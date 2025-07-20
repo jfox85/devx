@@ -21,6 +21,8 @@ import (
 
 type sessionItem struct {
 	name            string
+	projectAlias    string
+	projectName     string
 	branch          string
 	path            string
 	ports           map[string]int
@@ -29,45 +31,57 @@ type sessionItem struct {
 	attentionTime   time.Time
 }
 
+type projectItem struct {
+	alias       string
+	name        string
+	path        string
+	description string
+}
+
 type state int
 
 const (
 	stateList state = iota
 	stateCreating
+	stateProjectSelect
 	stateConfirm
 	stateHostnames
 )
 
 type model struct {
-	sessions     []sessionItem
-	cursor       int
-	state        state
-	help         help.Model
-	keys         keyMap
-	textInput    textinput.Model
-	confirmMsg   string
-	confirmFunc  func()
-	width        int
-	height       int
-	err          error
-	showPreview  bool
-	hostnames    []string
+	sessions       []sessionItem
+	cursor         int
+	state          state
+	help           help.Model
+	keys           keyMap
+	textInput      textinput.Model
+	confirmMsg     string
+	confirmFunc    func()
+	width          int
+	height         int
+	err            error
+	showPreview    bool
+	hostnames      []string
 	hostnameCursor int
+	projects       []projectItem
+	projectCursor  int
+	selectedProject string
 }
 
 type keyMap struct {
-	Up     key.Binding
-	Down   key.Binding
-	Enter  key.Binding
-	Create key.Binding
-	Delete key.Binding
-	Open    key.Binding
-	Edit    key.Binding
+	Up        key.Binding
+	Down      key.Binding
+	Enter     key.Binding
+	Create    key.Binding
+	Delete    key.Binding
+	Open      key.Binding
+	Edit      key.Binding
 	Hostnames key.Binding
-	Preview key.Binding
-	Quit    key.Binding
-	Help    key.Binding
-	Back    key.Binding
+	Projects  key.Binding
+	Preview   key.Binding
+	Quit      key.Binding
+	Help      key.Binding
+	Back      key.Binding
 }
 
 var keys = keyMap{
@@ -102,6 +116,10 @@ var keys = keyMap{
 	Hostnames: key.NewBinding(
 		key.WithKeys("h"),
 		key.WithHelp("h", "view hostnames"),
+	),
+	Projects: key.NewBinding(
+		key.WithKeys("P"),
+		key.WithHelp("P", "manage projects"),
 	),
 	Preview: key.NewBinding(
 		key.WithKeys("p"),

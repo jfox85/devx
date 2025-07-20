@@ -1,0 +1,324 @@
+package session
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+	
+	"github.com/jfox85/devx/caddy"
+	"github.com/jfox85/devx/config"
+)
+
+type Session struct {
+	Name            string                 `json:"name"`
+	ProjectAlias    string                 `json:"project_alias,omitempty"` // Reference to project in registry
+	ProjectPath     string                 `json:"project_path,omitempty"`  // Resolved project path
+	Branch          string                 `json:"branch"`
+	Path            string                 `json:"path"`
+	Ports           map[string]int         `json:"ports"`
+	Routes          map[string]string      `json:"routes,omitempty"` // service -> route ID mapping
+	EditorPID       int                    `json:"editor_pid,omitempty"` // PID of the editor process
+	AttentionFlag   bool                   `json:"attention_flag,omitempty"`
+	AttentionReason string                 `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
+	AttentionTime   time.Time              `json:"attention_time,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+}
+
+type SessionStore struct {
+	Sessions map[string]*Session `json:"sessions"`
+}
+
+// LoadSessions loads the sessions from the metadata file
+func LoadSessions() (*SessionStore, error) {
+	sessionsPath := getSessionsPath()
+	
+	// Create config directory if it doesn't exist
+	dir := filepath.Dir(sessionsPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
+	}
+	
+	// If file doesn't exist, return empty store
+	if _, err := os.Stat(sessionsPath); os.IsNotExist(err) {
+		return &SessionStore{Sessions: make(map[string]*Session)}, nil
+	}
+	
+	data, err := os.ReadFile(sessionsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sessions file: %w", err)
+	}
+	
+	var store SessionStore
+	if err := json.Unmarshal(data, &store); err != nil {
+		return nil, fmt.Errorf("failed to parse sessions file: %w", err)
+	}
+	
+	if store.Sessions == nil {
+		store.Sessions = make(map[string]*Session)
+	}
+	
+	return &store, nil
+}
+
+// SaveSessions saves the sessions to the metadata file
+func (s *SessionStore) Save() error {
+	sessionsPath := getSessionsPath()
+	
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal sessions: %w", err)
+	}
+	
+	if err := os.WriteFile(sessionsPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write sessions file: %w", err)
+	}
+	
+	return nil
+}
+
+// AddSession adds a new session to the store
+func (s *SessionStore) AddSession(name, branch, path string, ports map[string]int) error {
+	if _, exists := s.Sessions[name]; exists {
+		return fmt.Errorf("session %s already exists", name)
+	}
+	
+	now := time.Now()
+	s.Sessions[name] = &Session{
+		Name:      name,
+		Branch:    branch,
+		Path:      path,
+		Ports:     ports,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	
+	return s.Save()
+}
+
+// AddSessionWithProject adds a new session to the store with project information
+func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports map[string]int, projectAlias, projectPath string) error {
+	if _, exists := s.Sessions[name]; exists {
+		return fmt.Errorf("session %s already exists", name)
+	}
+	
+	now := time.Now()
+	s.Sessions[name] = &Session{
+		Name:         name,
+		ProjectAlias: projectAlias,
+		ProjectPath:  projectPath,
+		Branch:       branch,
+		Path:         path,
+		Ports:        ports,
+		Routes:       make(map[string]string),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	
+	return s.Save()
+}
+
+// GetSession retrieves a session by name
+func (s *SessionStore) GetSession(name string) (*Session, bool) {
+	session, exists := s.Sessions[name]
+	return session, exists
+}
+
+// UpdateSession updates an existing session
+func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error {
+	session, exists := s.Sessions[name]
+	if !exists {
+		return fmt.Errorf("session %s not found", name)
+	}
+	
+	updateFn(session)
+	session.UpdatedAt = time.Now()
+	
+	return s.Save()
+}
+
+// RemoveSession removes a session from the store
+func (s *SessionStore) RemoveSession(name string) error {
+	if _, exists := s.Sessions[name]; !exists {
+		return fmt.Errorf("session %s not found", name)
+	}
+	
+	delete(s.Sessions, name)
+	return s.Save()
+}
+
+// LoadRegistry is an alias for LoadSessions for compatibility
+func LoadRegistry() (*SessionStore, error) {
+	return LoadSessions()
+}
+
+// ClearRegistry removes all sessions and clears the sessions file
+func ClearRegistry() error {
+	store := &SessionStore{Sessions: make(map[string]*Session)}
+	return store.Save()
+}
+
+// RemoveSession removes a single session completely (helper for commands)
+func RemoveSession(name string, sess *Session) error {
+	// Terminate editor if it's running
+	if err := TerminateEditor(name); err != nil {
+		// Don't fail on editor termination errors
+	}
+	
+	// Kill tmux session if it exists
+	if err := killTmuxSession(name); err != nil {
+		// Don't fail on tmux errors
+	}
+	
+	// Remove Caddy routes
+	if sess.Routes != nil && len(sess.Routes) > 0 {
+		if err := removeCaddyRoutes(name, sess.Routes); err != nil {
+			// Don't fail on Caddy errors
+		}
+	}
+	
+	// Remove git worktree
+	if err := removeGitWorktree(sess.Path); err != nil {
+		// Don't fail on worktree errors
+	}
+	
+	return nil
+}
+
+func killTmuxSession(sessionName string) error {
+	// Check if tmux is available
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil // tmux not available, skip
+	}
+	
+	// Try to kill the session
+	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+	err := cmd.Run()
+	
+	// Don't treat "session not found" as an error
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil // session doesn't exist, which is fine
+		}
+		return err
+	}
+	
+	fmt.Printf("Killed tmux session '%s'\n", sessionName)
+	return nil
+}
+
+func removeGitWorktree(worktreePath string) error {
+	// Check if worktree exists
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		return nil // already removed
+	}
+	
+	// Use git worktree remove command with --force flag
+	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// If git command fails, try manual removal
+		if removeErr := os.RemoveAll(worktreePath); removeErr != nil {
+			return fmt.Errorf("failed to remove worktree: git error: %v; manual removal error: %v", 
+				string(output), removeErr)
+		}
+		fmt.Printf("Manually removed worktree directory\n")
+	} else {
+		fmt.Printf("Removed git worktree\n")
+	}
+	
+	return nil
+}
+
+func removeCaddyRoutes(sessionName string, routes map[string]string) error {
+	return caddy.DestroySessionRoutes(sessionName, routes)
+}
+
+func getSessionsPath() string {
+	return config.GetSessionsPath()
+}
+
+// SetAttentionFlag sets the attention flag for a session
+func SetAttentionFlag(sessionName, reason string) error {
+	store, err := LoadSessions()
+	if err != nil {
+		return fmt.Errorf("failed to load sessions: %w", err)
+	}
+
+	_, exists := store.GetSession(sessionName)
+	if !exists {
+		return fmt.Errorf("session '%s' not found", sessionName)
+	}
+
+	return store.UpdateSession(sessionName, func(s *Session) {
+		s.AttentionFlag = true
+		s.AttentionReason = reason
+		s.AttentionTime = time.Now()
+	})
+}
+
+// ClearAttentionFlag clears the attention flag for a session
+func ClearAttentionFlag(sessionName string) error {
+	store, err := LoadSessions()
+	if err != nil {
+		return fmt.Errorf("failed to load sessions: %w", err)
+	}
+
+	_, exists := store.GetSession(sessionName)
+	if !exists {
+		return fmt.Errorf("session '%s' not found", sessionName)
+	}
+
+	return store.UpdateSession(sessionName, func(s *Session) {
+		s.AttentionFlag = false
+		s.AttentionReason = ""
+		s.AttentionTime = time.Time{}
+	})
+}
+
+// GetCurrentSessionName attempts to determine the current session based on working directory
+func GetCurrentSessionName() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	// Load sessions to check if current directory matches any session path
+	store, err := LoadSessions()
+	if err != nil {
+		return ""
+	}
+
+	for name, sess := range store.Sessions {
+		if sess.Path == cwd {
+			return name
+		}
+	}
+
+	// Check if we're in a worktree subdirectory of any session
+	for name, sess := range store.Sessions {
+		if strings.HasPrefix(cwd, sess.Path+"/") {
+			return name
+		}
+	}
+
+	// Check tmux session name if we're in tmux
+	if tmuxSession := os.Getenv("TMUX"); tmuxSession != "" {
+		// Try to get tmux session name
+		cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}")
+		output, err := cmd.Output()
+		if err == nil {
+			sessionName := strings.TrimSpace(string(output))
+			// Check if this tmux session name matches any of our devx sessions
+			if _, exists := store.Sessions[sessionName]; exists {
+				return sessionName
+			}
+		}
+	}
+
+	return ""
+}

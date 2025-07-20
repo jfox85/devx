@@ -1,0 +1,7 @@
+basedomain: test.local
+caddy_api: http://localhost:2020
+ports:
+  - frontend
+  - backend
+  - database
+editor: code

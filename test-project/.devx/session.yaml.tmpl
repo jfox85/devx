@@ -1,0 +1,19 @@
+session_name: {{.Name}}
+start_directory: {{.Path}}
+windows:
+  - window_name: main
+    layout: tiled
+    shell_command_before:
+      - cd {{.Path}}
+    panes:
+      - echo "PROJECT-LEVEL TEMPLATE - Session: {{.Name}}"
+      - echo "This is using the project-level template!"
+
+  - window_name: services
+    layout: tiled
+    shell_command_before:
+      - cd {{.Path}}{{range $serviceName, $port := .Ports}}
+      - export {{toPortVar $serviceName}}={{$port}}{{end}}
+      - export SESSION_NAME={{.Name}}
+    panes:
+      - echo "Services - Frontend: $FRONTEND_PORT, Backend: $BACKEND_PORT, Database: $DATABASE_PORT"
