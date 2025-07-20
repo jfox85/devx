@@ -165,7 +165,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	}
 	
 	// Provision Caddy routes first to get hostnames
-	routes, err := caddy.ProvisionSessionRoutes(name, portAllocation.Ports)
+	routes, err := caddy.ProvisionSessionRoutesWithProject(name, portAllocation.Ports, projectAlias)
 	if err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
@@ -176,7 +176,11 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		for serviceName := range routes {
 			// Use the DNS-normalized service name for the hostname
 			dnsServiceName := caddy.NormalizeDNSName(serviceName)
-			hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", name, dnsServiceName)
+			if projectAlias != "" {
+				hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, name, dnsServiceName)
+			} else {
+				hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", name, dnsServiceName)
+			}
 		}
 	}
 	

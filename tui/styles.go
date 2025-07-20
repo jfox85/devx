@@ -7,6 +7,7 @@ var (
 			Foreground(lipgloss.Color("39")).
 			Bold(true).
 			Align(lipgloss.Center).
+			MarginTop(1).
 			MarginBottom(1)
 
 	headerStyle = lipgloss.NewStyle().

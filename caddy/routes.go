@@ -64,16 +64,33 @@ func NewCaddyClient() *CaddyClient {
 
 // CreateRoute creates a route for a service
 func (c *CaddyClient) CreateRoute(sessionName, serviceName string, port int) (string, error) {
+	return c.CreateRouteWithProject(sessionName, serviceName, port, "")
+}
+
+// CreateRouteWithProject creates a route for a service with optional project prefix
+func (c *CaddyClient) CreateRouteWithProject(sessionName, serviceName string, port int, projectAlias string) (string, error) {
 	// Use localhost for reliable resolution (works with both IPv4/IPv6)
 	upstreams := []RouteUpstream{
 		{Dial: fmt.Sprintf("localhost:%d", port)},
 	}
 	
+	// Generate hostname with project prefix if provided
+	hostname := fmt.Sprintf("%s-%s.localhost", sessionName, serviceName)
+	if projectAlias != "" {
+		hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sessionName, serviceName)
+	}
+	
+	// Generate route ID with project prefix if provided
+	routeID := fmt.Sprintf("sess-%s-%s", sessionName, serviceName)
+	if projectAlias != "" {
+		routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sessionName, serviceName)
+	}
+	
 	route := Route{
-		ID: fmt.Sprintf("sess-%s-%s", sessionName, serviceName),
+		ID: routeID,
 		Match: []RouteMatch{
 			{
-				Host: []string{fmt.Sprintf("%s-%s.localhost", sessionName, serviceName)},
+				Host: []string{hostname},
 			},
 		},
 		Handle: []RouteHandler{
@@ -135,11 +152,13 @@ func (c *CaddyClient) DeleteSessionRoutes(sessionName string) error {
 	}
 
 	// Find and delete routes matching the session
-	prefix := fmt.Sprintf("sess-%s-", sessionName)
+	// Check both with and without project prefix
 	var errors []string
 
 	for _, route := range routes {
-		if strings.HasPrefix(route.ID, prefix) {
+		// Match routes that contain the session name in the expected pattern
+		// This handles both sess-{session}-{service} and sess-{project}-{session}-{service}
+		if strings.Contains(route.ID, fmt.Sprintf("-%s-", sessionName)) || strings.HasPrefix(route.ID, fmt.Sprintf("sess-%s-", sessionName)) {
 			if err := c.DeleteRoute(route.ID); err != nil {
 				errors = append(errors, fmt.Sprintf("failed to delete route %s: %v", route.ID, err))
 			}

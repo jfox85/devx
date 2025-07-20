@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 )
@@ -47,6 +48,8 @@ const (
 	stateProjectSelect
 	stateConfirm
 	stateHostnames
+	stateProjectManagement
+	stateProjectAdd
 )
 
 type model struct {
@@ -164,6 +167,8 @@ func InitialModel() model {
 		keys:        keys,
 		textInput:   ti,
 		showPreview: true, // Enable preview by default
+		width:       80,    // Default width
+		height:      24,    // Default height
 	}
 }
 
@@ -267,6 +272,8 @@ type projectsLoadedMsg struct {
 
 type sessionCreationStartedMsg struct{}
 
+type projectSelectionNeededMsg struct{}
+
 type hostnamesLoadedMsg struct {
 	hostnames []string
 }
@@ -334,11 +341,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.Delete):
 				if len(m.sessions) > 0 {
 					selected := m.sessions[m.cursor]
-					m.state = stateConfirm
 					m.confirmMsg = fmt.Sprintf("Delete session '%s'? (y/n)", selected.name)
 					m.confirmFunc = func() {
-						// We'll implement deletion in a moment
+						// Delete the session
+						cmd := deleteCmd(selected.name)
+						cmd.Run()
+						m.state = stateList
 					}
+					m.state = stateConfirm
 				}
 
 			case key.Matches(msg, m.keys.Open):
@@ -357,7 +367,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.loadHostnames()
 
 			case key.Matches(msg, m.keys.Projects):
-				return m, m.loadProjects
+				m.state = stateProjectManagement
+				return m, m.loadProjectsForManagement()
 
 			case key.Matches(msg, m.keys.Preview):
 				m.showPreview = !m.showPreview
@@ -390,12 +401,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch strings.ToLower(msg.String()) {
 			case "y":
 				if m.confirmFunc != nil {
-					selected := m.sessions[m.cursor]
-					m.state = stateList
-					return m, m.deleteSession(selected.name)
+					m.confirmFunc()
+					m.confirmFunc = nil
+					m.confirmMsg = ""
+					// If we're in project management, reload projects
+					if m.state == stateProjectManagement {
+						return m, m.loadProjectsForManagement()
+					}
+					return m, nil
 				}
 			case "n":
-				m.state = stateList
+				// Return to previous state based on context
+				if m.state == stateProjectManagement {
+					// Stay in project management
+				} else {
+					m.state = stateList
+				}
 				m.confirmMsg = ""
 				m.confirmFunc = nil
 			}
@@ -451,6 +472,63 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, textinput.Blink
 				}
 			}
+
+		case stateProjectManagement:
+			switch {
+			case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
+				m.state = stateList
+				m.projects = nil
+				m.projectCursor = 0
+
+			case key.Matches(msg, m.keys.Up):
+				if m.projectCursor > 0 {
+					m.projectCursor--
+				}
+
+			case key.Matches(msg, m.keys.Down):
+				if m.projectCursor < len(m.projects)-1 {
+					m.projectCursor++
+				}
+
+			case key.Matches(msg, m.keys.Create):
+				m.state = stateProjectAdd
+				m.textInput.Reset()
+				m.textInput.Focus()
+				return m, textinput.Blink
+
+			case key.Matches(msg, m.keys.Delete):
+				if len(m.projects) > 0 {
+					project := m.projects[m.projectCursor]
+					m.confirmMsg = fmt.Sprintf("Remove project '%s'?", project.name)
+					m.confirmFunc = func() {
+						// Remove project
+						registry, _ := config.LoadProjectRegistry()
+						registry.RemoveProject(project.alias)
+						// Return to project management
+						m.state = stateProjectManagement
+					}
+					m.state = stateConfirm
+					return m, nil
+				}
+			}
+
+		case stateProjectAdd:
+			switch {
+			case key.Matches(msg, m.keys.Back):
+				m.state = stateProjectManagement
+				return m, m.loadProjectsForManagement()
+
+			case key.Matches(msg, m.keys.Enter):
+				path := m.textInput.Value()
+				if path != "" {
+					return m, m.addProject(path)
+				}
+
+			default:
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				return m, cmd
+			}
 		}
 
 	case sessionsLoadedMsg:
@@ -470,13 +548,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectsLoadedMsg:
 		m.projects = msg.projects
 		m.projectCursor = 0
-		m.state = stateProjectSelect
+		// Don't change state here - let the caller decide the state
 
 	case sessionCreationStartedMsg:
 		m.state = stateCreating
 		m.textInput.Reset()
 		m.textInput.Focus()
 		return m, textinput.Blink
+
+	case projectSelectionNeededMsg:
+		m.state = stateProjectSelect
+		return m, m.loadProjects
 
 	case sessionCreatedMsg:
 		// Reload sessions first, then attach to the newly created session
@@ -532,6 +614,10 @@ func (m model) View() string {
 		content = m.confirmView()
 	case stateHostnames:
 		content = m.hostnamesView()
+	case stateProjectManagement:
+		content = m.projectManagementView()
+	case stateProjectAdd:
+		content = m.projectAddView()
 	}
 
 	// Create footer with commands
@@ -550,16 +636,33 @@ func (m model) View() string {
 			footer = footerStyle.Width(m.width).Render("y: confirm • n: cancel")
 		case stateHostnames:
 			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: open in browser • esc: back • q: quit")
+		case stateProjectManagement:
+			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • c: add project • d: remove project • esc: back • q: quit")
+		case stateProjectAdd:
+			footer = footerStyle.Width(m.width).Render("enter: add project • esc: cancel")
 		}
 	}
 
-	height := m.height - lipgloss.Height(footer) - 1
-
-	return lipgloss.NewStyle().Height(height).Render(content) + "\n" + footer
+	// Calculate available height for content
+	// Account for footer height and some padding
+	footerHeight := lipgloss.Height(footer)
+	availableHeight := m.height - footerHeight - 1
+	
+	// Make sure we have a reasonable minimum height
+	if availableHeight < 10 {
+		availableHeight = 10
+	}
+	
+	// Apply height constraint to prevent overflow
+	return lipgloss.NewStyle().
+		Height(availableHeight).
+		MaxHeight(availableHeight).
+		Render(content) + "\n" + footer
 }
 
 func (m model) listView() string {
-	logo := logoStyle.Width(m.width).Render(`  ____            __  __
+	logo := logoStyle.Width(m.width).Render(`
+  ____            __  __
  |  _ \  _____   _\ \/ /
  | | | |/ _ \ \ / /\  / 
  | |_| |  __/\ V / /  \ 
@@ -1003,8 +1106,8 @@ func (m model) startSessionCreation() tea.Cmd {
 			return sessionCreationStartedMsg{}
 		}
 		
-		// Multiple projects, show selection
-		return m.loadProjects()
+		// Multiple projects, need to show selection first
+		return projectSelectionNeededMsg{}
 	}
 }
 
@@ -1156,22 +1259,53 @@ func (m model) loadHostnames() tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-
-		// Collect all unique hostnames from all sessions
+		
+		// Use Caddy client to get actual routes
+		client := caddy.NewCaddyClient()
+		routes, err := client.GetAllRoutes()
+		if err != nil {
+			// Fall back to generating hostnames from session data
+			hostnameSet := make(map[string]bool)
+			for _, sess := range store.Sessions {
+				for serviceName := range sess.Routes {
+					// Generate hostname based on project and session info
+					dnsServiceName := caddy.NormalizeDNSName(serviceName)
+					if sess.ProjectAlias != "" {
+						hostnameSet[fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sess.Name, dnsServiceName)] = true
+					} else {
+						hostnameSet[fmt.Sprintf("%s-%s", sess.Name, dnsServiceName)] = true
+					}
+				}
+			}
+			
+			var hostnames []string
+			for hostname := range hostnameSet {
+				hostnames = append(hostnames, hostname)
+			}
+			sort.Strings(hostnames)
+			return hostnamesLoadedMsg{hostnames: hostnames}
+		}
+		
+		// Extract hostnames from actual Caddy routes
 		hostnameSet := make(map[string]bool)
-		for _, sess := range store.Sessions {
-			for _, hostname := range sess.Routes {
-				hostnameSet[hostname] = true
+		for _, route := range routes {
+			for _, match := range route.Match {
+				for _, host := range match.Host {
+					// Extract just the subdomain part (without .localhost)
+					if strings.HasSuffix(host, ".localhost") {
+						subdomain := strings.TrimSuffix(host, ".localhost")
+						hostnameSet[subdomain] = true
+					}
+				}
 			}
 		}
-
+		
 		// Convert to sorted slice
 		var hostnames []string
 		for hostname := range hostnameSet {
 			hostnames = append(hostnames, hostname)
 		}
 		sort.Strings(hostnames)
-
 		return hostnamesLoadedMsg{hostnames: hostnames}
 	}
 }
@@ -1184,4 +1318,155 @@ func (m model) openHostname(hostname string) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+func (m model) projectManagementView() string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("Project Management") + "\n\n")
+	
+	if len(m.projects) == 0 {
+		b.WriteString("  No projects registered.\n\n")
+		b.WriteString("  Press 'c' to add a project.\n")
+		return b.String()
+	}
+	
+	// List projects with session counts
+	for i, project := range m.projects {
+		cursor := "  "
+		if i == m.projectCursor {
+			cursor = "> "
+		}
+		
+		// Count sessions for this project
+		sessionCount := 0
+		for _, sess := range m.sessions {
+			if sess.projectAlias == project.alias {
+				sessionCount++
+			}
+		}
+		
+		b.WriteString(fmt.Sprintf("%s%s (%s)\n", cursor, project.name, project.alias))
+		b.WriteString(fmt.Sprintf("    Path: %s\n", project.path))
+		b.WriteString(fmt.Sprintf("    Sessions: %d\n", sessionCount))
+		if project.description != "" {
+			b.WriteString(fmt.Sprintf("    %s\n", project.description))
+		}
+		if i < len(m.projects)-1 {
+			b.WriteString("\n")
+		}
+	}
+	
+	return b.String()
+}
+
+func (m model) projectAddView() string {
+	return headerStyle.Render("Add Project") + "\n\n" +
+		"  Project path: " + m.textInput.View() + "\n\n" +
+		dimStyle.Render("  Enter the path to a git repository") + "\n" +
+		dimStyle.Render("  Press Enter to add, Esc to cancel")
+}
+
+func (m model) loadProjectsForManagement() tea.Cmd {
+	return func() tea.Msg {
+		registry, err := config.LoadProjectRegistry()
+		if err != nil {
+			return errMsg{err}
+		}
+		
+		// Also load sessions to get counts
+		store, err := session.LoadSessions()
+		if err != nil {
+			return errMsg{err}
+		}
+		m.sessions = nil
+		for _, sess := range store.Sessions {
+			m.sessions = append(m.sessions, sessionItem{
+				name:         sess.Name,
+				projectAlias: sess.ProjectAlias,
+			})
+		}
+		
+		var projects []projectItem
+		for alias, project := range registry.Projects {
+			projects = append(projects, projectItem{
+				alias:       alias,
+				name:        project.Name,
+				path:        project.Path,
+				description: project.Description,
+			})
+		}
+		
+		// Sort projects by name
+		sort.Slice(projects, func(i, j int) bool {
+			return projects[i].name < projects[j].name
+		})
+		
+		return projectsLoadedMsg{projects: projects}
+	}
+}
+
+func (m model) addProject(path string) tea.Cmd {
+	return func() tea.Msg {
+		// Expand tilde if present
+		if strings.HasPrefix(path, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return errMsg{fmt.Errorf("failed to get home directory: %w", err)}
+			}
+			path = filepath.Join(home, path[2:])
+		}
+		
+		// Validate path exists
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return errMsg{fmt.Errorf("invalid path: %w", err)}
+		}
+		
+		// Check if it's a git repository
+		gitPath := filepath.Join(absPath, ".git")
+		if _, err := os.Stat(gitPath); err != nil {
+			return errMsg{fmt.Errorf("not a git repository: %s", absPath)}
+		}
+		
+		// Get project name from directory
+		projectName := filepath.Base(absPath)
+		
+		// Generate alias (lowercase, no spaces)
+		alias := strings.ToLower(strings.ReplaceAll(projectName, " ", "-"))
+		
+		// Add to registry
+		registry, err := config.LoadProjectRegistry()
+		if err != nil {
+			return errMsg{err}
+		}
+		
+		project := &config.Project{
+			Name: projectName,
+			Path: absPath,
+		}
+		
+		if err := registry.AddProject(alias, project); err != nil {
+			return errMsg{err}
+		}
+		
+		// Reload projects
+		m.state = stateProjectManagement
+		return m.loadProjectsForManagement()
+	}
+}
+
+func (m model) removeProject(alias string) {
+	registry, err := config.LoadProjectRegistry()
+	if err != nil {
+		m.err = err
+		return
+	}
+	
+	if err := registry.RemoveProject(alias); err != nil {
+		m.err = err
+		return
+	}
+	
+	// Reload projects and sessions
+	m.state = stateProjectManagement
 }

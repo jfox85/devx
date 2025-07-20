@@ -35,6 +35,11 @@ func NormalizeDNSName(serviceName string) string {
 
 // ProvisionSessionRoutes creates Caddy routes for all services in a session
 func ProvisionSessionRoutes(sessionName string, services map[string]int) (map[string]string, error) {
+	return ProvisionSessionRoutesWithProject(sessionName, services, "")
+}
+
+// ProvisionSessionRoutesWithProject creates Caddy routes for all services in a session with optional project prefix
+func ProvisionSessionRoutesWithProject(sessionName string, services map[string]int, projectAlias string) (map[string]string, error) {
 	// Check if Caddy provisioning is enabled
 	if viper.GetBool("disable_caddy") {
 		return make(map[string]string), nil
@@ -60,16 +65,26 @@ func ProvisionSessionRoutes(sessionName string, services map[string]int) (map[st
 			continue
 		}
 		
-		_, err := client.CreateRoute(sessionName, dnsServiceName, port)
+		_, err := client.CreateRouteWithProject(sessionName, dnsServiceName, port, projectAlias)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("failed to create route for %s: %v", dnsServiceName, err))
 			continue
 		}
 		
-		routes[serviceName] = fmt.Sprintf("sess-%s-%s", sessionName, dnsServiceName)
+		// Generate route ID with project prefix if provided
+		routeID := fmt.Sprintf("sess-%s-%s", sessionName, dnsServiceName)
+		if projectAlias != "" {
+			routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sessionName, dnsServiceName)
+		}
+		routes[serviceName] = routeID
 		
-		fmt.Printf("Created route: http://%s-%s.localhost -> port %d\n", 
-			sessionName, dnsServiceName, port)
+		// Generate hostname with project prefix if provided
+		hostname := fmt.Sprintf("%s-%s.localhost", sessionName, dnsServiceName)
+		if projectAlias != "" {
+			hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sessionName, dnsServiceName)
+		}
+		
+		fmt.Printf("Created route: http://%s -> port %d\n", hostname, port)
 	}
 	
 	if len(errors) > 0 {
