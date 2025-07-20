@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 )
 
@@ -176,10 +177,25 @@ func (m *model) loadSessions() tea.Msg {
 		return errMsg{err}
 	}
 
+	// Load project registry to get project names
+	registry, err := config.LoadProjectRegistry()
+	if err != nil {
+		return errMsg{err}
+	}
+
 	sessions := make([]sessionItem, 0, len(store.Sessions))
 	for name, sess := range store.Sessions {
+		projectName := sess.ProjectAlias // Default to alias
+		if sess.ProjectAlias != "" {
+			if project, err := registry.GetProject(sess.ProjectAlias); err == nil {
+				projectName = project.Name
+			}
+		}
+		
 		sessions = append(sessions, sessionItem{
 			name:            name,
+			projectAlias:    sess.ProjectAlias,
+			projectName:     projectName,
 			branch:          sess.Branch,
 			path:            sess.Path,
 			ports:           sess.Ports,
@@ -189,15 +205,27 @@ func (m *model) loadSessions() tea.Msg {
 		})
 	}
 
-	// Sort sessions: flagged ones first, then by name
+	// Sort sessions: by project first, then flagged ones first, then by name
 	sort.Slice(sessions, func(i, j int) bool {
-		// If one has attention flag and other doesn't, prioritize flagged
+		// First, group by project (sessions without project go last)
+		if sessions[i].projectAlias != sessions[j].projectAlias {
+			if sessions[i].projectAlias == "" {
+				return false // No project goes to end
+			}
+			if sessions[j].projectAlias == "" {
+				return true // No project goes to end
+			}
+			return sessions[i].projectAlias < sessions[j].projectAlias
+		}
+		
+		// Within same project, prioritize flagged sessions
 		if sessions[i].attentionFlag && !sessions[j].attentionFlag {
 			return true
 		}
 		if !sessions[i].attentionFlag && sessions[j].attentionFlag {
 			return false
 		}
+		
 		// Both have same flag status, sort by name
 		return sessions[i].name < sessions[j].name
 	})
@@ -205,9 +233,39 @@ func (m *model) loadSessions() tea.Msg {
 	return sessionsLoadedMsg{sessions}
 }
 
+func (m *model) loadProjects() tea.Msg {
+	registry, err := config.LoadProjectRegistry()
+	if err != nil {
+		return errMsg{err}
+	}
+	
+	projects := make([]projectItem, 0, len(registry.Projects))
+	for alias, proj := range registry.Projects {
+		projects = append(projects, projectItem{
+			alias:       alias,
+			name:        proj.Name,
+			path:        proj.Path,
+			description: proj.Description,
+		})
+	}
+	
+	// Sort projects by alias
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].alias < projects[j].alias
+	})
+	
+	return projectsLoadedMsg{projects}
+}
+
 type sessionsLoadedMsg struct {
 	sessions []sessionItem
 }
+
+type projectsLoadedMsg struct {
+	projects []projectItem
+}
+
+type sessionCreationStartedMsg struct{}
 
 type hostnamesLoadedMsg struct {
 	hostnames []string
@@ -271,10 +329,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case key.Matches(msg, m.keys.Create):
-				m.state = stateCreating
-				m.textInput.Reset()
-				m.textInput.Focus()
-				return m, textinput.Blink
+				return m, m.startSessionCreation()
 
 			case key.Matches(msg, m.keys.Delete):
 				if len(m.sessions) > 0 {
@@ -300,6 +355,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case key.Matches(msg, m.keys.Hostnames):
 				return m, m.loadHostnames()
+
+			case key.Matches(msg, m.keys.Projects):
+				return m, m.loadProjects
 
 			case key.Matches(msg, m.keys.Preview):
 				m.showPreview = !m.showPreview
@@ -366,6 +424,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.openHostname(hostname)
 				}
 			}
+
+		case stateProjectSelect:
+			switch {
+			case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Quit):
+				m.state = stateList
+				m.projects = nil
+				m.projectCursor = 0
+
+			case key.Matches(msg, m.keys.Up):
+				if m.projectCursor > 0 {
+					m.projectCursor--
+				}
+
+			case key.Matches(msg, m.keys.Down):
+				if m.projectCursor < len(m.projects)-1 {
+					m.projectCursor++
+				}
+
+			case key.Matches(msg, m.keys.Enter):
+				if len(m.projects) > 0 {
+					m.selectedProject = m.projects[m.projectCursor].alias
+					m.state = stateCreating
+					m.textInput.Reset()
+					m.textInput.Focus()
+					return m, textinput.Blink
+				}
+			}
 		}
 
 	case sessionsLoadedMsg:
@@ -381,6 +466,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hostnames = msg.hostnames
 		m.hostnameCursor = 0
 		m.state = stateHostnames
+
+	case projectsLoadedMsg:
+		m.projects = msg.projects
+		m.projectCursor = 0
+		m.state = stateProjectSelect
+
+	case sessionCreationStartedMsg:
+		m.state = stateCreating
+		m.textInput.Reset()
+		m.textInput.Focus()
+		return m, textinput.Blink
 
 	case sessionCreatedMsg:
 		// Reload sessions first, then attach to the newly created session
@@ -430,6 +526,8 @@ func (m model) View() string {
 		content = m.listView()
 	case stateCreating:
 		content = m.createView()
+	case stateProjectSelect:
+		content = m.projectSelectView()
 	case stateConfirm:
 		content = m.confirmView()
 	case stateHostnames:
@@ -443,9 +541,11 @@ func (m model) View() string {
 	} else {
 		switch m.state {
 		case stateList:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • p: preview • ?: help • q: quit")
+			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
 		case stateCreating:
 			footer = footerStyle.Width(m.width).Render("enter: create session • esc: cancel")
+		case stateProjectSelect:
+			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: select project • esc: back • q: quit")
 		case stateConfirm:
 			footer = footerStyle.Width(m.width).Render("y: confirm • n: cancel")
 		case stateHostnames:
@@ -477,7 +577,28 @@ func (m model) listView() string {
 		var b strings.Builder
 		b.WriteString(logo + "\n" + headerStyle.Render("devx Sessions") + "\n\n")
 
+		// Group sessions by project for display
+		var currentProject string
 		for i, sess := range m.sessions {
+			// Add project header if this is a new project
+			if sess.projectAlias != currentProject {
+				if currentProject != "" {
+					b.WriteString("\n") // Add spacing between projects
+				}
+				currentProject = sess.projectAlias
+				
+				projectHeader := "No Project"
+				if sess.projectAlias != "" {
+					if sess.projectName != "" {
+						projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
+					} else {
+						projectHeader = sess.projectAlias
+					}
+				}
+				
+				b.WriteString(headerStyle.Render(projectHeader) + "\n")
+			}
+			
 			cursor := "  "
 			if m.cursor == i {
 				cursor = "> "
@@ -514,7 +635,28 @@ func (m model) listView() string {
 	var sessionList strings.Builder
 	sessionList.WriteString(headerStyle.Render("Sessions") + "\n\n")
 	
+	// Group sessions by project for display
+	var currentProject string
 	for i, sess := range m.sessions {
+		// Add project header if this is a new project
+		if sess.projectAlias != currentProject {
+			if currentProject != "" {
+				sessionList.WriteString("\n") // Add spacing between projects
+			}
+			currentProject = sess.projectAlias
+			
+			projectHeader := "No Project"
+			if sess.projectAlias != "" {
+				if sess.projectName != "" {
+					projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
+				} else {
+					projectHeader = sess.projectAlias
+				}
+			}
+			
+			sessionList.WriteString(headerStyle.Render(projectHeader) + "\n")
+		}
+		
 		cursor := "  "
 		if m.cursor == i {
 			cursor = "> "
@@ -813,6 +955,59 @@ func (m model) hostnamesView() string {
 	return b.String()
 }
 
+func (m model) projectSelectView() string {
+	if len(m.projects) == 0 {
+		return headerStyle.Render("Select Project") + "\n\n" +
+			"  No projects found.\n" +
+			"  Use 'devx project add' to register projects.\n"
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("Select Project") + "\n\n")
+	
+	for i, project := range m.projects {
+		cursor := "  "
+		if i == m.projectCursor {
+			cursor = "> "
+		}
+		
+		description := project.description
+		if description == "" {
+			description = project.path
+		}
+		
+		b.WriteString(fmt.Sprintf("%s%s (%s)\n", cursor, project.name, project.alias))
+		b.WriteString(fmt.Sprintf("    %s\n", description))
+		if i < len(m.projects)-1 {
+			b.WriteString("\n")
+		}
+	}
+	
+	return b.String()
+}
+
+func (m model) startSessionCreation() tea.Cmd {
+	// Load projects to see if we need to show project selection
+	return func() tea.Msg {
+		registry, err := config.LoadProjectRegistry()
+		if err != nil {
+			return errMsg{err}
+		}
+		
+		// If no projects or only one project, go directly to session creation
+		if len(registry.Projects) <= 1 {
+			for alias := range registry.Projects {
+				m.selectedProject = alias
+				break
+			}
+			return sessionCreationStartedMsg{}
+		}
+		
+		// Multiple projects, show selection
+		return m.loadProjects()
+	}
+}
+
 func (m model) attachSession(name string) tea.Cmd {
 	return tea.ExecProcess(attachCmd(name), func(err error) tea.Msg {
 		if err != nil {
@@ -825,8 +1020,8 @@ func (m model) attachSession(name string) tea.Cmd {
 
 func (m model) createSession(name string) tea.Cmd {
 	return func() tea.Msg {
-		// Run the create command
-		cmd := createCmd(name)
+		// Run the create command with project if selected
+		cmd := createCmd(name, m.selectedProject)
 		if err := cmd.Run(); err != nil {
 			return errMsg{err}
 		}
@@ -850,8 +1045,12 @@ func attachCmd(name string) *exec.Cmd {
 	return cmd
 }
 
-func createCmd(name string) *exec.Cmd {
-	cmd := exec.Command("devx", "session", "create", name, "--no-editor")
+func createCmd(name, project string) *exec.Cmd {
+	args := []string{"session", "create", name, "--no-editor"}
+	if project != "" {
+		args = append(args, "--project", project)
+	}
+	cmd := exec.Command("devx", args...)
 	// Check if we're in a git repo, otherwise try to find one
 	gitRoot := findGitRoot()
 	if gitRoot != "" {
