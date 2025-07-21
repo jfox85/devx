@@ -17,7 +17,6 @@ var (
 	fePortFlag  int
 	apiPortFlag int
 	noTmuxFlag  bool
-	noEditorFlag bool
 	projectFlag string
 )
 
@@ -35,7 +34,6 @@ func init() {
 	sessionCreateCmd.Flags().IntVar(&fePortFlag, "fe-port", 0, "Frontend port (auto-allocated if not specified)")
 	sessionCreateCmd.Flags().IntVar(&apiPortFlag, "api-port", 0, "API port (auto-allocated if not specified)")
 	sessionCreateCmd.Flags().BoolVar(&noTmuxFlag, "no-tmux", false, "Skip launching tmux session")
-	sessionCreateCmd.Flags().BoolVar(&noEditorFlag, "no-editor", false, "Skip launching editor")
 	sessionCreateCmd.Flags().StringVarP(&projectFlag, "project", "p", "", "Project alias (defaults to current directory's project)")
 }
 
@@ -237,12 +235,6 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\n")
 	}
 	
-	// Launch editor first (if configured and not disabled) so it's available immediately
-	if !noEditorFlag {
-		if err := session.LaunchEditorForSession(name, worktreePath); err != nil {
-			fmt.Printf("Warning: Failed to launch editor: %v\n", err)
-		}
-	}
 	
 	// Launch tmux session unless disabled
 	if !noTmuxFlag {
