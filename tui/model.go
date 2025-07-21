@@ -1186,7 +1186,7 @@ func attachCmd(name string) *exec.Cmd {
 }
 
 func createCmd(name, project string) *exec.Cmd {
-	args := []string{"session", "create", name, "--no-editor"}
+	args := []string{"session", "create", name}
 	if project != "" {
 		args = append(args, "--project", project)
 	}
