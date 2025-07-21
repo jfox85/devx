@@ -1,0 +1,25 @@
+session_name: {{.Name}}
+start_directory: {{.Path}}
+suppress_history: false
+options:
+  base-index: 1
+  automatic-rename: "off"
+windows:
+  - window_name: editor
+    layout: tiled
+    shell_command_before:
+      - cd {{.Path}}
+      - export SESSION_NAME={{.Name}}
+    panes:
+      - claude
+
+  - window_name: repo-root
+    layout: tiled
+    shell_command_before:
+      - cd {{.Path}}{{range $name, $port := .Ports}}
+      - export {{$name}}={{$port}}{{end}}{{if .Routes}}{{range $service, $hostname := .Routes}}
+      - export {{toHostVar $service}}=http://{{$hostname}}{{end}}{{end}}
+      - export SESSION_NAME={{.Name}}    
+    panes:
+      - cd {{.Path}}
+

@@ -1,0 +1,6 @@
+basedomain: localhost
+caddy_api: http://localhost:2019
+close_editor_on_rm: true
+disable_caddy: false
+editor: cursor
+tmuxp_template: /Users/jfox/.config/devx/session.yaml.tmpl
