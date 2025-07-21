@@ -372,7 +372,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case key.Matches(msg, m.keys.Hostnames):
-				return m, m.loadHostnames()
+				// Pass the selected session if one is selected
+				var selectedSession string
+				if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
+					selectedSession = m.sessions[m.cursor].name
+				}
+				return m, m.loadHostnames(selectedSession)
 
 			case key.Matches(msg, m.keys.Projects):
 				m.state = stateProjectManagement
@@ -1298,13 +1303,33 @@ func (m model) editInEditor(sessionName string) tea.Cmd {
 	}
 }
 
-func (m model) loadHostnames() tea.Cmd {
+func (m model) loadHostnames(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		store, err := session.LoadSessions()
 		if err != nil {
 			return errMsg{err}
 		}
 		
+		// If a specific session is selected, only show its routes
+		if sessionName != "" {
+			sess, exists := store.Sessions[sessionName]
+			if exists {
+				var hostnames []string
+				for serviceName := range sess.Routes {
+					// Generate hostname based on project and session info
+					dnsServiceName := caddy.NormalizeDNSName(serviceName)
+					if sess.ProjectAlias != "" {
+						hostnames = append(hostnames, fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sess.Name, dnsServiceName))
+					} else {
+						hostnames = append(hostnames, fmt.Sprintf("%s-%s", sess.Name, dnsServiceName))
+					}
+				}
+				sort.Strings(hostnames)
+				return hostnamesLoadedMsg{hostnames: hostnames}
+			}
+		}
+		
+		// Otherwise, show all hostnames (original behavior)
 		// Use Caddy client to get actual routes
 		client := caddy.NewCaddyClient()
 		routes, err := client.GetAllRoutes()
