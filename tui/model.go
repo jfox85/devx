@@ -61,6 +61,7 @@ type model struct {
 	textInput      textinput.Model
 	confirmMsg     string
 	confirmFunc    func()
+	deleteTarget   string
 	width          int
 	height         int
 	err            error
@@ -350,12 +351,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.sessions) > 0 {
 					selected := m.sessions[m.cursor]
 					m.confirmMsg = fmt.Sprintf("Delete session '%s'? (y/n)", selected.name)
-					m.confirmFunc = func() {
-						// Delete the session
-						cmd := deleteCmd(selected.name)
-						cmd.Run()
-						m.state = stateList
-					}
+					m.deleteTarget = selected.name
 					m.state = stateConfirm
 				}
 
@@ -413,6 +409,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateConfirm:
 			switch strings.ToLower(msg.String()) {
 			case "y":
+				// Handle session deletion
+				if m.deleteTarget != "" {
+					target := m.deleteTarget
+					m.state = stateList
+					m.confirmMsg = ""
+					m.deleteTarget = ""
+					return m, m.deleteSession(target)
+				}
+				// Handle other confirmations (project deletion)
 				if m.confirmFunc != nil {
 					m.confirmFunc()
 					m.confirmFunc = nil
@@ -425,7 +430,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "n":
 				// Return to previous state based on context
-				if m.state == stateProjectManagement {
+				if m.deleteTarget != "" {
+					m.state = stateList
+					m.deleteTarget = ""
+				} else if m.state == stateProjectManagement {
 					// Stay in project management
 				} else {
 					m.state = stateList
