@@ -63,17 +63,9 @@ func GetConfigPath() string {
 	return filepath.Join(home, ".config", "devx", "config.yaml")
 }
 
-// GetSessionsPath returns the path to the sessions.json file, checking project-level first
+// GetSessionsPath returns the path to the sessions.json file
+// For multi-project support, we always use the global sessions file
 func GetSessionsPath() string {
-	// Check for project-level sessions first
-	if projectDir := FindProjectConfigDir(); projectDir != "" {
-		sessionsPath := filepath.Join(projectDir, "sessions.json")
-		if _, err := os.Stat(sessionsPath); err == nil {
-			return sessionsPath
-		}
-	}
-	
-	// Fall back to global sessions
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

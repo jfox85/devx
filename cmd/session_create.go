@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -158,7 +159,15 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	}
 	
 	// Add session to metadata with project information
-	if err := store.AddSessionWithProject(name, name, worktreePath, portAllocation.Ports, projectAlias, projectPath); err != nil {
+	// Get the branch name for the session
+	branchName := name // Default to session name
+	gitCmd := exec.Command("git", "branch", "--show-current")
+	gitCmd.Dir = worktreePath
+	if output, err := gitCmd.Output(); err == nil {
+		branchName = strings.TrimSpace(string(output))
+	}
+	
+	if err := store.AddSessionWithProject(name, branchName, worktreePath, portAllocation.Ports, projectAlias, projectPath); err != nil {
 		// If we fail to save metadata, we should clean up the worktree
 		// For now, we'll just return the error
 		return fmt.Errorf("failed to save session metadata: %w", err)

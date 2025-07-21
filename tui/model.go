@@ -64,6 +64,7 @@ type model struct {
 	width          int
 	height         int
 	err            error
+	statusMsg      string
 	showPreview    bool
 	hostnames      []string
 	hostnameCursor int
@@ -274,6 +275,13 @@ type sessionCreationStartedMsg struct{}
 
 type projectSelectionNeededMsg struct{}
 
+type projectAddedMsg struct {
+	name       string
+	alias      string
+	path       string
+	configNote string
+}
+
 type hostnamesLoadedMsg struct {
 	hostnames []string
 }
@@ -479,6 +487,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = stateList
 				m.projects = nil
 				m.projectCursor = 0
+				m.statusMsg = "" // Clear status message
 
 			case key.Matches(msg, m.keys.Up):
 				if m.projectCursor > 0 {
@@ -559,6 +568,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectSelectionNeededMsg:
 		m.state = stateProjectSelect
 		return m, m.loadProjects
+
+	case projectAddedMsg:
+		// Show success message briefly, then return to project management
+		m.err = nil // Clear any previous errors
+		m.state = stateProjectManagement
+		
+		// Create a success message
+		m.statusMsg = fmt.Sprintf("✓ Added project '%s' (%s) at %s%s", 
+			msg.name, msg.alias, msg.path, msg.configNote)
+		
+		// Reload the project list
+		return m, m.loadProjectsForManagement()
 
 	case sessionCreatedMsg:
 		// Reload sessions first, then attach to the newly created session
@@ -1125,9 +1146,20 @@ func (m model) createSession(name string) tea.Cmd {
 	return func() tea.Msg {
 		// Run the create command with project if selected
 		cmd := createCmd(name, m.selectedProject)
-		if err := cmd.Run(); err != nil {
-			return errMsg{err}
+		
+		// Capture output for better error reporting
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			// Include the command output in the error message
+			errorMessage := fmt.Sprintf("failed to create session '%s': %v", name, err)
+			if len(output) > 0 {
+				// Clean up the output to make it more readable
+				outputStr := strings.TrimSpace(string(output))
+				errorMessage += fmt.Sprintf("\n\nCommand output:\n%s", outputStr)
+			}
+			return errMsg{fmt.Errorf(errorMessage)}
 		}
+		
 		return sessionCreatedMsg{sessionName: name}
 	}
 }
@@ -1154,11 +1186,24 @@ func createCmd(name, project string) *exec.Cmd {
 		args = append(args, "--project", project)
 	}
 	cmd := exec.Command("devx", args...)
-	// Check if we're in a git repo, otherwise try to find one
-	gitRoot := findGitRoot()
-	if gitRoot != "" {
-		cmd.Dir = gitRoot
+	
+	// If a project is specified, we should run from the project's directory
+	if project != "" {
+		// Load project registry to get project path
+		registry, err := config.LoadProjectRegistry()
+		if err == nil {
+			if proj, err := registry.GetProject(project); err == nil {
+				cmd.Dir = proj.Path
+			}
+		}
+	} else {
+		// Otherwise, check if we're in a git repo
+		gitRoot := findGitRoot()
+		if gitRoot != "" {
+			cmd.Dir = gitRoot
+		}
 	}
+	
 	return cmd
 }
 
@@ -1324,6 +1369,13 @@ func (m model) projectManagementView() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Project Management") + "\n\n")
 	
+	// Show status message if present
+	if m.statusMsg != "" {
+		b.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color("70")).
+			Render(m.statusMsg) + "\n\n")
+	}
+	
 	if len(m.projects) == 0 {
 		b.WriteString("  No projects registered.\n\n")
 		b.WriteString("  Press 'c' to add a project.\n")
@@ -1422,10 +1474,27 @@ func (m model) addProject(path string) tea.Cmd {
 			return errMsg{fmt.Errorf("invalid path: %w", err)}
 		}
 		
+		// Check if directory exists
+		if info, err := os.Stat(absPath); err != nil {
+			if os.IsNotExist(err) {
+				return errMsg{fmt.Errorf("directory does not exist: %s", absPath)}
+			}
+			return errMsg{fmt.Errorf("failed to access directory: %w", err)}
+		} else if !info.IsDir() {
+			return errMsg{fmt.Errorf("path is not a directory: %s", absPath)}
+		}
+		
 		// Check if it's a git repository
 		gitPath := filepath.Join(absPath, ".git")
 		if _, err := os.Stat(gitPath); err != nil {
-			return errMsg{fmt.Errorf("not a git repository: %s", absPath)}
+			return errMsg{fmt.Errorf("not a git repository: %s\nPlease ensure the directory contains a .git folder", absPath)}
+		}
+		
+		// Check for devx config
+		configNote := ""
+		devxConfigPath := filepath.Join(absPath, ".devx", "config.yaml")
+		if _, err := os.Stat(devxConfigPath); os.IsNotExist(err) {
+			configNote = " (using defaults - no .devx/config.yaml found)"
 		}
 		
 		// Get project name from directory
@@ -1449,9 +1518,13 @@ func (m model) addProject(path string) tea.Cmd {
 			return errMsg{err}
 		}
 		
-		// Reload projects
-		m.state = stateProjectManagement
-		return m.loadProjectsForManagement()
+		// Return success message
+		return projectAddedMsg{
+			name:       projectName,
+			alias:      alias,
+			path:       absPath,
+			configNote: configNote,
+		}
 	}
 }
 
