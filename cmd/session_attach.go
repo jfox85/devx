@@ -12,7 +12,7 @@ import (
 var sessionAttachCmd = &cobra.Command{
 	Use:   "attach <name>",
 	Short: "Attach to an existing development session",
-	Long:  `Attach to an existing development session, reopening editor and tmux.`,
+	Long:  `Attach to an existing development session's tmux environment.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  runSessionAttach,
 }
@@ -52,10 +52,6 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 		}
 	}
 	
-	// Launch editor (re-opens if closed)
-	if err := session.AttachEditorToSession(name, sess.Path); err != nil {
-		fmt.Printf("Warning: Failed to attach editor: %v\n", err)
-	}
 	
 	// Check if the target tmux session exists
 	if err := session.AttachTmuxSession(name); err != nil {
