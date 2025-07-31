@@ -51,9 +51,21 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 		return nil, fmt.Errorf("failed to get routes: %w", err)
 	}
 	
-	// Check if catch-all is first (blocking other routes)
-	// Any route without an ID at the beginning is likely a catch-all route
-	if len(routes) > 0 && routes[0].ID == "" {
+	// Check if there are any catch-all routes (routes without IDs)
+	// and if they appear before specific routes
+	catchAllPosition := -1
+	lastSpecificRoutePosition := -1
+	
+	for i, route := range routes {
+		if route.ID == "" && catchAllPosition == -1 {
+			catchAllPosition = i
+		} else if route.ID != "" {
+			lastSpecificRoutePosition = i
+		}
+	}
+	
+	// If catch-all exists and there are specific routes after it, routing is broken
+	if catchAllPosition != -1 && lastSpecificRoutePosition > catchAllPosition {
 		result.CatchAllFirst = true
 	}
 	
@@ -172,35 +184,6 @@ func RepairRoutes(result *HealthCheckResult, sessions map[string]*SessionInfo) e
 		if err := reorderRoutes(client); err != nil {
 			return fmt.Errorf("failed to reorder routes after creation: %w", err)
 		}
-	}
-	
-	return nil
-}
-
-// reorderRoutes moves specific routes before the catch-all route
-func reorderRoutes(client *CaddyClient) error {
-	// Get current routes
-	routes, err := client.GetAllRoutes()
-	if err != nil {
-		return err
-	}
-	
-	// Separate specific routes (with IDs) and catch-all routes (without IDs)
-	var specificRoutes, catchAllRoutes []Route
-	for _, route := range routes {
-		if route.ID != "" {
-			specificRoutes = append(specificRoutes, route)
-		} else {
-			catchAllRoutes = append(catchAllRoutes, route)
-		}
-	}
-	
-	// Combine with specific routes first
-	orderedRoutes := append(specificRoutes, catchAllRoutes...)
-	
-	// Delete all routes and recreate in correct order
-	if err := client.ReplaceAllRoutes(orderedRoutes); err != nil {
-		return err
 	}
 	
 	return nil
