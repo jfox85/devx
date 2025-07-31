@@ -52,16 +52,9 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 	}
 	
 	// Check if catch-all is first (blocking other routes)
+	// Any route without an ID at the beginning is likely a catch-all route
 	if len(routes) > 0 && routes[0].ID == "" {
-		// First route has no ID, likely the catch-all
-		for _, match := range routes[0].Match {
-			for _, host := range match.Host {
-				if host == "*.localhost" {
-					result.CatchAllFirst = true
-					break
-				}
-			}
-		}
+		result.CatchAllFirst = true
 	}
 	
 	// Build a map of existing routes
@@ -75,14 +68,17 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 	// Check each session's expected routes
 	for sessionName, sessionInfo := range sessions {
 		for serviceName, port := range sessionInfo.Ports {
+			// Normalize service name for DNS compatibility
+			normalizedServiceName := NormalizeDNSName(serviceName)
+			
 			// Generate expected route ID and hostname
-			routeID := fmt.Sprintf("sess-%s-%s", sessionName, serviceName)
-			hostname := fmt.Sprintf("%s-%s.localhost", sessionName, serviceName)
+			routeID := fmt.Sprintf("sess-%s-%s", sessionName, normalizedServiceName)
+			hostname := fmt.Sprintf("%s-%s.localhost", sessionName, normalizedServiceName)
 			
 			// Handle project prefixes if present
 			if sessionInfo.ProjectAlias != "" {
-				routeID = fmt.Sprintf("sess-%s-%s-%s", sessionInfo.ProjectAlias, sessionName, serviceName)
-				hostname = fmt.Sprintf("%s-%s-%s.localhost", sessionInfo.ProjectAlias, sessionName, serviceName)
+				routeID = fmt.Sprintf("sess-%s-%s-%s", sessionInfo.ProjectAlias, sessionName, normalizedServiceName)
+				hostname = fmt.Sprintf("%s-%s-%s.localhost", sessionInfo.ProjectAlias, sessionName, normalizedServiceName)
 			}
 			
 			status := RouteStatus{
@@ -151,9 +147,11 @@ func RepairRoutes(result *HealthCheckResult, sessions map[string]*SessionInfo) e
 				continue
 			}
 			
+			// Use normalized service name for route creation
+			normalizedServiceName := NormalizeDNSName(status.ServiceName)
 			_, err := client.CreateRouteWithProject(
 				status.SessionName,
-				status.ServiceName,
+				normalizedServiceName,
 				status.Port,
 				sessionInfo.ProjectAlias,
 			)
