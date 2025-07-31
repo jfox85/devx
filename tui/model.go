@@ -72,6 +72,7 @@ type model struct {
 	projects       []projectItem
 	projectCursor  int
 	selectedProject string
+	caddyWarning   string
 }
 
 type keyMap struct {
@@ -175,7 +176,7 @@ func InitialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.loadSessions, m.refreshPreview(), m.refreshSessions())
+	return tea.Batch(m.loadSessions, m.refreshPreview(), m.refreshSessions(), m.checkCaddyHealth())
 }
 
 func (m *model) loadSessions() tea.Msg {
@@ -298,6 +299,9 @@ type attachToNewSessionMsg struct {
 }
 type refreshPreviewMsg struct{}
 type refreshSessionsMsg struct{}
+type caddyHealthMsg struct {
+	warning string
+}
 
 func (e errMsg) Error() string { return e.err.Error() }
 
@@ -622,6 +626,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reload sessions to reflect changes and continue periodic refresh
 		return m, tea.Batch(m.loadSessions, m.refreshSessions())
 
+	case caddyHealthMsg:
+		m.caddyWarning = msg.warning
+
 	case errMsg:
 		m.err = msg.err
 		m.state = stateList
@@ -713,6 +720,11 @@ func (m model) listView() string {
 		// Original full-width layout
 		var b strings.Builder
 		b.WriteString(logo + "\n" + headerStyle.Render("devx Sessions") + "\n\n")
+		
+		// Show Caddy warning if present
+		if m.caddyWarning != "" {
+			b.WriteString(warningStyle.Render(m.caddyWarning) + "\n\n")
+		}
 
 		// Group sessions by project for display
 		var currentProject string
@@ -1057,6 +1069,60 @@ func (m model) refreshSessions() tea.Cmd {
 	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
 		return refreshSessionsMsg{}
 	})
+}
+
+func (m model) checkCaddyHealth() tea.Cmd {
+	return func() tea.Msg {
+		// Load sessions
+		store, err := session.LoadSessions()
+		if err != nil {
+			return caddyHealthMsg{warning: "Failed to load sessions for Caddy check"}
+		}
+		
+		// Load project registry
+		registry, err := config.LoadProjectRegistry()
+		if err != nil {
+			return caddyHealthMsg{warning: "Failed to load projects for Caddy check"}
+		}
+		
+		// Convert sessions to format needed by health check
+		sessionInfos := make(map[string]*caddy.SessionInfo)
+		for name, sess := range store.Sessions {
+			info := &caddy.SessionInfo{
+				Name:  name,
+				Ports: sess.Ports,
+			}
+			
+			// Find project alias if session is in a project
+			for alias, project := range registry.Projects {
+				if sess.ProjectPath == project.Path {
+					info.ProjectAlias = alias
+					break
+				}
+			}
+			
+			sessionInfos[name] = info
+		}
+		
+		// Perform health check
+		result, err := caddy.CheckCaddyHealth(sessionInfos)
+		if err != nil {
+			return caddyHealthMsg{warning: fmt.Sprintf("Caddy health check failed: %v", err)}
+		}
+		
+		// Generate warning message if issues found
+		var warning string
+		if !result.CaddyRunning {
+			warning = "⚠️  Caddy is not running. Session hostnames won't work."
+		} else if result.CatchAllFirst {
+			warning = "⚠️  Caddy routes are misconfigured. Run 'devx caddy check --fix' to repair."
+		} else if result.RoutesNeeded > result.RoutesExisting {
+			missing := result.RoutesNeeded - result.RoutesExisting
+			warning = fmt.Sprintf("⚠️  %d Caddy routes are missing. Run 'devx caddy check --fix' to repair.", missing)
+		}
+		
+		return caddyHealthMsg{warning: warning}
+	}
 }
 
 func (m model) createView() string {

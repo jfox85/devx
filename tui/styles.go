@@ -27,6 +27,11 @@ var (
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
+	warningStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true).
+			MarginLeft(2)
+
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241")).
 			Background(lipgloss.Color("236")).
