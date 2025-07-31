@@ -228,3 +228,37 @@ func GetServiceMapping(portName string) string {
 		return strings.ReplaceAll(serviceName, "_", "-")
 	}
 }
+
+// ReplaceAllRoutes deletes all current routes and creates new ones in the specified order
+func (c *CaddyClient) ReplaceAllRoutes(routes []Route) error {
+	// First, delete all existing routes
+	resp, err := c.client.R().Delete(c.baseURL + "/config/apps/http/servers/srv1/routes")
+	if err != nil {
+		return fmt.Errorf("failed to delete existing routes: %w", err)
+	}
+	
+	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusNoContent {
+		return fmt.Errorf("failed to delete routes: status %d", resp.StatusCode())
+	}
+	
+	// Then create new routes in the correct order
+	routesJSON, err := json.Marshal(routes)
+	if err != nil {
+		return fmt.Errorf("failed to marshal routes: %w", err)
+	}
+	
+	resp, err = c.client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(routesJSON).
+		Post(c.baseURL + "/config/apps/http/servers/srv1/routes")
+	
+	if err != nil {
+		return fmt.Errorf("failed to create routes: %w", err)
+	}
+	
+	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusCreated {
+		return fmt.Errorf("failed to create routes: status %d: %s", resp.StatusCode(), resp.String())
+	}
+	
+	return nil
+}

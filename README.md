@@ -16,6 +16,7 @@ A macOS CLI tool for managing local development environments with Git worktrees,
 - **Configurable Templates**: Customize tmux layouts and port names without recompiling
 - **Session Persistence**: Track and manage multiple development sessions with metadata
 - **Caddy HTTP Integration**: Automatic HTTP proxy routes for .localhost domains
+- **Caddy Health Monitoring**: Built-in diagnostics and automatic repair for routing issues
 - **Dependency Checking**: Automatic validation of required tools with installation guidance
 
 ## Dependencies
@@ -498,6 +499,31 @@ echo $SESSION_NAME  # Shows "my-feature"
 
 devx can automatically create HTTPS routes through [Caddy](https://caddyserver.com/) for your development services.
 
+#### Caddy Health Check and Route Management
+
+devx includes built-in tools to verify and manage Caddy routes:
+
+```bash
+# Check Caddy status and verify all routes
+devx caddy check
+
+# Automatically fix any routing issues
+devx caddy check --fix
+```
+
+**The health check will:**
+- Verify Caddy is running and accessible
+- Check all session routes are properly configured
+- Detect if catch-all routes are blocking specific routes
+- Show detailed status for each route
+- Automatically repair issues with `--fix` flag
+
+**TUI Integration:**
+The TUI automatically checks Caddy health on startup and displays warnings:
+- ⚠️ Caddy is not running. Session hostnames won't work.
+- ⚠️ Caddy routes are misconfigured. Run 'devx caddy check --fix' to repair.
+- ⚠️ X Caddy routes are missing. Run 'devx caddy check --fix' to repair.
+
 #### Hostname Environment Variables
 
 When Caddy routes are created, devx automatically adds hostname environment variables to your `.envrc` file:
@@ -885,6 +911,12 @@ devx session flag current-session  # Should show warning
 
 If HTTPS routes aren't working:
 ```bash
+# First, run the health check to diagnose issues
+devx caddy check
+
+# Automatically fix common issues (missing routes, wrong order)
+devx caddy check --fix
+
 # Check if Caddy is running
 curl http://localhost:2019/config/
 
@@ -897,6 +929,12 @@ devx config set disable_caddy true
 # Check route creation manually
 curl -X GET http://localhost:2019/config/apps/http/servers/srv0/routes
 ```
+
+**Common Caddy routing issues:**
+- **"No service found for this hostname"**: Routes exist but are blocked by catch-all route. Run `devx caddy check --fix` to reorder routes.
+- **502 Bad Gateway**: Route is working but the backend service isn't running on the expected port.
+- **Connection refused**: Caddy isn't running. Start it with the helper scripts or manually.
+- **Stale routes**: Session shows `caddy:stale` status. Run `devx caddy check --fix` to recreate routes.
 
 If you get certificate warnings:
 - .localhost domains use self-signed certificates
