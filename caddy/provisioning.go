@@ -53,6 +53,28 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 		return make(map[string]string), nil
 	}
 	
+	// Check if there are any catch-all routes that need to be moved to the end
+	existingRoutes, err := client.GetAllRoutes()
+	if err == nil {
+		hasCatchAll := false
+		for _, route := range existingRoutes {
+			if route.ID == "" {
+				hasCatchAll = true
+				break
+			}
+		}
+		
+		// If there's a catch-all route, we'll need to reorder after adding new routes
+		if hasCatchAll {
+			defer func() {
+				// Reorder routes to ensure specific routes come before catch-all
+				if err := reorderRoutes(client); err != nil {
+					fmt.Printf("Warning: Failed to reorder routes after creation: %v\n", err)
+				}
+			}()
+		}
+	}
+	
 	routes := make(map[string]string)
 	var errors []string
 	
@@ -115,5 +137,52 @@ func DestroySessionRoutes(sessionName string, routes map[string]string) error {
 	}
 	
 	fmt.Printf("Deleted Caddy routes for session '%s'\n", sessionName)
+	return nil
+}
+
+// reorderRoutes moves specific routes before the catch-all routes
+func reorderRoutes(client *CaddyClient) error {
+	// Get current routes
+	routes, err := client.GetAllRoutes()
+	if err != nil {
+		return err
+	}
+	
+	// Separate specific routes (with IDs) and catch-all routes (without IDs)
+	var specificRoutes, catchAllRoutes []Route
+	for _, route := range routes {
+		if route.ID != "" {
+			specificRoutes = append(specificRoutes, route)
+		} else {
+			catchAllRoutes = append(catchAllRoutes, route)
+		}
+	}
+	
+	// If all routes are already in the correct order, no need to reorder
+	if len(catchAllRoutes) == 0 || len(routes) == len(specificRoutes) + len(catchAllRoutes) {
+		// Check if catch-all routes are already at the end
+		foundCatchAll := false
+		for _, route := range routes {
+			if route.ID == "" {
+				foundCatchAll = true
+			} else if foundCatchAll {
+				// Found a specific route after a catch-all, need to reorder
+				break
+			}
+		}
+		if !foundCatchAll || routes[len(routes)-1].ID == "" {
+			// Already in correct order
+			return nil
+		}
+	}
+	
+	// Combine with specific routes first
+	orderedRoutes := append(specificRoutes, catchAllRoutes...)
+	
+	// Delete all routes and recreate in correct order
+	if err := client.ReplaceAllRoutes(orderedRoutes); err != nil {
+		return err
+	}
+	
 	return nil
 }
