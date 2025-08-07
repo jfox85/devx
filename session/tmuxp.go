@@ -139,10 +139,10 @@ func LaunchTmuxSession(worktreePath, sessionName string) error {
 	}
 
 	// Kill any existing session first
-	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 
 	// Set default terminal size for new sessions
-	exec.Command("tmux", "set-option", "-g", "default-size", "120x40").Run()
+	_ = exec.Command("tmux", "set-option", "-g", "default-size", "120x40").Run()
 
 	// Load the tmuxp session in detached mode
 	cmd := exec.Command("tmuxp", "load", "-d", tmuxpConfigPath, "-s", sessionName)
@@ -156,10 +156,10 @@ func LaunchTmuxSession(worktreePath, sessionName string) error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Kill all windows with index 0 (the initial directory window)
-	exec.Command("tmux", "kill-window", "-t", sessionName+":0").Run()
+	_ = exec.Command("tmux", "kill-window", "-t", sessionName+":0").Run()
 
 	// Also try to kill any window that just shows the directory cd command
-	exec.Command("bash", "-c", fmt.Sprintf(`tmux list-windows -t %s -F "#{window_index}:#{window_name}" | grep "^0:" | cut -d: -f1 | xargs -I {} tmux kill-window -t %s:{} 2>/dev/null || true`, sessionName, sessionName)).Run()
+	_ = exec.Command("bash", "-c", fmt.Sprintf(`tmux list-windows -t %s -F "#{window_index}:#{window_name}" | grep "^0:" | cut -d: -f1 | xargs -I {} tmux kill-window -t %s:{} 2>/dev/null || true`, sessionName, sessionName)).Run()
 
 	// Attach to the session
 	cmd = exec.Command("tmux", "attach", "-t", sessionName)

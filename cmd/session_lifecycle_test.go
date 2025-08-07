@@ -183,7 +183,7 @@ func TestSessionListEmpty(t *testing.T) {
 
 	defer func() {
 		store.Sessions = originalSessions
-		store.Save()
+		_ = store.Save()
 	}()
 
 	// Test empty session list - should not panic or error

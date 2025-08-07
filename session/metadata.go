@@ -175,7 +175,7 @@ func RemoveSession(name string, sess *Session) error {
 	}
 
 	// Remove Caddy routes
-	if sess.Routes != nil && len(sess.Routes) > 0 {
+	if len(sess.Routes) > 0 {
 		if err := removeCaddyRoutes(name, sess.Routes); err != nil {
 			// Don't fail on Caddy errors
 		}

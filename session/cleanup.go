@@ -113,7 +113,7 @@ func executeCleanupCommand(command, workingDir string, env []string) error {
 	case <-time.After(timeout):
 		// Kill the process if it's taking too long
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		return fmt.Errorf("cleanup command timed out after %v", timeout)
 	}
@@ -159,7 +159,7 @@ func RunCleanupCommandForShell(sess *Session) error {
 		return nil
 	case <-time.After(timeout):
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		return fmt.Errorf("cleanup command timed out after %v", timeout)
 	}

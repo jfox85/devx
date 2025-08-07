@@ -100,7 +100,7 @@ func TestSessionStoreUpdate(t *testing.T) {
 
 	store, _ := LoadSessions()
 	updatePorts := map[string]int{"UPDATE_PORT": 5000}
-	store.AddSession("update-test", "branch", "/path", updatePorts)
+	_ = store.AddSession("update-test", "branch", "/path", updatePorts)
 
 	// Update session
 	err = store.UpdateSession("update-test", func(s *Session) {

@@ -26,11 +26,11 @@ func initTempRepo(t *testing.T) string {
 	// Create initial commit
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
 	cmd.Dir = tmpDir
-	cmd.Run()
+	_ = cmd.Run()
 
 	cmd = exec.Command("git", "config", "user.name", "Test User")
 	cmd.Dir = tmpDir
-	cmd.Run()
+	_ = cmd.Run()
 
 	// Create a file and commit
 	testFile := filepath.Join(tmpDir, "README.md")
@@ -41,11 +41,11 @@ func initTempRepo(t *testing.T) string {
 
 	cmd = exec.Command("git", "add", ".")
 	cmd.Dir = tmpDir
-	cmd.Run()
+	_ = cmd.Run()
 
 	cmd = exec.Command("git", "commit", "-m", "Initial commit")
 	cmd.Dir = tmpDir
-	cmd.Run()
+	_ = cmd.Run()
 
 	t.Cleanup(func() {
 		os.RemoveAll(tmpDir)
@@ -64,12 +64,12 @@ func TestCreateSession(t *testing.T) {
 
 	// Clean up any existing session first
 	rootCmd.SetArgs([]string{"session", "rm", "feat-foo", "-f"})
-	rootCmd.Execute()
+	_ = rootCmd.Execute()
 
 	// Cleanup session after test
 	t.Cleanup(func() {
 		rootCmd.SetArgs([]string{"session", "rm", "feat-foo", "-f"})
-		rootCmd.Execute()
+		_ = rootCmd.Execute()
 	})
 
 	// Run devx session create with --no-tmux to avoid launching tmux
@@ -109,12 +109,12 @@ func TestCreateSessionTwice(t *testing.T) {
 
 	// Clean up any existing session first
 	rootCmd.SetArgs([]string{"session", "rm", "feat-bar", "-f"})
-	rootCmd.Execute()
+	_ = rootCmd.Execute()
 
 	// Cleanup session after test
 	t.Cleanup(func() {
 		rootCmd.SetArgs([]string{"session", "rm", "feat-bar", "-f"})
-		rootCmd.Execute()
+		_ = rootCmd.Execute()
 	})
 
 	// Create session first time with --no-tmux
@@ -145,12 +145,12 @@ func TestTmuxpConfigGeneration(t *testing.T) {
 
 	// Clean up any existing session first
 	rootCmd.SetArgs([]string{"session", "rm", "feat-tmuxp", "-f"})
-	rootCmd.Execute()
+	_ = rootCmd.Execute()
 
 	// Cleanup session after test
 	t.Cleanup(func() {
 		rootCmd.SetArgs([]string{"session", "rm", "feat-tmuxp", "-f"})
-		rootCmd.Execute()
+		_ = rootCmd.Execute()
 	})
 
 	// Run devx session create with --no-tmux to avoid tmux launching

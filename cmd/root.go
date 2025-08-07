@@ -99,7 +99,7 @@ func initConfig() {
 	viper.SetDefault("cleanup_command", "")
 
 	// Read in config file if found
-	viper.ReadInConfig()
+	_ = viper.ReadInConfig()
 }
 
 // runTUI launches the terminal user interface

@@ -49,7 +49,7 @@ func TestTmuxSessionLaunch(t *testing.T) {
 
 	// Cleanup: kill the session after test
 	defer func() {
-		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 	}()
 
 	// Verify session exists

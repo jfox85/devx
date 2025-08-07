@@ -31,7 +31,9 @@ func TestFindProjectConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	defer os.Chdir(oldWd)
+	defer func() {
+		_ = os.Chdir(oldWd)
+	}()
 
 	tests := []struct {
 		name     string
@@ -150,7 +152,9 @@ func TestGetConfigPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	defer os.Chdir(oldWd)
+	defer func() {
+		_ = os.Chdir(oldWd)
+	}()
 
 	// Test with project config
 	projectDir := filepath.Join(tmpDir, "project")
@@ -219,7 +223,9 @@ func TestGetTmuxTemplatePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	defer os.Chdir(oldWd)
+	defer func() {
+		_ = os.Chdir(oldWd)
+	}()
 
 	// Create project with template
 	projectDir := filepath.Join(tmpDir, "project")
@@ -274,7 +280,9 @@ func TestGetConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	defer os.Chdir(oldWd)
+	defer func() {
+		_ = os.Chdir(oldWd)
+	}()
 
 	// Test with project config
 	projectDir := filepath.Join(tmpDir, "project")

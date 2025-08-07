@@ -112,5 +112,5 @@ func init() {
 	projectAddCmd.Flags().StringVarP(&projectDesc, "desc", "d", "", "Description of the project")
 	projectAddCmd.Flags().StringVar(&projectDefaultBranch, "default-branch", "main", "Default branch for new sessions")
 
-	projectAddCmd.MarkFlagRequired("alias")
+	_ = projectAddCmd.MarkFlagRequired("alias")
 }

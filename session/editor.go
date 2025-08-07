@@ -57,7 +57,7 @@ func LaunchEditor(path string) (int, error) {
 	// Don't wait for the editor to exit - let it run independently
 	go func() {
 		// Wait for the process to finish to prevent zombie processes
-		cmd.Wait()
+		_ = cmd.Wait()
 	}()
 
 	return pid, nil

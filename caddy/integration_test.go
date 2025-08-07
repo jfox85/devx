@@ -36,7 +36,7 @@ func TestCaddyRouteLifecycle(t *testing.T) {
 
 	// Clean up any existing routes
 	defer func() {
-		client.DeleteSessionRoutes(sessionName)
+		_ = client.DeleteSessionRoutes(sessionName)
 	}()
 
 	// Create route

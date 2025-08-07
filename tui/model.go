@@ -529,7 +529,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.confirmFunc = func() {
 						// Remove project
 						registry, _ := config.LoadProjectRegistry()
-						registry.RemoveProject(project.alias)
+						_ = registry.RemoveProject(project.alias)
 						// Return to project management
 						m.state = stateProjectManagement
 					}
@@ -1236,7 +1236,7 @@ func (m model) createSession(name string) tea.Cmd {
 				outputStr := strings.TrimSpace(string(output))
 				errorMessage += fmt.Sprintf("\n\nCommand output:\n%s", outputStr)
 			}
-			return errMsg{fmt.Errorf(errorMessage)}
+			return errMsg{fmt.Errorf("%s", errorMessage)}
 		}
 
 		return sessionCreatedMsg{sessionName: name}
@@ -1627,18 +1627,3 @@ func (m model) addProject(path string) tea.Cmd {
 	}
 }
 
-func (m model) removeProject(alias string) {
-	registry, err := config.LoadProjectRegistry()
-	if err != nil {
-		m.err = err
-		return
-	}
-
-	if err := registry.RemoveProject(alias); err != nil {
-		m.err = err
-		return
-	}
-
-	// Reload projects and sessions
-	m.state = stateProjectManagement
-}

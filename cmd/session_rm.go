@@ -48,7 +48,7 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Print("Are you sure? (y/N): ")
 
 		var response string
-		fmt.Scanln(&response)
+		_, _ = fmt.Scanln(&response)
 
 		if response != "y" && response != "Y" && response != "yes" && response != "Yes" {
 			fmt.Println("Aborted")
@@ -67,7 +67,7 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 	}
 
 	// Remove Caddy routes
-	if sess.Routes != nil && len(sess.Routes) > 0 {
+	if len(sess.Routes) > 0 {
 		if err := caddy.DestroySessionRoutes(name, sess.Routes); err != nil {
 			fmt.Printf("Warning: failed to remove Caddy routes: %v\n", err)
 		}
