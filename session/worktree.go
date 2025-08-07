@@ -136,3 +136,56 @@ func BranchExists(repoPath, branchName string) (bool, error) {
 
 	return true, nil
 }
+
+// PullFromOrigin pulls the latest changes from origin for the specified branch
+func PullFromOrigin(repoPath, branch string) error {
+	// First, check if we have uncommitted changes
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = repoPath
+	output, err := statusCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to check git status: %w", err)
+	}
+
+	// If there are uncommitted changes, we should not pull
+	if len(strings.TrimSpace(string(output))) > 0 {
+		return fmt.Errorf("cannot pull: repository has uncommitted changes")
+	}
+
+	// Fetch from origin first
+	fetchCmd := exec.Command("git", "fetch", "origin")
+	fetchCmd.Dir = repoPath
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		// Check if it's a network error or missing remote
+		if strings.Contains(string(output), "Could not resolve host") ||
+			strings.Contains(string(output), "unable to access") ||
+			strings.Contains(string(output), "does not appear to be a git repository") {
+			// Network or remote issue - return nil to continue without pulling
+			return nil
+		}
+		return fmt.Errorf("failed to fetch from origin: %w\n%s", err, output)
+	}
+
+	// Now pull from origin
+	pullCmd := exec.Command("git", "pull", "origin", branch, "--ff-only")
+	pullCmd.Dir = repoPath
+	if output, err := pullCmd.CombinedOutput(); err != nil {
+		// Check for common non-fatal errors
+		outputStr := string(output)
+		if strings.Contains(outputStr, "Couldn't find remote ref") {
+			// Branch doesn't exist on remote yet - that's OK
+			return nil
+		}
+		if strings.Contains(outputStr, "not a valid object name") {
+			// Branch doesn't exist on remote - that's OK
+			return nil
+		}
+		if strings.Contains(outputStr, "Would overwrite") || strings.Contains(outputStr, "diverged") {
+			// Merge conflict or diverged branches - skip pull but don't fail
+			return nil
+		}
+		return fmt.Errorf("failed to pull from origin/%s: %w\n%s", branch, err, output)
+	}
+
+	return nil
+}

@@ -112,6 +112,19 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Check if auto-pull is enabled for this project
+	if project != nil && project.AutoPullOnCreate {
+		fmt.Printf("Pulling latest changes from origin/%s...\n", project.DefaultBranch)
+		if err := session.PullFromOrigin(projectPath, project.DefaultBranch); err != nil {
+			// Only show warning for actual errors, not network issues
+			if strings.Contains(err.Error(), "uncommitted changes") {
+				return fmt.Errorf("cannot create session: %w", err)
+			}
+			// For other errors, just warn and continue
+			fmt.Printf("Warning: Could not pull from origin: %v\n", err)
+		}
+	}
+
 	// Allocate or validate ports
 	var portAllocation *session.PortAllocation
 

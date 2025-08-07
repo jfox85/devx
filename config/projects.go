@@ -11,10 +11,11 @@ import (
 
 // Project represents a registered project in devx
 type Project struct {
-	Name          string `json:"name"`
-	Path          string `json:"path"`
-	Description   string `json:"description,omitempty"`
-	DefaultBranch string `json:"default_branch,omitempty"`
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Description      string `json:"description,omitempty"`
+	DefaultBranch    string `json:"default_branch,omitempty"`
+	AutoPullOnCreate bool   `json:"auto_pull_on_create,omitempty"`
 }
 
 // ProjectRegistry manages multiple projects
