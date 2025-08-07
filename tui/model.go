@@ -388,6 +388,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
+
+			// Handle number keys 1-9 for quick navigation
+			case msg.String() >= "1" && msg.String() <= "9":
+				// Convert to 0-based index
+				targetIndex := int(msg.String()[0] - '1')
+				if targetIndex < len(m.sessions) {
+					m.cursor = targetIndex
+				}
 			}
 
 		case stateCreating:
@@ -668,7 +676,7 @@ func (m model) View() string {
 	} else {
 		switch m.state {
 		case stateList:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
+			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
 		case stateCreating:
 			footer = footerStyle.Width(m.width).Render("enter: create session • esc: cancel")
 		case stateProjectSelect:
@@ -753,13 +761,21 @@ func (m model) listView() string {
 				cursor = "> "
 			}
 
+			// Add number shortcut for first 9 items
+			numberPrefix := ""
+			if i < 9 {
+				numberPrefix = fmt.Sprintf("%d. ", i+1)
+			} else {
+				numberPrefix = "   " // Maintain alignment
+			}
+
 			// Add attention indicator
 			indicator := " "
 			if sess.attentionFlag {
 				indicator = "🔔"
 			}
 
-			line := fmt.Sprintf("%s%s %s", cursor, indicator, sess.name)
+			line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
 			if m.cursor == i {
 				line = selectedStyle.Render(line)
 			}
@@ -811,13 +827,21 @@ func (m model) listView() string {
 			cursor = "> "
 		}
 
+		// Add number shortcut for first 9 items
+		numberPrefix := ""
+		if i < 9 {
+			numberPrefix = fmt.Sprintf("%d. ", i+1)
+		} else {
+			numberPrefix = "   " // Maintain alignment
+		}
+
 		// Add attention indicator
 		indicator := " "
 		if sess.attentionFlag {
 			indicator = "🔔"
 		}
 
-		line := fmt.Sprintf("%s%s %s", cursor, indicator, sess.name)
+		line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
 		if m.cursor == i {
 			line = selectedStyle.Render(line)
 		}
