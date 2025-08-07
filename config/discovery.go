@@ -21,26 +21,26 @@ func FindProjectConfigDir() string {
 // given path and walking up the directory tree.
 func findProjectConfigDirFromPath(startPath string) string {
 	currentPath := startPath
-	
+
 	for {
 		devxPath := filepath.Join(currentPath, ".devx")
-		
+
 		// Check if .devx directory exists
 		if info, err := os.Stat(devxPath); err == nil && info.IsDir() {
 			return devxPath
 		}
-		
+
 		// Get parent directory
 		parentPath := filepath.Dir(currentPath)
-		
+
 		// If we've reached the root directory, stop searching
 		if parentPath == currentPath {
 			break
 		}
-		
+
 		currentPath = parentPath
 	}
-	
+
 	return ""
 }
 
@@ -53,13 +53,13 @@ func GetConfigPath() string {
 			return configPath
 		}
 	}
-	
+
 	// Fall back to global config
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	
+
 	return filepath.Join(home, ".config", "devx", "config.yaml")
 }
 
@@ -70,7 +70,7 @@ func GetSessionsPath() string {
 	if err != nil {
 		return ""
 	}
-	
+
 	return filepath.Join(home, ".config", "devx", "sessions.json")
 }
 
@@ -83,13 +83,13 @@ func GetTmuxTemplatePath() string {
 			return templatePath
 		}
 	}
-	
+
 	// Fall back to global template
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	
+
 	return filepath.Join(home, ".config", "devx", "session.yaml.tmpl")
 }
 
@@ -99,12 +99,12 @@ func GetConfigDir() string {
 	if projectDir := FindProjectConfigDir(); projectDir != "" {
 		return projectDir
 	}
-	
+
 	// Fall back to global config
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	
+
 	return filepath.Join(home, ".config", "devx")
 }

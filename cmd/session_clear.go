@@ -24,7 +24,7 @@ This command will:
 WARNING: This cannot be undone!`,
 	Run: func(cmd *cobra.Command, args []string) {
 		force, _ := cmd.Flags().GetBool("force")
-		
+
 		// Load existing sessions
 		registry, err := session.LoadRegistry()
 		if err != nil {
@@ -53,7 +53,7 @@ WARNING: This cannot be undone!`,
 				fmt.Printf("Error reading input: %v\n", err)
 				os.Exit(1)
 			}
-			
+
 			response = strings.TrimSpace(strings.ToLower(response))
 			if response != "y" && response != "yes" {
 				fmt.Println("Aborted")
@@ -65,7 +65,7 @@ WARNING: This cannot be undone!`,
 		var errors []string
 		for name, sess := range registry.Sessions {
 			fmt.Printf("Removing session '%s'...\n", name)
-			
+
 			if err := session.RemoveSession(name, sess); err != nil {
 				errors = append(errors, fmt.Sprintf("Failed to remove session '%s': %v", name, err))
 				continue

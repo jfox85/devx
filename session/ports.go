@@ -16,37 +16,37 @@ func AllocatePorts(serviceNames []string) (*PortAllocation, error) {
 	if len(serviceNames) == 0 {
 		return &PortAllocation{Ports: make(map[string]int)}, nil
 	}
-	
+
 	allocation := &PortAllocation{
 		Ports: make(map[string]int),
 	}
-	
+
 	usedPorts := make(map[int]bool)
-	
+
 	for _, serviceName := range serviceNames {
 		var port int
-		
+
 		// Try to get a unique port (max 20 attempts)
 		for attempts := 0; attempts < 20; attempts++ {
 			result, err := getport.GetPort(getport.TCP, "")
 			if err != nil {
 				return nil, fmt.Errorf("failed to allocate port for %s: %w", serviceName, err)
 			}
-			
+
 			port = result.Port
 			if !usedPorts[port] {
 				break
 			}
-			
+
 			if attempts == 19 {
 				return nil, fmt.Errorf("failed to allocate unique port for %s after 20 attempts", serviceName)
 			}
 		}
-		
+
 		allocation.Ports[serviceName] = port
 		usedPorts[port] = true
 	}
-	
+
 	return allocation, nil
 }
 
@@ -56,7 +56,7 @@ func AllocatePortsLegacy() (fePort, apiPort int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	
+
 	return allocation.Ports["ui"], allocation.Ports["api"], nil
 }
 

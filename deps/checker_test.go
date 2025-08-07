@@ -10,12 +10,12 @@ import (
 
 func TestGetDependencies(t *testing.T) {
 	deps := GetDependencies()
-	
+
 	// Check we have the expected number of dependencies
 	if len(deps) != 5 {
 		t.Errorf("expected 5 dependencies, got %d", len(deps))
 	}
-	
+
 	// Check required dependencies
 	requiredCommands := map[string]bool{
 		"git":   false,
@@ -23,11 +23,11 @@ func TestGetDependencies(t *testing.T) {
 		"tmuxp": false,
 		"caddy": false,
 	}
-	
+
 	optionalCommands := map[string]bool{
 		"direnv": false,
 	}
-	
+
 	for _, dep := range deps {
 		if dep.Required {
 			if _, exists := requiredCommands[dep.Command]; exists {
@@ -38,7 +38,7 @@ func TestGetDependencies(t *testing.T) {
 				optionalCommands[dep.Command] = true
 			}
 		}
-		
+
 		// Check all dependencies have descriptions and install hints
 		if dep.Description == "" {
 			t.Errorf("dependency %s missing description", dep.Name)
@@ -47,14 +47,14 @@ func TestGetDependencies(t *testing.T) {
 			t.Errorf("dependency %s missing install hint", dep.Name)
 		}
 	}
-	
+
 	// Verify all required commands were found
 	for cmd, found := range requiredCommands {
 		if !found {
 			t.Errorf("required dependency %s not found in list", cmd)
 		}
 	}
-	
+
 	// Verify all optional commands were found
 	for cmd, found := range optionalCommands {
 		if !found {
@@ -92,24 +92,24 @@ func TestCheckDependency(t *testing.T) {
 			wantAvail: false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CheckDependency(tt.dep)
-			
+
 			if result.Available != tt.wantAvail {
 				t.Errorf("CheckDependency() available = %v, want %v", result.Available, tt.wantAvail)
 			}
-			
+
 			if result.Dependency.Name != tt.dep.Name {
 				t.Errorf("CheckDependency() preserved name = %v, want %v", result.Dependency.Name, tt.dep.Name)
 			}
-			
+
 			if tt.wantAvail && result.Version == "" {
 				// Most commands should return some version info
 				t.Logf("Warning: available command %s returned no version info", tt.dep.Command)
 			}
-			
+
 			if !tt.wantAvail && result.Error == nil {
 				t.Errorf("CheckDependency() for unavailable command should return error")
 			}
@@ -119,19 +119,19 @@ func TestCheckDependency(t *testing.T) {
 
 func TestCheckAllDependencies(t *testing.T) {
 	results := CheckAllDependencies()
-	
+
 	// Should return results for all dependencies
 	deps := GetDependencies()
 	if len(results) != len(deps) {
 		t.Errorf("CheckAllDependencies() returned %d results, want %d", len(results), len(deps))
 	}
-	
+
 	// Each result should correspond to a dependency
 	for i, result := range results {
 		if result.Dependency.Name != deps[i].Name {
 			t.Errorf("Result %d has dependency %s, want %s", i, result.Dependency.Name, deps[i].Name)
 		}
-		
+
 		// If command is available, it should be in PATH
 		if result.Available {
 			if _, err := exec.LookPath(result.Dependency.Command); err != nil {
@@ -146,13 +146,13 @@ func TestCheckConfiguredEditor(t *testing.T) {
 	originalVisual := os.Getenv("VISUAL")
 	originalEditor := os.Getenv("EDITOR")
 	originalViperEditor := viper.GetString("editor")
-	
+
 	defer func() {
 		os.Setenv("VISUAL", originalVisual)
 		os.Setenv("EDITOR", originalEditor)
 		viper.Set("editor", originalViperEditor)
 	}()
-	
+
 	tests := []struct {
 		name        string
 		viperEditor string
@@ -193,16 +193,16 @@ func TestCheckConfiguredEditor(t *testing.T) {
 			wantCommand: "nano",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set up environment
 			viper.Set("editor", tt.viperEditor)
 			os.Setenv("VISUAL", tt.visual)
 			os.Setenv("EDITOR", tt.editor)
-			
+
 			result := CheckConfiguredEditor()
-			
+
 			if tt.wantNil {
 				if result != nil {
 					t.Errorf("CheckConfiguredEditor() = %v, want nil", result)
@@ -223,13 +223,13 @@ func TestGetEditorCommand(t *testing.T) {
 	originalVisual := os.Getenv("VISUAL")
 	originalEditor := os.Getenv("EDITOR")
 	originalViperEditor := viper.GetString("editor")
-	
+
 	defer func() {
 		os.Setenv("VISUAL", originalVisual)
 		os.Setenv("EDITOR", originalEditor)
 		viper.Set("editor", originalViperEditor)
 	}()
-	
+
 	tests := []struct {
 		name        string
 		viperEditor string
@@ -266,13 +266,13 @@ func TestGetEditorCommand(t *testing.T) {
 			want:        "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			viper.Set("editor", tt.viperEditor)
 			os.Setenv("VISUAL", tt.visual)
 			os.Setenv("EDITOR", tt.editor)
-			
+
 			got := getEditorCommand()
 			if got != tt.want {
 				t.Errorf("getEditorCommand() = %v, want %v", got, tt.want)
@@ -284,7 +284,7 @@ func TestGetEditorCommand(t *testing.T) {
 func TestPrintResults(t *testing.T) {
 	// This is mainly a smoke test to ensure PrintResults doesn't panic
 	// We can't easily test the output without capturing stdout
-	
+
 	results := []CheckResult{
 		{
 			Dependency: Dependency{
@@ -318,7 +318,7 @@ func TestPrintResults(t *testing.T) {
 			Available: false,
 		},
 	}
-	
+
 	editorResult := &CheckResult{
 		Dependency: Dependency{
 			Name:        "Editor",
@@ -330,13 +330,13 @@ func TestPrintResults(t *testing.T) {
 		Available: true,
 		Version:   "VIM 8.2",
 	}
-	
+
 	// This should not panic
 	PrintResults(results, editorResult)
-	
+
 	// Test with nil editor result
 	PrintResults(results, nil)
-	
+
 	// Test with empty results
 	PrintResults([]CheckResult{}, nil)
 }
@@ -350,7 +350,7 @@ func TestDependencyStructure(t *testing.T) {
 		Description: "Test description",
 		InstallHint: "Test install hint",
 	}
-	
+
 	if dep.Name != "Test" {
 		t.Errorf("Dependency.Name = %v, want Test", dep.Name)
 	}
@@ -377,7 +377,7 @@ func TestCheckResultStructure(t *testing.T) {
 		Version:    "1.0.0",
 		Error:      nil,
 	}
-	
+
 	if result.Dependency.Name != "Test" {
 		t.Errorf("CheckResult.Dependency.Name = %v, want Test", result.Dependency.Name)
 	}
@@ -402,13 +402,13 @@ func TestVersionExtraction(t *testing.T) {
 		Description: "List command",
 		InstallHint: "Should be pre-installed",
 	}
-	
+
 	result := CheckDependency(dep)
-	
+
 	if !result.Available {
 		t.Skip("ls command not available, skipping version extraction test")
 	}
-	
+
 	// ls might not support --version on all systems, so we just check it was attempted
 	// The important thing is that CheckDependency doesn't crash when version check fails
 	if result.Error != nil {

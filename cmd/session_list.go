@@ -26,13 +26,13 @@ func init() {
 }
 
 type SessionStatus struct {
-	Name      string
-	Branch    string
-	Ports     map[string]int
-	Routes    map[string]string
-	TmuxStatus string // "attached", "detached", "none"
+	Name         string
+	Branch       string
+	Ports        map[string]int
+	Routes       map[string]string
+	TmuxStatus   string // "attached", "detached", "none"
 	EditorStatus string // "running", "stopped"
-	Path      string
+	Path         string
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
@@ -49,7 +49,7 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 
 	// Get tmux session status
 	tmuxSessions := getTmuxSessions()
-	
+
 	// Get Caddy route status (if available)
 	caddyRoutes := getCaddyRoutes()
 
@@ -117,7 +117,7 @@ func getTmuxSessions() map[string]TmuxSessionInfo {
 		if line == "" {
 			continue
 		}
-		
+
 		parts := strings.Split(line, ":")
 		if len(parts) != 2 {
 			continue
@@ -211,7 +211,7 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 
 		// Format status
 		var statusParts []string
-		
+
 		// Tmux status
 		switch status.TmuxStatus {
 		case "attached":

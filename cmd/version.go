@@ -28,7 +28,7 @@ func init() {
 
 func runVersion(cmd *cobra.Command, args []string) {
 	info := version.Get()
-	
+
 	switch versionOutput {
 	case "json":
 		output, err := json.MarshalIndent(info, "", "  ")

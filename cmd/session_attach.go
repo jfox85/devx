@@ -23,26 +23,26 @@ func init() {
 
 func runSessionAttach(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	
+
 	// Load existing sessions
 	store, err := session.LoadSessions()
 	if err != nil {
 		return fmt.Errorf("failed to load sessions: %w", err)
 	}
-	
+
 	// Check if session exists
 	sess, exists := store.GetSession(name)
 	if !exists {
 		return fmt.Errorf("session '%s' not found", name)
 	}
-	
+
 	// Verify session path still exists
 	if _, err := os.Stat(sess.Path); os.IsNotExist(err) {
 		return fmt.Errorf("session path '%s' no longer exists", sess.Path)
 	}
-	
+
 	fmt.Printf("Attaching to session '%s' at %s\n", name, sess.Path)
-	
+
 	// Clear attention flag since user is now looking at this session
 	if sess.AttentionFlag {
 		if err := session.ClearAttentionFlag(name); err != nil {
@@ -51,8 +51,7 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Cleared attention flag\n")
 		}
 	}
-	
-	
+
 	// Check if the target tmux session exists
 	if err := session.AttachTmuxSession(name); err != nil {
 		// Session doesn't exist, try to launch it
@@ -69,6 +68,6 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("Attached to existing tmux session '%s'\n", name)
 	}
-	
+
 	return nil
 }

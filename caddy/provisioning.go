@@ -11,10 +11,10 @@ import (
 func NormalizeDNSName(serviceName string) string {
 	// Convert to lowercase
 	normalized := strings.ToLower(serviceName)
-	
+
 	// Replace underscores with hyphens
 	normalized = strings.ReplaceAll(normalized, "_", "-")
-	
+
 	// Remove any non-alphanumeric characters except hyphens
 	var result strings.Builder
 	for _, r := range normalized {
@@ -22,16 +22,15 @@ func NormalizeDNSName(serviceName string) string {
 			result.WriteRune(r)
 		}
 	}
-	
+
 	// Remove leading/trailing hyphens and collapse multiple hyphens
 	final := strings.Trim(result.String(), "-")
 	for strings.Contains(final, "--") {
 		final = strings.ReplaceAll(final, "--", "-")
 	}
-	
+
 	return final
 }
-
 
 // ProvisionSessionRoutes creates Caddy routes for all services in a session
 func ProvisionSessionRoutes(sessionName string, services map[string]int) (map[string]string, error) {
@@ -44,15 +43,15 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 	if viper.GetBool("disable_caddy") {
 		return make(map[string]string), nil
 	}
-	
+
 	client := NewCaddyClient()
-	
+
 	// Check if Caddy is running
 	if err := client.CheckCaddyConnection(); err != nil {
 		fmt.Printf("Warning: Caddy not available, skipping route provisioning: %v\n", err)
 		return make(map[string]string), nil
 	}
-	
+
 	// Check if there are any catch-all routes that need to be moved to the end
 	existingRoutes, err := client.GetAllRoutes()
 	if err == nil {
@@ -63,7 +62,7 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 				break
 			}
 		}
-		
+
 		// If there's a catch-all route, we'll need to reorder after adding new routes
 		if hasCatchAll {
 			defer func() {
@@ -74,45 +73,45 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 			}()
 		}
 	}
-	
+
 	routes := make(map[string]string)
 	var errors []string
-	
+
 	for serviceName, port := range services {
 		// Normalize service name for DNS compatibility
 		dnsServiceName := NormalizeDNSName(serviceName)
-		
+
 		if dnsServiceName == "" {
 			errors = append(errors, fmt.Sprintf("service name '%s' cannot be converted to valid DNS name", serviceName))
 			continue
 		}
-		
+
 		_, err := client.CreateRouteWithProject(sessionName, dnsServiceName, port, projectAlias)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("failed to create route for %s: %v", dnsServiceName, err))
 			continue
 		}
-		
+
 		// Generate route ID with project prefix if provided
 		routeID := fmt.Sprintf("sess-%s-%s", sessionName, dnsServiceName)
 		if projectAlias != "" {
 			routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sessionName, dnsServiceName)
 		}
 		routes[serviceName] = routeID
-		
+
 		// Generate hostname with project prefix if provided
 		hostname := fmt.Sprintf("%s-%s.localhost", sessionName, dnsServiceName)
 		if projectAlias != "" {
 			hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sessionName, dnsServiceName)
 		}
-		
+
 		fmt.Printf("Created route: http://%s -> port %d\n", hostname, port)
 	}
-	
+
 	if len(errors) > 0 {
 		return routes, fmt.Errorf("some routes failed: %s", strings.Join(errors, "; "))
 	}
-	
+
 	return routes, nil
 }
 
@@ -122,20 +121,20 @@ func DestroySessionRoutes(sessionName string, routes map[string]string) error {
 	if viper.GetBool("disable_caddy") {
 		return nil
 	}
-	
+
 	client := NewCaddyClient()
-	
+
 	// Check if Caddy is running
 	if err := client.CheckCaddyConnection(); err != nil {
 		fmt.Printf("Warning: Caddy not available, skipping route cleanup: %v\n", err)
 		return nil
 	}
-	
+
 	// Delete all routes for the session
 	if err := client.DeleteSessionRoutes(sessionName); err != nil {
 		return fmt.Errorf("failed to delete session routes: %w", err)
 	}
-	
+
 	fmt.Printf("Deleted Caddy routes for session '%s'\n", sessionName)
 	return nil
 }
@@ -147,7 +146,7 @@ func reorderRoutes(client *CaddyClient) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Separate specific routes (with IDs) and catch-all routes (without IDs)
 	var specificRoutes, catchAllRoutes []Route
 	for _, route := range routes {
@@ -157,9 +156,9 @@ func reorderRoutes(client *CaddyClient) error {
 			catchAllRoutes = append(catchAllRoutes, route)
 		}
 	}
-	
+
 	// If all routes are already in the correct order, no need to reorder
-	if len(catchAllRoutes) == 0 || len(routes) == len(specificRoutes) + len(catchAllRoutes) {
+	if len(catchAllRoutes) == 0 || len(routes) == len(specificRoutes)+len(catchAllRoutes) {
 		// Check if catch-all routes are already at the end
 		foundCatchAll := false
 		for _, route := range routes {
@@ -175,14 +174,14 @@ func reorderRoutes(client *CaddyClient) error {
 			return nil
 		}
 	}
-	
+
 	// Combine with specific routes first
 	orderedRoutes := append(specificRoutes, catchAllRoutes...)
-	
+
 	// Delete all routes and recreate in correct order
 	if err := client.ReplaceAllRoutes(orderedRoutes); err != nil {
 		return err
 	}
-	
+
 	return nil
 }

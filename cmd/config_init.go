@@ -57,29 +57,29 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
-	
+
 	configDir := filepath.Join(home, ".config", "devx")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-	
+
 	// Create template file
 	templatePath := filepath.Join(configDir, "session.yaml.tmpl")
-	
+
 	// Check if file already exists
 	if _, err := os.Stat(templatePath); err == nil {
 		fmt.Printf("Template file already exists at %s\n", templatePath)
 		fmt.Printf("Use --force to overwrite\n")
 		return nil
 	}
-	
+
 	// Write default template
 	if err := os.WriteFile(templatePath, []byte(defaultTmuxpTemplate), 0644); err != nil {
 		return fmt.Errorf("failed to write template file: %w", err)
 	}
-	
+
 	fmt.Printf("Created default tmuxp template at %s\n", templatePath)
 	fmt.Printf("You can now customize this template to suit your workflow.\n")
-	
+
 	return nil
 }
