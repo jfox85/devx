@@ -40,9 +40,9 @@ Improve test coverage for the devx project to:
 
 ## Implementation Plan
 
-### Phase 1: Fix Existing Test Failures ⏳
-- [ ] Fix `TestCaddyRouteLifecycle` - Mock HTTP calls or make Caddy optional
-- [ ] Fix `TestLoadTmuxpTemplateFromFile` - Ensure test template exists
+### Phase 1: Fix Existing Test Failures ✅
+- [x] Fix `TestCaddyRouteLifecycle` - Mock HTTP calls or make Caddy optional
+- [x] Fix `TestLoadTmuxpTemplateFromFile` - Ensure test template exists
 
 ### Phase 2: Add Critical Missing Tests 🚨
 - [ ] **deps package** tests
@@ -95,10 +95,12 @@ Improve test coverage for the devx project to:
 ## Progress Tracking
 
 ### Completed Tasks ✅
-_None yet_
+- Phase 1: Fixed both failing tests
+  - `TestCaddyRouteLifecycle` - Now skips when HTTPS routing not configured
+  - `TestLoadTmuxpTemplateFromFile` - Fixed to use project-level template discovery
 
 ### In Progress 🔄
-- Creating this tracking document
+- Phase 2: Adding tests for critical untested packages
 
 ### Blocked 🚫
 _None_
