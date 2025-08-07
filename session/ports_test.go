@@ -1,23 +1,33 @@
 package session
 
 import (
+	"fmt"
 	"testing"
-
-	getport "github.com/jsumners/go-getport"
 )
 
 func TestUniquePorts(t *testing.T) {
+	// Test that AllocatePorts returns unique ports
+	// We'll allocate many ports at once to test uniqueness
+	serviceNames := make([]string, 20)
+	for i := 0; i < 20; i++ {
+		serviceNames[i] = fmt.Sprintf("service%d", i)
+	}
+	
+	allocation, err := AllocatePorts(serviceNames)
+	if err != nil {
+		t.Fatalf("failed to allocate ports: %v", err)
+	}
+	
 	seen := map[int]bool{}
-	for i := 0; i < 50; i++ {
-		result, err := getport.GetPort(getport.TCP, "")
-		if err != nil {
-			t.Fatalf("failed to get port: %v", err)
+	for name, port := range allocation.Ports {
+		if seen[port] {
+			t.Fatalf("duplicate port %d for service %s", port, name)
 		}
-		p := result.Port
-		if seen[p] {
-			t.Fatalf("duplicate port %d", p)
-		}
-		seen[p] = true
+		seen[port] = true
+	}
+	
+	if len(allocation.Ports) != 20 {
+		t.Errorf("expected 20 unique ports, got %d", len(allocation.Ports))
 	}
 }
 
