@@ -12,12 +12,12 @@ func TestGetEditorCommand(t *testing.T) {
 	// Save original environment
 	originalVisual := os.Getenv("VISUAL")
 	originalEditor := os.Getenv("EDITOR")
-	
+
 	// Clear environment and viper for clean test
 	os.Unsetenv("VISUAL")
 	os.Unsetenv("EDITOR")
 	viper.Set("editor", "")
-	
+
 	defer func() {
 		// Restore original environment
 		if originalVisual != "" {
@@ -27,27 +27,27 @@ func TestGetEditorCommand(t *testing.T) {
 			os.Setenv("EDITOR", originalEditor)
 		}
 	}()
-	
+
 	// Test 1: No editor configured
 	result := GetEditorCommand()
 	if result != "" {
 		t.Errorf("Expected empty string when no editor configured, got '%s'", result)
 	}
-	
+
 	// Test 2: EDITOR environment variable
 	os.Setenv("EDITOR", "nano")
 	result = GetEditorCommand()
 	if result != "nano" {
 		t.Errorf("Expected 'nano' from EDITOR env var, got '%s'", result)
 	}
-	
+
 	// Test 3: VISUAL environment variable (should override EDITOR)
 	os.Setenv("VISUAL", "vim")
 	result = GetEditorCommand()
 	if result != "vim" {
 		t.Errorf("Expected 'vim' from VISUAL env var, got '%s'", result)
 	}
-	
+
 	// Test 4: devx config setting (should override everything)
 	viper.Set("editor", "cursor")
 	result = GetEditorCommand()
@@ -61,7 +61,7 @@ func TestIsEditorAvailable(t *testing.T) {
 	originalEditor := viper.GetString("editor")
 	originalVisual := os.Getenv("VISUAL")
 	originalEditorEnv := os.Getenv("EDITOR")
-	
+
 	defer func() {
 		viper.Set("editor", originalEditor)
 		if originalVisual != "" {
@@ -75,7 +75,7 @@ func TestIsEditorAvailable(t *testing.T) {
 			os.Unsetenv("EDITOR")
 		}
 	}()
-	
+
 	// Test with a command that should exist (echo)
 	viper.Set("editor", "echo")
 	os.Unsetenv("VISUAL")
@@ -83,7 +83,7 @@ func TestIsEditorAvailable(t *testing.T) {
 	if !IsEditorAvailable() {
 		t.Error("Expected 'echo' command to be available")
 	}
-	
+
 	// Test with a command that shouldn't exist
 	viper.Set("editor", "nonexistent-editor-command-12345")
 	os.Unsetenv("VISUAL")
@@ -91,7 +91,7 @@ func TestIsEditorAvailable(t *testing.T) {
 	if IsEditorAvailable() {
 		t.Error("Expected nonexistent command to be unavailable")
 	}
-	
+
 	// Test with no editor configured
 	viper.Set("editor", "")
 	os.Unsetenv("VISUAL")
@@ -114,7 +114,7 @@ func TestLaunchEditor(t *testing.T) {
 	originalEditor := viper.GetString("editor")
 	originalVisual := os.Getenv("VISUAL")
 	originalEditorEnv := os.Getenv("EDITOR")
-	
+
 	defer func() {
 		viper.Set("editor", originalEditor)
 		if originalVisual != "" {
@@ -128,12 +128,12 @@ func TestLaunchEditor(t *testing.T) {
 			os.Unsetenv("EDITOR")
 		}
 	}()
-	
+
 	// Clear all editor settings
 	viper.Set("editor", "")
 	os.Unsetenv("VISUAL")
 	os.Unsetenv("EDITOR")
-	
+
 	// Test with no editor configured (should return PID 0 and no error)
 	pid, err := LaunchEditor("/tmp")
 	if err != nil {
@@ -142,7 +142,7 @@ func TestLaunchEditor(t *testing.T) {
 	if pid != 0 {
 		t.Errorf("Expected PID 0 when no editor configured, got %d", pid)
 	}
-	
+
 	// Test with a safe command that won't actually open an editor
 	viper.Set("editor", "echo")
 	pid, err = LaunchEditor("/tmp")
@@ -159,17 +159,17 @@ func TestIsProcessRunning(t *testing.T) {
 	if IsProcessRunning(0) {
 		t.Error("PID 0 should not be considered running")
 	}
-	
+
 	if IsProcessRunning(-1) {
 		t.Error("Negative PID should not be considered running")
 	}
-	
+
 	// Test with our own process (should be running)
 	myPid := os.Getpid()
 	if !IsProcessRunning(myPid) {
 		t.Errorf("Our own process PID %d should be running", myPid)
 	}
-	
+
 	// Test with a non-existent PID (very high number)
 	if IsProcessRunning(999999) {
 		t.Error("Very high PID should not be running")

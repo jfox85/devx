@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64, arm64]
+        exclude:
+          # Windows ARM64 is not commonly used for CLI tools
+          - os: windows
+            arch: arm64
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+        cache: true
+    
+    - name: Build binary
+      env:
+        GOOS: ${{ matrix.os }}
+        GOARCH: ${{ matrix.arch }}
+      run: |
+        output_name="devx-${{ matrix.os }}-${{ matrix.arch }}"
+        if [ "${{ matrix.os }}" == "windows" ]; then
+          output_name="${output_name}.exe"
+        fi
+        go build -v -o "bin/${output_name}" \
+          -ldflags "-X github.com/jfox85/devx/version.Version=$(git describe --tags --always) \
+                    -X github.com/jfox85/devx/version.GitCommit=$(git rev-parse HEAD) \
+                    -X github.com/jfox85/devx/version.BuildDate=$(date -u +%Y-%m-%d)"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: devx-${{ matrix.os }}-${{ matrix.arch }}
+        path: bin/*
+        retention-days: 7
+
+  verify-build:
+    name: Verify Build
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: List artifacts
+      run: |
+        echo "Built binaries:"
+        ls -la artifacts/*/
+    
+    - name: Verify Linux AMD64 binary
+      run: |
+        chmod +x artifacts/devx-linux-amd64/devx-linux-amd64
+        artifacts/devx-linux-amd64/devx-linux-amd64 version || echo "Version command not implemented"

@@ -1,6 +1,5 @@
 /*
 Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-
 */
 package cmd
 
@@ -47,20 +46,20 @@ func init() {
 
 	// Add version flag to root command
 	rootCmd.Flags().BoolP("version", "v", false, "Show version information")
-	
+
 	// Override the default behavior to handle --version/-v
 	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if versionFlag, _ := cmd.Flags().GetBool("version"); versionFlag {
 			fmt.Println(version.Get().String())
 			return nil
 		}
-		
+
 		// Original TUI behavior
 		if len(args) == 0 {
 			checkDependenciesQuiet()
 			return runTUI()
 		}
-		
+
 		return nil
 	}
 }
@@ -76,13 +75,13 @@ func initConfig() {
 		if projectConfigDir != "" {
 			viper.AddConfigPath(projectConfigDir)
 		}
-		
+
 		// Also add global config path as fallback
 		home, err := os.UserHomeDir()
 		cobra.CheckErr(err)
 		globalConfigPath := home + "/.config/devx"
 		viper.AddConfigPath(globalConfigPath)
-		
+
 		viper.SetConfigType("yaml")
 		viper.SetConfigName("config")
 	}
@@ -100,7 +99,7 @@ func initConfig() {
 	viper.SetDefault("cleanup_command", "")
 
 	// Read in config file if found
-	viper.ReadInConfig()
+	_ = viper.ReadInConfig()
 }
 
 // runTUI launches the terminal user interface
@@ -111,10 +110,10 @@ func runTUI() error {
 // checkDependenciesQuiet performs a quick check and shows warnings for missing dependencies
 func checkDependenciesQuiet() {
 	results := deps.CheckAllDependencies()
-	
+
 	var missingRequired []string
 	var missingOptional []string
-	
+
 	for _, result := range results {
 		if !result.Available {
 			if result.Dependency.Required {
@@ -124,18 +123,18 @@ func checkDependenciesQuiet() {
 			}
 		}
 	}
-	
+
 	// Check configured editor
 	if editorResult := deps.CheckConfiguredEditor(); editorResult != nil && !editorResult.Available {
 		missingOptional = append(missingOptional, "Editor")
 	}
-	
+
 	// Show warnings if needed
 	if len(missingRequired) > 0 {
 		fmt.Printf("⚠️  Warning: Missing required dependencies: %s\n", strings.Join(missingRequired, ", "))
 		fmt.Printf("   Run 'devx check' for installation instructions.\n\n")
 	}
-	
+
 	if len(missingOptional) > 0 {
 		fmt.Printf("ℹ️  Note: Missing optional dependencies: %s\n", strings.Join(missingOptional, ", "))
 		fmt.Printf("   Run 'devx check' for more details.\n\n")

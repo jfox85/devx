@@ -6,6 +6,29 @@ This file provides guidance to AI agents when working with code in this reposito
 
 `devx` is a macOS CLI tool for managing local development environments with Git worktrees, automatic port allocation, and tmux session management. It's written in Go and uses Cobra for the CLI framework.
 
+## Important: Pre-Commit Checklist
+
+**ALWAYS run these checks before committing any changes:**
+
+```bash
+# 1. Format all Go code
+gofmt -w .
+
+# 2. Run static analysis
+go vet ./...
+
+# 3. Check for common issues with golangci-lint (if available)
+golangci-lint run --timeout=5m
+
+# 4. Run all tests with race detection
+go test -v -race ./...
+
+# 5. Ensure go.mod is tidy
+go mod tidy
+```
+
+These checks are enforced in CI and will cause builds to fail if not passing.
+
 ## Common Development Commands
 
 ### Building
@@ -108,3 +131,4 @@ The project uses Go modules. Key dependencies:
 - Caddy route operations should handle API failures gracefully
 - TUI changes should preserve keyboard navigation patterns
 - Configuration changes should respect the hierarchy (env vars > project > global)
+- **Always run the pre-commit checklist before committing changes**

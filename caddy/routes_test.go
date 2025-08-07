@@ -25,13 +25,13 @@ func TestRouteGeneration(t *testing.T) {
 		},
 		Terminal: true,
 	}
-	
+
 	// Test JSON marshaling
 	jsonData, err := json.Marshal(route)
 	if err != nil {
 		t.Fatalf("failed to marshal route: %v", err)
 	}
-	
+
 	// Verify key fields are present
 	jsonStr := string(jsonData)
 	expectedFields := []string{
@@ -41,7 +41,7 @@ func TestRouteGeneration(t *testing.T) {
 		`"dial":"127.0.0.1:3000"`,
 		`"terminal":true`,
 	}
-	
+
 	for _, field := range expectedFields {
 		if !contains(jsonStr, field) {
 			t.Errorf("expected field %s not found in JSON: %s", field, jsonStr)
@@ -66,11 +66,11 @@ func TestGetServiceMapping(t *testing.T) {
 		{"PAYMENT_PORT", "payment"},
 		{"CUSTOM_THING_PORT", "custom-thing"},
 	}
-	
+
 	for _, test := range tests {
 		result := GetServiceMapping(test.portName)
 		if result != test.expected {
-			t.Errorf("GetServiceMapping(%s) = %s, expected %s", 
+			t.Errorf("GetServiceMapping(%s) = %s, expected %s",
 				test.portName, result, test.expected)
 		}
 	}

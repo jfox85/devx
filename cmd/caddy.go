@@ -40,13 +40,13 @@ func runCaddyCheck(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load sessions: %w", err)
 	}
-	
+
 	// Load project registry to get project aliases
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to load project registry: %w", err)
 	}
-	
+
 	// Convert sessions to format needed by health check
 	sessionInfos := make(map[string]*caddy.SessionInfo)
 	for name, sess := range store.Sessions {
@@ -54,7 +54,7 @@ func runCaddyCheck(cmd *cobra.Command, args []string) error {
 			Name:  name,
 			Ports: sess.Ports,
 		}
-		
+
 		// Find project alias if session is in a project
 		for alias, project := range registry.Projects {
 			if sess.ProjectPath == project.Path {
@@ -62,26 +62,26 @@ func runCaddyCheck(cmd *cobra.Command, args []string) error {
 				break
 			}
 		}
-		
+
 		sessionInfos[name] = info
 	}
-	
+
 	// Perform health check
 	result, err := caddy.CheckCaddyHealth(sessionInfos)
 	if err != nil {
 		return fmt.Errorf("failed to check Caddy health: %w", err)
 	}
-	
+
 	// Display results
 	displayHealthCheckResults(result)
-	
+
 	// Fix issues if requested
 	if fixFlag && (result.RoutesNeeded > result.RoutesExisting || result.CatchAllFirst) {
 		fmt.Println("\nAttempting to fix issues...")
 		if err := caddy.RepairRoutes(result, sessionInfos); err != nil {
 			return fmt.Errorf("failed to repair routes: %w", err)
 		}
-		
+
 		// Re-run health check to show updated status
 		fmt.Println("\nRechecking after repairs...")
 		result, err = caddy.CheckCaddyHealth(sessionInfos)
@@ -90,7 +90,7 @@ func runCaddyCheck(cmd *cobra.Command, args []string) error {
 		}
 		displayHealthCheckResults(result)
 	}
-	
+
 	return nil
 }
 
@@ -105,13 +105,13 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 		fmt.Println("  caddy run --config ~/.config/devx/Caddyfile")
 		return
 	}
-	
+
 	// Display route summary
 	fmt.Printf("\n=== Route Summary ===\n")
 	fmt.Printf("Routes needed:   %d\n", result.RoutesNeeded)
 	fmt.Printf("Routes existing: %d\n", result.RoutesExisting)
 	fmt.Printf("Routes working:  %d\n", result.RoutesWorking)
-	
+
 	if result.CatchAllFirst {
 		fmt.Println("\n⚠️  WARNING: Catch-all route is blocking specific routes!")
 		fmt.Println("   This prevents session hostnames from working properly.")
@@ -119,14 +119,14 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 			fmt.Println("   Run with --fix to repair this issue.")
 		}
 	}
-	
+
 	// Display individual route status
 	if len(result.RouteStatuses) > 0 {
 		fmt.Println("\n=== Route Details ===")
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "SESSION\tSERVICE\tHOSTNAME\tPORT\tSTATUS")
 		fmt.Fprintln(w, "-------\t-------\t--------\t----\t------")
-		
+
 		for _, status := range result.RouteStatuses {
 			statusText := "✗ Missing"
 			if status.Exists {
@@ -136,7 +136,7 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 					statusText = "⚠️  Blocked"
 				}
 			}
-			
+
 			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
 				status.SessionName,
 				status.ServiceName,
@@ -146,7 +146,7 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 			)
 		}
 		w.Flush()
-		
+
 		// Show missing routes
 		missingCount := 0
 		for _, status := range result.RouteStatuses {
@@ -154,12 +154,12 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 				missingCount++
 			}
 		}
-		
+
 		if missingCount > 0 && !fixFlag {
 			fmt.Printf("\n%d routes are missing. Run with --fix to create them.\n", missingCount)
 		}
 	}
-	
+
 	// Final status
 	fmt.Println()
 	if result.RoutesNeeded == result.RoutesExisting && !result.CatchAllFirst {

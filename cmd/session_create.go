@@ -39,18 +39,18 @@ func init() {
 
 func runSessionCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	
+
 	// Load project registry
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to load project registry: %w", err)
 	}
-	
+
 	// Determine project to use
 	var project *config.Project
 	var projectAlias string
 	var projectPath string
-	
+
 	if projectFlag != "" {
 		// Use specified project
 		project, err = registry.GetProject(projectFlag)
@@ -65,7 +65,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get current directory: %w", err)
 		}
-		
+
 		// Check if current directory is within a registered project
 		for alias, proj := range registry.Projects {
 			if strings.HasPrefix(cwd, proj.Path) {
@@ -75,7 +75,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 				break
 			}
 		}
-		
+
 		// If no project found, use current directory as a standalone project
 		if project == nil {
 			projectPath = cwd
@@ -85,25 +85,25 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	
+
 	// Load existing sessions
 	store, err := session.LoadSessions()
 	if err != nil {
 		return fmt.Errorf("failed to load sessions: %w", err)
 	}
-	
+
 	// Check if session already exists in metadata
 	if _, exists := store.GetSession(name); exists && !detachFlag {
 		return fmt.Errorf("session '%s' already exists", name)
 	}
-	
+
 	// Load configuration to get port names
 	// Try project-specific config first
 	cfg, err := config.GetProjectConfig(projectPath)
 	if err != nil {
 		return fmt.Errorf("failed to load project config: %w", err)
 	}
-	
+
 	// Fall back to global config if no project config
 	if cfg == nil {
 		cfg, err = config.LoadConfig()
@@ -111,10 +111,10 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 	}
-	
+
 	// Allocate or validate ports
 	var portAllocation *session.PortAllocation
-	
+
 	if fePortFlag != 0 || apiPortFlag != 0 {
 		// Legacy flag support - validate provided ports
 		if fePortFlag == 0 || apiPortFlag == 0 {
@@ -129,7 +129,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		if fePortFlag == apiPortFlag {
 			return fmt.Errorf("frontend and API ports must be different")
 		}
-		
+
 		// Create port allocation with legacy values mapped to service names
 		portAllocation = &session.PortAllocation{
 			Ports: map[string]int{
@@ -144,18 +144,18 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to allocate ports: %w", err)
 		}
 	}
-	
+
 	// Create the worktree
 	if err := session.CreateWorktree(projectPath, name, detachFlag); err != nil {
 		return err
 	}
-	
+
 	// Copy bootstrap files from project root to worktree
 	worktreePath := filepath.Join(projectPath, ".worktrees", name)
 	if err := session.CopyBootstrapFiles(projectPath, worktreePath); err != nil {
 		return fmt.Errorf("failed to copy bootstrap files: %w", err)
 	}
-	
+
 	// Add session to metadata with project information
 	// Get the branch name for the session
 	branchName := name // Default to session name
@@ -164,19 +164,19 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	if output, err := gitCmd.Output(); err == nil {
 		branchName = strings.TrimSpace(string(output))
 	}
-	
+
 	if err := store.AddSessionWithProject(name, branchName, worktreePath, portAllocation.Ports, projectAlias, projectPath); err != nil {
 		// If we fail to save metadata, we should clean up the worktree
 		// For now, we'll just return the error
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
-	
+
 	// Provision Caddy routes first to get hostnames
 	routes, err := caddy.ProvisionSessionRoutesWithProject(name, portAllocation.Ports, projectAlias)
 	if err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
-	
+
 	// Convert routes to hostnames for environment variables
 	hostnames := make(map[string]string)
 	if len(routes) > 0 {
@@ -190,7 +190,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	
+
 	// Generate .envrc file
 	envData := session.EnvrcData{
 		Ports:  portAllocation.Ports,
@@ -200,7 +200,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	if err := session.GenerateEnvrc(worktreePath, envData); err != nil {
 		return fmt.Errorf("failed to generate .envrc: %w", err)
 	}
-	
+
 	// Generate tmuxp config
 	tmuxpData := session.TmuxpData{
 		Name:   name,
@@ -211,7 +211,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	if err := session.GenerateTmuxpConfig(worktreePath, tmuxpData); err != nil {
 		return fmt.Errorf("failed to generate tmuxp config: %w", err)
 	}
-	
+
 	// Update session with route information
 	if len(routes) > 0 {
 		if err := store.UpdateSession(name, func(s *session.Session) {
@@ -225,7 +225,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Warning: failed to save route information: %v\n", err)
 		}
 	}
-	
+
 	fmt.Printf("Created session '%s' at %s\n", name, worktreePath)
 	if len(portAllocation.Ports) > 0 {
 		fmt.Printf("Allocated ports:")
@@ -234,8 +234,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("\n")
 	}
-	
-	
+
 	// Launch tmux session unless disabled
 	if !noTmuxFlag {
 		if session.IsTmuxRunning() {
@@ -249,7 +248,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 

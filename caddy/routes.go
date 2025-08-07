@@ -13,10 +13,10 @@ import (
 
 // Route represents a Caddy route configuration
 type Route struct {
-	ID       string          `json:"@id"`
-	Match    []RouteMatch    `json:"match"`
-	Handle   []RouteHandler  `json:"handle"`
-	Terminal bool            `json:"terminal"`
+	ID       string         `json:"@id"`
+	Match    []RouteMatch   `json:"match"`
+	Handle   []RouteHandler `json:"handle"`
+	Terminal bool           `json:"terminal"`
 }
 
 // RouteMatch represents the match criteria for a route
@@ -26,8 +26,8 @@ type RouteMatch struct {
 
 // RouteHandler represents a route handler
 type RouteHandler struct {
-	Handler   string            `json:"handler"`
-	Upstreams []RouteUpstream   `json:"upstreams,omitempty"`
+	Handler   string          `json:"handler"`
+	Upstreams []RouteUpstream `json:"upstreams,omitempty"`
 }
 
 // RouteUpstream represents an upstream server
@@ -73,19 +73,19 @@ func (c *CaddyClient) CreateRouteWithProject(sessionName, serviceName string, po
 	upstreams := []RouteUpstream{
 		{Dial: fmt.Sprintf("localhost:%d", port)},
 	}
-	
+
 	// Generate hostname with project prefix if provided
 	hostname := fmt.Sprintf("%s-%s.localhost", sessionName, serviceName)
 	if projectAlias != "" {
 		hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sessionName, serviceName)
 	}
-	
+
 	// Generate route ID with project prefix if provided
 	routeID := fmt.Sprintf("sess-%s-%s", sessionName, serviceName)
 	if projectAlias != "" {
 		routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sessionName, serviceName)
 	}
-	
+
 	route := Route{
 		ID: routeID,
 		Match: []RouteMatch{
@@ -130,7 +130,7 @@ func (c *CaddyClient) CreateRouteWithProject(sessionName, serviceName string, po
 // DeleteRoute deletes a route by ID
 func (c *CaddyClient) DeleteRoute(routeID string) error {
 	url := fmt.Sprintf("%s/id/%s", c.baseURL, routeID)
-	
+
 	resp, err := c.client.R().Delete(url)
 	if err != nil {
 		return fmt.Errorf("failed to delete route: %w", err)
@@ -192,7 +192,6 @@ func (c *CaddyClient) GetAllRoutes() ([]Route, error) {
 	return routes, nil
 }
 
-
 // CheckCaddyConnection verifies that Caddy is running and accessible
 func (c *CaddyClient) CheckCaddyConnection() error {
 	resp, err := c.client.R().Get(c.baseURL + "/config/")
@@ -211,10 +210,10 @@ func (c *CaddyClient) CheckCaddyConnection() error {
 func GetServiceMapping(portName string) string {
 	// Remove _PORT suffix if present
 	serviceName := strings.TrimSuffix(portName, "_PORT")
-	
+
 	// Convert to lowercase
 	serviceName = strings.ToLower(serviceName)
-	
+
 	// Apply special mappings
 	switch serviceName {
 	case "fe", "web", "frontend":
@@ -236,29 +235,29 @@ func (c *CaddyClient) ReplaceAllRoutes(routes []Route) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete existing routes: %w", err)
 	}
-	
+
 	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusNoContent {
 		return fmt.Errorf("failed to delete routes: status %d", resp.StatusCode())
 	}
-	
+
 	// Then create new routes in the correct order
 	routesJSON, err := json.Marshal(routes)
 	if err != nil {
 		return fmt.Errorf("failed to marshal routes: %w", err)
 	}
-	
+
 	resp, err = c.client.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(routesJSON).
 		Post(c.baseURL + "/config/apps/http/servers/srv1/routes")
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to create routes: %w", err)
 	}
-	
+
 	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusCreated {
 		return fmt.Errorf("failed to create routes: status %d: %s", resp.StatusCode(), resp.String())
 	}
-	
+
 	return nil
 }

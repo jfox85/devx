@@ -26,13 +26,13 @@ var configViewCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
-		
+
 		// Convert to YAML for pretty printing
 		yamlData, err := yaml.Marshal(cfg)
 		if err != nil {
 			return fmt.Errorf("failed to marshal config: %w", err)
 		}
-		
+
 		fmt.Print(string(yamlData))
 		return nil
 	},
@@ -46,11 +46,11 @@ var configGetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
 		value := config.GetConfigValue(key)
-		
+
 		if value == nil {
 			return fmt.Errorf("key '%s' not found", key)
 		}
-		
+
 		fmt.Println(value)
 		return nil
 	},
@@ -64,7 +64,7 @@ var configSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
 		value := args[1]
-		
+
 		// Validate known keys
 		validKeys := map[string]bool{
 			"basedomain":     true,
@@ -74,11 +74,11 @@ var configSetCmd = &cobra.Command{
 			"disable_caddy":  true,
 			"editor":         true,
 		}
-		
+
 		if !validKeys[key] {
 			return fmt.Errorf("unknown configuration key: %s", key)
 		}
-		
+
 		// Ensure config file exists
 		if viper.ConfigFileUsed() == "" {
 			// Force creation of config file
@@ -90,10 +90,10 @@ var configSetCmd = &cobra.Command{
 				return fmt.Errorf("failed to save config: %w", err)
 			}
 		}
-		
+
 		// Handle special cases for different value types
 		var configValue interface{} = value
-		
+
 		if key == "ports" {
 			// Parse JSON array for ports
 			if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
@@ -114,11 +114,11 @@ var configSetCmd = &cobra.Command{
 			// Convert string to boolean
 			configValue = value == "true" || value == "True" || value == "1"
 		}
-		
+
 		if err := config.SetConfigValue(key, configValue); err != nil {
 			return fmt.Errorf("failed to set config value: %w", err)
 		}
-		
+
 		fmt.Printf("Set %s = %v\n", key, configValue)
 		return nil
 	},

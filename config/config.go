@@ -21,7 +21,7 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode config: %w", err)
 	}
-	
+
 	// Expand ~ in tmuxp_template path
 	if cfg.TmuxpTemplate != "" && cfg.TmuxpTemplate[0] == '~' {
 		home, err := os.UserHomeDir()
@@ -30,7 +30,7 @@ func LoadConfig() (*Config, error) {
 		}
 		cfg.TmuxpTemplate = filepath.Join(home, cfg.TmuxpTemplate[1:])
 	}
-	
+
 	return &cfg, nil
 }
 
@@ -40,12 +40,12 @@ func SaveConfig(cfg *Config) error {
 	if err := os.MkdirAll(configPath, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-	
+
 	// Set the values in viper
 	viper.Set("basedomain", cfg.BaseDomain)
 	viper.Set("caddy_api", cfg.CaddyAPI)
 	viper.Set("tmuxp_template", cfg.TmuxpTemplate)
-	
+
 	// Write the config file
 	configFile := filepath.Join(configPath, "config.yaml")
 	return viper.WriteConfigAs(configFile)

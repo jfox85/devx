@@ -23,10 +23,6 @@ var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
 
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
-			Bold(true)
-
 	warningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")).
 			Bold(true).
@@ -44,7 +40,7 @@ var (
 			MarginLeft(1)
 
 	sessionListStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240")).
-			Padding(1, 2)
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(1, 2)
 )

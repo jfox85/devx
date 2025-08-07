@@ -29,7 +29,7 @@ func init() {
 
 func runSessionFlag(cmd *cobra.Command, args []string) error {
 	sessionName := args[0]
-	
+
 	if clearFlag {
 		// Clear the flag
 		if err := session.ClearAttentionFlag(sessionName); err != nil {
@@ -38,13 +38,13 @@ func runSessionFlag(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Cleared attention flag for session '%s'\n", sessionName)
 		return nil
 	}
-	
+
 	// Set the flag
 	reason := "manual"
 	if len(args) > 1 {
 		reason = args[1]
 	}
-	
+
 	// Check if this is the current session (unless forced)
 	if !forceFlagFlag {
 		currentSession := session.GetCurrentSessionName()
@@ -53,11 +53,11 @@ func runSessionFlag(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 	}
-	
+
 	if err := session.SetAttentionFlag(sessionName, reason); err != nil {
 		return fmt.Errorf("failed to set attention flag: %w", err)
 	}
-	
+
 	fmt.Printf("Flagged session '%s' for attention (reason: %s)\n", sessionName, reason)
 	return nil
 }
