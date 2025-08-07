@@ -63,7 +63,9 @@ jobs:
       run: |
         # Install system dependencies
         brew install tmux
-        pip3 install --user tmuxp
+        # Use pipx to install tmuxp in an isolated environment
+        brew install pipx
+        pipx install tmuxp
     
     - name: Run tests
       run: |
