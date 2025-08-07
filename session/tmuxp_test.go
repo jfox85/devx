@@ -101,26 +101,26 @@ func TestIsTmuxRunning(t *testing.T) {
 }
 
 func TestLoadTmuxpTemplateFromFile(t *testing.T) {
-	// Create temp directory for custom template
+	// Create temp directory for custom template and project
 	tmpDir, err := os.MkdirTemp("", "devx-template-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 	
-	// Save original HOME env var
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	
-	// Set HOME to temp directory
-	os.Setenv("HOME", tmpDir)
-	
-	// Create config directory and custom template
-	configDir := filepath.Join(tmpDir, ".config", "devx")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatalf("failed to create config dir: %v", err)
+	// Create a project directory that will be used as the working directory
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("failed to create project dir: %v", err)
 	}
 	
+	// Create .devx directory in the project to make it a devx project
+	devxDir := filepath.Join(projectDir, ".devx")
+	if err := os.MkdirAll(devxDir, 0755); err != nil {
+		t.Fatalf("failed to create .devx dir: %v", err)
+	}
+	
+	// Create custom template in the project's .devx directory
 	customTemplate := `session_name: {{.Name}}
 custom: true
 windows:
@@ -129,25 +129,36 @@ windows:
       - echo "Custom template loaded for {{.Name}}"
 `
 	
-	templatePath := filepath.Join(configDir, "session.yaml.tmpl")
+	templatePath := filepath.Join(devxDir, "session.yaml.tmpl")
 	if err := os.WriteFile(templatePath, []byte(customTemplate), 0644); err != nil {
 		t.Fatalf("failed to write custom template: %v", err)
+	}
+	
+	// Save and change working directory to project dir
+	originalWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	defer os.Chdir(originalWd)
+	
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("failed to change working directory: %v", err)
 	}
 	
 	// Test data
 	data := TmuxpData{
 		Name:  "test-custom",
-		Path:  tmpDir,
-		Ports: map[string]int{"FE_PORT": 3000, "API_PORT": 3001},
+		Path:  projectDir,
+		Ports: map[string]int{"ui": 3000, "api": 3001},
 	}
 	
 	// Generate config using custom template
-	if err := GenerateTmuxpConfig(tmpDir, data); err != nil {
+	if err := GenerateTmuxpConfig(projectDir, data); err != nil {
 		t.Fatalf("failed to generate tmuxp config: %v", err)
 	}
 	
 	// Read generated file
-	configPath := filepath.Join(tmpDir, ".tmuxp.yaml")
+	configPath := filepath.Join(projectDir, ".tmuxp.yaml")
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("failed to read generated config: %v", err)
