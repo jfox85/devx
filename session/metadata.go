@@ -176,9 +176,7 @@ func RemoveSession(name string, sess *Session) error {
 	}
 
 	// Remove git worktree
-	if err := removeGitWorktree(sess.Path); err != nil {
-		// Don't fail on worktree errors
-	}
+	_ = removeGitWorktree(sess.Path) // Don't fail on worktree errors
 
 	return nil
 }
