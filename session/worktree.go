@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -86,17 +87,72 @@ func IsWorktreeCheckedOut(repoPath, branchName string) (bool, string, error) {
 func CreateWorktree(repoPath, name string, detach bool) error {
 	worktreePath := filepath.Join(repoPath, ".worktrees", name)
 
-	// Check if already exists
-	exists, existingPath, err := IsWorktreeCheckedOut(repoPath, name)
-	if err != nil {
-		return err
+	// First, check if the worktree directory exists on disk
+	if _, err := os.Stat(worktreePath); err == nil {
+		// Directory exists, check if it's a valid worktree
+		worktreeExists, err := WorktreeExists(repoPath, worktreePath)
+		if err != nil {
+			return err
+		}
+
+		if !worktreeExists {
+			// Directory exists but not tracked as worktree - likely orphaned
+			// Try to prune stale worktree references
+			if err := PruneWorktrees(repoPath); err != nil {
+				// Pruning failed, but continue anyway
+				fmt.Printf("Warning: failed to prune worktrees: %v\n", err)
+			}
+
+			// Check again after pruning
+			worktreeExists, err = WorktreeExists(repoPath, worktreePath)
+			if err != nil {
+				return err
+			}
+		}
+
+		if worktreeExists {
+			// Worktree exists and is valid
+			// Check if it's on the expected branch
+			worktrees, err := ListWorktrees(repoPath)
+			if err != nil {
+				return err
+			}
+
+			for _, wt := range worktrees {
+				if wt.Path == worktreePath {
+					if wt.Branch == name {
+						// Already on correct branch, we can reuse it
+						fmt.Printf("Reusing existing worktree at %s (branch: %s)\n", worktreePath, name)
+						return nil
+					} else if !detach {
+						return fmt.Errorf("worktree at %s exists but is on branch %s, not %s. Use --detach to override", worktreePath, wt.Branch, name)
+					}
+					// If detach is true, we'll remove and recreate below
+					break
+				}
+			}
+
+			if detach {
+				// Remove the existing worktree to recreate it
+				cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+				cmd.Dir = repoPath
+				if output, err := cmd.CombinedOutput(); err != nil {
+					return fmt.Errorf("failed to remove existing worktree: %w\n%s", err, output)
+				}
+			}
+		} else if !detach {
+			// Directory exists but isn't a worktree - this shouldn't happen in normal flow
+			return fmt.Errorf("directory %s exists but is not a git worktree. Remove it manually or use --detach", worktreePath)
+		} else {
+			// detach is true and directory exists but isn't a worktree
+			// Remove the directory
+			if err := os.RemoveAll(worktreePath); err != nil {
+				return fmt.Errorf("failed to remove existing directory: %w", err)
+			}
+		}
 	}
 
-	if exists && !detach {
-		return fmt.Errorf("session already exists at %s", existingPath)
-	}
-
-	// Check if branch exists
+	// Check if branch exists by name (not if it's checked out)
 	branchExists, err := BranchExists(repoPath, name)
 	if err != nil {
 		return err
@@ -114,6 +170,14 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 	cmd.Dir = repoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// Check if error is due to branch being already checked out elsewhere
+		if strings.Contains(string(output), "is already checked out") {
+			// Try to find where it's checked out
+			checkedOut, path, checkErr := IsWorktreeCheckedOut(repoPath, name)
+			if checkErr == nil && checkedOut {
+				return fmt.Errorf("branch '%s' is already checked out at %s", name, path)
+			}
+		}
 		return fmt.Errorf("failed to create worktree: %w\n%s", err, output)
 	}
 
@@ -135,6 +199,35 @@ func BranchExists(repoPath, branchName string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// PruneWorktrees removes stale worktree references
+func PruneWorktrees(repoPath string) error {
+	cmd := exec.Command("git", "worktree", "prune")
+	cmd.Dir = repoPath
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to prune worktrees: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// WorktreeExists checks if a worktree exists at the specified path
+func WorktreeExists(repoPath, worktreePath string) (bool, error) {
+	worktrees, err := ListWorktrees(repoPath)
+	if err != nil {
+		return false, err
+	}
+
+	for _, wt := range worktrees {
+		if wt.Path == worktreePath {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // PullFromOrigin pulls the latest changes from origin for the specified branch

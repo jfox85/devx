@@ -18,6 +18,7 @@ var (
 	apiPortFlag int
 	noTmuxFlag  bool
 	projectFlag string
+	reuseFlag   bool
 )
 
 var sessionCreateCmd = &cobra.Command{
@@ -31,6 +32,7 @@ var sessionCreateCmd = &cobra.Command{
 func init() {
 	sessionCmd.AddCommand(sessionCreateCmd)
 	sessionCreateCmd.Flags().BoolVar(&detachFlag, "detach", false, "Detach existing worktree if it exists")
+	sessionCreateCmd.Flags().BoolVar(&reuseFlag, "reuse", false, "Reuse existing worktree if it exists at the expected path")
 	sessionCreateCmd.Flags().IntVar(&fePortFlag, "fe-port", 0, "Frontend port (auto-allocated if not specified)")
 	sessionCreateCmd.Flags().IntVar(&apiPortFlag, "api-port", 0, "API port (auto-allocated if not specified)")
 	sessionCreateCmd.Flags().BoolVar(&noTmuxFlag, "no-tmux", false, "Skip launching tmux session")
@@ -93,8 +95,38 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if session already exists in metadata
-	if _, exists := store.GetSession(name); exists && !detachFlag {
-		return fmt.Errorf("session '%s' already exists", name)
+	existingSession, sessionExists := store.GetSession(name)
+	if sessionExists && !detachFlag && !reuseFlag {
+		return fmt.Errorf("session '%s' already exists in metadata. Use --reuse to reuse it or --detach to recreate", name)
+	}
+
+	// If reuse flag is set and session exists, verify the worktree is still valid
+	if reuseFlag && sessionExists {
+		// Check if the worktree still exists
+		worktreeExists, err := session.WorktreeExists(projectPath, existingSession.Path)
+		if err != nil {
+			return fmt.Errorf("failed to check worktree existence: %w", err)
+		}
+
+		if worktreeExists {
+			fmt.Printf("Reusing existing session '%s' at %s\n", name, existingSession.Path)
+			// Skip to tmux launch if not disabled
+			if !noTmuxFlag {
+				if session.IsTmuxRunning() {
+					fmt.Printf("Note: Already inside tmux. Session exists but not launched.\n")
+					fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", existingSession.Path)
+				} else {
+					fmt.Printf("Launching tmux session...\n")
+					if err := session.LaunchTmuxSession(existingSession.Path, name); err != nil {
+						fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
+						fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", existingSession.Path)
+					}
+				}
+			}
+			return nil
+		}
+		// Worktree doesn't exist, continue with creation
+		fmt.Printf("Session metadata exists but worktree is missing, recreating...\n")
 	}
 
 	// Load configuration to get port names
@@ -158,7 +190,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create the worktree
+	// Create the worktree (or reuse if it exists and matches)
 	if err := session.CreateWorktree(projectPath, name, detachFlag); err != nil {
 		return err
 	}
