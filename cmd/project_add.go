@@ -13,6 +13,7 @@ var (
 	projectName          string
 	projectDesc          string
 	projectDefaultBranch string
+	projectAutoPull      bool
 )
 
 var projectAddCmd = &cobra.Command{
@@ -23,7 +24,8 @@ var projectAddCmd = &cobra.Command{
 Examples:
   devx project add . --alias myapp
   devx project add ~/code/backend --alias backend --name "Backend API"
-  devx project add /path/to/frontend --alias fe --desc "React frontend" --default-branch develop`,
+  devx project add /path/to/frontend --alias fe --desc "React frontend" --default-branch develop
+  devx project add . --alias myapp --auto-pull  # Auto-pull from origin when creating sessions`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectPath := args[0]
@@ -78,10 +80,11 @@ Examples:
 
 		// Create project
 		project := &config.Project{
-			Name:          projectName,
-			Path:          absPath,
-			Description:   projectDesc,
-			DefaultBranch: projectDefaultBranch,
+			Name:             projectName,
+			Path:             absPath,
+			Description:      projectDesc,
+			DefaultBranch:    projectDefaultBranch,
+			AutoPullOnCreate: projectAutoPull,
 		}
 
 		// Add to registry
@@ -111,6 +114,7 @@ func init() {
 	projectAddCmd.Flags().StringVarP(&projectName, "name", "n", "", "Display name for the project")
 	projectAddCmd.Flags().StringVarP(&projectDesc, "desc", "d", "", "Description of the project")
 	projectAddCmd.Flags().StringVar(&projectDefaultBranch, "default-branch", "main", "Default branch for new sessions")
+	projectAddCmd.Flags().BoolVar(&projectAutoPull, "auto-pull", false, "Automatically pull from origin when creating sessions")
 
 	_ = projectAddCmd.MarkFlagRequired("alias")
 }
