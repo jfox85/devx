@@ -1,0 +1,1 @@
+- Always run gofmt before committing any changes

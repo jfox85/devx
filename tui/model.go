@@ -605,7 +605,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			func() tea.Msg {
 				// Small delay to ensure sessions are loaded
 				time.Sleep(100 * time.Millisecond)
-				return attachToNewSessionMsg{sessionName: msg.sessionName}
+				return attachToNewSessionMsg(msg)
 			},
 		)
 

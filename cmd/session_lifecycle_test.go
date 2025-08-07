@@ -62,7 +62,7 @@ func createTestSession(t *testing.T, sessionName string) {
 
 	// Cleanup function to restore directory
 	t.Cleanup(func() {
-		os.Chdir(originalDir)
+		_ = os.Chdir(originalDir)
 	})
 
 	// Create the session using our existing functionality

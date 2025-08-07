@@ -59,8 +59,10 @@ func TestCreateSession(t *testing.T) {
 
 	// Change to the repo directory for the test
 	oldDir, _ := os.Getwd()
-	os.Chdir(repo)
-	defer os.Chdir(oldDir)
+	_ = os.Chdir(repo)
+	defer func() {
+		_ = os.Chdir(oldDir)
+	}()
 
 	// Clean up any existing session first
 	rootCmd.SetArgs([]string{"session", "rm", "feat-foo", "-f"})
@@ -104,8 +106,10 @@ func TestCreateSessionTwice(t *testing.T) {
 
 	// Change to the repo directory for the test
 	oldDir, _ := os.Getwd()
-	os.Chdir(repo)
-	defer os.Chdir(oldDir)
+	_ = os.Chdir(repo)
+	defer func() {
+		_ = os.Chdir(oldDir)
+	}()
 
 	// Clean up any existing session first
 	rootCmd.SetArgs([]string{"session", "rm", "feat-bar", "-f"})
@@ -140,8 +144,10 @@ func TestTmuxpConfigGeneration(t *testing.T) {
 
 	// Change to the repo directory for the test
 	oldDir, _ := os.Getwd()
-	os.Chdir(repo)
-	defer os.Chdir(oldDir)
+	_ = os.Chdir(repo)
+	defer func() {
+		_ = os.Chdir(oldDir)
+	}()
 
 	// Clean up any existing session first
 	rootCmd.SetArgs([]string{"session", "rm", "feat-tmuxp", "-f"})

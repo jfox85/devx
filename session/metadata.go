@@ -165,20 +165,14 @@ func ClearRegistry() error {
 // RemoveSession removes a single session completely (helper for commands)
 func RemoveSession(name string, sess *Session) error {
 	// Terminate editor if it's running
-	if err := TerminateEditor(name); err != nil {
-		// Don't fail on editor termination errors
-	}
+	_ = TerminateEditor(name) // Don't fail on editor termination errors
 
 	// Kill tmux session if it exists
-	if err := killTmuxSession(name); err != nil {
-		// Don't fail on tmux errors
-	}
+	_ = killTmuxSession(name) // Don't fail on tmux errors
 
 	// Remove Caddy routes
 	if len(sess.Routes) > 0 {
-		if err := removeCaddyRoutes(name, sess.Routes); err != nil {
-			// Don't fail on Caddy errors
-		}
+		_ = removeCaddyRoutes(name, sess.Routes) // Don't fail on Caddy errors
 	}
 
 	// Remove git worktree

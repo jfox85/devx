@@ -139,7 +139,9 @@ windows:
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	defer os.Chdir(originalWd)
+	defer func() {
+		_ = os.Chdir(originalWd)
+	}()
 
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("failed to change working directory: %v", err)
