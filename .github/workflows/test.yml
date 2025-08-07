@@ -1,0 +1,91 @@
+name: Test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.22', '1.23']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+        cache: true
+    
+    - name: Install dependencies
+      run: |
+        # Install system dependencies that devx checks for
+        sudo apt-get update
+        sudo apt-get install -y tmux
+        pip install --user tmuxp
+        # Caddy is optional for tests (integration tests skip if not available)
+    
+    - name: Run tests
+      run: |
+        go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+    
+    - name: Upload coverage to Codecov
+      if: matrix.go-version == '1.23'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.txt
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  test-macos:
+    name: Test macOS
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+        cache: true
+    
+    - name: Install dependencies
+      run: |
+        # Install system dependencies
+        brew install tmux
+        pip3 install --user tmuxp
+    
+    - name: Run tests
+      run: |
+        go test -v -race ./...
+
+  test-windows:
+    name: Test Windows
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+        cache: true
+    
+    - name: Run tests
+      run: |
+        # Windows tests may have limited functionality
+        # as tmux is not available on Windows
+        go test -v -race ./...
+      continue-on-error: true
