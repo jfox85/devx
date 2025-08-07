@@ -12,12 +12,12 @@ func TestUniquePorts(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		serviceNames[i] = fmt.Sprintf("service%d", i)
 	}
-	
+
 	allocation, err := AllocatePorts(serviceNames)
 	if err != nil {
 		t.Fatalf("failed to allocate ports: %v", err)
 	}
-	
+
 	seen := map[int]bool{}
 	for name, port := range allocation.Ports {
 		if seen[port] {
@@ -25,7 +25,7 @@ func TestUniquePorts(t *testing.T) {
 		}
 		seen[port] = true
 	}
-	
+
 	if len(allocation.Ports) != 20 {
 		t.Errorf("expected 20 unique ports, got %d", len(allocation.Ports))
 	}

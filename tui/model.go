@@ -1626,4 +1626,3 @@ func (m model) addProject(path string) tea.Cmd {
 		}
 	}
 }
-
