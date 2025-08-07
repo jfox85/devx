@@ -134,7 +134,7 @@ func TestCreateSessionTwice(t *testing.T) {
 		t.Fatal("expected error when creating duplicate session")
 	}
 
-	if err.Error() != "session 'feat-bar' already exists" {
+	if err.Error() != "session 'feat-bar' already exists in metadata. Use --reuse to reuse it or --detach to recreate" {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
