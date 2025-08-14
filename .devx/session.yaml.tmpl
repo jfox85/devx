@@ -1,9 +1,19 @@
-session_name: {{.Name}}
+session_name: DevX - {{.Name}}
 start_directory: {{.Path}}
 suppress_history: false
 options:
   base-index: 1
   automatic-rename: "off"
+  mouse: on
+  status: on
+  status-interval: 5
+  status-left-length: 60
+  status-right-length: 120
+  status-left: '#[bold]DevX - #{session_name}#[default] | #{window_index}:#{window_name}'
+  status-right: '#{pane_current_path} | %Y-%m-%d %H:%M'
+window_options:
+  window-status-format: ' #{window_index}:#{window_name} '
+  window-status-current-format: ' #[reverse]#{window_index}:#{window_name}#[default] '
 windows:
   - window_name: editor
     layout: tiled
