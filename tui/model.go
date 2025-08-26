@@ -582,6 +582,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.Focus()
 					return m, textinput.Blink
 				}
+
+			// Handle number keys 1-9 for quick project selection
+			case msg.String() >= "1" && msg.String() <= "9":
+				// Convert to 0-based index
+				targetIndex := int(msg.String()[0] - '1')
+				if targetIndex < len(m.projects) {
+					m.selectedProject = m.projects[targetIndex].alias
+					m.state = stateCreating
+					m.textInput.Reset()
+					m.textInput.Focus()
+					return m, textinput.Blink
+				}
 			}
 
 		case stateProjectManagement:
@@ -772,7 +784,7 @@ func (m *model) View() string {
 		case stateCreating:
 			footer = footerStyle.Width(m.width).Render("enter: create session • esc: cancel")
 		case stateProjectSelect:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: select project • esc: back • q: quit")
+			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump • enter: select project • esc: back • q: quit")
 		case stateConfirm:
 			footer = footerStyle.Width(m.width).Render("y: confirm • n: cancel")
 		case stateHostnames:
@@ -1333,12 +1345,20 @@ func (m *model) projectSelectView() string {
 			cursor = "> "
 		}
 
+		// Add number shortcut for first 9 items
+		numberPrefix := ""
+		if i < 9 {
+			numberPrefix = fmt.Sprintf("%d. ", i+1)
+		} else {
+			numberPrefix = "   " // Maintain alignment
+		}
+
 		description := project.description
 		if description == "" {
 			description = project.path
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s (%s)\n", cursor, project.name, project.alias))
+		b.WriteString(fmt.Sprintf("%s%s%s (%s)\n", cursor, numberPrefix, project.name, project.alias))
 		b.WriteString(fmt.Sprintf("    %s\n", description))
 		if i < len(m.projects)-1 {
 			b.WriteString("\n")
