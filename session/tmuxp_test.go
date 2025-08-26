@@ -48,8 +48,8 @@ func TestGenerateTmuxpConfig(t *testing.T) {
 	// Debug: print the generated config
 	t.Logf("Generated config:\n%s", configStr)
 
-	// Verify session name
-	if !strings.Contains(configStr, "session_name: test-session") {
+	// Verify session name (account for custom template that may prefix the name)
+	if !strings.Contains(configStr, "session_name: DevX - test-session") && !strings.Contains(configStr, "session_name: test-session") {
 		t.Error("config should contain session name")
 	}
 
