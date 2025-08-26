@@ -1,5 +1,5 @@
-session_name: jf-test-harness
-start_directory: /Users/jfox/projects/devx/.worktrees/jf-test-harness
+session_name: jf-mem-leak
+start_directory: /Users/jfox/projects/devx/.worktrees/jf-mem-leak
 suppress_history: false
 options:
   base-index: 1
@@ -8,16 +8,16 @@ windows:
   - window_name: editor
     layout: tiled
     shell_command_before:
-      - cd /Users/jfox/projects/devx/.worktrees/jf-test-harness
-      - export SESSION_NAME=jf-test-harness
+      - cd /Users/jfox/projects/devx/.worktrees/jf-mem-leak
+      - export SESSION_NAME=jf-mem-leak
     panes:
       - claude
 
   - window_name: repo-root
     layout: tiled
     shell_command_before:
-      - cd /Users/jfox/projects/devx/.worktrees/jf-test-harness
-      - export SESSION_NAME=jf-test-harness    
+      - cd /Users/jfox/projects/devx/.worktrees/jf-mem-leak
+      - export SESSION_NAME=jf-mem-leak    
     panes:
-      - cd /Users/jfox/projects/devx/.worktrees/jf-test-harness
+      - cd /Users/jfox/projects/devx/.worktrees/jf-mem-leak
 

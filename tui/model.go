@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,6 +75,22 @@ type model struct {
 	projectCursor   int
 	selectedProject string
 	caddyWarning    string
+	// Performance monitoring
+	debugMode     bool
+	debugLevel    int // 1=basic, 2=verbose
+	updateCount   int
+	lastMemStats  runtime.MemStats
+	memStatsCount int
+	debugLogger   *log.Logger
+	// Timer frequency tracking
+	lastPreviewRefresh time.Time
+	lastSessionRefresh time.Time
+	// Cached regex for better performance
+	ansiRegex *regexp.Regexp
+	// Cache tmux content to avoid excessive subprocess calls
+	tmuxContentCache  map[string]string
+	tmuxUpdateTimes   map[string]time.Time
+	tmuxSessionStates map[string]bool // Track if session exists to reduce logging
 }
 
 type keyMap struct {
@@ -158,24 +176,67 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	}
 }
 
-func InitialModel() model {
+func InitialModel() *model {
 	ti := textinput.New()
 	ti.Placeholder = "session-name"
 	ti.CharLimit = 50
 
-	return model{
-		sessions:    []sessionItem{},
-		state:       stateList,
-		help:        help.New(),
-		keys:        keys,
-		textInput:   ti,
-		showPreview: true, // Enable preview by default
-		width:       80,   // Default width
-		height:      24,   // Default height
+	// Check for debug mode and level via environment variable
+	debugEnv := os.Getenv("DEVX_DEBUG")
+	debugMode := debugEnv != ""
+	debugLevel := 1 // Default to basic
+	if debugEnv == "2" {
+		debugLevel = 2 // Verbose mode
 	}
+
+	// Set up debug logger if enabled
+	var debugLogger *log.Logger
+	if debugMode {
+		// Create debug log file in temp directory
+		logFile, err := os.OpenFile("/tmp/devx-debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			// Fall back to discard if file creation fails
+			debugLogger = log.New(io.Discard, "", 0)
+		} else {
+			debugLogger = log.New(logFile, "[DEVX_DEBUG] ", log.LstdFlags|log.Lmicroseconds)
+			debugLogger.Printf("=== Debug session started ===")
+		}
+	} else {
+		debugLogger = log.New(io.Discard, "", 0)
+	}
+
+	// Pre-compile regex for performance
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+	m := model{
+		sessions:           []sessionItem{},
+		state:              stateList,
+		help:               help.New(),
+		keys:               keys,
+		textInput:          ti,
+		showPreview:        true, // Enable preview by default
+		width:              80,   // Default width
+		height:             24,   // Default height
+		debugMode:          debugMode,
+		debugLogger:        debugLogger,
+		ansiRegex:          ansiRegex,
+		tmuxContentCache:   make(map[string]string),
+		tmuxUpdateTimes:    make(map[string]time.Time),
+		tmuxSessionStates:  make(map[string]bool),
+		lastPreviewRefresh: time.Now(),
+		lastSessionRefresh: time.Now(),
+		debugLevel:         debugLevel,
+	}
+
+	if debugMode {
+		m.debugLogger.Printf("TUI initialized in debug mode")
+		runtime.ReadMemStats(&m.lastMemStats)
+	}
+
+	return &m
 }
 
-func (m model) Init() tea.Cmd {
+func (m *model) Init() tea.Cmd {
 	return tea.Batch(m.loadSessions, m.refreshPreview(), m.refreshSessions(), m.checkCaddyHealth())
 }
 
@@ -305,7 +366,14 @@ type caddyHealthMsg struct {
 
 func (e errMsg) Error() string { return e.err.Error() }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.updateCount++
+
+	// Log memory stats every 50 updates in debug mode
+	if m.debugMode && m.updateCount%50 == 0 {
+		m.logMemoryStats()
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -384,7 +452,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.loadProjectsForManagement()
 
 			case key.Matches(msg, m.keys.Preview):
+				wasEnabled := m.showPreview
 				m.showPreview = !m.showPreview
+				if wasEnabled && !m.showPreview {
+					// Clear tmux cache when disabling preview
+					m.tmuxContentCache = make(map[string]string)
+					m.tmuxUpdateTimes = make(map[string]time.Time)
+					m.tmuxSessionStates = make(map[string]bool)
+					if m.debugMode {
+						m.debugLogger.Printf("Preview disabled, cleared tmux cache")
+					}
+				}
 
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
@@ -627,11 +705,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshPreviewMsg:
 		// Only refresh if we're in preview mode
 		if m.showPreview && m.state == stateList {
+			m.lastPreviewRefresh = time.Now()
 			return m, m.refreshPreview()
 		}
 
 	case refreshSessionsMsg:
 		// Reload sessions to reflect changes and continue periodic refresh
+		m.lastSessionRefresh = time.Now()
 		return m, tea.Batch(m.loadSessions, m.refreshSessions())
 
 	case caddyHealthMsg:
@@ -640,14 +720,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		m.state = stateList
+		// Log the error for debugging
+		m.debugLogger.Printf("TUI Error: %v", msg.err)
 	}
 
 	return m, nil
 }
 
-func (m model) View() string {
+func (m *model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("\n  Error: %v\n\n  Press any key to continue or 'q' to quit.\n", m.err)
+		// Make the error display more prominent and detailed
+		errorBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("196")). // Red
+			Foreground(lipgloss.Color("196")).       // Red text
+			Padding(1, 2).
+			Margin(1, 0).
+			Width(m.width - 4)
+
+		errorContent := fmt.Sprintf("ERROR\n\n%s\n\nPress any key to continue or 'q' to quit.", m.err)
+		return errorBox.Render(errorContent)
 	}
 
 	var content string
@@ -709,7 +801,7 @@ func (m model) View() string {
 		Render(content) + "\n" + footer
 }
 
-func (m model) listView() string {
+func (m *model) listView() string {
 	logo := logoStyle.Width(m.width).Render(`
   ____            __  __
  |  _ \  _____   _\ \/ /
@@ -865,7 +957,7 @@ func (m model) listView() string {
 	return logo + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 }
 
-func (m model) getSessionDetails(sess sessionItem) string {
+func (m *model) getSessionDetails(sess sessionItem) string {
 	details := fmt.Sprintf("    Branch: %s\n    Path: %s\n",
 		sess.branch,
 		sess.path)
@@ -904,7 +996,7 @@ func (m model) getSessionDetails(sess sessionItem) string {
 	return details
 }
 
-func (m model) getSessionPreview(sess sessionItem) string {
+func (m *model) getSessionPreview(sess sessionItem) string {
 	var preview strings.Builder
 
 	preview.WriteString(headerStyle.Render(sess.name) + "\n")
@@ -969,17 +1061,50 @@ func (m model) getSessionPreview(sess sessionItem) string {
 	return preview.String()
 }
 
-func (m model) getTmuxSessionContent(sessionName string) string {
+func (m *model) getTmuxSessionContent(sessionName string) string {
+	// Rate limit tmux calls per session - only update every 2 seconds
+	now := time.Now()
+	lastUpdate, exists := m.tmuxUpdateTimes[sessionName]
+	if exists && now.Sub(lastUpdate) < 2*time.Second {
+		if cached, cacheExists := m.tmuxContentCache[sessionName]; cacheExists {
+			return cached
+		}
+	}
+
+	// Only log tmux fetching in verbose mode, and only when session state changes
+	prevExists, hadState := m.tmuxSessionStates[sessionName]
+	if m.debugLevel >= 2 && (!hadState || !prevExists) {
+		m.debugLogger.Printf("Fetching tmux content for session: %s", sessionName)
+	}
+
 	// Check if tmux session exists
 	checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
 	if err := checkCmd.Run(); err != nil {
-		return "" // Session doesn't exist
+		// Cache the "session doesn't exist" result for 5 seconds to avoid spam
+		noSessionResult := "Session not running"
+		m.tmuxContentCache[sessionName] = noSessionResult
+		m.tmuxUpdateTimes[sessionName] = now
+
+		// Update session state and only log state changes
+		prevExists, hadState := m.tmuxSessionStates[sessionName]
+		m.tmuxSessionStates[sessionName] = false
+
+		// Only log when session state changes or in verbose mode
+		if m.debugMode && (!hadState || prevExists) {
+			m.debugLogger.Printf("tmux session '%s' does not exist: %v", sessionName, err)
+		}
+		return noSessionResult
 	}
 
 	// Try to get the currently active window first
 	activeCmd := exec.Command("tmux", "display-message", "-t", sessionName, "-p", "#{window_index}")
 	activeOutput, err := activeCmd.Output()
 	if err != nil {
+		delete(m.tmuxContentCache, sessionName)
+		delete(m.tmuxUpdateTimes, sessionName)
+		if m.debugMode {
+			m.debugLogger.Printf("Failed to get active window for session '%s': %v", sessionName, err)
+		}
 		return ""
 	}
 
@@ -994,6 +1119,9 @@ func (m model) getTmuxSessionContent(sessionName string) string {
 		captureCmd = exec.Command("tmux", "capture-pane", "-t", target, "-p")
 		output, err = captureCmd.Output()
 		if err != nil {
+			if m.debugMode {
+				m.debugLogger.Printf("Failed to capture pane content for session '%s' target '%s': %v", sessionName, target, err)
+			}
 			return ""
 		}
 	}
@@ -1003,12 +1131,11 @@ func (m model) getTmuxSessionContent(sessionName string) string {
 	// Split into lines
 	lines := strings.Split(content, "\n")
 
-	// Clean up and format the content
-	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	// Clean up and format the content using cached regex
 	var cleanLines []string
 	for _, line := range lines {
 		// Remove ANSI escape sequences for cleaner display
-		cleaned := ansiRegex.ReplaceAllString(line, "")
+		cleaned := m.ansiRegex.ReplaceAllString(line, "")
 		// Don't trim whitespace completely - preserve some formatting
 		if len(strings.TrimSpace(cleaned)) > 0 {
 			cleanLines = append(cleanLines, cleaned)
@@ -1021,6 +1148,7 @@ func (m model) getTmuxSessionContent(sessionName string) string {
 		cleanLines = cleanLines[len(cleanLines)-maxLines:] // Show last N lines
 	}
 
+	result := ""
 	if len(cleanLines) == 0 {
 		// Try to get some basic session info instead
 		var debugInfo strings.Builder
@@ -1046,13 +1174,20 @@ func (m model) getTmuxSessionContent(sessionName string) string {
 		debugInfo.WriteString(fmt.Sprintf("\nRaw content length: %d", len(content)))
 		debugInfo.WriteString(fmt.Sprintf("\nRaw lines: %d", len(lines)))
 
-		return debugInfo.String()
+		result = debugInfo.String()
+	} else {
+		result = strings.Join(cleanLines, "\n")
 	}
 
-	return strings.Join(cleanLines, "\n")
+	// Cache the result, update timestamp, and mark session as existing
+	m.tmuxContentCache[sessionName] = result
+	m.tmuxUpdateTimes[sessionName] = now
+	m.tmuxSessionStates[sessionName] = true
+
+	return result
 }
 
-func (m model) calculateOptimalListWidth() int {
+func (m *model) calculateOptimalListWidth() int {
 	if len(m.sessions) == 0 {
 		return 30 // Minimum width for empty list
 	}
@@ -1083,19 +1218,19 @@ func (m model) calculateOptimalListWidth() int {
 	return optimalWidth
 }
 
-func (m model) refreshPreview() tea.Cmd {
+func (m *model) refreshPreview() tea.Cmd {
 	return tea.Tick(time.Millisecond*500, func(t time.Time) tea.Msg {
 		return refreshPreviewMsg{}
 	})
 }
 
-func (m model) refreshSessions() tea.Cmd {
+func (m *model) refreshSessions() tea.Cmd {
 	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
 		return refreshSessionsMsg{}
 	})
 }
 
-func (m model) checkCaddyHealth() tea.Cmd {
+func (m *model) checkCaddyHealth() tea.Cmd {
 	return func() tea.Msg {
 		// Load sessions
 		store, err := session.LoadSessions()
@@ -1149,18 +1284,18 @@ func (m model) checkCaddyHealth() tea.Cmd {
 	}
 }
 
-func (m model) createView() string {
+func (m *model) createView() string {
 	return headerStyle.Render("Create New Session") + "\n\n" +
 		"  Session name: " + m.textInput.View() + "\n\n" +
 		dimStyle.Render("  Press Enter to create, Esc to cancel")
 }
 
-func (m model) confirmView() string {
+func (m *model) confirmView() string {
 	return headerStyle.Render("Confirm") + "\n\n" +
 		"  " + m.confirmMsg + "\n"
 }
 
-func (m model) hostnamesView() string {
+func (m *model) hostnamesView() string {
 	if len(m.hostnames) == 0 {
 		return headerStyle.Render("Caddy Hostnames") + "\n\n" +
 			"  No hostnames found.\n"
@@ -1182,7 +1317,7 @@ func (m model) hostnamesView() string {
 	return b.String()
 }
 
-func (m model) projectSelectView() string {
+func (m *model) projectSelectView() string {
 	if len(m.projects) == 0 {
 		return headerStyle.Render("Select Project") + "\n\n" +
 			"  No projects found.\n" +
@@ -1213,7 +1348,7 @@ func (m model) projectSelectView() string {
 	return b.String()
 }
 
-func (m model) startSessionCreation() tea.Cmd {
+func (m *model) startSessionCreation() tea.Cmd {
 	// Load projects to see if we need to show project selection
 	return func() tea.Msg {
 		registry, err := config.LoadProjectRegistry()
@@ -1235,24 +1370,72 @@ func (m model) startSessionCreation() tea.Cmd {
 	}
 }
 
-func (m model) attachSession(name string) tea.Cmd {
-	return tea.ExecProcess(attachCmd(name), func(err error) tea.Msg {
+func (m *model) attachSession(name string) tea.Cmd {
+	return func() tea.Msg {
+		m.debugLogger.Printf("Attempting to attach to session: %s", name)
+
+		// First, let's validate the session exists and check its state
+		store, err := session.LoadSessions()
 		if err != nil {
-			return errMsg{err}
+			m.debugLogger.Printf("Failed to load sessions: %v", err)
+			return errMsg{fmt.Errorf("failed to load sessions: %w", err)}
 		}
-		// Reload sessions to update the TUI with cleared flags
-		return refreshSessionsMsg{}
-	})
+
+		sess, exists := store.Sessions[name]
+		if !exists {
+			m.debugLogger.Printf("Session '%s' not found in metadata", name)
+			return errMsg{fmt.Errorf("session '%s' not found", name)}
+		}
+
+		m.debugLogger.Printf("Session '%s' found - Path: %s, Branch: %s, ProjectAlias: %s",
+			name, sess.Path, sess.Branch, sess.ProjectAlias)
+
+		// Check if the worktree path exists
+		if _, err := os.Stat(sess.Path); os.IsNotExist(err) {
+			m.debugLogger.Printf("Session '%s' worktree path does not exist: %s", name, sess.Path)
+			return errMsg{fmt.Errorf("session '%s' worktree missing at %s", name, sess.Path)}
+		}
+
+		// Check if tmux session is already running
+		checkCmd := exec.Command("tmux", "has-session", "-t", name)
+		tmuxExists := checkCmd.Run() == nil
+		m.debugLogger.Printf("Session '%s' tmux status: exists=%t", name, tmuxExists)
+
+		cmd := attachCmd(name)
+		m.debugLogger.Printf("Running attach command: %s %v", cmd.Path, cmd.Args)
+
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				m.debugLogger.Printf("Failed to attach to session '%s': %v", name, err)
+				// Try to get more details about the failure
+				if exitError, ok := err.(*exec.ExitError); ok {
+					m.debugLogger.Printf("Exit code: %d, Stderr: %s", exitError.ExitCode(), string(exitError.Stderr))
+				}
+				return errMsg{fmt.Errorf("failed to attach to session '%s': %w", name, err)}
+			}
+			m.debugLogger.Printf("Successfully attached to session: %s", name)
+			// Reload sessions to update the TUI with cleared flags
+			return refreshSessionsMsg{}
+		})()
+	}
 }
 
-func (m model) createSession(name string) tea.Cmd {
+func (m *model) createSession(name string) tea.Cmd {
 	return func() tea.Msg {
+		m.debugLogger.Printf("Creating session '%s' with project '%s'", name, m.selectedProject)
+
 		// Run the create command with project if selected
 		cmd := createCmd(name, m.selectedProject)
+		m.debugLogger.Printf("Running command: %s %v", cmd.Path, cmd.Args)
+		m.debugLogger.Printf("Working directory: %s", cmd.Dir)
 
 		// Capture output for better error reporting
 		output, err := cmd.CombinedOutput()
 		if err != nil {
+			// Log the full error details
+			m.debugLogger.Printf("Session creation failed for '%s': %v", name, err)
+			m.debugLogger.Printf("Command output: %s", string(output))
+
 			// Include the command output in the error message
 			errorMessage := fmt.Sprintf("failed to create session '%s': %v", name, err)
 			if len(output) > 0 {
@@ -1261,13 +1444,16 @@ func (m model) createSession(name string) tea.Cmd {
 				errorMessage += fmt.Sprintf("\n\nCommand output:\n%s", outputStr)
 			}
 			return errMsg{fmt.Errorf("%s", errorMessage)}
+		} else {
+			m.debugLogger.Printf("Session '%s' created successfully", name)
+			m.debugLogger.Printf("Command output: %s", string(output))
 		}
 
 		return sessionCreatedMsg{sessionName: name}
 	}
 }
 
-func (m model) deleteSession(name string) tea.Cmd {
+func (m *model) deleteSession(name string) tea.Cmd {
 	return func() tea.Msg {
 		// Run the delete command
 		cmd := deleteCmd(name)
@@ -1280,6 +1466,8 @@ func (m model) deleteSession(name string) tea.Cmd {
 
 func attachCmd(name string) *exec.Cmd {
 	cmd := exec.Command("devx", "session", "attach", name)
+	// Set environment for debugging
+	cmd.Env = append(os.Environ(), "DEVX_SESSION_DEBUG=1")
 	return cmd
 }
 
@@ -1306,6 +1494,9 @@ func createCmd(name, project string) *exec.Cmd {
 			cmd.Dir = gitRoot
 		}
 	}
+
+	// Set environment variables that might help with debugging
+	cmd.Env = append(os.Environ(), "DEVX_SESSION_DEBUG=1")
 
 	return cmd
 }
@@ -1338,7 +1529,7 @@ func deleteCmd(name string) *exec.Cmd {
 	return exec.Command("devx", "session", "rm", name, "--force")
 }
 
-func (m model) openRoutes(sessionName string) tea.Cmd {
+func (m *model) openRoutes(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		store, err := session.LoadSessions()
 		if err != nil {
@@ -1379,7 +1570,7 @@ func openURL(url string) error {
 	return cmd.Start()
 }
 
-func (m model) editInEditor(sessionName string) tea.Cmd {
+func (m *model) editInEditor(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		store, err := session.LoadSessions()
 		if err != nil {
@@ -1401,7 +1592,7 @@ func (m model) editInEditor(sessionName string) tea.Cmd {
 	}
 }
 
-func (m model) loadHostnames(sessionName string) tea.Cmd {
+func (m *model) loadHostnames(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		store, err := session.LoadSessions()
 		if err != nil {
@@ -1478,7 +1669,7 @@ func (m model) loadHostnames(sessionName string) tea.Cmd {
 	}
 }
 
-func (m model) openHostname(hostname string) tea.Cmd {
+func (m *model) openHostname(hostname string) tea.Cmd {
 	return func() tea.Msg {
 		url := fmt.Sprintf("http://%s.localhost", hostname)
 		if err := openURL(url); err != nil {
@@ -1488,7 +1679,7 @@ func (m model) openHostname(hostname string) tea.Cmd {
 	}
 }
 
-func (m model) projectManagementView() string {
+func (m *model) projectManagementView() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Project Management") + "\n\n")
 
@@ -1534,14 +1725,14 @@ func (m model) projectManagementView() string {
 	return b.String()
 }
 
-func (m model) projectAddView() string {
+func (m *model) projectAddView() string {
 	return headerStyle.Render("Add Project") + "\n\n" +
 		"  Project path: " + m.textInput.View() + "\n\n" +
 		dimStyle.Render("  Enter the path to a git repository") + "\n" +
 		dimStyle.Render("  Press Enter to add, Esc to cancel")
 }
 
-func (m model) loadProjectsForManagement() tea.Cmd {
+func (m *model) loadProjectsForManagement() tea.Cmd {
 	return func() tea.Msg {
 		registry, err := config.LoadProjectRegistry()
 		if err != nil {
@@ -1580,7 +1771,7 @@ func (m model) loadProjectsForManagement() tea.Cmd {
 	}
 }
 
-func (m model) addProject(path string) tea.Cmd {
+func (m *model) addProject(path string) tea.Cmd {
 	return func() tea.Msg {
 		// Expand tilde if present
 		if strings.HasPrefix(path, "~/") {
@@ -1649,4 +1840,31 @@ func (m model) addProject(path string) tea.Cmd {
 			configNote: configNote,
 		}
 	}
+}
+
+// Performance monitoring methods
+
+func (m *model) logMemoryStats() {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	m.memStatsCount++
+
+	// Calculate differences from last measurement
+	allocDiff := int64(memStats.Alloc) - int64(m.lastMemStats.Alloc)
+	totalAllocDiff := int64(memStats.TotalAlloc) - int64(m.lastMemStats.TotalAlloc)
+	numGCDiff := memStats.NumGC - m.lastMemStats.NumGC
+
+	m.debugLogger.Printf("Memory Stats #%d (Updates: %d):", m.memStatsCount, m.updateCount)
+	m.debugLogger.Printf("  Current Alloc: %d bytes (Δ%+d)", memStats.Alloc, allocDiff)
+	m.debugLogger.Printf("  Total Alloc: %d bytes (Δ%+d)", memStats.TotalAlloc, totalAllocDiff)
+	m.debugLogger.Printf("  Sys: %d bytes", memStats.Sys)
+	m.debugLogger.Printf("  NumGC: %d (Δ%d)", memStats.NumGC, numGCDiff)
+	m.debugLogger.Printf("  Preview rate: %.1f/s, Session rate: %.1f/s",
+		1.0/time.Since(m.lastPreviewRefresh).Seconds(),
+		1.0/time.Since(m.lastSessionRefresh).Seconds())
+	m.debugLogger.Printf("  Goroutines: %d", runtime.NumGoroutine())
+
+	// Store current stats for next comparison
+	m.lastMemStats = memStats
 }
