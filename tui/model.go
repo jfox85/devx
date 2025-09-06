@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,8 @@ type sessionItem struct {
 	attentionFlag   bool
 	attentionReason string
 	attentionTime   time.Time
+	additions       int // Git diff additions count
+	deletions       int // Git diff deletions count
 }
 
 type projectItem struct {
@@ -261,6 +264,9 @@ func (m *model) loadSessions() tea.Msg {
 			}
 		}
 
+		// Get git diff stats for the session
+		additions, deletions := m.getGitDiffStats(sess.Path, sess.Branch)
+
 		sessions = append(sessions, sessionItem{
 			name:            name,
 			projectAlias:    sess.ProjectAlias,
@@ -271,6 +277,8 @@ func (m *model) loadSessions() tea.Msg {
 			attentionFlag:   sess.AttentionFlag,
 			attentionReason: sess.AttentionReason,
 			attentionTime:   sess.AttentionTime,
+			additions:       additions,
+			deletions:       deletions,
 		})
 	}
 
@@ -811,7 +819,7 @@ func (m *model) listView() string {
                         `)
 
 	if len(m.sessions) == 0 {
-		return logo + "\n" + headerStyle.Render("devx Sessions") + "\n\n" +
+		return logo + "\n" + headerStyle.Render("Sessions") + "\n\n" +
 			"  No sessions found.\n\n" +
 			"  Press 'c' to create a new session.\n"
 	}
@@ -819,7 +827,7 @@ func (m *model) listView() string {
 	if !m.showPreview {
 		// Original full-width layout
 		var b strings.Builder
-		b.WriteString(logo + "\n" + headerStyle.Render("devx Sessions") + "\n\n")
+		b.WriteString(logo + "\n" + headerStyle.Render("Sessions") + "\n\n")
 
 		// Show Caddy warning if present
 		if m.caddyWarning != "" {
@@ -876,7 +884,11 @@ func (m *model) listView() string {
 			// Show details for selected session (inline)
 			if m.cursor == i {
 				details := m.getSessionDetails(sess)
-				b.WriteString(dimStyle.Render(details))
+				// Apply dimStyle to each line separately to avoid layout issues
+				lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
+				for _, line := range lines {
+					b.WriteString(dimStyle.Render(line) + "\n")
+				}
 			}
 		}
 
@@ -962,6 +974,18 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 		sess.branch,
 		sess.path)
 
+	// Add git diff stats if there are any changes
+	if sess.additions > 0 || sess.deletions > 0 {
+		var diffParts []string
+		if sess.additions > 0 {
+			diffParts = append(diffParts, additionsStyle.Render(fmt.Sprintf("+%d", sess.additions)))
+		}
+		if sess.deletions > 0 {
+			diffParts = append(diffParts, deletionsStyle.Render(fmt.Sprintf("-%d", sess.deletions)))
+		}
+		details += fmt.Sprintf("    Changes: %s\n", strings.Join(diffParts, " "))
+	}
+
 	if len(sess.ports) > 0 {
 		details += "    Ports:"
 		// Sort ports alphabetically
@@ -1001,6 +1025,18 @@ func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 
 	preview.WriteString(headerStyle.Render(sess.name) + "\n")
 
+	// Always show git diff stats at the top if there are changes
+	if sess.additions > 0 || sess.deletions > 0 {
+		var diffParts []string
+		if sess.additions > 0 {
+			diffParts = append(diffParts, additionsStyle.Render(fmt.Sprintf("+%d", sess.additions)))
+		}
+		if sess.deletions > 0 {
+			diffParts = append(diffParts, deletionsStyle.Render(fmt.Sprintf("-%d", sess.deletions)))
+		}
+		preview.WriteString(fmt.Sprintf("Changes: %s\n", strings.Join(diffParts, " ")))
+	}
+
 	// Show attention reason at the top if flagged
 	if sess.attentionFlag {
 		attentionStyle := lipgloss.NewStyle().
@@ -1024,6 +1060,19 @@ func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 		preview.WriteString(dimStyle.Render("Session not running") + "\n\n")
 
 		preview.WriteString(fmt.Sprintf("Branch: %s\n", sess.branch))
+		
+		// Add git diff stats if there are any changes
+		if sess.additions > 0 || sess.deletions > 0 {
+			var diffParts []string
+			if sess.additions > 0 {
+				diffParts = append(diffParts, fmt.Sprintf("+%d", sess.additions))
+			}
+			if sess.deletions > 0 {
+				diffParts = append(diffParts, fmt.Sprintf("-%d", sess.deletions))
+			}
+			preview.WriteString(fmt.Sprintf("Changes: %s\n", strings.Join(diffParts, " ")))
+		}
+		
 		preview.WriteString(fmt.Sprintf("Path: %s\n\n", sess.path))
 
 		if len(sess.ports) > 0 {
@@ -1200,6 +1249,79 @@ func (m *model) getTmuxSessionContent(sessionName string, maxWidth int) string {
 	m.tmuxSessionStates[sessionName] = true
 
 	return result
+}
+
+// getGitDiffStats fetches git diff statistics for a session's branch compared to its base branch
+func (m *model) getGitDiffStats(sessionPath, branch string) (int, int) {
+	// Skip if path doesn't exist
+	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
+		return 0, 0
+	}
+
+	// Determine base branch - try main, then master, then fallback to origin/main
+	baseBranches := []string{"main", "master", "origin/main", "origin/master"}
+	var baseBranch string
+
+	for _, candidate := range baseBranches {
+		// Check if the branch exists in the repo
+		checkCmd := exec.Command("git", "rev-parse", "--verify", candidate)
+		checkCmd.Dir = sessionPath
+		if err := checkCmd.Run(); err == nil {
+			baseBranch = candidate
+			break
+		}
+	}
+
+	// If no base branch found, skip diff stats
+	if baseBranch == "" {
+		return 0, 0
+	}
+
+	// Skip if we're already on the base branch
+	if branch == baseBranch {
+		return 0, 0
+	}
+
+	// Get diff stats using git diff --numstat
+	cmd := exec.Command("git", "diff", "--numstat", fmt.Sprintf("%s...HEAD", baseBranch))
+	cmd.Dir = sessionPath
+	output, err := cmd.Output()
+	if err != nil {
+		// Log error if debug mode is enabled
+		if m.debugMode {
+			m.debugLogger.Printf("Failed to get git diff stats for %s: %v", sessionPath, err)
+		}
+		return 0, 0
+	}
+
+	// Parse output to calculate total additions and deletions
+	var totalAdditions, totalDeletions int
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			// Parse additions (first field)
+			if additions := strings.TrimSpace(parts[0]); additions != "-" {
+				if add, err := strconv.Atoi(additions); err == nil {
+					totalAdditions += add
+				}
+			}
+
+			// Parse deletions (second field)
+			if deletions := strings.TrimSpace(parts[1]); deletions != "-" {
+				if del, err := strconv.Atoi(deletions); err == nil {
+					totalDeletions += del
+				}
+			}
+		}
+	}
+
+	return totalAdditions, totalDeletions
 }
 
 func (m *model) calculateOptimalListWidth() int {

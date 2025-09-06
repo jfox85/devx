@@ -43,4 +43,10 @@ var (
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("240")).
 				Padding(1, 2)
+
+	additionsStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("2")) // Green
+
+	deletionsStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("1")) // Red
 )
