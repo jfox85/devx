@@ -944,7 +944,7 @@ func (m *model) listView() string {
 	var preview string
 	if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
 		selected := m.sessions[m.cursor]
-		preview = m.getSessionPreview(selected)
+		preview = m.getSessionPreview(selected, previewWidth)
 	} else {
 		preview = dimStyle.Render("No session selected")
 	}
@@ -996,7 +996,7 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 	return details
 }
 
-func (m *model) getSessionPreview(sess sessionItem) string {
+func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 	var preview strings.Builder
 
 	preview.WriteString(headerStyle.Render(sess.name) + "\n")
@@ -1016,7 +1016,7 @@ func (m *model) getSessionPreview(sess sessionItem) string {
 	}
 
 	// Check if tmux session exists and capture its content
-	if tmuxContent := m.getTmuxSessionContent(sess.name); tmuxContent != "" {
+	if tmuxContent := m.getTmuxSessionContent(sess.name, maxWidth); tmuxContent != "" {
 		preview.WriteString(dimStyle.Render("Live tmux session:") + "\n\n")
 		preview.WriteString(tmuxContent)
 	} else {
@@ -1061,7 +1061,7 @@ func (m *model) getSessionPreview(sess sessionItem) string {
 	return preview.String()
 }
 
-func (m *model) getTmuxSessionContent(sessionName string) string {
+func (m *model) getTmuxSessionContent(sessionName string, maxWidth int) string {
 	// Rate limit tmux calls per session - only update every 2 seconds
 	now := time.Now()
 	lastUpdate, exists := m.tmuxUpdateTimes[sessionName]
@@ -1138,6 +1138,21 @@ func (m *model) getTmuxSessionContent(sessionName string) string {
 		cleaned := m.ansiRegex.ReplaceAllString(line, "")
 		// Don't trim whitespace completely - preserve some formatting
 		if len(strings.TrimSpace(cleaned)) > 0 {
+			// Truncate line if it exceeds maxWidth, accounting for border and padding
+			// The preview style has: border (2 chars) + padding (4 chars) = 6 chars total
+			availableWidth := maxWidth - 6
+			if availableWidth > 0 {
+				// Use rune count for proper character width measurement
+				runes := []rune(cleaned)
+				if len(runes) > availableWidth {
+					// Leave space for ellipsis
+					if availableWidth > 3 {
+						cleaned = string(runes[:availableWidth-3]) + "..."
+					} else if availableWidth > 0 {
+						cleaned = string(runes[:availableWidth])
+					}
+				}
+			}
 			cleanLines = append(cleanLines, cleaned)
 		}
 	}
