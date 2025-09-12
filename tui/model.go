@@ -1893,10 +1893,12 @@ func (m *model) loadHostnames(sessionName string) tea.Cmd {
 				for serviceName := range sess.Routes {
 					// Generate hostname based on project and session info
 					dnsServiceName := caddy.NormalizeDNSName(serviceName)
+					// Sanitize session name for hostname compatibility
+					sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
 					if sess.ProjectAlias != "" {
-						hostnames = append(hostnames, fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sess.Name, dnsServiceName))
+						hostnames = append(hostnames, fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sanitizedSessionName, dnsServiceName))
 					} else {
-						hostnames = append(hostnames, fmt.Sprintf("%s-%s", sess.Name, dnsServiceName))
+						hostnames = append(hostnames, fmt.Sprintf("%s-%s", sanitizedSessionName, dnsServiceName))
 					}
 				}
 				sort.Strings(hostnames)
@@ -1915,10 +1917,12 @@ func (m *model) loadHostnames(sessionName string) tea.Cmd {
 				for serviceName := range sess.Routes {
 					// Generate hostname based on project and session info
 					dnsServiceName := caddy.NormalizeDNSName(serviceName)
+					// Sanitize session name for hostname compatibility
+					sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
 					if sess.ProjectAlias != "" {
-						hostnameSet[fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sess.Name, dnsServiceName)] = true
+						hostnameSet[fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sanitizedSessionName, dnsServiceName)] = true
 					} else {
-						hostnameSet[fmt.Sprintf("%s-%s", sess.Name, dnsServiceName)] = true
+						hostnameSet[fmt.Sprintf("%s-%s", sanitizedSessionName, dnsServiceName)] = true
 					}
 				}
 			}

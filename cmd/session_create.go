@@ -228,10 +228,12 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		for serviceName := range routes {
 			// Use the DNS-normalized service name for the hostname
 			dnsServiceName := caddy.NormalizeDNSName(serviceName)
+			// Sanitize session name for hostname compatibility
+			sanitizedSessionName := caddy.SanitizeHostname(name)
 			if projectAlias != "" {
-				hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, name, dnsServiceName)
+				hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
 			} else {
-				hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", name, dnsServiceName)
+				hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
 			}
 		}
 	}

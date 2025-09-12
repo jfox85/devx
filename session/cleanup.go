@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/jfox85/devx/caddy"
 )
 
 // RunCleanupCommand executes the configured cleanup command with session environment variables
@@ -58,7 +60,9 @@ func prepareCleanupEnvironment(sess *Session) []string {
 
 			// Reconstruct the hostname from the route ID
 			// Route IDs are typically in format: "session-service.localhost"
-			hostname := fmt.Sprintf("https://%s-%s.localhost", sess.Name, strings.ToLower(serviceName))
+			// Sanitize session name for hostname compatibility
+			sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
+			hostname := fmt.Sprintf("https://%s-%s.localhost", sanitizedSessionName, strings.ToLower(serviceName))
 			env = append(env, fmt.Sprintf("%s=%s", hostVar, hostname))
 		}
 	}
