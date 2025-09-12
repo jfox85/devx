@@ -74,16 +74,19 @@ func (c *CaddyClient) CreateRouteWithProject(sessionName, serviceName string, po
 		{Dial: fmt.Sprintf("localhost:%d", port)},
 	}
 
+	// Sanitize session name for hostname compatibility
+	sanitizedSessionName := SanitizeHostname(sessionName)
+
 	// Generate hostname with project prefix if provided
-	hostname := fmt.Sprintf("%s-%s.localhost", sessionName, serviceName)
+	hostname := fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, serviceName)
 	if projectAlias != "" {
-		hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sessionName, serviceName)
+		hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, serviceName)
 	}
 
 	// Generate route ID with project prefix if provided
-	routeID := fmt.Sprintf("sess-%s-%s", sessionName, serviceName)
+	routeID := fmt.Sprintf("sess-%s-%s", sanitizedSessionName, serviceName)
 	if projectAlias != "" {
-		routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sessionName, serviceName)
+		routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sanitizedSessionName, serviceName)
 	}
 
 	route := Route{
@@ -151,14 +154,19 @@ func (c *CaddyClient) DeleteSessionRoutes(sessionName string) error {
 		return fmt.Errorf("failed to get routes: %w", err)
 	}
 
+	// Sanitize session name for hostname compatibility
+	sanitizedSessionName := SanitizeHostname(sessionName)
+
 	// Find and delete routes matching the session
-	// Check both with and without project prefix
+	// Check both with and without project prefix, using both original and sanitized session names
 	var errors []string
 
 	for _, route := range routes {
 		// Match routes that contain the session name in the expected pattern
 		// This handles both sess-{session}-{service} and sess-{project}-{session}-{service}
-		if strings.Contains(route.ID, fmt.Sprintf("-%s-", sessionName)) || strings.HasPrefix(route.ID, fmt.Sprintf("sess-%s-", sessionName)) {
+		// Check both original and sanitized session names for backward compatibility
+		if strings.Contains(route.ID, fmt.Sprintf("-%s-", sessionName)) || strings.HasPrefix(route.ID, fmt.Sprintf("sess-%s-", sessionName)) ||
+			strings.Contains(route.ID, fmt.Sprintf("-%s-", sanitizedSessionName)) || strings.HasPrefix(route.ID, fmt.Sprintf("sess-%s-", sanitizedSessionName)) {
 			if err := c.DeleteRoute(route.ID); err != nil {
 				errors = append(errors, fmt.Sprintf("failed to delete route %s: %v", route.ID, err))
 			}

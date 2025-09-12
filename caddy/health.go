@@ -83,14 +83,17 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 			// Normalize service name for DNS compatibility
 			normalizedServiceName := NormalizeDNSName(serviceName)
 
+			// Sanitize session name for hostname compatibility
+			sanitizedSessionName := SanitizeHostname(sessionName)
+
 			// Generate expected route ID and hostname
-			routeID := fmt.Sprintf("sess-%s-%s", sessionName, normalizedServiceName)
-			hostname := fmt.Sprintf("%s-%s.localhost", sessionName, normalizedServiceName)
+			routeID := fmt.Sprintf("sess-%s-%s", sanitizedSessionName, normalizedServiceName)
+			hostname := fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, normalizedServiceName)
 
 			// Handle project prefixes if present
 			if sessionInfo.ProjectAlias != "" {
-				routeID = fmt.Sprintf("sess-%s-%s-%s", sessionInfo.ProjectAlias, sessionName, normalizedServiceName)
-				hostname = fmt.Sprintf("%s-%s-%s.localhost", sessionInfo.ProjectAlias, sessionName, normalizedServiceName)
+				routeID = fmt.Sprintf("sess-%s-%s-%s", sessionInfo.ProjectAlias, sanitizedSessionName, normalizedServiceName)
+				hostname = fmt.Sprintf("%s-%s-%s.localhost", sessionInfo.ProjectAlias, sanitizedSessionName, normalizedServiceName)
 			}
 
 			status := RouteStatus{

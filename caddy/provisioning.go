@@ -12,13 +12,51 @@ func NormalizeDNSName(serviceName string) string {
 	// Convert to lowercase
 	normalized := strings.ToLower(serviceName)
 
-	// Replace underscores with hyphens
+	// Replace underscores and spaces with hyphens
 	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.ReplaceAll(normalized, " ", "-")
 
-	// Remove any non-alphanumeric characters except hyphens
+	// Replace any non-alphanumeric characters with hyphens
 	var result strings.Builder
 	for _, r := range normalized {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else if r != '-' {
+			// Replace any non-alphanumeric character with hyphen
+			result.WriteRune('-')
+		} else {
+			result.WriteRune(r)
+		}
+	}
+
+	// Remove leading/trailing hyphens and collapse multiple hyphens
+	final := strings.Trim(result.String(), "-")
+	for strings.Contains(final, "--") {
+		final = strings.ReplaceAll(final, "--", "-")
+	}
+
+	return final
+}
+
+// SanitizeHostname converts a session name to be hostname-compatible
+func SanitizeHostname(sessionName string) string {
+	// Convert to lowercase
+	normalized := strings.ToLower(sessionName)
+
+	// Replace slashes, underscores, and spaces with hyphens
+	normalized = strings.ReplaceAll(normalized, "/", "-")
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.ReplaceAll(normalized, " ", "-")
+
+	// Replace any non-alphanumeric characters with hyphens
+	var result strings.Builder
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else if r != '-' {
+			// Replace any non-alphanumeric character with hyphen
+			result.WriteRune('-')
+		} else {
 			result.WriteRune(r)
 		}
 	}
@@ -77,6 +115,9 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 	routes := make(map[string]string)
 	var errors []string
 
+	// Sanitize session name for hostname compatibility
+	sanitizedSessionName := SanitizeHostname(sessionName)
+
 	for serviceName, port := range services {
 		// Normalize service name for DNS compatibility
 		dnsServiceName := NormalizeDNSName(serviceName)
@@ -86,23 +127,23 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 			continue
 		}
 
-		_, err := client.CreateRouteWithProject(sessionName, dnsServiceName, port, projectAlias)
+		_, err := client.CreateRouteWithProject(sanitizedSessionName, dnsServiceName, port, projectAlias)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("failed to create route for %s: %v", dnsServiceName, err))
 			continue
 		}
 
 		// Generate route ID with project prefix if provided
-		routeID := fmt.Sprintf("sess-%s-%s", sessionName, dnsServiceName)
+		routeID := fmt.Sprintf("sess-%s-%s", sanitizedSessionName, dnsServiceName)
 		if projectAlias != "" {
-			routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sessionName, dnsServiceName)
+			routeID = fmt.Sprintf("sess-%s-%s-%s", projectAlias, sanitizedSessionName, dnsServiceName)
 		}
 		routes[serviceName] = routeID
 
 		// Generate hostname with project prefix if provided
-		hostname := fmt.Sprintf("%s-%s.localhost", sessionName, dnsServiceName)
+		hostname := fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
 		if projectAlias != "" {
-			hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sessionName, dnsServiceName)
+			hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
 		}
 
 		fmt.Printf("Created route: http://%s -> port %d\n", hostname, port)

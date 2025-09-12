@@ -76,6 +76,77 @@ func TestGetServiceMapping(t *testing.T) {
 	}
 }
 
+func TestSanitizeHostname(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// Basic cases
+		{"simple", "simple"},
+		{"Simple-Case", "simple-case"},
+		{"UPPERCASE", "uppercase"},
+
+		// Slash handling (the main issue)
+		{"codex/add-ui-for-prompt-presets-in-frontend", "codex-add-ui-for-prompt-presets-in-frontend"},
+		{"feature/user-auth", "feature-user-auth"},
+		{"fix/api/endpoint", "fix-api-endpoint"},
+
+		// Multiple slashes
+		{"deep/nested/branch/name", "deep-nested-branch-name"},
+
+		// Underscore handling
+		{"branch_with_underscores", "branch-with-underscores"},
+		{"mix_of/slash_and_underscore", "mix-of-slash-and-underscore"},
+
+		// Special characters
+		{"branch.with.dots", "branch-with-dots"},
+		{"branch@with#special$chars", "branch-with-special-chars"},
+		{"branch with spaces", "branch-with-spaces"},
+
+		// Edge cases
+		{"", ""},
+		{"---multiple---hyphens---", "multiple-hyphens"},
+		{"-leading-and-trailing-", "leading-and-trailing"},
+		{"123-numeric-456", "123-numeric-456"},
+
+		// Complex real-world examples
+		{"feature/auth/oauth2-integration", "feature-auth-oauth2-integration"},
+		{"hotfix/payment_processing/stripe_api", "hotfix-payment-processing-stripe-api"},
+	}
+
+	for _, test := range tests {
+		result := SanitizeHostname(test.input)
+		if result != test.expected {
+			t.Errorf("SanitizeHostname(%q) = %q, expected %q",
+				test.input, result, test.expected)
+		}
+	}
+}
+
+func TestNormalizeDNSName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"simple", "simple"},
+		{"UPPERCASE", "uppercase"},
+		{"with_underscores", "with-underscores"},
+		{"with spaces", "with-spaces"},
+		{"with@special#chars", "with-special-chars"},
+		{"", ""},
+		{"---multiple---hyphens---", "multiple-hyphens"},
+		{"-leading-and-trailing-", "leading-and-trailing"},
+	}
+
+	for _, test := range tests {
+		result := NormalizeDNSName(test.input)
+		if result != test.expected {
+			t.Errorf("NormalizeDNSName(%q) = %q, expected %q",
+				test.input, result, test.expected)
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
