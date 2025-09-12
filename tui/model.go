@@ -96,9 +96,8 @@ type model struct {
 	tmuxContentCache  map[string]string
 	tmuxUpdateTimes   map[string]time.Time
 	tmuxSessionStates map[string]bool // Track if session exists to reduce logging
-	// Git stats caching
-	gitStatsCache           map[string]gitStatsEntry
-	baseBranchCache         map[string]baseBranchEntry
+    // Git stats caching
+    gitStatsCache           map[string]gitStatsEntry
 	gitStatsTTLSelected     time.Duration
 	gitStatsTTLOthers       time.Duration
 	baseBranchTTL           time.Duration
@@ -112,11 +111,6 @@ type gitStatsEntry struct {
 	updatedAt time.Time
 }
 
-// baseBranchEntry memoizes the detected base branch for a repo
-type baseBranchEntry struct {
-	base      string
-	checkedAt time.Time
-}
 
 type keyMap struct {
 	Up          key.Binding
@@ -257,7 +251,6 @@ func InitialModel() *model {
 		lastSessionRefresh:      time.Now(),
 		debugLevel:              debugLevel,
 		gitStatsCache:           make(map[string]gitStatsEntry),
-		baseBranchCache:         make(map[string]baseBranchEntry),
 		gitStatsTTLSelected:     5 * time.Second,
 		gitStatsTTLOthers:       2 * time.Minute,
 		baseBranchTTL:           time.Hour,
@@ -1383,77 +1376,8 @@ func (m *model) getTmuxSessionContent(sessionName string, maxWidth int) string {
 }
 
 // getGitDiffStats fetches git diff statistics for a session's branch compared to its base branch
-func (m *model) getGitDiffStats(sessionPath, branch string) (int, int) {
-	// Skip if path doesn't exist
-	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
-		return 0, 0
-	}
-
-	// Determine base branch - try main, then master, then fallback to origin/main
-	baseBranches := []string{"main", "master", "origin/main", "origin/master"}
-	var baseBranch string
-
-	for _, candidate := range baseBranches {
-		// Check if the branch exists in the repo
-		checkCmd := exec.Command("git", "rev-parse", "--verify", candidate)
-		checkCmd.Dir = sessionPath
-		if err := checkCmd.Run(); err == nil {
-			baseBranch = candidate
-			break
-		}
-	}
-
-	// If no base branch found, skip diff stats
-	if baseBranch == "" {
-		return 0, 0
-	}
-
-	// Skip if we're already on the base branch
-	if branch == baseBranch {
-		return 0, 0
-	}
-
-	// Get diff stats using git diff --numstat
-	cmd := exec.Command("git", "diff", "--numstat", fmt.Sprintf("%s...HEAD", baseBranch))
-	cmd.Dir = sessionPath
-	output, err := cmd.Output()
-	if err != nil {
-		// Log error if debug mode is enabled
-		if m.debugMode {
-			m.debugLogger.Printf("Failed to get git diff stats for %s: %v", sessionPath, err)
-		}
-		return 0, 0
-	}
-
-	// Parse output to calculate total additions and deletions
-	var totalAdditions, totalDeletions int
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			// Parse additions (first field)
-			if additions := strings.TrimSpace(parts[0]); additions != "-" {
-				if add, err := strconv.Atoi(additions); err == nil {
-					totalAdditions += add
-				}
-			}
-
-			// Parse deletions (second field)
-			if deletions := strings.TrimSpace(parts[1]); deletions != "-" {
-				if del, err := strconv.Atoi(deletions); err == nil {
-					totalDeletions += del
-				}
-			}
-		}
-	}
-
-	return totalAdditions, totalDeletions
-}
+// Deprecated: replaced by computeGitStats; remove unused legacy function
+// getGitDiffStats was replaced by computeGitStats; removed to satisfy linters.
 
 func (m *model) calculateOptimalListWidth() int {
 	if len(m.sessions) == 0 {
