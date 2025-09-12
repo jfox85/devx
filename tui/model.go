@@ -96,8 +96,8 @@ type model struct {
 	tmuxContentCache  map[string]string
 	tmuxUpdateTimes   map[string]time.Time
 	tmuxSessionStates map[string]bool // Track if session exists to reduce logging
-    // Git stats caching
-    gitStatsCache           map[string]gitStatsEntry
+	// Git stats caching
+	gitStatsCache           map[string]gitStatsEntry
 	gitStatsTTLSelected     time.Duration
 	gitStatsTTLOthers       time.Duration
 	baseBranchTTL           time.Duration
@@ -110,7 +110,6 @@ type gitStatsEntry struct {
 	deletions int
 	updatedAt time.Time
 }
-
 
 type keyMap struct {
 	Up          key.Binding
