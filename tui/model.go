@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jfox85/devx/caddy"
+	"github.com/jfox85/devx/claude"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 )
@@ -30,9 +32,12 @@ type sessionItem struct {
 	branch          string
 	path            string
 	ports           map[string]int
+	routes          map[string]string
 	attentionFlag   bool
 	attentionReason string
 	attentionTime   time.Time
+	additions       int // Git diff additions count
+	deletions       int // Git diff deletions count
 }
 
 type projectItem struct {
@@ -91,22 +96,36 @@ type model struct {
 	tmuxContentCache  map[string]string
 	tmuxUpdateTimes   map[string]time.Time
 	tmuxSessionStates map[string]bool // Track if session exists to reduce logging
+	// Git stats caching
+	gitStatsCache           map[string]gitStatsEntry
+	gitStatsTTLSelected     time.Duration
+	gitStatsTTLOthers       time.Duration
+	baseBranchTTL           time.Duration
+	maxStatsUpdatesPerCycle int
+}
+
+// gitStatsEntry holds cached additions/deletions for a repo+branch
+type gitStatsEntry struct {
+	additions int
+	deletions int
+	updatedAt time.Time
 }
 
 type keyMap struct {
-	Up        key.Binding
-	Down      key.Binding
-	Enter     key.Binding
-	Create    key.Binding
-	Delete    key.Binding
-	Open      key.Binding
-	Edit      key.Binding
-	Hostnames key.Binding
-	Projects  key.Binding
-	Preview   key.Binding
-	Quit      key.Binding
-	Help      key.Binding
-	Back      key.Binding
+	Up          key.Binding
+	Down        key.Binding
+	Enter       key.Binding
+	Create      key.Binding
+	Delete      key.Binding
+	Open        key.Binding
+	Edit        key.Binding
+	Hostnames   key.Binding
+	Projects    key.Binding
+	Preview     key.Binding
+	ClaudeHooks key.Binding
+	Quit        key.Binding
+	Help        key.Binding
+	Back        key.Binding
 }
 
 var keys = keyMap{
@@ -149,6 +168,10 @@ var keys = keyMap{
 	Preview: key.NewBinding(
 		key.WithKeys("p"),
 		key.WithHelp("p", "toggle preview"),
+	),
+	ClaudeHooks: key.NewBinding(
+		key.WithKeys("C"),
+		key.WithHelp("C", "init Claude hooks"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
@@ -209,23 +232,28 @@ func InitialModel() *model {
 	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 	m := model{
-		sessions:           []sessionItem{},
-		state:              stateList,
-		help:               help.New(),
-		keys:               keys,
-		textInput:          ti,
-		showPreview:        true, // Enable preview by default
-		width:              80,   // Default width
-		height:             24,   // Default height
-		debugMode:          debugMode,
-		debugLogger:        debugLogger,
-		ansiRegex:          ansiRegex,
-		tmuxContentCache:   make(map[string]string),
-		tmuxUpdateTimes:    make(map[string]time.Time),
-		tmuxSessionStates:  make(map[string]bool),
-		lastPreviewRefresh: time.Now(),
-		lastSessionRefresh: time.Now(),
-		debugLevel:         debugLevel,
+		sessions:                []sessionItem{},
+		state:                   stateList,
+		help:                    help.New(),
+		keys:                    keys,
+		textInput:               ti,
+		showPreview:             true, // Enable preview by default
+		width:                   80,   // Default width
+		height:                  24,   // Default height
+		debugMode:               debugMode,
+		debugLogger:             debugLogger,
+		ansiRegex:               ansiRegex,
+		tmuxContentCache:        make(map[string]string),
+		tmuxUpdateTimes:         make(map[string]time.Time),
+		tmuxSessionStates:       make(map[string]bool),
+		lastPreviewRefresh:      time.Now(),
+		lastSessionRefresh:      time.Now(),
+		debugLevel:              debugLevel,
+		gitStatsCache:           make(map[string]gitStatsEntry),
+		gitStatsTTLSelected:     5 * time.Second,
+		gitStatsTTLOthers:       2 * time.Minute,
+		baseBranchTTL:           time.Hour,
+		maxStatsUpdatesPerCycle: 5,
 	}
 
 	if debugMode {
@@ -253,6 +281,8 @@ func (m *model) loadSessions() tea.Msg {
 	}
 
 	sessions := make([]sessionItem, 0, len(store.Sessions))
+
+	// Note: selected session staleness is handled after sessions are loaded in Update
 	for name, sess := range store.Sessions {
 		projectName := sess.ProjectAlias // Default to alias
 		if sess.ProjectAlias != "" {
@@ -261,6 +291,9 @@ func (m *model) loadSessions() tea.Msg {
 			}
 		}
 
+		// Defer filling git stats until Update (avoid concurrent map access)
+		additions, deletions := 0, 0
+
 		sessions = append(sessions, sessionItem{
 			name:            name,
 			projectAlias:    sess.ProjectAlias,
@@ -268,9 +301,12 @@ func (m *model) loadSessions() tea.Msg {
 			branch:          sess.Branch,
 			path:            sess.Path,
 			ports:           sess.Ports,
+			routes:          sess.Routes,
 			attentionFlag:   sess.AttentionFlag,
 			attentionReason: sess.AttentionReason,
 			attentionTime:   sess.AttentionTime,
+			additions:       additions,
+			deletions:       deletions,
 		})
 	}
 
@@ -360,8 +396,18 @@ type attachToNewSessionMsg struct {
 }
 type refreshPreviewMsg struct{}
 type refreshSessionsMsg struct{}
+type gitStatsMsg struct {
+	key         string
+	additions   int
+	deletions   int
+	sessionName string
+}
 type caddyHealthMsg struct {
 	warning string
+}
+type claudeHooksMsg struct {
+	success bool
+	message string
 }
 
 func (e errMsg) Error() string { return e.err.Error() }
@@ -634,6 +680,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = stateConfirm
 					return m, nil
 				}
+
+			case key.Matches(msg, m.keys.ClaudeHooks):
+				// Initialize Claude hooks for current working directory
+				return m, m.initClaudeHooks()
 			}
 
 		case stateProjectAdd:
@@ -662,6 +712,67 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.cursor < 0 {
 			m.cursor = 0
+		}
+
+		// Apply cached git stats to the in-memory sessions (safe in Update loop)
+		for i := range m.sessions {
+			key := m.statsKey(m.sessions[i].path, m.sessions[i].branch)
+			if entry, ok := m.gitStatsCache[key]; ok {
+				m.sessions[i].additions = entry.additions
+				m.sessions[i].deletions = entry.deletions
+			}
+		}
+
+		// Schedule background git stats updates with TTLs (selected prioritized)
+		var cmds []tea.Cmd
+		now := time.Now()
+		var selectedName string
+		if len(m.sessions) > 0 && m.cursor >= 0 && m.cursor < len(m.sessions) {
+			selectedName = m.sessions[m.cursor].name
+		}
+
+		// Helper to check staleness
+		isStale := func(path, branch, name string) bool {
+			key := m.statsKey(path, branch)
+			entry, ok := m.gitStatsCache[key]
+			if !ok {
+				return true
+			}
+			ttl := m.gitStatsTTLOthers
+			if name == selectedName {
+				ttl = m.gitStatsTTLSelected
+			}
+			return now.Sub(entry.updatedAt) > ttl
+		}
+
+		// Always try to refresh selected if stale
+		updates := 0
+		if selectedName != "" {
+			sel := m.sessions[m.cursor]
+			if isStale(sel.path, sel.branch, sel.name) {
+				cmds = append(cmds, m.queueGitStats(sel.path, sel.branch, sel.name))
+				updates++
+			}
+		}
+
+		// Refresh a limited number of other stale sessions
+		for i := range m.sessions {
+			if updates >= m.maxStatsUpdatesPerCycle {
+				break
+			}
+			// Skip selected (already handled)
+			if selectedName != "" && m.sessions[i].name == selectedName {
+				continue
+			}
+			s := m.sessions[i]
+			if isStale(s.path, s.branch, s.name) {
+				cmds = append(cmds, m.queueGitStats(s.path, s.branch, s.name))
+				updates++
+			}
+		}
+
+		if len(cmds) > 0 {
+			return m, tea.Batch(cmds...)
 		}
 
 	case hostnamesLoadedMsg:
@@ -726,8 +837,32 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastSessionRefresh = time.Now()
 		return m, tea.Batch(m.loadSessions, m.refreshSessions())
 
+	case gitStatsMsg:
+		// Update cache
+		m.gitStatsCache[msg.key] = gitStatsEntry{additions: msg.additions, deletions: msg.deletions, updatedAt: time.Now()}
+		// Update the in-memory sessions list for immediate UI feedback
+		for i := range m.sessions {
+			if m.sessions[i].name == msg.sessionName {
+				m.sessions[i].additions = msg.additions
+				m.sessions[i].deletions = msg.deletions
+				break
+			}
+		}
+		return m, nil
+
 	case caddyHealthMsg:
 		m.caddyWarning = msg.warning
+
+	case claudeHooksMsg:
+		if msg.success {
+			m.statusMsg = msg.message
+			m.debugLogger.Printf("Claude hooks initialized successfully")
+		} else {
+			m.err = fmt.Errorf(msg.message)
+			m.debugLogger.Printf("Claude hooks initialization failed: %s", msg.message)
+		}
+		// No need to reload project data - just update the UI
+		return m, nil
 
 	case errMsg:
 		m.err = msg.err
@@ -790,7 +925,7 @@ func (m *model) View() string {
 		case stateHostnames:
 			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: open in browser • esc: back • q: quit")
 		case stateProjectManagement:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • c: add project • d: remove project • esc: back • q: quit")
+			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • c: add project • d: remove project • C: init Claude hooks • esc: back • q: quit")
 		case stateProjectAdd:
 			footer = footerStyle.Width(m.width).Render("enter: add project • esc: cancel")
 		}
@@ -823,7 +958,7 @@ func (m *model) listView() string {
                         `)
 
 	if len(m.sessions) == 0 {
-		return logo + "\n" + headerStyle.Render("devx Sessions") + "\n\n" +
+		return logo + "\n" + headerStyle.Render("Sessions") + "\n\n" +
 			"  No sessions found.\n\n" +
 			"  Press 'c' to create a new session.\n"
 	}
@@ -831,7 +966,7 @@ func (m *model) listView() string {
 	if !m.showPreview {
 		// Original full-width layout
 		var b strings.Builder
-		b.WriteString(logo + "\n" + headerStyle.Render("devx Sessions") + "\n\n")
+		b.WriteString(logo + "\n" + headerStyle.Render("Sessions") + "\n\n")
 
 		// Show Caddy warning if present
 		if m.caddyWarning != "" {
@@ -888,7 +1023,11 @@ func (m *model) listView() string {
 			// Show details for selected session (inline)
 			if m.cursor == i {
 				details := m.getSessionDetails(sess)
-				b.WriteString(dimStyle.Render(details))
+				// Apply dimStyle to each line separately to avoid layout issues
+				lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
+				for _, line := range lines {
+					b.WriteString(dimStyle.Render(line) + "\n")
+				}
 			}
 		}
 
@@ -956,7 +1095,7 @@ func (m *model) listView() string {
 	var preview string
 	if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
 		selected := m.sessions[m.cursor]
-		preview = m.getSessionPreview(selected)
+		preview = m.getSessionPreview(selected, previewWidth)
 	} else {
 		preview = dimStyle.Render("No session selected")
 	}
@@ -974,6 +1113,18 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 		sess.branch,
 		sess.path)
 
+	// Add git diff stats if there are any changes
+	if sess.additions > 0 || sess.deletions > 0 {
+		var diffParts []string
+		if sess.additions > 0 {
+			diffParts = append(diffParts, additionsStyle.Render(fmt.Sprintf("+%d", sess.additions)))
+		}
+		if sess.deletions > 0 {
+			diffParts = append(diffParts, deletionsStyle.Render(fmt.Sprintf("-%d", sess.deletions)))
+		}
+		details += fmt.Sprintf("    Changes: %s\n", strings.Join(diffParts, " "))
+	}
+
 	if len(sess.ports) > 0 {
 		details += "    Ports:"
 		// Sort ports alphabetically
@@ -988,30 +1139,40 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 		details += "\n"
 	}
 
-	// Show Caddy routes
-	if sessionStore, err := session.LoadSessions(); err == nil {
-		if sessionData, exists := sessionStore.Sessions[sess.name]; exists && len(sessionData.Routes) > 0 {
-			details += "    Routes:\n"
-			// Sort routes alphabetically
-			var routeServices []string
-			for service := range sessionData.Routes {
-				routeServices = append(routeServices, service)
-			}
-			sort.Strings(routeServices)
-			for _, service := range routeServices {
-				url := fmt.Sprintf("http://%s.localhost", sessionData.Routes[service])
-				details += fmt.Sprintf("      %s: %s\n", service, url)
-			}
+	// Show Caddy routes (from already loaded session data)
+	if len(sess.routes) > 0 {
+		details += "    Routes:\n"
+		// Sort routes alphabetically
+		var routeServices []string
+		for service := range sess.routes {
+			routeServices = append(routeServices, service)
+		}
+		sort.Strings(routeServices)
+		for _, service := range routeServices {
+			url := fmt.Sprintf("http://%s.localhost", sess.routes[service])
+			details += fmt.Sprintf("      %s: %s\n", service, url)
 		}
 	}
 
 	return details
 }
 
-func (m *model) getSessionPreview(sess sessionItem) string {
+func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 	var preview strings.Builder
 
 	preview.WriteString(headerStyle.Render(sess.name) + "\n")
+
+	// Always show git diff stats at the top if there are changes
+	if sess.additions > 0 || sess.deletions > 0 {
+		var diffParts []string
+		if sess.additions > 0 {
+			diffParts = append(diffParts, additionsStyle.Render(fmt.Sprintf("+%d", sess.additions)))
+		}
+		if sess.deletions > 0 {
+			diffParts = append(diffParts, deletionsStyle.Render(fmt.Sprintf("-%d", sess.deletions)))
+		}
+		preview.WriteString(fmt.Sprintf("Changes: %s\n", strings.Join(diffParts, " ")))
+	}
 
 	// Show attention reason at the top if flagged
 	if sess.attentionFlag {
@@ -1028,7 +1189,7 @@ func (m *model) getSessionPreview(sess sessionItem) string {
 	}
 
 	// Check if tmux session exists and capture its content
-	if tmuxContent := m.getTmuxSessionContent(sess.name); tmuxContent != "" {
+	if tmuxContent := m.getTmuxSessionContent(sess.name, maxWidth); tmuxContent != "" {
 		preview.WriteString(dimStyle.Render("Live tmux session:") + "\n\n")
 		preview.WriteString(tmuxContent)
 	} else {
@@ -1036,6 +1197,19 @@ func (m *model) getSessionPreview(sess sessionItem) string {
 		preview.WriteString(dimStyle.Render("Session not running") + "\n\n")
 
 		preview.WriteString(fmt.Sprintf("Branch: %s\n", sess.branch))
+
+		// Add git diff stats if there are any changes
+		if sess.additions > 0 || sess.deletions > 0 {
+			var diffParts []string
+			if sess.additions > 0 {
+				diffParts = append(diffParts, fmt.Sprintf("+%d", sess.additions))
+			}
+			if sess.deletions > 0 {
+				diffParts = append(diffParts, fmt.Sprintf("-%d", sess.deletions))
+			}
+			preview.WriteString(fmt.Sprintf("Changes: %s\n", strings.Join(diffParts, " ")))
+		}
+
 		preview.WriteString(fmt.Sprintf("Path: %s\n\n", sess.path))
 
 		if len(sess.ports) > 0 {
@@ -1052,20 +1226,18 @@ func (m *model) getSessionPreview(sess sessionItem) string {
 			preview.WriteString("\n")
 		}
 
-		// Show Caddy routes
-		if sessionStore, err := session.LoadSessions(); err == nil {
-			if sessionData, exists := sessionStore.Sessions[sess.name]; exists && len(sessionData.Routes) > 0 {
-				preview.WriteString("Routes:\n")
-				// Sort routes alphabetically
-				var routeServices []string
-				for service := range sessionData.Routes {
-					routeServices = append(routeServices, service)
-				}
-				sort.Strings(routeServices)
-				for _, service := range routeServices {
-					url := fmt.Sprintf("http://%s.localhost", sessionData.Routes[service])
-					preview.WriteString(fmt.Sprintf("  %s: %s\n", service, url))
-				}
+		// Show Caddy routes (from already loaded session data)
+		if len(sess.routes) > 0 {
+			preview.WriteString("Routes:\n")
+			// Sort routes alphabetically
+			var routeServices []string
+			for service := range sess.routes {
+				routeServices = append(routeServices, service)
+			}
+			sort.Strings(routeServices)
+			for _, service := range routeServices {
+				url := fmt.Sprintf("http://%s.localhost", sess.routes[service])
+				preview.WriteString(fmt.Sprintf("  %s: %s\n", service, url))
 			}
 		}
 	}
@@ -1073,7 +1245,7 @@ func (m *model) getSessionPreview(sess sessionItem) string {
 	return preview.String()
 }
 
-func (m *model) getTmuxSessionContent(sessionName string) string {
+func (m *model) getTmuxSessionContent(sessionName string, maxWidth int) string {
 	// Rate limit tmux calls per session - only update every 2 seconds
 	now := time.Now()
 	lastUpdate, exists := m.tmuxUpdateTimes[sessionName]
@@ -1150,6 +1322,21 @@ func (m *model) getTmuxSessionContent(sessionName string) string {
 		cleaned := m.ansiRegex.ReplaceAllString(line, "")
 		// Don't trim whitespace completely - preserve some formatting
 		if len(strings.TrimSpace(cleaned)) > 0 {
+			// Truncate line if it exceeds maxWidth, accounting for border and padding
+			// The preview style has: border (2 chars) + padding (4 chars) = 6 chars total
+			availableWidth := maxWidth - 6
+			if availableWidth > 0 {
+				// Use rune count for proper character width measurement
+				runes := []rune(cleaned)
+				if len(runes) > availableWidth {
+					// Leave space for ellipsis
+					if availableWidth > 3 {
+						cleaned = string(runes[:availableWidth-3]) + "..."
+					} else if availableWidth > 0 {
+						cleaned = string(runes[:availableWidth])
+					}
+				}
+			}
 			cleanLines = append(cleanLines, cleaned)
 		}
 	}
@@ -1199,6 +1386,10 @@ func (m *model) getTmuxSessionContent(sessionName string) string {
 	return result
 }
 
+// getGitDiffStats fetches git diff statistics for a session's branch compared to its base branch
+// Deprecated: replaced by computeGitStats; remove unused legacy function
+// getGitDiffStats was replaced by computeGitStats; removed to satisfy linters.
+
 func (m *model) calculateOptimalListWidth() int {
 	if len(m.sessions) == 0 {
 		return 30 // Minimum width for empty list
@@ -1240,6 +1431,81 @@ func (m *model) refreshSessions() tea.Cmd {
 	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
 		return refreshSessionsMsg{}
 	})
+}
+
+// statsKey builds a cache key for a repo path and branch
+func (m *model) statsKey(path, branch string) string {
+	return path + "|" + branch
+}
+
+// getBaseBranchCached resolves the base branch for a repo with caching
+func (m *model) getBaseBranchCached(sessionPath string) (string, error) {
+	// Do not access shared caches from background goroutines; perform a direct check.
+	baseBranches := []string{"main", "master", "origin/main", "origin/master"}
+	for _, candidate := range baseBranches {
+		checkCmd := exec.Command("git", "rev-parse", "--verify", candidate)
+		checkCmd.Dir = sessionPath
+		if err := checkCmd.Run(); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", nil
+}
+
+// computeGitStats runs git and totals additions/deletions with base-branch memoization
+func (m *model) computeGitStats(sessionPath, branch string) (int, int, error) {
+	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
+		return 0, 0, nil
+	}
+
+	baseBranch, err := m.getBaseBranchCached(sessionPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	if baseBranch == "" || branch == baseBranch {
+		return 0, 0, nil
+	}
+
+	cmd := exec.Command("git", "diff", "--numstat", fmt.Sprintf("%s...HEAD", baseBranch))
+	cmd.Dir = sessionPath
+	output, err := cmd.Output()
+	if err != nil {
+		if m.debugMode {
+			m.debugLogger.Printf("Failed to get git diff stats for %s: %v", sessionPath, err)
+		}
+		return 0, 0, nil
+	}
+
+	var totalAdditions, totalDeletions int
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			if additions := strings.TrimSpace(parts[0]); additions != "-" {
+				if add, err := strconv.Atoi(additions); err == nil {
+					totalAdditions += add
+				}
+			}
+			if deletions := strings.TrimSpace(parts[1]); deletions != "-" {
+				if del, err := strconv.Atoi(deletions); err == nil {
+					totalDeletions += del
+				}
+			}
+		}
+	}
+	return totalAdditions, totalDeletions, nil
+}
+
+// queueGitStats returns a Cmd that computes stats and emits a gitStatsMsg
+func (m *model) queueGitStats(path, branch, sessionName string) tea.Cmd {
+	key := m.statsKey(path, branch)
+	return func() tea.Msg {
+		add, del, _ := m.computeGitStats(path, branch)
+		return gitStatsMsg{key: key, additions: add, deletions: del, sessionName: sessionName}
+	}
 }
 
 func (m *model) checkCaddyHealth() tea.Cmd {
@@ -1887,4 +2153,56 @@ func (m *model) logMemoryStats() {
 
 	// Store current stats for next comparison
 	m.lastMemStats = memStats
+}
+
+func (m *model) initClaudeHooks() tea.Cmd {
+	return func() tea.Msg {
+		// Get current working directory
+		projectPath, err := os.Getwd()
+		if err != nil {
+			return claudeHooksMsg{
+				success: false,
+				message: fmt.Sprintf("Failed to get current directory: %v", err),
+			}
+		}
+
+		// Check if hooks are already installed
+		hooksInstalled, err := claude.CheckHooksStatus(projectPath)
+		if err != nil {
+			return claudeHooksMsg{
+				success: false,
+				message: fmt.Sprintf("Failed to check hooks status: %v", err),
+			}
+		}
+
+		if hooksInstalled {
+			return claudeHooksMsg{
+				success: true,
+				message: "Claude hooks are already installed and configured correctly",
+			}
+		}
+
+		// Install the hooks
+		result, err := claude.InstallHooks(projectPath, false, true)
+		if err != nil {
+			return claudeHooksMsg{
+				success: false,
+				message: fmt.Sprintf("Failed to install hooks: %v", err),
+			}
+		}
+
+		var message string
+		if result.Created {
+			message = "Claude hooks installed successfully"
+		} else if result.Updated {
+			message = "Claude hooks updated successfully"
+		} else {
+			message = result.Message
+		}
+
+		return claudeHooksMsg{
+			success: true,
+			message: message,
+		}
+	}
 }
