@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [ main, master, 'jf-*' ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
 
@@ -135,12 +134,3 @@ jobs:
         name: binaries
         path: dist/*
         retention-days: 7
-    
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: softprops/action-gh-release@v2
-      with:
-        files: dist/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
