@@ -36,7 +36,7 @@ A macOS CLI tool for managing local development environments with Git worktrees,
 ### Homebrew (macOS & Linux)
 
 ```bash
-brew tap toneclone/toneclone
+brew tap jfox85/homebrew-devx
 brew install devx
 ```
 
