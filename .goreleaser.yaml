@@ -1,3 +1,4 @@
+version: 2
 project_name: devx
 before:
   hooks:
@@ -22,19 +23,11 @@ builds:
       - -X github.com/jfox85/devx/version.BuildDate={{.Date}}
 
 archives:
-  - format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md
-    strip_parent_binary_folder: true
     wrap_in_directory: false
-
-checksums:
-  name_template: "checksums.txt"
-
-snapshot:
-  name_template: "{{ .Tag }}-SNAPSHOT"
 
 changelog:
   use: git
@@ -47,16 +40,14 @@ brews:
     commit_author:
       name: devx-bot
       email: devx@jonefox.com
-    tap:
+    repository:
       owner: jfox85
       name: homebrew-devx
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     test: |
       system "#{bin}/devx", "--version"
     install: |
       bin.install "devx"
-    dependencies:
-      - name: go
-        type: optional
 
 announce:
   skip: true
