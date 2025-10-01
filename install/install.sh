@@ -61,7 +61,8 @@ else
   fi
 fi
 
-asset="devx_${VERSION}_${os}_${arch}.tar.gz"
+asset_version="${VERSION#v}"
+asset="devx_${asset_version}_${os}_${arch}.tar.gz"
 url="https://github.com/${REPO}/releases/download/${VERSION}/${asset}"
 
 workdir="$(mktemp -d)"

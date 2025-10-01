@@ -45,11 +45,11 @@ brews:
     description: "A macOS development environment manager"
     license: "MIT"
     commit_author:
-      name: toneclone-bot
-      email: opensource@toneclone.dev
+      name: devx-bot
+      email: devx@jonefox.com
     tap:
-      owner: toneclone
-      name: toneclone
+      owner: jfox85
+      name: homebrew-devx
     test: |
       system "#{bin}/devx", "--version"
     install: |
