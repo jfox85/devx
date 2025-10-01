@@ -19,8 +19,14 @@ func TestUpdateCheckStatePersistence(t *testing.T) {
 
 	// Change working directory to temp dir so FindProjectConfigDir doesn't find the real .devx
 	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Failed to change directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(originalWd); err != nil {
+			t.Errorf("Failed to restore directory: %v", err)
+		}
+	}()
 
 	// Test saving and loading
 	state := &UpdateCheckState{
@@ -105,8 +111,14 @@ func TestLoadUpdateCheckStateNonExistent(t *testing.T) {
 
 	// Change working directory to temp dir so FindProjectConfigDir doesn't find the real .devx
 	originalWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(originalWd)
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Failed to change directory: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(originalWd); err != nil {
+			t.Errorf("Failed to restore directory: %v", err)
+		}
+	}()
 
 	// Should return empty state for non-existent file
 	state, err := LoadUpdateCheckState()

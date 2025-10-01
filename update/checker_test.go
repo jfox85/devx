@@ -71,8 +71,14 @@ func TestShouldNotifyUser(t *testing.T) {
 			defer os.Setenv("HOME", originalHome)
 
 			originalWd, _ := os.Getwd()
-			os.Chdir(tempDir)
-			defer os.Chdir(originalWd)
+			if err := os.Chdir(tempDir); err != nil {
+				t.Fatalf("Failed to change directory: %v", err)
+			}
+			defer func() {
+				if err := os.Chdir(originalWd); err != nil {
+					t.Errorf("Failed to restore directory: %v", err)
+				}
+			}()
 
 			// Setup: Save a test state
 			state := &config.UpdateCheckState{
