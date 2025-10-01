@@ -35,7 +35,7 @@ changelog:
 brews:
   - name: devx
     homepage: https://github.com/jfox85/devx
-    description: "A macOS development environment manager"
+    description: "macOS development environment manager with Git worktrees and tmux"
     license: "MIT"
     commit_author:
       name: devx-bot
@@ -45,7 +45,7 @@ brews:
       name: homebrew-devx
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     test: |
-      system "#{bin}/devx", "--version"
+      system bin/"devx", "--version"
     install: |
       bin.install "devx"
 
