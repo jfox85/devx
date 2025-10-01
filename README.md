@@ -33,6 +33,39 @@ A macOS CLI tool for managing local development environments with Git worktrees,
 
 ## Installation
 
+### Homebrew (macOS & Linux)
+
+```bash
+brew tap jfox85/homebrew-devx
+brew install devx
+```
+
+### go install (requires Go 1.22+)
+
+```bash
+go install github.com/jfox85/devx@latest
+```
+
+### Universal install script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jfox85/devx/main/install/install.sh | bash
+```
+
+Set `DEVX_INSTALL_DIR` or `DEVX_VERSION` to customize the installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jfox85/devx/main/install/install.sh \
+  | DEVX_INSTALL_DIR=$HOME/.local/bin DEVX_VERSION=v1.2.3 bash
+```
+
+### Direct binary download
+
+Download the appropriate archive from the [releases page](https://github.com/jfox85/devx/releases), extract it, and move the
+`devx` binary into your `PATH`.
+
+### Build from source
+
 ```bash
 git clone https://github.com/jfox85/devx
 cd devx
@@ -41,7 +74,7 @@ make build
 mv devx /usr/local/bin/
 ```
 
-**Alternative installation methods:**
+**Alternative build targets:**
 ```bash
 # Development build (no version info)
 make dev
