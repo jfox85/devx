@@ -1,0 +1,62 @@
+project_name: devx
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: devx
+    main: ./main.go
+    binary: devx
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/jfox85/devx/version.Version={{.Version}}
+      - -X github.com/jfox85/devx/version.GitCommit={{.ShortCommit}}
+      - -X github.com/jfox85/devx/version.BuildDate={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+    strip_parent_binary_folder: true
+    wrap_in_directory: false
+
+checksums:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-SNAPSHOT"
+
+changelog:
+  use: git
+
+brews:
+  - name: devx
+    homepage: https://github.com/jfox85/devx
+    description: "A macOS development environment manager"
+    license: "MIT"
+    commit_author:
+      name: toneclone-bot
+      email: opensource@toneclone.dev
+    tap:
+      owner: toneclone
+      name: toneclone
+    test: |
+      system "#{bin}/devx", "--version"
+    install: |
+      bin.install "devx"
+    dependencies:
+      - name: go
+        type: optional
+
+announce:
+  skip: true
