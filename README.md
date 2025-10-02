@@ -1,23 +1,38 @@
 # devx
 
-A macOS CLI tool for managing local development environments with Git worktrees, automatic port allocation, and tmux session management.
+**Develop multiple features in parallel with instant switching and zero port conflicts.**
+
+devx is a terminal-based development environment manager that makes it trivial to work on multiple features simultaneously. Each session gets its own git worktree, unique ports, HTTPS hostnames via Caddy, and tmux session—all managed through an interactive TUI or CLI.
+
+Browse all your sessions at a glance, see their real-time status, and switch between them instantly. No more stashing changes, juggling ports, or losing context. Just lightweight, isolated environments that spin up in seconds.
+
+Built on battle-tested open tools (tmuxp, Caddy, direnv) with powerful configuration options—use the defaults or customize every detail.
 
 ## Features
 
-- **Interactive TUI**: Beautiful terminal interface for browsing and managing sessions
-- **Live Session Preview**: Real-time view of tmux session content in the TUI
-- **Attention Flags**: Visual notifications when sessions need attention (perfect for Claude Code integration)
-- **Git Worktree Management**: Create isolated development environments with separate branches
-- **Dynamic Port Allocation**: Automatically allocate unique ports for your services
-- **Environment Configuration**: Generate `.envrc` files with port assignments and session variables
-- **tmux Integration**: Launch preconfigured tmux sessions with multiple windows
-- **Editor Integration**: Automatically launch your preferred editor (Cursor, VS Code, etc.) with session folders
-- **Session Management**: List, attach to, and remove development sessions with full cleanup
-- **Configurable Templates**: Customize tmux layouts and port names without recompiling
-- **Session Persistence**: Track and manage multiple development sessions with metadata
-- **Caddy HTTP Integration**: Automatic HTTP proxy routes for .localhost domains
-- **Caddy Health Monitoring**: Built-in diagnostics and automatic repair for routing issues
-- **Dependency Checking**: Automatic validation of required tools with installation guidance
+### Terminal Interface
+- **Interactive TUI**: Browse all sessions, see real-time tmux previews, and manage everything with keyboard shortcuts
+- **Live Session Preview**: Watch your tmux sessions update in real-time without attaching
+- **Attention Flags**: Mark sessions that need review (perfect for AI coding workflows)
+- **Quick Switching**: Jump between sessions instantly—no stashing, no context loss
+
+### Parallel Development
+- **Git Worktrees**: Each session is an isolated worktree with its own branch
+- **Zero Port Conflicts**: Automatic unique port allocation per session
+- **HTTPS Hostnames**: Caddy integration gives each service a `.localhost` domain (e.g., `https://my-feature-api.localhost`)
+- **Environment Variables**: Auto-generated `.envrc` files with ports and hostnames for each session
+
+### Developer Experience
+- **tmux Integration**: Pre-configured sessions with customizable layouts via tmuxp templates
+- **Editor Integration**: Auto-launch Cursor, VS Code, or any editor when creating/attaching to sessions
+- **Bootstrap Files**: Copy setup files (`.env.example`, scripts) into each new worktree automatically
+- **Cleanup Commands**: Run teardown scripts (Docker cleanup, database drops) when removing sessions
+
+### Configuration & Reliability
+- **Project-Level Config**: Team-shareable `.devx/` configs that override global settings
+- **Caddy Health Monitoring**: Automatic route verification and repair
+- **Dependency Checking**: Validates required tools with installation guidance
+- **Fully Customizable**: Built on open tools (tmuxp, Caddy, direnv)—configure or replace any part
 
 ## Dependencies
 
