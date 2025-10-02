@@ -134,6 +134,12 @@ func checkForUpdatesBackground() {
 				// Print notification message
 				fmt.Printf("\n💡 devx %s is available (currently %s). Run 'devx update' to upgrade.\n\n",
 					info.LatestVersion, info.CurrentVersion)
+
+				// Mark as notified so we don't spam on every command
+				if err := update.MarkUpdateNotified(info.LatestVersion); err != nil {
+					// Log but don't fail - this is not critical
+					fmt.Printf("Warning: failed to save notification state: %v\n", err)
+				}
 			}
 		}
 	}()

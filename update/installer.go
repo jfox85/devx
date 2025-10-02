@@ -11,10 +11,15 @@ import (
 
 // PerformUpdate downloads and installs the latest version
 func PerformUpdate(force bool) error {
-	// Parse current version
-	currentVersion, err := semver.Parse(strings.TrimPrefix(version.Version, "v"))
-	if err != nil {
-		return fmt.Errorf("parsing current version: %w", err)
+	// Parse current version - handle dev versions gracefully
+	var currentVersion semver.Version
+	rawVersion := strings.TrimPrefix(version.Version, "v")
+
+	if parsedVersion, err := semver.Parse(rawVersion); err != nil {
+		// For dev versions, use 0.0.0 so any release is considered newer
+		currentVersion = semver.Version{Major: 0, Minor: 0, Patch: 0}
+	} else {
+		currentVersion = parsedVersion
 	}
 
 	// Check for latest version
@@ -29,7 +34,7 @@ func PerformUpdate(force bool) error {
 
 	// Check if update is needed
 	if latest.Version.LTE(currentVersion) && !force {
-		return fmt.Errorf("you are already running the latest version (%s)", currentVersion)
+		return fmt.Errorf("you are already running the latest version (%s)", version.Version)
 	}
 
 	// Perform the update

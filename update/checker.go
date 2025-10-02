@@ -82,11 +82,8 @@ func CheckForUpdatesWithCache(interval time.Duration) (*UpdateInfo, bool, error)
 		return nil, false, err
 	}
 
-	// Save the check time
+	// Save the check time (but don't update LastNotifiedVersion yet - that happens after we actually notify)
 	state.LastCheck = time.Now()
-	if info.Available {
-		state.LastNotifiedVersion = info.LatestVersion
-	}
 	if err := config.SaveUpdateCheckState(state); err != nil {
 		// Log but don't fail - this is not critical
 		fmt.Printf("Warning: failed to save update check state: %v\n", err)
@@ -111,4 +108,21 @@ func ShouldNotifyUser(info *UpdateInfo) (bool, error) {
 
 	// If we haven't notified about this version yet, notify
 	return state.LastNotifiedVersion != info.LatestVersion, nil
+}
+
+// MarkUpdateNotified marks an update version as having been shown to the user
+// This should be called after successfully displaying an update notification
+func MarkUpdateNotified(latestVersion string) error {
+	state, err := config.LoadUpdateCheckState()
+	if err != nil {
+		// If we can't load state, create a new one
+		state = &config.UpdateCheckState{}
+	}
+
+	state.LastNotifiedVersion = latestVersion
+	if err := config.SaveUpdateCheckState(state); err != nil {
+		return fmt.Errorf("saving notification state: %w", err)
+	}
+
+	return nil
 }
