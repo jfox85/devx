@@ -1,3 +1,5 @@
 devx
 .envrc
 .tmuxp.yaml
+dist/
+.devx/

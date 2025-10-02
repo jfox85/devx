@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/deps"
 	"github.com/jfox85/devx/tui"
+	"github.com/jfox85/devx/update"
 	"github.com/jfox85/devx/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -36,7 +38,7 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
+	cobra.OnInitialize(initConfig, checkForUpdatesBackground)
 
 	// Here you will define your flags and configuration settings.
 	// Cobra supports persistent flags, which, if defined here,
@@ -97,9 +99,50 @@ func initConfig() {
 	viper.SetDefault("editor", "")
 	viper.SetDefault("bootstrap_files", []string{})
 	viper.SetDefault("cleanup_command", "")
+	viper.SetDefault("auto_check_updates", true)
+	viper.SetDefault("update_check_interval", "24h")
 
 	// Read in config file if found
 	_ = viper.ReadInConfig()
+}
+
+// checkForUpdatesBackground performs a background update check
+func checkForUpdatesBackground() {
+	// Skip if auto-update checking is disabled
+	if !viper.GetBool("auto_check_updates") {
+		return
+	}
+
+	// Parse the update check interval
+	intervalStr := viper.GetString("update_check_interval")
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		interval = 24 * time.Hour // Default to 24 hours
+	}
+
+	// Run in background to avoid blocking startup
+	go func() {
+		info, checked, err := update.CheckForUpdatesWithCache(interval)
+		if err != nil || !checked || info == nil {
+			return
+		}
+
+		// Only show notification if update is available
+		if info.Available {
+			shouldNotify, _ := update.ShouldNotifyUser(info)
+			if shouldNotify {
+				// Print notification message
+				fmt.Printf("\n💡 devx %s is available (currently %s). Run 'devx update' to upgrade.\n\n",
+					info.LatestVersion, info.CurrentVersion)
+
+				// Mark as notified so we don't spam on every command
+				if err := update.MarkUpdateNotified(info.LatestVersion); err != nil {
+					// Log but don't fail - this is not critical
+					fmt.Printf("Warning: failed to save notification state: %v\n", err)
+				}
+			}
+		}
+	}()
 }
 
 // runTUI launches the terminal user interface

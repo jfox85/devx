@@ -23,6 +23,8 @@ import (
 	"github.com/jfox85/devx/claude"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/update"
+	"github.com/jfox85/devx/version"
 )
 
 type sessionItem struct {
@@ -80,6 +82,10 @@ type model struct {
 	projectCursor   int
 	selectedProject string
 	caddyWarning    string
+	// Update availability
+	updateAvailable bool
+	updateVersion   string
+	currentVersion  string
 	// Performance monitoring
 	debugMode     bool
 	debugLevel    int // 1=basic, 2=verbose
@@ -123,6 +129,7 @@ type keyMap struct {
 	Projects    key.Binding
 	Preview     key.Binding
 	ClaudeHooks key.Binding
+	Update      key.Binding
 	Quit        key.Binding
 	Help        key.Binding
 	Back        key.Binding
@@ -172,6 +179,10 @@ var keys = keyMap{
 	ClaudeHooks: key.NewBinding(
 		key.WithKeys("C"),
 		key.WithHelp("C", "init Claude hooks"),
+	),
+	Update: key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "update devx"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
@@ -240,6 +251,9 @@ func InitialModel() *model {
 		showPreview:             true, // Enable preview by default
 		width:                   80,   // Default width
 		height:                  24,   // Default height
+		updateAvailable:         false,
+		updateVersion:           "",
+		currentVersion:          "",
 		debugMode:               debugMode,
 		debugLogger:             debugLogger,
 		ansiRegex:               ansiRegex,
@@ -265,7 +279,7 @@ func InitialModel() *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.loadSessions, m.refreshPreview(), m.refreshSessions(), m.checkCaddyHealth())
+	return tea.Batch(m.loadSessions, m.refreshPreview(), m.refreshSessions(), m.checkCaddyHealth(), m.checkForUpdates)
 }
 
 func (m *model) loadSessions() tea.Msg {
@@ -386,6 +400,12 @@ type hostnamesLoadedMsg struct {
 }
 
 type errMsg struct{ err error }
+
+type updateAvailableMsg struct {
+	available      bool
+	currentVersion string
+	latestVersion  string
+}
 
 type sessionCreatedMsg struct {
 	sessionName string
@@ -684,6 +704,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.ClaudeHooks):
 				// Initialize Claude hooks for current working directory
 				return m, m.initClaudeHooks()
+
+			case key.Matches(msg, m.keys.Update):
+				// Only allow update if one is available and we can self-update
+				if m.updateAvailable && update.CanSelfUpdate() {
+					m.confirmMsg = fmt.Sprintf("Update devx from %s to %s?", m.currentVersion, m.updateVersion)
+					m.confirmFunc = func() {
+						// Perform update
+						if err := update.PerformUpdate(false); err != nil {
+							m.statusMsg = fmt.Sprintf("Update failed: %v", err)
+						} else {
+							m.statusMsg = "Update successful! Please restart devx."
+						}
+					}
+					m.state = stateConfirm
+					return m, nil
+				} else if !update.CanSelfUpdate() {
+					m.statusMsg = "Cannot self-update. " + update.GetUpdateInstructions()
+					return m, nil
+				}
 			}
 
 		case stateProjectAdd:
@@ -853,6 +892,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case caddyHealthMsg:
 		m.caddyWarning = msg.warning
 
+	case updateAvailableMsg:
+		m.updateAvailable = msg.available
+		m.currentVersion = msg.currentVersion
+		m.updateVersion = msg.latestVersion
+
 	case claudeHooksMsg:
 		if msg.success {
 			m.statusMsg = msg.message
@@ -968,6 +1012,15 @@ func (m *model) listView() string {
 		var b strings.Builder
 		b.WriteString(logo + "\n" + headerStyle.Render("Sessions") + "\n\n")
 
+		// Show update banner if available
+		if m.updateAvailable {
+			updateBanner := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("42")). // Green
+				Bold(true).
+				Render(fmt.Sprintf("🆙 Update available: %s → %s (Press 'u' to update)", m.currentVersion, m.updateVersion))
+			b.WriteString(updateBanner + "\n\n")
+		}
+
 		// Show Caddy warning if present
 		if m.caddyWarning != "" {
 			b.WriteString(warningStyle.Render(m.caddyWarning) + "\n\n")
@@ -1042,6 +1095,21 @@ func (m *model) listView() string {
 	// Build session list
 	var sessionList strings.Builder
 	sessionList.WriteString(headerStyle.Render("Sessions") + "\n\n")
+
+	// Show update banner if available
+	if m.updateAvailable {
+		updateBanner := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("42")). // Green
+			Bold(true).
+			Render(fmt.Sprintf("🆙 %s → %s (u)", m.currentVersion, m.updateVersion))
+		sessionList.WriteString(updateBanner + "\n\n")
+	}
+
+	// Show Caddy warning if present (condensed for preview)
+	if m.caddyWarning != "" {
+		condensedWarning := strings.Split(m.caddyWarning, "\n")[0] // First line only
+		sessionList.WriteString(warningStyle.Render("⚠️ "+condensedWarning) + "\n\n")
+	}
 
 	// Group sessions by project for display
 	var currentProject string
@@ -1559,6 +1627,24 @@ func (m *model) checkCaddyHealth() tea.Cmd {
 		}
 
 		return caddyHealthMsg{warning: warning}
+	}
+}
+
+func (m *model) checkForUpdates() tea.Msg {
+	info, err := update.CheckForUpdates()
+	if err != nil {
+		// Silently fail - update checks shouldn't interrupt the UI
+		return updateAvailableMsg{
+			available:      false,
+			currentVersion: version.Version,
+			latestVersion:  "",
+		}
+	}
+
+	return updateAvailableMsg{
+		available:      info.Available,
+		currentVersion: info.CurrentVersion,
+		latestVersion:  info.LatestVersion,
 	}
 }
 
