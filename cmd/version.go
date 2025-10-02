@@ -76,4 +76,10 @@ func checkForVersionUpdates() {
 	fmt.Printf("🆙 A newer version is available: %s → %s\n", updateInfo.CurrentVersion, updateInfo.LatestVersion)
 	fmt.Printf("Release URL: %s\n", updateInfo.ReleaseURL)
 	fmt.Println("\nRun 'devx update' to upgrade.")
+
+	// Mark as notified so we don't spam on every command
+	if err := update.MarkUpdateNotified(updateInfo.LatestVersion); err != nil {
+		// Silently ignore - notification state is not critical
+		_ = err
+	}
 }
