@@ -2,6 +2,8 @@
 
 A macOS CLI tool for managing local development environments with Git worktrees, automatic port allocation, and tmux session management.
 
+![devx TUI demo](screenshots/tui-final.gif)
+
 ## Features
 
 - **Interactive TUI**: Beautiful terminal interface for browsing and managing sessions
