@@ -1,0 +1,25 @@
+{
+  "projects": {
+    "webapp": {
+      "name": "E-Commerce Web App",
+      "path": "/Users/demo/projects/webapp",
+      "description": "React frontend + Node.js API",
+      "default_branch": "main",
+      "auto_pull_on_create": true
+    },
+    "backend": {
+      "name": "Backend Services",
+      "path": "/Users/demo/projects/backend",
+      "description": "GraphQL API with PostgreSQL",
+      "default_branch": "develop",
+      "auto_pull_on_create": true
+    },
+    "website": {
+      "name": "Marketing Website",
+      "path": "/Users/demo/projects/website",
+      "description": "Next.js marketing site with CMS",
+      "default_branch": "main",
+      "auto_pull_on_create": false
+    }
+  }
+}

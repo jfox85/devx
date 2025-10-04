@@ -1,0 +1,15 @@
+{
+  "admin": {
+    "listen": "localhost:2019"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "srv1": {
+          "listen": [":80"],
+          "routes": []
+        }
+      }
+    }
+  }
+}
