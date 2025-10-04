@@ -1,0 +1,91 @@
+{
+  "sessions": {
+    "feature-auth": {
+      "name": "feature-auth",
+      "project_alias": "webapp",
+      "project_path": "/Users/demo/projects/webapp",
+      "branch": "feature/oauth-integration",
+      "path": "/Users/demo/projects/webapp/.worktrees/feature-auth",
+      "ports": {
+        "ui": 3000,
+        "api": 4000
+      },
+      "routes": {
+        "ui": "sess-webapp-feature-auth-ui",
+        "api": "sess-webapp-feature-auth-api"
+      },
+      "editor_pid": 12345,
+      "created_at": "2024-10-01T10:30:00Z",
+      "updated_at": "2024-10-04T09:15:00Z"
+    },
+    "bugfix-login": {
+      "name": "bugfix-login",
+      "project_alias": "webapp",
+      "project_path": "/Users/demo/projects/webapp",
+      "branch": "bugfix/login-validation",
+      "path": "/Users/demo/projects/webapp/.worktrees/bugfix-login",
+      "ports": {
+        "ui": 3001,
+        "api": 4001
+      },
+      "routes": {
+        "ui": "sess-webapp-bugfix-login-ui",
+        "api": "sess-webapp-bugfix-login-api"
+      },
+      "attention_flag": true,
+      "attention_reason": "claude_done",
+      "attention_time": "2024-10-04T08:45:00Z",
+      "created_at": "2024-10-02T14:20:00Z",
+      "updated_at": "2024-10-04T08:45:00Z"
+    },
+    "refactor-api": {
+      "name": "refactor-api",
+      "project_alias": "backend",
+      "project_path": "/Users/demo/projects/backend",
+      "branch": "refactor/rest-to-graphql",
+      "path": "/Users/demo/projects/backend/.worktrees/refactor-api",
+      "ports": {
+        "api": 5000,
+        "db": 5432
+      },
+      "routes": {
+        "api": "sess-backend-refactor-api-api",
+        "db": "sess-backend-refactor-api-db"
+      },
+      "created_at": "2024-09-28T16:00:00Z",
+      "updated_at": "2024-10-03T11:30:00Z"
+    },
+    "docs-update": {
+      "name": "docs-update",
+      "project_alias": "website",
+      "project_path": "/Users/demo/projects/website",
+      "branch": "docs/api-v2",
+      "path": "/Users/demo/projects/website/.worktrees/docs-update",
+      "ports": {
+        "ui": 8080
+      },
+      "routes": {
+        "ui": "sess-website-docs-update-ui"
+      },
+      "created_at": "2024-10-03T09:00:00Z",
+      "updated_at": "2024-10-04T10:00:00Z"
+    },
+    "experiment-cache": {
+      "name": "experiment-cache",
+      "project_alias": "backend",
+      "project_path": "/Users/demo/projects/backend",
+      "branch": "experiment/redis-cache",
+      "path": "/Users/demo/projects/backend/.worktrees/experiment-cache",
+      "ports": {
+        "api": 5001,
+        "cache": 6379
+      },
+      "routes": {
+        "api": "sess-backend-experiment-cache-api",
+        "cache": "sess-backend-experiment-cache-cache"
+      },
+      "created_at": "2024-10-01T13:45:00Z",
+      "updated_at": "2024-10-02T16:20:00Z"
+    }
+  }
+}

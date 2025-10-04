@@ -8,6 +8,8 @@ Browse all your sessions at a glance, see their real-time status, and switch bet
 
 Built on battle-tested open tools (tmuxp, Caddy, direnv) with powerful configuration options—use the defaults or customize every detail.
 
+![devx TUI demo](screenshots/tui-final.gif)
+
 ## Features
 
 ### Terminal Interface
