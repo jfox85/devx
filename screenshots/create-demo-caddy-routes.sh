@@ -13,7 +13,7 @@ create_route() {
     local hostname=$2
     local port=$3
 
-    curl -s -X POST "$CADDY_API/config/apps/http/servers/srv1/routes" \
+    curl -sS --fail -X POST "$CADDY_API/config/apps/http/servers/srv1/routes" \
         -H "Content-Type: application/json" \
         -d "{
             \"@id\": \"$route_id\",

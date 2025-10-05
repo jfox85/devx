@@ -18,14 +18,14 @@ echo "✓ Caddy is running"
 mkdir -p "$DEVX_CONFIG"
 
 # Backup and replace sessions
-if [ -f "$DEVX_CONFIG/sessions.json" ]; then
+if [ ! -f "$DEVX_CONFIG/sessions.json.backup" ] && [ -f "$DEVX_CONFIG/sessions.json" ]; then
     cp "$DEVX_CONFIG/sessions.json" "$DEVX_CONFIG/sessions.json.backup"
 fi
 cp "$DEMO_DIR/sessions.json" "$DEVX_CONFIG/sessions.json"
 echo "✓ Demo sessions installed"
 
 # Backup and replace projects
-if [ -f "$DEVX_CONFIG/projects.json" ]; then
+if [ ! -f "$DEVX_CONFIG/projects.json.backup" ] && [ -f "$DEVX_CONFIG/projects.json" ]; then
     cp "$DEVX_CONFIG/projects.json" "$DEVX_CONFIG/projects.json.backup"
 fi
 cp "$DEMO_DIR/projects.json" "$DEVX_CONFIG/projects.json"
