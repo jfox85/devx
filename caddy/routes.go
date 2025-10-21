@@ -111,11 +111,12 @@ func (c *CaddyClient) CreateRouteWithProject(sessionName, serviceName string, po
 		return "", fmt.Errorf("failed to marshal route JSON: %w", err)
 	}
 
-	// POST to Caddy admin API
+	// Use array append notation to avoid race conditions
+	// POST to /routes/- appends to the array, creating it if needed
 	resp, err := c.client.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(routeJSON).
-		Post(c.baseURL + "/config/apps/http/servers/srv1/routes")
+		Post(c.baseURL + "/config/apps/http/servers/srv1/routes/-")
 
 	if err != nil {
 		return "", fmt.Errorf("failed to create route: %w", err)
