@@ -902,7 +902,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.message
 			m.debugLogger.Printf("Claude hooks initialized successfully")
 		} else {
-			m.err = fmt.Errorf(msg.message)
+			m.err = fmt.Errorf("%s", msg.message)
 			m.debugLogger.Printf("Claude hooks initialization failed: %s", msg.message)
 		}
 		// No need to reload project data - just update the UI
