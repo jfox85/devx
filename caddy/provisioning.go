@@ -90,6 +90,11 @@ func ProvisionSessionRoutesWithProject(sessionName string, services map[string]i
 		return make(map[string]string), nil
 	}
 
+	// Ensure routes array exists (Caddy can't append to null)
+	if err := client.EnsureRoutesArray(); err != nil {
+		return nil, fmt.Errorf("failed to initialize routes array: %w", err)
+	}
+
 	// Check if there are any catch-all routes that need to be moved to the end
 	existingRoutes, err := client.GetAllRoutes()
 	if err == nil {

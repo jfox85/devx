@@ -142,6 +142,11 @@ func RepairRoutes(result *HealthCheckResult, sessions map[string]*SessionInfo) e
 		return fmt.Errorf("Caddy is not running")
 	}
 
+	// Ensure routes array exists (Caddy can't append to null)
+	if err := client.EnsureRoutesArray(); err != nil {
+		return fmt.Errorf("failed to initialize routes array: %w", err)
+	}
+
 	// If catch-all is first, we need to reorder all routes
 	if result.CatchAllFirst {
 		fmt.Println("Fixing route order (catch-all route is blocking specific routes)...")

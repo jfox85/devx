@@ -42,8 +42,9 @@ type RouteResponse struct {
 
 // CaddyClient manages communication with Caddy's admin API
 type CaddyClient struct {
-	client  *resty.Client
-	baseURL string
+	client     *resty.Client
+	baseURL    string
+	serverName string
 }
 
 // NewCaddyClient creates a new Caddy API client
@@ -56,10 +57,48 @@ func NewCaddyClient() *CaddyClient {
 	client := resty.New()
 	client.SetTimeout(10 * time.Second)
 
-	return &CaddyClient{
+	c := &CaddyClient{
 		client:  client,
 		baseURL: caddyAPI,
 	}
+	c.discoverServerName()
+	return c
+}
+
+// discoverServerName finds the HTTP server listening on :80.
+// Falls back to "srv1" on any failure.
+func (c *CaddyClient) discoverServerName() {
+	c.serverName = "srv1" // default fallback
+
+	resp, err := c.client.R().Get(c.baseURL + "/config/apps/http/servers")
+	if err != nil || resp.StatusCode() != http.StatusOK {
+		return
+	}
+
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body(), &servers); err != nil {
+		return
+	}
+
+	for name, raw := range servers {
+		var srv struct {
+			Listen []string `json:"listen"`
+		}
+		if err := json.Unmarshal(raw, &srv); err != nil {
+			continue
+		}
+		for _, addr := range srv.Listen {
+			if strings.Contains(addr, ":80") {
+				c.serverName = name
+				return
+			}
+		}
+	}
+}
+
+// serverPath returns the Caddy config path for the discovered HTTP server.
+func (c *CaddyClient) serverPath() string {
+	return "/config/apps/http/servers/" + c.serverName
 }
 
 // CreateRoute creates a route for a service
@@ -116,7 +155,7 @@ func (c *CaddyClient) CreateRouteWithProject(sessionName, serviceName string, po
 	resp, err := c.client.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(routeJSON).
-		Post(c.baseURL + "/config/apps/http/servers/srv1/routes/-")
+		Post(c.baseURL + c.serverPath() + "/routes/-")
 
 	if err != nil {
 		return "", fmt.Errorf("failed to create route: %w", err)
@@ -183,13 +222,24 @@ func (c *CaddyClient) DeleteSessionRoutes(sessionName string) error {
 
 // GetAllRoutes retrieves all routes from Caddy
 func (c *CaddyClient) GetAllRoutes() ([]Route, error) {
-	resp, err := c.client.R().Get(c.baseURL + "/config/apps/http/servers/srv1/routes")
+	resp, err := c.client.R().Get(c.baseURL + c.serverPath() + "/routes")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list routes: %w", err)
 	}
 
+	// Routes path doesn't exist yet — treat as empty
+	if resp.StatusCode() == http.StatusNotFound {
+		return []Route{}, nil
+	}
+
 	if resp.StatusCode() != http.StatusOK {
 		return nil, fmt.Errorf("caddy API returned status %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	// Handle null or empty body
+	body := strings.TrimSpace(string(resp.Body()))
+	if body == "null" || body == "" {
+		return []Route{}, nil
 	}
 
 	// Parse routes response
@@ -199,6 +249,43 @@ func (c *CaddyClient) GetAllRoutes() ([]Route, error) {
 	}
 
 	return routes, nil
+}
+
+// EnsureRoutesArray initializes the server's routes array if it is null or missing.
+// Caddy cannot append a route to a null RouteList, so this must be called before
+// any route-creation batch.
+func (c *CaddyClient) EnsureRoutesArray() error {
+	resp, err := c.client.R().Get(c.baseURL + c.serverPath())
+	if err != nil {
+		return fmt.Errorf("failed to read server config: %w", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		return fmt.Errorf("caddy API returned status %d reading server config: %s", resp.StatusCode(), resp.String())
+	}
+
+	var serverCfg map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body(), &serverCfg); err != nil {
+		return fmt.Errorf("failed to parse server config: %w", err)
+	}
+
+	raw, exists := serverCfg["routes"]
+	if exists && strings.TrimSpace(string(raw)) != "null" {
+		return nil // routes array already present
+	}
+
+	// PATCH with an empty routes array — merges into existing config
+	resp, err = c.client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody([]byte(`{"routes":[]}`)).
+		Patch(c.baseURL + c.serverPath())
+	if err != nil {
+		return fmt.Errorf("failed to initialize routes array: %w", err)
+	}
+	if resp.StatusCode() != http.StatusOK {
+		return fmt.Errorf("caddy API returned status %d initializing routes: %s", resp.StatusCode(), resp.String())
+	}
+
+	return nil
 }
 
 // CheckCaddyConnection verifies that Caddy is running and accessible
@@ -240,7 +327,7 @@ func GetServiceMapping(portName string) string {
 // ReplaceAllRoutes deletes all current routes and creates new ones in the specified order
 func (c *CaddyClient) ReplaceAllRoutes(routes []Route) error {
 	// First, delete all existing routes
-	resp, err := c.client.R().Delete(c.baseURL + "/config/apps/http/servers/srv1/routes")
+	resp, err := c.client.R().Delete(c.baseURL + c.serverPath() + "/routes")
 	if err != nil {
 		return fmt.Errorf("failed to delete existing routes: %w", err)
 	}
@@ -258,7 +345,7 @@ func (c *CaddyClient) ReplaceAllRoutes(routes []Route) error {
 	resp, err = c.client.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(routesJSON).
-		Post(c.baseURL + "/config/apps/http/servers/srv1/routes")
+		Post(c.baseURL + c.serverPath() + "/routes")
 
 	if err != nil {
 		return fmt.Errorf("failed to create routes: %w", err)
