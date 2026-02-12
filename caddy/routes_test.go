@@ -179,7 +179,7 @@ func newTestClient(ts *httptest.Server, serverName string) *CaddyClient {
 func TestDiscoverServerName(t *testing.T) {
 	t.Run("finds srv1 with :80", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"srv0": map[string]any{"listen": []string{":443"}},
 				"srv1": map[string]any{"listen": []string{":80"}},
 			})
@@ -195,7 +195,7 @@ func TestDiscoverServerName(t *testing.T) {
 
 	t.Run("finds srv0 with :80", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"srv0": map[string]any{"listen": []string{":80"}},
 				"srv1": map[string]any{"listen": []string{":443"}},
 			})
@@ -211,7 +211,7 @@ func TestDiscoverServerName(t *testing.T) {
 
 	t.Run("falls back to srv1 when no :80 server", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"myserver": map[string]any{"listen": []string{":443"}},
 			})
 		}))
@@ -245,7 +245,7 @@ func TestEnsureRoutesArray(t *testing.T) {
 		patched := false
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				w.Write([]byte(`{"listen":[":80"],"routes":[]}`))
+				_, _ = w.Write([]byte(`{"listen":[":80"],"routes":[]}`))
 				return
 			}
 			if r.Method == http.MethodPatch {
@@ -268,7 +268,7 @@ func TestEnsureRoutesArray(t *testing.T) {
 		patched := false
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				w.Write([]byte(`{"listen":[":80"],"routes":null}`))
+				_, _ = w.Write([]byte(`{"listen":[":80"],"routes":null}`))
 				return
 			}
 			if r.Method == http.MethodPatch {
@@ -291,7 +291,7 @@ func TestEnsureRoutesArray(t *testing.T) {
 		patched := false
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				w.Write([]byte(`{"listen":[":80"]}`))
+				_, _ = w.Write([]byte(`{"listen":[":80"]}`))
 				return
 			}
 			if r.Method == http.MethodPatch {
@@ -316,7 +316,7 @@ func TestEnsureRoutesArray(t *testing.T) {
 func TestGetAllRoutesNullResponse(t *testing.T) {
 	t.Run("null body returns empty slice", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("null"))
+			_, _ = w.Write([]byte("null"))
 		}))
 		defer ts.Close()
 
@@ -348,7 +348,7 @@ func TestGetAllRoutesNullResponse(t *testing.T) {
 
 	t.Run("valid routes are parsed", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode([]Route{
+			_ = json.NewEncoder(w).Encode([]Route{
 				{ID: "test-route"},
 			})
 		}))
@@ -388,7 +388,7 @@ func TestRoutesUseDiscoveredServer(t *testing.T) {
 
 		// Discovery endpoint
 		if r.URL.Path == "/config/apps/http/servers" {
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"myhttp": map[string]any{"listen": []string{":80"}},
 			})
 			return
@@ -396,7 +396,7 @@ func TestRoutesUseDiscoveredServer(t *testing.T) {
 
 		// Routes GET
 		if r.Method == http.MethodGet {
-			w.Write([]byte("[]"))
+			_, _ = w.Write([]byte("[]"))
 			return
 		}
 
