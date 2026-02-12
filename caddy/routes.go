@@ -88,7 +88,7 @@ func (c *CaddyClient) discoverServerName() {
 			continue
 		}
 		for _, addr := range srv.Listen {
-			if strings.Contains(addr, ":80") {
+			if strings.HasSuffix(addr, ":80") {
 				c.serverName = name
 				return
 			}

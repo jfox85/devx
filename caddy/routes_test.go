@@ -209,6 +209,22 @@ func TestDiscoverServerName(t *testing.T) {
 		}
 	})
 
+	t.Run("does not match :8080 as :80", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"wrong": map[string]any{"listen": []string{":8080"}},
+				"right": map[string]any{"listen": []string{":80"}},
+			})
+		}))
+		defer ts.Close()
+
+		c := newTestClient(ts, "placeholder")
+		c.discoverServerName()
+		if c.serverName != "right" {
+			t.Errorf("expected right, got %s", c.serverName)
+		}
+	})
+
 	t.Run("falls back to srv1 when no :80 server", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
