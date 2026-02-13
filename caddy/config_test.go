@@ -129,6 +129,36 @@ func TestBuildCaddyConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("session without project alias when others have one", func(t *testing.T) {
+		sessions := map[string]*SessionInfo{
+			"with-project": {
+				Name:         "with-project",
+				Ports:        map[string]int{"UI": 3000},
+				ProjectAlias: "myapp",
+			},
+			"no-project": {
+				Name:  "no-project",
+				Ports: map[string]int{"UI": 4000},
+			},
+		}
+		config := BuildCaddyConfig(sessions)
+
+		jsonData, _ := json.Marshal(config)
+		jsonStr := string(jsonData)
+		// Project-prefixed session
+		if !contains(jsonStr, `myapp-with-project-ui.localhost`) {
+			t.Errorf("missing project-prefixed hostname: %s", jsonStr)
+		}
+		// Non-project session
+		if !contains(jsonStr, `no-project-ui.localhost`) {
+			t.Errorf("missing non-project hostname: %s", jsonStr)
+		}
+		// Should not have project prefix on the non-project session
+		if contains(jsonStr, `myapp-no-project`) {
+			t.Errorf("non-project session incorrectly got project prefix: %s", jsonStr)
+		}
+	})
+
 	t.Run("session with empty ports produces no routes", func(t *testing.T) {
 		sessions := map[string]*SessionInfo{
 			"empty": {
