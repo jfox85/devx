@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 )
 
@@ -20,7 +19,7 @@ type Session struct {
 	Branch          string            `json:"branch"`
 	Path            string            `json:"path"`
 	Ports           map[string]int    `json:"ports"`
-	Routes          map[string]string `json:"routes,omitempty"`     // service -> route ID mapping
+	Routes          map[string]string `json:"routes,omitempty"`     // service -> hostname mapping
 	EditorPID       int               `json:"editor_pid,omitempty"` // PID of the editor process
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
@@ -170,11 +169,6 @@ func RemoveSession(name string, sess *Session) error {
 	// Kill tmux session if it exists
 	_ = killTmuxSession(name) // Don't fail on tmux errors
 
-	// Remove Caddy routes
-	if len(sess.Routes) > 0 {
-		_ = removeCaddyRoutes(name, sess.Routes) // Don't fail on Caddy errors
-	}
-
 	// Remove git worktree
 	_ = removeGitWorktree(sess.Path) // Don't fail on worktree errors
 
@@ -224,10 +218,6 @@ func removeGitWorktree(worktreePath string) error {
 	}
 
 	return nil
-}
-
-func removeCaddyRoutes(sessionName string, routes map[string]string) error {
-	return caddy.DestroySessionRoutes(sessionName, routes)
 }
 
 func getSessionsPath() string {

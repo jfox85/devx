@@ -1217,7 +1217,7 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 		}
 		sort.Strings(routeServices)
 		for _, service := range routeServices {
-			url := fmt.Sprintf("http://%s.localhost", sess.routes[service])
+			url := fmt.Sprintf("http://%s", sess.routes[service])
 			details += fmt.Sprintf("      %s: %s\n", service, url)
 		}
 	}
@@ -1304,7 +1304,7 @@ func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 			}
 			sort.Strings(routeServices)
 			for _, service := range routeServices {
-				url := fmt.Sprintf("http://%s.localhost", sess.routes[service])
+				url := fmt.Sprintf("http://%s", sess.routes[service])
 				preview.WriteString(fmt.Sprintf("  %s: %s\n", service, url))
 			}
 		}
@@ -1618,12 +1618,10 @@ func (m *model) checkCaddyHealth() tea.Cmd {
 		// Generate warning message if issues found
 		var warning string
 		if !result.CaddyRunning {
-			warning = "⚠️  Caddy is not running. Session hostnames won't work."
-		} else if result.CatchAllFirst {
-			warning = "⚠️  Caddy routes are misconfigured. Run 'devx caddy check --fix' to repair."
+			warning = "Caddy is not running. Session hostnames won't work."
 		} else if result.RoutesNeeded > result.RoutesExisting {
 			missing := result.RoutesNeeded - result.RoutesExisting
-			warning = fmt.Sprintf("⚠️  %d Caddy routes are missing. Run 'devx caddy check --fix' to repair.", missing)
+			warning = fmt.Sprintf("%d Caddy routes are missing. Run 'devx caddy check --fix' to repair.", missing)
 		}
 
 		return caddyHealthMsg{warning: warning}
@@ -1674,7 +1672,7 @@ func (m *model) hostnamesView() string {
 			cursor = "> "
 		}
 
-		url := fmt.Sprintf("http://%s.localhost", hostname)
+		url := fmt.Sprintf("http://%s", hostname)
 		b.WriteString(fmt.Sprintf("%s%s\n", cursor, url))
 	}
 
@@ -1915,7 +1913,7 @@ func (m *model) openRoutes(sessionName string) tea.Cmd {
 
 		// Open all routes in the default browser
 		for _, hostname := range sess.Routes {
-			url := fmt.Sprintf("http://%s.localhost", hostname)
+			url := fmt.Sprintf("http://%s", hostname)
 			if err := openURL(url); err != nil {
 				return errMsg{fmt.Errorf("failed to open %s: %w", url, err)}
 			}
@@ -1971,75 +1969,28 @@ func (m *model) loadHostnames(sessionName string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		// If a specific session is selected, only show its routes
-		if sessionName != "" {
-			sess, exists := store.Sessions[sessionName]
-			if exists {
-				var hostnames []string
-				for serviceName := range sess.Routes {
-					// Generate hostname based on project and session info
-					dnsServiceName := caddy.NormalizeDNSName(serviceName)
-					// Sanitize session name for hostname compatibility
-					sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
-					if sess.ProjectAlias != "" {
-						hostnames = append(hostnames, fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sanitizedSessionName, dnsServiceName))
-					} else {
-						hostnames = append(hostnames, fmt.Sprintf("%s-%s", sanitizedSessionName, dnsServiceName))
-					}
-				}
-				sort.Strings(hostnames)
-				return hostnamesLoadedMsg{hostnames: hostnames}
-			}
-		}
+		var hostnames []string
 
-		// Otherwise, show all hostnames (original behavior)
-		// Use Caddy client to get actual routes
-		client := caddy.NewCaddyClient()
-		routes, err := client.GetAllRoutes()
-		if err != nil {
-			// Fall back to generating hostnames from session data
+		if sessionName != "" {
+			// Show routes for the selected session only
+			if sess, exists := store.Sessions[sessionName]; exists {
+				for _, hostname := range sess.Routes {
+					hostnames = append(hostnames, hostname)
+				}
+			}
+		} else {
+			// Show all stored hostnames across sessions
 			hostnameSet := make(map[string]bool)
 			for _, sess := range store.Sessions {
-				for serviceName := range sess.Routes {
-					// Generate hostname based on project and session info
-					dnsServiceName := caddy.NormalizeDNSName(serviceName)
-					// Sanitize session name for hostname compatibility
-					sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
-					if sess.ProjectAlias != "" {
-						hostnameSet[fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sanitizedSessionName, dnsServiceName)] = true
-					} else {
-						hostnameSet[fmt.Sprintf("%s-%s", sanitizedSessionName, dnsServiceName)] = true
-					}
+				for _, hostname := range sess.Routes {
+					hostnameSet[hostname] = true
 				}
 			}
-
-			var hostnames []string
 			for hostname := range hostnameSet {
 				hostnames = append(hostnames, hostname)
 			}
-			sort.Strings(hostnames)
-			return hostnamesLoadedMsg{hostnames: hostnames}
 		}
 
-		// Extract hostnames from actual Caddy routes
-		hostnameSet := make(map[string]bool)
-		for _, route := range routes {
-			for _, match := range route.Match {
-				for _, host := range match.Host {
-					// Extract just the subdomain part (without .localhost)
-					if strings.HasSuffix(host, ".localhost") {
-						subdomain := strings.TrimSuffix(host, ".localhost")
-						hostnameSet[subdomain] = true
-					}
-				}
-			}
-		}
-
-		// Convert to sorted slice
-		var hostnames []string
-		for hostname := range hostnameSet {
-			hostnames = append(hostnames, hostname)
-		}
 		sort.Strings(hostnames)
 		return hostnamesLoadedMsg{hostnames: hostnames}
 	}
@@ -2047,7 +1998,7 @@ func (m *model) loadHostnames(sessionName string) tea.Cmd {
 
 func (m *model) openHostname(hostname string) tea.Cmd {
 	return func() tea.Msg {
-		url := fmt.Sprintf("http://%s.localhost", hostname)
+		url := fmt.Sprintf("http://%s", hostname)
 		if err := openURL(url); err != nil {
 			return errMsg{fmt.Errorf("failed to open %s: %w", url, err)}
 		}

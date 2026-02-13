@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
-
-	"github.com/jfox85/devx/caddy"
 )
 
 // RunCleanupCommand executes the configured cleanup command with session environment variables
@@ -50,21 +48,11 @@ func prepareCleanupEnvironment(sess *Session) []string {
 		env = append(env, fmt.Sprintf("%s=%d", portVar, port))
 	}
 
-	// Add hostname variables if routes exist
-	if len(sess.Routes) > 0 {
-		for serviceName := range sess.Routes {
-			// Convert service name to HOST variable name
-			// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
-			hostVar := strings.ToUpper(serviceName)
-			hostVar = strings.ReplaceAll(hostVar, "-", "_") + "_HOST"
-
-			// Reconstruct the hostname from the route ID
-			// Route IDs are typically in format: "session-service.localhost"
-			// Sanitize session name for hostname compatibility
-			sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
-			hostname := fmt.Sprintf("https://%s-%s.localhost", sanitizedSessionName, strings.ToLower(serviceName))
-			env = append(env, fmt.Sprintf("%s=%s", hostVar, hostname))
-		}
+	// Add hostname variables from stored routes
+	for serviceName, hostname := range sess.Routes {
+		hostVar := strings.ToUpper(serviceName)
+		hostVar = strings.ReplaceAll(hostVar, "-", "_") + "_HOST"
+		env = append(env, fmt.Sprintf("%s=http://%s", hostVar, hostname))
 	}
 
 	// Add worktree path
