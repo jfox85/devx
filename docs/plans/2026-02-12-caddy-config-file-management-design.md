@@ -46,7 +46,7 @@ func SyncRoutes(sessions map[string]*SessionInfo) error
 1. Build full Caddy JSON config with all session routes
 2. Write atomically to `~/.config/devx/caddy-config.json` (temp file + rename)
 3. Run `caddy reload --config <path>`
-4. If Caddy isn't running, start it with `caddy run --config <path>`
+4. If Caddy isn't running, warn (config is written for next start)
 
 ## Caller Changes
 

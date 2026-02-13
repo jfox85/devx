@@ -33,6 +33,9 @@ import (
 )
 
 func TestBuildCaddyConfig(t *testing.T) {
+	// Ensure clean Viper state for all subtests
+	viper.Set("caddy_admin", "")
+
 	t.Run("empty sessions produces valid config with no routes", func(t *testing.T) {
 		sessions := map[string]*SessionInfo{}
 		config := BuildCaddyConfig(sessions)
@@ -129,6 +132,38 @@ func TestBuildCaddyConfig(t *testing.T) {
 
 		if string(json1) != string(json2) {
 			t.Errorf("config generation is not deterministic")
+		}
+	})
+
+	t.Run("session with slashes in name is sanitized", func(t *testing.T) {
+		sessions := map[string]*SessionInfo{
+			"feature/my-branch": {
+				Name:  "feature/my-branch",
+				Ports: map[string]int{"FRONTEND": 3000},
+			},
+		}
+		config := BuildCaddyConfig(sessions)
+
+		jsonData, _ := json.Marshal(config)
+		jsonStr := string(jsonData)
+		// Slashes should be converted to hyphens
+		if !contains(jsonStr, `feature-my-branch-frontend.localhost`) {
+			t.Errorf("session name with slash not properly sanitized: %s", jsonStr)
+		}
+	})
+
+	t.Run("session with empty ports produces no routes", func(t *testing.T) {
+		sessions := map[string]*SessionInfo{
+			"empty": {
+				Name:  "empty",
+				Ports: map[string]int{},
+			},
+		}
+		config := BuildCaddyConfig(sessions)
+
+		routes := config.Apps.HTTP.Servers["devx"].Routes
+		if len(routes) != 0 {
+			t.Errorf("expected 0 routes for empty ports, got %d", len(routes))
 		}
 	})
 }
@@ -500,7 +535,20 @@ In `cmd/session_create.go`, replace lines 219-270 (the entire Caddy provisioning
 	}
 ```
 
-This removes the `ProvisionSessionRoutesWithProject` call, the route-to-hostname conversion (hostnames are now computed directly), and the `store.UpdateSession` call that saved route IDs (no longer needed).
+This removes the `ProvisionSessionRoutesWithProject` call and the route-to-hostname conversion (hostnames are now computed directly).
+
+**IMPORTANT:** Keep the `store.UpdateSession` block (lines 262-270) but change it to save **hostnames** instead of route IDs. `sess.Routes` is read by cleanup.go (HOST env vars), TUI (openRoutes, loadHostnames), and session_list.go. Replace:
+
+```go
+	// Update session with route information
+	if len(hostnames) > 0 {
+		if err := store.UpdateSession(name, func(s *session.Session) {
+			s.Routes = hostnames
+		}); err != nil {
+			fmt.Printf("Warning: failed to update session routes: %v\n", err)
+		}
+	}
+```
 
 **Step 2: Add the `syncAllCaddyRoutes` helper function**
 
@@ -553,9 +601,9 @@ func syncAllCaddyRoutes() error {
 }
 ```
 
-**Step 3: Remove `caddy` import from `session_create.go` if no longer needed for route provisioning**
+**Step 3: Verify imports**
 
-After the edit, `session_create.go` still uses `caddy.NormalizeDNSName` and `caddy.SanitizeHostname`, so the import stays. But remove the `store.UpdateSession` block for routes (lines 262-270) since route IDs are no longer stored per-session.
+After the edit, `session_create.go` still uses `caddy.NormalizeDNSName` and `caddy.SanitizeHostname`, so the caddy import stays.
 
 **Step 4: Run tests**
 
@@ -853,14 +901,12 @@ git commit -m "refactor: delete provisioning.go, move hostname utils to config.g
 
 ---
 
-### Task 9: Remove `removeCaddyRoutes` from `session/metadata.go`
+### Task 9: Update `session/metadata.go` — remove `removeCaddyRoutes` and fix `RemoveSession`
 
 **Files:**
-- Modify: `session/metadata.go:229-231`
+- Modify: `session/metadata.go:165-182, 228-231`
 
-**Step 1: Delete the `removeCaddyRoutes` function**
-
-Delete lines 228-230:
+**Step 1: Delete the `removeCaddyRoutes` function** (lines 228-231)
 
 ```go
 func removeCaddyRoutes(sessionName string, routes map[string]string) error {
@@ -868,9 +914,81 @@ func removeCaddyRoutes(sessionName string, routes map[string]string) error {
 }
 ```
 
-**Step 2: Remove the `caddy` import if no longer used**
+**Step 2: Remove the Caddy route removal from `RemoveSession`** (line 173-176)
 
-Check if `session/metadata.go` has any other `caddy` references. If the import `"github.com/jfox85/devx/caddy"` is now unused, remove it.
+In `RemoveSession()`, delete:
+
+```go
+	// Remove Caddy routes
+	if len(sess.Routes) > 0 {
+		_ = removeCaddyRoutes(name, sess.Routes) // Don't fail on Caddy errors
+	}
+```
+
+Note: Caddy route cleanup is now handled by the caller via `syncAllCaddyRoutes()` after all sessions are removed from the store.
+
+**Step 3: Remove the `caddy` import**
+
+The import `"github.com/jfox85/devx/caddy"` should now be unused — remove it.
+
+**Step 4: Run tests**
+
+Run: `go build ./... && go test ./session/ -v`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add session/metadata.go
+git commit -m "refactor: remove Caddy API calls from session metadata"
+```
+
+---
+
+### Task 10: Fix `session/cleanup.go` — remove caddy import dependency
+
+The cleanup environment builder at `cleanup.go:54-67` iterates `sess.Routes` to derive HOST env vars. After Task 3, `sess.Routes` now stores hostnames directly (e.g., `"toneclone-jf-add-mcp-frontend.localhost"`), so we can use them directly instead of reconstructing from the session name.
+
+**Files:**
+- Modify: `session/cleanup.go:53-67`
+
+**Step 1: Simplify the hostname generation**
+
+Replace lines 53-67:
+
+```go
+	// Add hostname variables if routes exist
+	if len(sess.Routes) > 0 {
+		for serviceName := range sess.Routes {
+			// Convert service name to HOST variable name
+			// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
+			hostVar := strings.ToUpper(serviceName)
+			hostVar = strings.ReplaceAll(hostVar, "-", "_") + "_HOST"
+
+			// Reconstruct the hostname from the route ID
+			// Route IDs are typically in format: "session-service.localhost"
+			// Sanitize session name for hostname compatibility
+			sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
+			hostname := fmt.Sprintf("https://%s-%s.localhost", sanitizedSessionName, strings.ToLower(serviceName))
+			env = append(env, fmt.Sprintf("%s=%s", hostVar, hostname))
+		}
+	}
+```
+
+With:
+
+```go
+	// Add hostname variables from stored routes
+	for serviceName, hostname := range sess.Routes {
+		hostVar := strings.ToUpper(serviceName)
+		hostVar = strings.ReplaceAll(hostVar, "-", "_") + "_HOST"
+		env = append(env, fmt.Sprintf("%s=http://%s", hostVar, hostname))
+	}
+```
+
+**Step 2: Remove the `caddy` import**
+
+The `caddy.SanitizeHostname` call is gone, so remove `"github.com/jfox85/devx/caddy"` from imports.
 
 **Step 3: Run tests**
 
@@ -880,20 +998,60 @@ Expected: PASS
 **Step 4: Commit**
 
 ```bash
-git add session/metadata.go
-git commit -m "refactor: remove unused removeCaddyRoutes helper"
+git add session/cleanup.go
+git commit -m "refactor: cleanup uses stored hostnames instead of reconstructing them"
 ```
 
 ---
 
-### Task 10: Update TUI health check
+### Task 11: Fix TUI `openRoutes` — use stored hostnames
 
-Simplify the TUI's Caddy health warning to remove `CatchAllFirst` references.
+The `openRoutes` function at `tui/model.go:1917` does `http://%s.localhost` with the stored value, which previously produced broken URLs since route IDs were stored. Now that `sess.Routes` stores hostnames, fix the URL construction.
+
+**Files:**
+- Modify: `tui/model.go:1917-1918`
+
+**Step 1: Fix URL construction in `openRoutes`**
+
+Replace line 1917-1918:
+
+```go
+		for _, hostname := range sess.Routes {
+			url := fmt.Sprintf("http://%s.localhost", hostname)
+```
+
+With:
+
+```go
+		for _, hostname := range sess.Routes {
+			url := fmt.Sprintf("http://%s", hostname)
+```
+
+The hostname already includes `.localhost` (e.g., `"toneclone-jf-add-mcp-frontend.localhost"`).
+
+**Step 2: Run build**
+
+Run: `go build ./...`
+Expected: Compiles cleanly
+
+**Step 3: Commit**
+
+```bash
+git add tui/model.go
+git commit -m "fix: openRoutes uses stored hostname directly instead of appending .localhost"
+```
+
+---
+
+### Task 12: Update TUI health check and Caddy help message
+
+Simplify the TUI's Caddy health warning to remove `CatchAllFirst` references. Fix stale Caddyfile path in help message.
 
 **Files:**
 - Modify: `tui/model.go:1618-1627`
+- Modify: `cmd/caddy.go:105`
 
-**Step 1: Simplify the warning logic**
+**Step 1: Simplify the warning logic in TUI**
 
 Replace lines 1618-1627:
 
@@ -910,21 +1068,36 @@ Replace lines 1618-1627:
 
 This removes the `CatchAllFirst` check since that field no longer exists.
 
-**Step 2: Run build**
+**Step 2: Fix stale Caddyfile path in `cmd/caddy.go`**
+
+At line 105, replace:
+
+```go
+		fmt.Println("  caddy run --config ~/.config/devx/Caddyfile")
+```
+
+With:
+
+```go
+		fmt.Println("  caddy run --config ~/.config/devx/caddy-config.json")
+		fmt.Println("  (Run 'devx caddy check --fix' first to generate the config file)")
+```
+
+**Step 3: Run build**
 
 Run: `go build ./...`
 Expected: Compiles cleanly
 
-**Step 3: Commit**
+**Step 4: Commit**
 
 ```bash
-git add tui/model.go
-git commit -m "refactor: simplify TUI Caddy health warning"
+git add tui/model.go cmd/caddy.go
+git commit -m "refactor: simplify TUI health warning, fix Caddy config path in help message"
 ```
 
 ---
 
-### Task 11: Update integration test
+### Task 13: Update integration test
 
 Rewrite the Caddy integration test to test `SyncRoutes` instead of the old API-based flow.
 
@@ -1038,7 +1211,7 @@ git commit -m "test: rewrite integration test for SyncRoutes"
 
 ---
 
-### Task 12: Full test suite + manual verification
+### Task 14: Full test suite + manual verification
 
 Run all tests, build, and manually verify with a real `devx caddy check`.
 
