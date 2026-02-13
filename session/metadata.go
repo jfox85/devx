@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 )
 
@@ -170,11 +169,6 @@ func RemoveSession(name string, sess *Session) error {
 	// Kill tmux session if it exists
 	_ = killTmuxSession(name) // Don't fail on tmux errors
 
-	// Remove Caddy routes
-	if len(sess.Routes) > 0 {
-		_ = removeCaddyRoutes(name, sess.Routes) // Don't fail on Caddy errors
-	}
-
 	// Remove git worktree
 	_ = removeGitWorktree(sess.Path) // Don't fail on worktree errors
 
@@ -224,10 +218,6 @@ func removeGitWorktree(worktreePath string) error {
 	}
 
 	return nil
-}
-
-func removeCaddyRoutes(sessionName string, routes map[string]string) error {
-	return caddy.DestroySessionRoutes(sessionName, routes)
 }
 
 func getSessionsPath() string {
