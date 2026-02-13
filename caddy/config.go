@@ -39,65 +39,42 @@ type CaddyServer struct {
 	Routes []Route  `json:"routes"`
 }
 
-// NormalizeDNSName converts a service name to be DNS-compatible
-func NormalizeDNSName(serviceName string) string {
-	// Convert to lowercase
-	normalized := strings.ToLower(serviceName)
-
-	// Replace underscores and spaces with hyphens
+// sanitizeDNS is the shared helper that lowercases, replaces non-alphanumeric
+// characters with hyphens, collapses runs of hyphens, and trims leading/trailing
+// hyphens. extraReplacements are applied before the character-level pass.
+func sanitizeDNS(s string, extraReplacements ...string) string {
+	normalized := strings.ToLower(s)
+	for _, r := range extraReplacements {
+		normalized = strings.ReplaceAll(normalized, r, "-")
+	}
 	normalized = strings.ReplaceAll(normalized, "_", "-")
 	normalized = strings.ReplaceAll(normalized, " ", "-")
 
-	// Replace any non-alphanumeric characters with hyphens
 	var result strings.Builder
 	for _, r := range normalized {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
 			result.WriteRune(r)
-		} else if r != '-' {
-			result.WriteRune('-')
 		} else {
-			result.WriteRune(r)
+			result.WriteRune('-')
 		}
 	}
 
-	// Remove leading/trailing hyphens and collapse multiple hyphens
 	final := strings.Trim(result.String(), "-")
 	for strings.Contains(final, "--") {
 		final = strings.ReplaceAll(final, "--", "-")
 	}
-
 	return final
 }
 
-// SanitizeHostname converts a session name to be hostname-compatible
+// NormalizeDNSName converts a service name to be DNS-compatible
+func NormalizeDNSName(serviceName string) string {
+	return sanitizeDNS(serviceName)
+}
+
+// SanitizeHostname converts a session name to be hostname-compatible.
+// Unlike NormalizeDNSName, it also converts slashes to hyphens (for branch names like "feature/foo").
 func SanitizeHostname(sessionName string) string {
-	// Convert to lowercase
-	normalized := strings.ToLower(sessionName)
-
-	// Replace slashes, underscores, and spaces with hyphens
-	normalized = strings.ReplaceAll(normalized, "/", "-")
-	normalized = strings.ReplaceAll(normalized, "_", "-")
-	normalized = strings.ReplaceAll(normalized, " ", "-")
-
-	// Replace any non-alphanumeric characters with hyphens
-	var result strings.Builder
-	for _, r := range normalized {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			result.WriteRune(r)
-		} else if r != '-' {
-			result.WriteRune('-')
-		} else {
-			result.WriteRune(r)
-		}
-	}
-
-	// Remove leading/trailing hyphens and collapse multiple hyphens
-	final := strings.Trim(result.String(), "-")
-	for strings.Contains(final, "--") {
-		final = strings.ReplaceAll(final, "--", "-")
-	}
-
-	return final
+	return sanitizeDNS(sessionName, "/")
 }
 
 // BuildCaddyConfig generates the complete Caddy JSON config from session data
@@ -215,6 +192,9 @@ func SyncRoutes(sessions map[string]*SessionInfo) error {
 
 	// Atomic write: temp file + rename
 	dir := filepath.Dir(cfgPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
 	tmpFile, err := os.CreateTemp(dir, "caddy-config-*.json")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)

@@ -135,7 +135,7 @@ func contains(s, substr string) bool {
 }
 
 // newTestClient creates a CaddyClient wired to the given httptest.Server,
-// bypassing NewCaddyClient (which uses viper and does live discovery).
+// bypassing NewCaddyClient (which uses viper).
 func newTestClient(ts *httptest.Server, serverName string) *CaddyClient {
 	client := resty.New()
 	client.SetTimeout(5 * time.Second)
@@ -144,86 +144,6 @@ func newTestClient(ts *httptest.Server, serverName string) *CaddyClient {
 		baseURL:    ts.URL,
 		serverName: serverName,
 	}
-}
-
-// --- discoverServerName tests ---
-
-func TestDiscoverServerName(t *testing.T) {
-	t.Run("finds srv1 with :80", func(t *testing.T) {
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"srv0": map[string]any{"listen": []string{":443"}},
-				"srv1": map[string]any{"listen": []string{":80"}},
-			})
-		}))
-		defer ts.Close()
-
-		c := newTestClient(ts, "placeholder")
-		c.discoverServerName()
-		if c.serverName != "srv1" {
-			t.Errorf("expected srv1, got %s", c.serverName)
-		}
-	})
-
-	t.Run("finds srv0 with :80", func(t *testing.T) {
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"srv0": map[string]any{"listen": []string{":80"}},
-				"srv1": map[string]any{"listen": []string{":443"}},
-			})
-		}))
-		defer ts.Close()
-
-		c := newTestClient(ts, "placeholder")
-		c.discoverServerName()
-		if c.serverName != "srv0" {
-			t.Errorf("expected srv0, got %s", c.serverName)
-		}
-	})
-
-	t.Run("does not match :8080 as :80", func(t *testing.T) {
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"wrong": map[string]any{"listen": []string{":8080"}},
-				"right": map[string]any{"listen": []string{":80"}},
-			})
-		}))
-		defer ts.Close()
-
-		c := newTestClient(ts, "placeholder")
-		c.discoverServerName()
-		if c.serverName != "right" {
-			t.Errorf("expected right, got %s", c.serverName)
-		}
-	})
-
-	t.Run("keeps default when no :80 server", func(t *testing.T) {
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"myserver": map[string]any{"listen": []string{":443"}},
-			})
-		}))
-		defer ts.Close()
-
-		c := newTestClient(ts, "devx")
-		c.discoverServerName()
-		if c.serverName != "devx" {
-			t.Errorf("expected devx (unchanged), got %s", c.serverName)
-		}
-	})
-
-	t.Run("keeps default on API error", func(t *testing.T) {
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer ts.Close()
-
-		c := newTestClient(ts, "devx")
-		c.discoverServerName()
-		if c.serverName != "devx" {
-			t.Errorf("expected devx (unchanged), got %s", c.serverName)
-		}
-	})
 }
 
 // --- GetAllRoutes null/404 handling tests ---

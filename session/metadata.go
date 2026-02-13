@@ -19,7 +19,7 @@ type Session struct {
 	Branch          string            `json:"branch"`
 	Path            string            `json:"path"`
 	Ports           map[string]int    `json:"ports"`
-	Routes          map[string]string `json:"routes,omitempty"`     // service -> route ID mapping
+	Routes          map[string]string `json:"routes,omitempty"`     // service -> hostname mapping
 	EditorPID       int               `json:"editor_pid,omitempty"` // PID of the editor process
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.

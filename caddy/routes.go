@@ -52,43 +52,10 @@ func NewCaddyClient() *CaddyClient {
 	client := resty.New()
 	client.SetTimeout(10 * time.Second)
 
-	c := &CaddyClient{
+	return &CaddyClient{
 		client:     client,
 		baseURL:    caddyAPI,
 		serverName: "devx",
-	}
-	// Try to discover actual server name for health check compatibility
-	// during transition from Caddyfile to JSON config
-	c.discoverServerName()
-	return c
-}
-
-// discoverServerName finds the HTTP server listening on :80.
-// Falls back to "srv1" on any failure.
-func (c *CaddyClient) discoverServerName() {
-	resp, err := c.client.R().Get(c.baseURL + "/config/apps/http/servers")
-	if err != nil || resp.StatusCode() != http.StatusOK {
-		return
-	}
-
-	var servers map[string]json.RawMessage
-	if err := json.Unmarshal(resp.Body(), &servers); err != nil {
-		return
-	}
-
-	for name, raw := range servers {
-		var srv struct {
-			Listen []string `json:"listen"`
-		}
-		if err := json.Unmarshal(raw, &srv); err != nil {
-			continue
-		}
-		for _, addr := range srv.Listen {
-			if strings.HasSuffix(addr, ":80") {
-				c.serverName = name
-				return
-			}
-		}
 	}
 }
 

@@ -35,36 +35,18 @@ func init() {
 }
 
 func runCaddyCheck(cmd *cobra.Command, args []string) error {
-	// Load sessions
+	// Load sessions and project registry
 	store, err := session.LoadSessions()
 	if err != nil {
 		return fmt.Errorf("failed to load sessions: %w", err)
 	}
 
-	// Load project registry to get project aliases
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to load project registry: %w", err)
 	}
 
-	// Convert sessions to format needed by health check
-	sessionInfos := make(map[string]*caddy.SessionInfo)
-	for name, sess := range store.Sessions {
-		info := &caddy.SessionInfo{
-			Name:  name,
-			Ports: sess.Ports,
-		}
-
-		// Find project alias if session is in a project
-		for alias, project := range registry.Projects {
-			if sess.ProjectPath == project.Path {
-				info.ProjectAlias = alias
-				break
-			}
-		}
-
-		sessionInfos[name] = info
-	}
+	sessionInfos := buildSessionInfoMap(store, registry)
 
 	// Perform health check
 	result, err := caddy.CheckCaddyHealth(sessionInfos)
