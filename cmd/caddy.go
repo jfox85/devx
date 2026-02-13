@@ -76,14 +76,14 @@ func runCaddyCheck(cmd *cobra.Command, args []string) error {
 	displayHealthCheckResults(result)
 
 	// Fix issues if requested
-	if fixFlag && (result.RoutesNeeded > result.RoutesExisting || result.CatchAllFirst) {
-		fmt.Println("\nAttempting to fix issues...")
-		if err := caddy.RepairRoutes(result, sessionInfos); err != nil {
-			return fmt.Errorf("failed to repair routes: %w", err)
+	if fixFlag {
+		fmt.Println("\nSyncing Caddy config...")
+		if err := syncAllCaddyRoutes(); err != nil {
+			return fmt.Errorf("failed to sync routes: %w", err)
 		}
 
 		// Re-run health check to show updated status
-		fmt.Println("\nRechecking after repairs...")
+		fmt.Println("\nRechecking after sync...")
 		result, err = caddy.CheckCaddyHealth(sessionInfos)
 		if err != nil {
 			return fmt.Errorf("failed to recheck Caddy health: %w", err)
@@ -102,7 +102,8 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 	} else {
 		fmt.Printf("✗ Caddy is not running: %s\n", result.CaddyError)
 		fmt.Println("\nTo start Caddy, ensure it's installed and run:")
-		fmt.Println("  caddy run --config ~/.config/devx/Caddyfile")
+		fmt.Println("  caddy run --config ~/.config/devx/caddy-config.json")
+		fmt.Println("  (Run 'devx caddy check --fix' first to generate the config file)")
 		return
 	}
 
@@ -111,14 +112,6 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 	fmt.Printf("Routes needed:   %d\n", result.RoutesNeeded)
 	fmt.Printf("Routes existing: %d\n", result.RoutesExisting)
 	fmt.Printf("Routes working:  %d\n", result.RoutesWorking)
-
-	if result.CatchAllFirst {
-		fmt.Println("\n⚠️  WARNING: Catch-all route is blocking specific routes!")
-		fmt.Println("   This prevents session hostnames from working properly.")
-		if !fixFlag {
-			fmt.Println("   Run with --fix to repair this issue.")
-		}
-	}
 
 	// Display individual route status
 	if len(result.RouteStatuses) > 0 {
@@ -130,11 +123,7 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 		for _, status := range result.RouteStatuses {
 			statusText := "✗ Missing"
 			if status.Exists {
-				if status.IsFirst || !result.CatchAllFirst {
-					statusText = "✓ Configured"
-				} else {
-					statusText = "⚠️  Blocked"
-				}
+				statusText = "✓ Active"
 			}
 
 			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
@@ -162,7 +151,7 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 
 	// Final status
 	fmt.Println()
-	if result.RoutesNeeded == result.RoutesExisting && !result.CatchAllFirst {
+	if result.RoutesNeeded == result.RoutesExisting {
 		fmt.Println("✓ All routes are properly configured")
 	} else {
 		fmt.Println("✗ Some issues were found with Caddy routes")
