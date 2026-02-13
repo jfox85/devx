@@ -1618,12 +1618,10 @@ func (m *model) checkCaddyHealth() tea.Cmd {
 		// Generate warning message if issues found
 		var warning string
 		if !result.CaddyRunning {
-			warning = "⚠️  Caddy is not running. Session hostnames won't work."
-		} else if result.CatchAllFirst {
-			warning = "⚠️  Caddy routes are misconfigured. Run 'devx caddy check --fix' to repair."
+			warning = "Caddy is not running. Session hostnames won't work."
 		} else if result.RoutesNeeded > result.RoutesExisting {
 			missing := result.RoutesNeeded - result.RoutesExisting
-			warning = fmt.Sprintf("⚠️  %d Caddy routes are missing. Run 'devx caddy check --fix' to repair.", missing)
+			warning = fmt.Sprintf("%d Caddy routes are missing. Run 'devx caddy check --fix' to repair.", missing)
 		}
 
 		return caddyHealthMsg{warning: warning}
