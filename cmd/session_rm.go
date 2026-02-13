@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
 )
@@ -66,13 +65,6 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
 	}
 
-	// Remove Caddy routes
-	if len(sess.Routes) > 0 {
-		if err := caddy.DestroySessionRoutes(name, sess.Routes); err != nil {
-			fmt.Printf("Warning: failed to remove Caddy routes: %v\n", err)
-		}
-	}
-
 	// Run cleanup command if configured
 	if err := session.RunCleanupCommandForShell(sess); err != nil {
 		fmt.Printf("Warning: cleanup command failed: %v\n", err)
@@ -86,6 +78,11 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 	// Remove session from metadata
 	if err := store.RemoveSession(name); err != nil {
 		return fmt.Errorf("failed to remove session metadata: %w", err)
+	}
+
+	// Sync Caddy routes after removal
+	if err := syncAllCaddyRoutes(); err != nil {
+		fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)
 	}
 
 	fmt.Printf("Removed session '%s'\n", name)
