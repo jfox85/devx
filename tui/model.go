@@ -1913,7 +1913,7 @@ func (m *model) openRoutes(sessionName string) tea.Cmd {
 
 		// Open all routes in the default browser
 		for _, hostname := range sess.Routes {
-			url := fmt.Sprintf("http://%s.localhost", hostname)
+			url := fmt.Sprintf("http://%s", hostname)
 			if err := openURL(url); err != nil {
 				return errMsg{fmt.Errorf("failed to open %s: %w", url, err)}
 			}
@@ -1974,16 +1974,8 @@ func (m *model) loadHostnames(sessionName string) tea.Cmd {
 			sess, exists := store.Sessions[sessionName]
 			if exists {
 				var hostnames []string
-				for serviceName := range sess.Routes {
-					// Generate hostname based on project and session info
-					dnsServiceName := caddy.NormalizeDNSName(serviceName)
-					// Sanitize session name for hostname compatibility
-					sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
-					if sess.ProjectAlias != "" {
-						hostnames = append(hostnames, fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sanitizedSessionName, dnsServiceName))
-					} else {
-						hostnames = append(hostnames, fmt.Sprintf("%s-%s", sanitizedSessionName, dnsServiceName))
-					}
+				for _, hostname := range sess.Routes {
+					hostnames = append(hostnames, hostname)
 				}
 				sort.Strings(hostnames)
 				return hostnamesLoadedMsg{hostnames: hostnames}
@@ -1995,19 +1987,11 @@ func (m *model) loadHostnames(sessionName string) tea.Cmd {
 		client := caddy.NewCaddyClient()
 		routes, err := client.GetAllRoutes()
 		if err != nil {
-			// Fall back to generating hostnames from session data
+			// Fall back to stored hostnames from session data
 			hostnameSet := make(map[string]bool)
 			for _, sess := range store.Sessions {
-				for serviceName := range sess.Routes {
-					// Generate hostname based on project and session info
-					dnsServiceName := caddy.NormalizeDNSName(serviceName)
-					// Sanitize session name for hostname compatibility
-					sanitizedSessionName := caddy.SanitizeHostname(sess.Name)
-					if sess.ProjectAlias != "" {
-						hostnameSet[fmt.Sprintf("%s-%s-%s", sess.ProjectAlias, sanitizedSessionName, dnsServiceName)] = true
-					} else {
-						hostnameSet[fmt.Sprintf("%s-%s", sanitizedSessionName, dnsServiceName)] = true
-					}
+				for _, hostname := range sess.Routes {
+					hostnameSet[hostname] = true
 				}
 			}
 
