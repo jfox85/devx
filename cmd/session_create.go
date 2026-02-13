@@ -216,25 +216,15 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
-	// Provision Caddy routes first to get hostnames
-	routes, err := caddy.ProvisionSessionRoutesWithProject(name, portAllocation.Ports, projectAlias)
-	if err != nil {
-		fmt.Printf("Warning: %v\n", err)
-	}
-
-	// Convert routes to hostnames for environment variables
+	// Build hostname map for environment variables
 	hostnames := make(map[string]string)
-	if len(routes) > 0 {
-		for serviceName := range routes {
-			// Use the DNS-normalized service name for the hostname
-			dnsServiceName := caddy.NormalizeDNSName(serviceName)
-			// Sanitize session name for hostname compatibility
-			sanitizedSessionName := caddy.SanitizeHostname(name)
-			if projectAlias != "" {
-				hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
-			} else {
-				hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
-			}
+	for serviceName := range portAllocation.Ports {
+		dnsServiceName := caddy.NormalizeDNSName(serviceName)
+		sanitizedSessionName := caddy.SanitizeHostname(name)
+		if projectAlias != "" {
+			hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
+		} else {
+			hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
 		}
 	}
 
@@ -259,18 +249,18 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to generate tmuxp config: %w", err)
 	}
 
-	// Update session with route information
-	if len(routes) > 0 {
+	// Update session with hostname information
+	if len(hostnames) > 0 {
 		if err := store.UpdateSession(name, func(s *session.Session) {
-			if s.Routes == nil {
-				s.Routes = make(map[string]string)
-			}
-			for service, routeID := range routes {
-				s.Routes[service] = routeID
-			}
+			s.Routes = hostnames
 		}); err != nil {
-			fmt.Printf("Warning: failed to save route information: %v\n", err)
+			fmt.Printf("Warning: failed to update session routes: %v\n", err)
 		}
+	}
+
+	// Sync all Caddy routes (writes config file + reloads)
+	if err := syncAllCaddyRoutes(); err != nil {
+		fmt.Printf("Warning: %v\n", err)
 	}
 
 	fmt.Printf("Created session '%s' at %s\n", name, worktreePath)
