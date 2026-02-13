@@ -13,7 +13,6 @@ type RouteStatus struct {
 	Hostname    string
 	Port        int
 	Exists      bool
-	ServiceUp   bool
 	Error       string
 }
 
@@ -24,7 +23,6 @@ type HealthCheckResult struct {
 	RouteStatuses  []RouteStatus
 	RoutesNeeded   int
 	RoutesExisting int
-	RoutesWorking  int
 }
 
 // CheckCaddyHealth performs a comprehensive health check of Caddy and all routes
@@ -60,21 +58,11 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 	// Check each session's expected routes
 	for sessionName, sessionInfo := range sessions {
 		for serviceName, port := range sessionInfo.Ports {
-			// Normalize service name for DNS compatibility
-			normalizedServiceName := NormalizeDNSName(serviceName)
-
-			// Sanitize session name for hostname compatibility
-			sanitizedSessionName := SanitizeHostname(sessionName)
-
-			// Generate expected route ID and hostname
-			routeID := fmt.Sprintf("sess-%s-%s", sanitizedSessionName, normalizedServiceName)
-			hostname := fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, normalizedServiceName)
-
-			// Handle project prefixes if present
-			if sessionInfo.ProjectAlias != "" {
-				routeID = fmt.Sprintf("sess-%s-%s-%s", sessionInfo.ProjectAlias, sanitizedSessionName, normalizedServiceName)
-				hostname = fmt.Sprintf("%s-%s-%s.localhost", sessionInfo.ProjectAlias, sanitizedSessionName, normalizedServiceName)
+			hostname := BuildHostname(sessionName, serviceName, sessionInfo.ProjectAlias)
+			if hostname == "" {
+				continue
 			}
+			routeID := BuildRouteID(sessionName, serviceName, sessionInfo.ProjectAlias)
 
 			status := RouteStatus{
 				SessionName: sessionName,
@@ -90,7 +78,6 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 			if existingRoutes[routeID] {
 				status.Exists = true
 				result.RoutesExisting++
-				result.RoutesWorking++
 			}
 
 			result.RouteStatuses = append(result.RouteStatuses, status)

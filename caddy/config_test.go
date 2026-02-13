@@ -159,6 +159,27 @@ func TestBuildCaddyConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("project alias is sanitized in hostname", func(t *testing.T) {
+		sessions := map[string]*SessionInfo{
+			"my-session": {
+				Name:         "my-session",
+				Ports:        map[string]int{"FRONTEND": 3000},
+				ProjectAlias: "My_Project",
+			},
+		}
+		config := BuildCaddyConfig(sessions)
+
+		jsonData, _ := json.Marshal(config)
+		jsonStr := string(jsonData)
+		// ProjectAlias should be sanitized: "My_Project" -> "my-project"
+		if !contains(jsonStr, `my-project-my-session-frontend.localhost`) {
+			t.Errorf("project alias not sanitized in hostname: %s", jsonStr)
+		}
+		if !contains(jsonStr, `sess-my-project-my-session-frontend`) {
+			t.Errorf("project alias not sanitized in route ID: %s", jsonStr)
+		}
+	})
+
 	t.Run("session with empty ports produces no routes", func(t *testing.T) {
 		sessions := map[string]*SessionInfo{
 			"empty": {
@@ -180,6 +201,7 @@ func TestSyncRoutes(t *testing.T) {
 		// Use a temp dir to avoid writing to real config
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
+		t.Setenv("USERPROFILE", tmpDir) // Windows: os.UserHomeDir() checks USERPROFILE
 
 		// Create the config directory
 		configDir := filepath.Join(tmpDir, ".config", "devx")
@@ -221,6 +243,7 @@ func TestSyncRoutes(t *testing.T) {
 	t.Run("skips when disable_caddy is true", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
+		t.Setenv("USERPROFILE", tmpDir) // Windows: os.UserHomeDir() checks USERPROFILE
 
 		viper.Set("disable_caddy", true)
 		defer viper.Set("disable_caddy", false)

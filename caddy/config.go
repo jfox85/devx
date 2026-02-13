@@ -101,6 +101,36 @@ func BuildCaddyConfig(sessions map[string]*SessionInfo) CaddyConfig {
 	}
 }
 
+// BuildHostname constructs the hostname for a session/service combination.
+// Returns "" if the service name normalizes to empty.
+func BuildHostname(sessionName, serviceName, projectAlias string) string {
+	dnsService := NormalizeDNSName(serviceName)
+	if dnsService == "" {
+		return ""
+	}
+	sanitizedSession := SanitizeHostname(sessionName)
+	if projectAlias != "" {
+		sanitizedProject := NormalizeDNSName(projectAlias)
+		return fmt.Sprintf("%s-%s-%s.localhost", sanitizedProject, sanitizedSession, dnsService)
+	}
+	return fmt.Sprintf("%s-%s.localhost", sanitizedSession, dnsService)
+}
+
+// BuildRouteID constructs the route ID for a session/service combination.
+// Returns "" if the service name normalizes to empty.
+func BuildRouteID(sessionName, serviceName, projectAlias string) string {
+	dnsService := NormalizeDNSName(serviceName)
+	if dnsService == "" {
+		return ""
+	}
+	sanitizedSession := SanitizeHostname(sessionName)
+	if projectAlias != "" {
+		sanitizedProject := NormalizeDNSName(projectAlias)
+		return fmt.Sprintf("sess-%s-%s-%s", sanitizedProject, sanitizedSession, dnsService)
+	}
+	return fmt.Sprintf("sess-%s-%s", sanitizedSession, dnsService)
+}
+
 // buildRoutes generates all session routes in deterministic order
 func buildRoutes(sessions map[string]*SessionInfo) []Route {
 	var routes []Route
@@ -114,7 +144,6 @@ func buildRoutes(sessions map[string]*SessionInfo) []Route {
 
 	for _, sessionName := range sessionNames {
 		info := sessions[sessionName]
-		sanitizedSession := SanitizeHostname(sessionName)
 
 		// Sort service names for deterministic output
 		serviceNames := make([]string, 0, len(info.Ports))
@@ -125,17 +154,11 @@ func buildRoutes(sessions map[string]*SessionInfo) []Route {
 
 		for _, serviceName := range serviceNames {
 			port := info.Ports[serviceName]
-			dnsService := NormalizeDNSName(serviceName)
-			if dnsService == "" {
+			hostname := BuildHostname(sessionName, serviceName, info.ProjectAlias)
+			if hostname == "" {
 				continue
 			}
-
-			hostname := fmt.Sprintf("%s-%s.localhost", sanitizedSession, dnsService)
-			routeID := fmt.Sprintf("sess-%s-%s", sanitizedSession, dnsService)
-			if info.ProjectAlias != "" {
-				hostname = fmt.Sprintf("%s-%s-%s.localhost", info.ProjectAlias, sanitizedSession, dnsService)
-				routeID = fmt.Sprintf("sess-%s-%s-%s", info.ProjectAlias, sanitizedSession, dnsService)
-			}
+			routeID := BuildRouteID(sessionName, serviceName, info.ProjectAlias)
 
 			routes = append(routes, Route{
 				ID: routeID,

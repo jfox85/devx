@@ -93,7 +93,6 @@ func displayHealthCheckResults(result *caddy.HealthCheckResult) {
 	fmt.Printf("\n=== Route Summary ===\n")
 	fmt.Printf("Routes needed:   %d\n", result.RoutesNeeded)
 	fmt.Printf("Routes existing: %d\n", result.RoutesExisting)
-	fmt.Printf("Routes working:  %d\n", result.RoutesWorking)
 
 	// Display individual route status
 	if len(result.RouteStatuses) > 0 {

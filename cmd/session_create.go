@@ -219,13 +219,11 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	// Build hostname map for environment variables
 	hostnames := make(map[string]string)
 	for serviceName := range portAllocation.Ports {
-		dnsServiceName := caddy.NormalizeDNSName(serviceName)
-		sanitizedSessionName := caddy.SanitizeHostname(name)
-		if projectAlias != "" {
-			hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
-		} else {
-			hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
+		hostname := caddy.BuildHostname(name, serviceName, projectAlias)
+		if hostname == "" {
+			continue
 		}
+		hostnames[serviceName] = hostname
 	}
 
 	// Generate .envrc file
