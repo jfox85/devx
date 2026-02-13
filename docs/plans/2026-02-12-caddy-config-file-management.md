@@ -333,6 +333,8 @@ func SyncRoutes(sessions map[string]*SessionInfo) error {
 	}
 
 	// Atomic write: temp file + rename
+	// Note: os.CreateTemp creates with 0600 permissions, which is appropriate
+	// for a local config file (owner read/write only)
 	dir := filepath.Dir(cfgPath)
 	tmpFile, err := os.CreateTemp(dir, "caddy-config-*.json")
 	if err != nil {
@@ -781,6 +783,22 @@ Remove the catch-all detection logic (lines 55-70) and the `IsFirst` assignment 
 		}
 ```
 
+**Step 2b: Sort route statuses for deterministic output**
+
+After the loop that builds `result.RouteStatuses`, add sorting by session name then service name:
+
+```go
+	// Sort route statuses for deterministic display output
+	sort.Slice(result.RouteStatuses, func(i, j int) bool {
+		if result.RouteStatuses[i].SessionName != result.RouteStatuses[j].SessionName {
+			return result.RouteStatuses[i].SessionName < result.RouteStatuses[j].SessionName
+		}
+		return result.RouteStatuses[i].ServiceName < result.RouteStatuses[j].ServiceName
+	})
+```
+
+Add `"sort"` to the imports.
+
 **Step 3: Delete `RepairRoutes` function entirely** (lines 138-198)
 
 It's replaced by `SyncRoutes`.
@@ -809,7 +827,6 @@ Remove functions that are no longer called.
 
 **Step 1: Delete these functions from `caddy/routes.go`:**
 
-- `discoverServerName` (lines 70-97) — server name is always `devx` now
 - `CreateRoute` (lines 105-107)
 - `CreateRouteWithProject` (lines 110-171)
 - `DeleteRoute` (lines 174-187)
@@ -820,7 +837,7 @@ Remove functions that are no longer called.
 
 **Step 2: Simplify `NewCaddyClient`**
 
-Remove the `discoverServerName()` call. Hardcode `serverName` to `"devx"`:
+Remove the `discoverServerName()` call. Keep the server discovery for `GetAllRoutes` compatibility during migration — existing Caddy instances may use a different server name until the first `caddy check --fix` regenerates the config. Use `discoverServerName` as a fallback:
 
 ```go
 func NewCaddyClient() *CaddyClient {
@@ -832,13 +849,19 @@ func NewCaddyClient() *CaddyClient {
 	client := resty.New()
 	client.SetTimeout(10 * time.Second)
 
-	return &CaddyClient{
+	c := &CaddyClient{
 		client:     client,
 		baseURL:    caddyAPI,
 		serverName: "devx",
 	}
+	// Try to discover actual server name for health check compatibility
+	// during transition from Caddyfile to JSON config
+	c.discoverServerName()
+	return c
 }
 ```
+
+NOTE: Keep `discoverServerName` for now. It will be deleted in a follow-up once all users have migrated to the JSON config (at which point the server is always `"devx"`).
 
 **Step 3: Delete these tests from `caddy/routes_test.go`:**
 
@@ -848,7 +871,7 @@ func NewCaddyClient() *CaddyClient {
 - `TestRoutesUseDiscoveredServer` (lines 396-451)
 - `TestGetServiceMapping` (lines 58-83)
 
-Keep: `TestRouteGeneration`, `TestSanitizeHostname`, `TestNormalizeDNSName`, `TestGetAllRoutesNullResponse`, and `newTestClient` helper.
+Keep: `TestRouteGeneration`, `TestSanitizeHostname`, `TestNormalizeDNSName`, `TestGetAllRoutesNullResponse`, `TestDiscoverServerName` (still used during transition), `newTestClient` helper, and the `contains` helper (also used by `config_test.go`).
 
 **Step 4: Run tests**
 
@@ -1211,7 +1234,120 @@ git commit -m "test: rewrite integration test for SyncRoutes"
 
 ---
 
-### Task 14: Full test suite + manual verification
+### Task 14: Update `caddy-start.sh`
+
+The startup script still references the old Caddyfile. Update it to use the generated JSON config, and generate the config if it doesn't exist yet.
+
+**Files:**
+- Modify: `~/.config/devx/caddy-start.sh` (runtime file, not in repo)
+
+**Step 1: Update the script**
+
+This is a runtime file at `~/.config/devx/caddy-start.sh`. Update it to:
+
+```bash
+#!/bin/bash
+
+# Start Caddy for devx development
+echo "Starting Caddy for devx..."
+
+# Check if Caddy is already running
+if curl -s http://localhost:2019/config/ > /dev/null 2>&1; then
+    echo "Caddy is already running on port 2019"
+    exit 0
+fi
+
+CONFIG_FILE="$HOME/.config/devx/caddy-config.json"
+
+# Generate config if it doesn't exist
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "No config file found. Run 'devx caddy check --fix' to generate it."
+    echo "Starting with minimal config..."
+    cat > "$CONFIG_FILE" <<'ENDJSON'
+{"admin":{"listen":"localhost:2019"},"apps":{"http":{"servers":{"devx":{"listen":[":80"],"routes":[]}}}}}
+ENDJSON
+fi
+
+# Start Caddy in the background
+caddy run --config "$CONFIG_FILE" > ~/.config/devx/caddy.log 2>&1 &
+CADDY_PID=$!
+
+# Wait a moment for Caddy to start
+sleep 2
+
+# Check if Caddy started successfully
+if curl -s http://localhost:2019/config/ > /dev/null 2>&1; then
+    echo "Caddy started successfully (PID: $CADDY_PID)"
+    echo "   Admin API: http://localhost:2019"
+    echo "   Log file: ~/.config/devx/caddy.log"
+else
+    echo "Failed to start Caddy. Check ~/.config/devx/caddy.log for errors"
+    exit 1
+fi
+```
+
+**Step 2: No commit** — this is a runtime file, not tracked in git. Note in the PR description that users should update their `caddy-start.sh` or re-run setup.
+
+---
+
+### Task 15: Add missing tests — project alias edge case and empty state
+
+Fill test coverage gaps identified in review.
+
+**Files:**
+- Modify: `caddy/config_test.go`
+
+**Step 1: Add project alias test to `TestBuildCaddyConfig`**
+
+Add to `TestBuildCaddyConfig`:
+
+```go
+	t.Run("session without project alias when others have one", func(t *testing.T) {
+		sessions := map[string]*SessionInfo{
+			"with-project": {
+				Name:         "with-project",
+				Ports:        map[string]int{"UI": 3000},
+				ProjectAlias: "myapp",
+			},
+			"no-project": {
+				Name:  "no-project",
+				Ports: map[string]int{"UI": 4000},
+			},
+		}
+		config := BuildCaddyConfig(sessions)
+
+		jsonData, _ := json.Marshal(config)
+		jsonStr := string(jsonData)
+		// Project-prefixed session
+		if !contains(jsonStr, `myapp-with-project-ui.localhost`) {
+			t.Errorf("missing project-prefixed hostname: %s", jsonStr)
+		}
+		// Non-project session
+		if !contains(jsonStr, `no-project-ui.localhost`) {
+			t.Errorf("missing non-project hostname: %s", jsonStr)
+		}
+		// Should not have project prefix on the non-project session
+		if contains(jsonStr, `myapp-no-project`) {
+			t.Errorf("non-project session incorrectly got project prefix: %s", jsonStr)
+		}
+	})
+```
+
+**Step 2: Run tests**
+
+Run: `go test ./caddy/ -run TestBuildCaddyConfig -v`
+Expected: PASS
+
+**Step 3: Commit**
+
+```bash
+git add caddy/config_test.go
+git commit -m "test: add project alias edge case and mixed-project tests"
+```
+
+---
+
+### Task 16: Full test suite + manual verification
 
 Run all tests, build, and manually verify with a real `devx caddy check`.
 
