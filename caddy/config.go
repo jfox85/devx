@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -36,6 +37,67 @@ type CaddyHTTP struct {
 type CaddyServer struct {
 	Listen []string `json:"listen"`
 	Routes []Route  `json:"routes"`
+}
+
+// NormalizeDNSName converts a service name to be DNS-compatible
+func NormalizeDNSName(serviceName string) string {
+	// Convert to lowercase
+	normalized := strings.ToLower(serviceName)
+
+	// Replace underscores and spaces with hyphens
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.ReplaceAll(normalized, " ", "-")
+
+	// Replace any non-alphanumeric characters with hyphens
+	var result strings.Builder
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else if r != '-' {
+			result.WriteRune('-')
+		} else {
+			result.WriteRune(r)
+		}
+	}
+
+	// Remove leading/trailing hyphens and collapse multiple hyphens
+	final := strings.Trim(result.String(), "-")
+	for strings.Contains(final, "--") {
+		final = strings.ReplaceAll(final, "--", "-")
+	}
+
+	return final
+}
+
+// SanitizeHostname converts a session name to be hostname-compatible
+func SanitizeHostname(sessionName string) string {
+	// Convert to lowercase
+	normalized := strings.ToLower(sessionName)
+
+	// Replace slashes, underscores, and spaces with hyphens
+	normalized = strings.ReplaceAll(normalized, "/", "-")
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.ReplaceAll(normalized, " ", "-")
+
+	// Replace any non-alphanumeric characters with hyphens
+	var result strings.Builder
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else if r != '-' {
+			result.WriteRune('-')
+		} else {
+			result.WriteRune(r)
+		}
+	}
+
+	// Remove leading/trailing hyphens and collapse multiple hyphens
+	final := strings.Trim(result.String(), "-")
+	for strings.Contains(final, "--") {
+		final = strings.ReplaceAll(final, "--", "-")
+	}
+
+	return final
 }
 
 // BuildCaddyConfig generates the complete Caddy JSON config from session data
