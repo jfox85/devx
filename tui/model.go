@@ -49,6 +49,12 @@ type projectItem struct {
 	description string
 }
 
+// displayEntry maps a session index to its position in the filtered view.
+type displayEntry struct {
+	sessIdx   int // index into model.sessions
+	filterIdx int // position in filtered view (-1 if not filtered)
+}
+
 type state int
 
 const (
@@ -108,6 +114,15 @@ type model struct {
 	gitStatsTTLOthers       time.Duration
 	baseBranchTTL           time.Duration
 	maxStatsUpdatesPerCycle int
+	// MRU slots
+	numberedSlots     map[int]string // slot number -> session name
+	slotsBootstrapped bool           // true after first bootstrap pass
+	// Search/filter fields
+	filterActive    bool
+	searchInput     textinput.Model
+	searchFilter    string
+	filteredIndices []int // indices into m.sessions that match the filter
+	searchCursor    int   // cursor within filtered results
 }
 
 // gitStatsEntry holds cached additions/deletions for a repo+branch
@@ -133,6 +148,7 @@ type keyMap struct {
 	Quit        key.Binding
 	Help        key.Binding
 	Back        key.Binding
+	Search      key.Binding
 }
 
 var keys = keyMap{
@@ -196,6 +212,10 @@ var keys = keyMap{
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "back"),
 	),
+	Search: key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "search"),
+	),
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
@@ -206,7 +226,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter},
 		{k.Create, k.Delete, k.Open},
-		{k.Preview, k.Help, k.Quit},
+		{k.Search, k.Preview, k.Help, k.Quit},
 	}
 }
 
@@ -214,6 +234,10 @@ func InitialModel() *model {
 	ti := textinput.New()
 	ti.Placeholder = "session-name"
 	ti.CharLimit = 50
+
+	si := textinput.New()
+	si.Placeholder = "search sessions..."
+	si.CharLimit = 50
 
 	// Check for debug mode and level via environment variable
 	debugEnv := os.Getenv("DEVX_DEBUG")
@@ -248,6 +272,7 @@ func InitialModel() *model {
 		help:                    help.New(),
 		keys:                    keys,
 		textInput:               ti,
+		searchInput:             si,
 		showPreview:             true, // Enable preview by default
 		width:                   80,   // Default width
 		height:                  24,   // Default height
@@ -268,6 +293,7 @@ func InitialModel() *model {
 		gitStatsTTLOthers:       2 * time.Minute,
 		baseBranchTTL:           time.Hour,
 		maxStatsUpdatesPerCycle: 5,
+		numberedSlots:           make(map[int]string),
 	}
 
 	if debugMode {
@@ -349,7 +375,7 @@ func (m *model) loadSessions() tea.Msg {
 		return sessions[i].name < sessions[j].name
 	})
 
-	return sessionsLoadedMsg{sessions}
+	return sessionsLoadedMsg{sessions: sessions, store: store}
 }
 
 func (m *model) loadProjects() tea.Msg {
@@ -378,6 +404,7 @@ func (m *model) loadProjects() tea.Msg {
 
 type sessionsLoadedMsg struct {
 	sessions []sessionItem
+	store    *session.SessionStore // carry store to avoid reloading for slots
 }
 
 type projectsLoadedMsg struct {
@@ -462,9 +489,65 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch m.state {
 		case stateList:
+			// When filter is active, intercept keys for the search input
+			if m.filterActive {
+				switch {
+				case key.Matches(msg, m.keys.Back): // Esc
+					m.filterActive = false
+					m.searchInput.Blur()
+					m.searchFilter = ""
+					m.filteredIndices = nil
+					m.searchCursor = 0
+
+				case msg.Type == tea.KeyEnter:
+					// Jump cursor to selected filtered result, close filter
+					if len(m.filteredIndices) > 0 && m.searchCursor < len(m.filteredIndices) {
+						m.cursor = m.filteredIndices[m.searchCursor]
+					}
+					m.filterActive = false
+					m.searchInput.Blur()
+					m.searchFilter = ""
+					m.filteredIndices = nil
+					m.searchCursor = 0
+
+				case msg.Type == tea.KeyUp:
+					if m.searchCursor > 0 {
+						m.searchCursor--
+					}
+
+				case msg.Type == tea.KeyDown:
+					if len(m.filteredIndices) > 0 && m.searchCursor < len(m.filteredIndices)-1 {
+						m.searchCursor++
+					}
+
+				default:
+					var cmd tea.Cmd
+					m.searchInput, cmd = m.searchInput.Update(msg)
+					m.searchFilter = strings.ToLower(strings.TrimSpace(m.searchInput.Value()))
+					m.filteredIndices = nil
+					m.searchCursor = 0
+					for i, sess := range m.sessions {
+						if m.searchFilter == "" || strings.Contains(strings.ToLower(sess.name), m.searchFilter) {
+							m.filteredIndices = append(m.filteredIndices, i)
+						}
+					}
+					return m, cmd
+				}
+				return m, nil
+			}
+
 			switch {
 			case key.Matches(msg, m.keys.Quit):
 				return m, tea.Quit
+
+			case key.Matches(msg, m.keys.Search):
+				m.filterActive = true
+				m.searchInput.Reset()
+				m.searchInput.Focus()
+				m.searchFilter = ""
+				m.filteredIndices = nil
+				m.searchCursor = 0
+				return m, textinput.Blink
 
 			case key.Matches(msg, m.keys.Up):
 				if m.cursor > 0 {
@@ -533,12 +616,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
 
-			// Handle number keys 1-9 for quick navigation
+			// Handle number keys 1-9 for quick navigation (MRU slot-based)
 			case msg.String() >= "1" && msg.String() <= "9":
-				// Convert to 0-based index
-				targetIndex := int(msg.String()[0] - '1')
-				if targetIndex < len(m.sessions) {
-					m.cursor = targetIndex
+				slot := int(msg.String()[0] - '0')
+				if sessName, ok := m.numberedSlots[slot]; ok {
+					if idx := m.sessionIndexByName(sessName); idx >= 0 {
+						m.cursor = idx
+					}
 				}
 			}
 
@@ -762,6 +846,59 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Rebuild filteredIndices if filter is active so they stay in sync
+		if m.filterActive && m.searchFilter != "" {
+			m.filteredIndices = nil
+			for i, sess := range m.sessions {
+				if strings.Contains(strings.ToLower(sess.name), m.searchFilter) {
+					m.filteredIndices = append(m.filteredIndices, i)
+				}
+			}
+			if m.searchCursor >= len(m.filteredIndices) {
+				m.searchCursor = len(m.filteredIndices) - 1
+			}
+			if m.searchCursor < 0 {
+				m.searchCursor = 0
+			}
+		}
+
+		// Load numbered slots from the store we already have
+		slotStore := msg.store
+		if slotStore != nil {
+			slotStore.ReconcileSlots()
+			// Bootstrap: fill any free slots (1-9) with unslotted sessions,
+			// but only on the first load to avoid repeated work every 2s.
+			if !m.slotsBootstrapped {
+				changed := false
+				// Sort session names for deterministic slot assignment
+				names := make([]string, 0, len(slotStore.Sessions))
+				for name := range slotStore.Sessions {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for i := 1; i <= 9; i++ {
+					if _, taken := slotStore.NumberedSlots[i]; taken {
+						continue
+					}
+					// Find an unslotted session to fill this free slot
+					for _, name := range names {
+						if slotStore.GetSlotForSession(name) == 0 {
+							slotStore.NumberedSlots[i] = name
+							changed = true
+							break
+						}
+					}
+				}
+				if changed {
+					_ = slotStore.Save()
+				}
+				m.slotsBootstrapped = true
+			}
+			m.numberedSlots = slotStore.NumberedSlots
+		} else {
+			m.numberedSlots = make(map[int]string)
+		}
+
 		// Schedule background git stats updates with TTLs (selected prioritized)
 		var cmds []tea.Cmd
 		now := time.Now()
@@ -959,7 +1096,11 @@ func (m *model) View() string {
 	} else {
 		switch m.state {
 		case stateList:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
+			if m.filterActive {
+				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: jump to session • esc: cancel search")
+			} else {
+				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump (MRU) • /: search • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
+			}
 		case stateCreating:
 			footer = footerStyle.Width(m.width).Render("enter: create session • esc: cancel")
 		case stateProjectSelect:
@@ -990,6 +1131,117 @@ func (m *model) View() string {
 		Height(availableHeight).
 		MaxHeight(availableHeight).
 		Render(content) + "\n" + footer
+}
+
+func (m *model) buildFilteredEntries() []displayEntry {
+	if m.filterActive && m.searchFilter != "" && m.filteredIndices != nil {
+		entries := make([]displayEntry, len(m.filteredIndices))
+		for fi, si := range m.filteredIndices {
+			entries[fi] = displayEntry{sessIdx: si, filterIdx: fi}
+		}
+		return entries
+	}
+	entries := make([]displayEntry, len(m.sessions))
+	for i := range m.sessions {
+		entries[i] = displayEntry{sessIdx: i, filterIdx: -1}
+	}
+	return entries
+}
+
+func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, showDetails bool) {
+	if m.filterActive && m.searchFilter != "" && len(entries) == 0 {
+		w.WriteString(dimStyle.Render("  No matching sessions") + "\n")
+		return
+	}
+
+	var currentProject string
+	for _, entry := range entries {
+		sess := m.sessions[entry.sessIdx]
+
+		// Add project header if this is a new project
+		if sess.projectAlias != currentProject {
+			if currentProject != "" {
+				w.WriteString("\n")
+			}
+			currentProject = sess.projectAlias
+
+			projectHeader := "No Project"
+			if sess.projectAlias != "" {
+				if sess.projectName != "" {
+					projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
+				} else {
+					projectHeader = sess.projectAlias
+				}
+			}
+
+			w.WriteString(headerStyle.Render(projectHeader) + "\n")
+		}
+
+		// Cursor logic: use searchCursor when filtering, else main cursor
+		isSelected := false
+		if entry.filterIdx >= 0 {
+			isSelected = entry.filterIdx == m.searchCursor
+		} else {
+			isSelected = m.cursor == entry.sessIdx
+		}
+
+		cursor := "  "
+		if isSelected {
+			cursor = "> "
+		}
+
+		// Add MRU slot number if this session has one
+		numberPrefix := "   "
+		for slot, name := range m.numberedSlots {
+			if name == sess.name {
+				numberPrefix = fmt.Sprintf("%d. ", slot)
+				break
+			}
+		}
+
+		// Add attention indicator
+		indicator := " "
+		if sess.attentionFlag {
+			indicator = "🔔"
+		}
+
+		line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
+		if isSelected {
+			line = selectedStyle.Render(line)
+		}
+		w.WriteString(line + "\n")
+
+		// Show details for selected session (inline, only when not filtering)
+		if showDetails && !m.filterActive && m.cursor == entry.sessIdx {
+			details := m.getSessionDetails(sess)
+			lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
+			for _, line := range lines {
+				w.WriteString(dimStyle.Render(line) + "\n")
+			}
+		}
+	}
+}
+
+func (m *model) renderSearchBox(w *strings.Builder, availableWidth int) {
+	if m.filterActive {
+		w.WriteString("\n")
+		// Fit search box to available width
+		// Account for MarginLeft(2) + border(2) + padding(2) = 6 chars of overhead
+		boxWidth := availableWidth - 6
+		if boxWidth > 40 {
+			boxWidth = 40
+		}
+		if boxWidth < 15 {
+			boxWidth = 15
+		}
+		searchBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("170")).
+			Padding(0, 1).
+			Width(boxWidth).
+			MarginLeft(2)
+		w.WriteString(searchBox.Render("/ " + m.searchInput.View()))
+	}
 }
 
 func (m *model) listView() string {
@@ -1026,63 +1278,9 @@ func (m *model) listView() string {
 			b.WriteString(warningStyle.Render(m.caddyWarning) + "\n\n")
 		}
 
-		// Group sessions by project for display
-		var currentProject string
-		for i, sess := range m.sessions {
-			// Add project header if this is a new project
-			if sess.projectAlias != currentProject {
-				if currentProject != "" {
-					b.WriteString("\n") // Add spacing between projects
-				}
-				currentProject = sess.projectAlias
-
-				projectHeader := "No Project"
-				if sess.projectAlias != "" {
-					if sess.projectName != "" {
-						projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
-					} else {
-						projectHeader = sess.projectAlias
-					}
-				}
-
-				b.WriteString(headerStyle.Render(projectHeader) + "\n")
-			}
-
-			cursor := "  "
-			if m.cursor == i {
-				cursor = "> "
-			}
-
-			// Add number shortcut for first 9 items
-			numberPrefix := ""
-			if i < 9 {
-				numberPrefix = fmt.Sprintf("%d. ", i+1)
-			} else {
-				numberPrefix = "   " // Maintain alignment
-			}
-
-			// Add attention indicator
-			indicator := " "
-			if sess.attentionFlag {
-				indicator = "🔔"
-			}
-
-			line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
-			if m.cursor == i {
-				line = selectedStyle.Render(line)
-			}
-			b.WriteString(line + "\n")
-
-			// Show details for selected session (inline)
-			if m.cursor == i {
-				details := m.getSessionDetails(sess)
-				// Apply dimStyle to each line separately to avoid layout issues
-				lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
-				for _, line := range lines {
-					b.WriteString(dimStyle.Render(line) + "\n")
-				}
-			}
-		}
+		entries := m.buildFilteredEntries()
+		m.renderSessionList(&b, entries, true) // true = show inline details
+		m.renderSearchBox(&b, m.width)
 
 		return b.String()
 	}
@@ -1111,53 +1309,11 @@ func (m *model) listView() string {
 		sessionList.WriteString(warningStyle.Render("⚠️ "+condensedWarning) + "\n\n")
 	}
 
-	// Group sessions by project for display
-	var currentProject string
-	for i, sess := range m.sessions {
-		// Add project header if this is a new project
-		if sess.projectAlias != currentProject {
-			if currentProject != "" {
-				sessionList.WriteString("\n") // Add spacing between projects
-			}
-			currentProject = sess.projectAlias
-
-			projectHeader := "No Project"
-			if sess.projectAlias != "" {
-				if sess.projectName != "" {
-					projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
-				} else {
-					projectHeader = sess.projectAlias
-				}
-			}
-
-			sessionList.WriteString(headerStyle.Render(projectHeader) + "\n")
-		}
-
-		cursor := "  "
-		if m.cursor == i {
-			cursor = "> "
-		}
-
-		// Add number shortcut for first 9 items
-		numberPrefix := ""
-		if i < 9 {
-			numberPrefix = fmt.Sprintf("%d. ", i+1)
-		} else {
-			numberPrefix = "   " // Maintain alignment
-		}
-
-		// Add attention indicator
-		indicator := " "
-		if sess.attentionFlag {
-			indicator = "🔔"
-		}
-
-		line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
-		if m.cursor == i {
-			line = selectedStyle.Render(line)
-		}
-		sessionList.WriteString(line + "\n")
-	}
+	entries := m.buildFilteredEntries()
+	m.renderSessionList(&sessionList, entries, false) // false = no inline details
+	// In preview mode, the search box renders inside the left pane which has
+	// border(2) + padding(4) = 6 chars of overhead, so pass the inner width.
+	m.renderSearchBox(&sessionList, listWidth-6)
 
 	// Build preview pane
 	var preview string
@@ -1718,6 +1874,16 @@ func (m *model) projectSelectView() string {
 	return b.String()
 }
 
+// sessionIndexByName returns the index of a session in m.sessions, or -1.
+func (m *model) sessionIndexByName(name string) int {
+	for i, s := range m.sessions {
+		if s.name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 func (m *model) startSessionCreation() tea.Cmd {
 	// Load projects to see if we need to show project selection
 	return func() tea.Msg {
@@ -1770,6 +1936,9 @@ func (m *model) attachSession(name string) tea.Cmd {
 		checkCmd := exec.Command("tmux", "has-session", "-t", name)
 		tmuxExists := checkCmd.Run() == nil
 		m.debugLogger.Printf("Session '%s' tmux status: exists=%t", name, tmuxExists)
+
+		// RecordAttach and AssignSlot are handled by the CLI command
+		// (devx session attach), so we don't duplicate them here.
 
 		cmd := attachCmd(name)
 		m.debugLogger.Printf("Running attach command: %s %v", cmd.Path, cmd.Args)

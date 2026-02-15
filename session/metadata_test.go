@@ -1,8 +1,10 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestSessionStore(t *testing.T) {
@@ -118,5 +120,286 @@ func TestSessionStoreUpdate(t *testing.T) {
 	// Verify UpdatedAt was changed
 	if session.UpdatedAt.Equal(session.CreatedAt) {
 		t.Error("expected UpdatedAt to be different from CreatedAt")
+	}
+}
+
+func TestSessionLastAttached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+	_ = store.AddSession("test-sess", "main", "/path", map[string]int{"PORT": 3000})
+
+	// LastAttached should be zero initially
+	sess, _ := store.GetSession("test-sess")
+	if !sess.LastAttached.IsZero() {
+		t.Error("expected LastAttached to be zero initially")
+	}
+
+	// Record attach
+	err = store.RecordAttach("test-sess")
+	if err != nil {
+		t.Fatalf("failed to record attach: %v", err)
+	}
+
+	sess, _ = store.GetSession("test-sess")
+	if sess.LastAttached.IsZero() {
+		t.Error("expected LastAttached to be set after RecordAttach")
+	}
+}
+
+func TestNumberedSlots_AssignSlot(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+	_ = store.AddSession("sess-a", "main", "/a", map[string]int{})
+	_ = store.AddSession("sess-b", "main", "/b", map[string]int{})
+
+	// Assign slot for sess-a — should get slot 1 (lowest available)
+	slot, err := store.AssignSlot("sess-a")
+	if err != nil {
+		t.Fatalf("failed to assign slot: %v", err)
+	}
+	if slot != 1 {
+		t.Errorf("expected slot 1, got %d", slot)
+	}
+
+	// Assign slot for sess-b — should get slot 2
+	slot, err = store.AssignSlot("sess-b")
+	if err != nil {
+		t.Fatalf("failed to assign slot: %v", err)
+	}
+	if slot != 2 {
+		t.Errorf("expected slot 2, got %d", slot)
+	}
+
+	// Assign again for sess-a — should keep slot 1 (stable)
+	slot, err = store.AssignSlot("sess-a")
+	if err != nil {
+		t.Fatalf("failed to assign slot: %v", err)
+	}
+	if slot != 1 {
+		t.Errorf("expected sess-a to keep slot 1, got %d", slot)
+	}
+}
+
+func TestNumberedSlots_EvictLRU(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	// Create 10 sessions, assign slots to first 9
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("sess-%d", i)
+		_ = store.AddSession(name, "main", fmt.Sprintf("/%d", i), map[string]int{})
+		// Set LastAttached so sess-1 is oldest
+		_ = store.UpdateSession(name, func(s *Session) {
+			s.LastAttached = time.Now().Add(time.Duration(i) * time.Minute)
+		})
+	}
+
+	for i := 1; i <= 9; i++ {
+		_, _ = store.AssignSlot(fmt.Sprintf("sess-%d", i))
+	}
+
+	// All 9 slots full. Assign slot for sess-10 — should evict sess-1 (oldest LastAttached)
+	slot, err := store.AssignSlot("sess-10")
+	if err != nil {
+		t.Fatalf("failed to assign slot: %v", err)
+	}
+
+	// sess-10 should have taken sess-1's slot (slot 1)
+	if slot != 1 {
+		t.Errorf("expected sess-10 to get slot 1 (evicting sess-1), got %d", slot)
+	}
+
+	// sess-1 should no longer have a slot
+	if s := store.GetSlotForSession("sess-1"); s != 0 {
+		t.Errorf("expected sess-1 to have no slot, got %d", s)
+	}
+}
+
+func TestNumberedSlots_Reconcile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+	_ = store.AddSession("sess-a", "main", "/a", map[string]int{})
+	_, _ = store.AssignSlot("sess-a")
+
+	// Remove session, then reconcile — slot should be freed
+	_ = store.RemoveSession("sess-a")
+	store.ReconcileSlots()
+
+	if s := store.GetSlotForSession("sess-a"); s != 0 {
+		t.Errorf("expected no slot for removed session, got %d", s)
+	}
+}
+
+func TestRecordAttach_NonexistentSession(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	err = store.RecordAttach("nonexistent")
+	if err == nil {
+		t.Error("expected error when recording attach for nonexistent session")
+	}
+}
+
+func TestAssignSlot_NonexistentSession(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	_, err = store.AssignSlot("nonexistent")
+	if err == nil {
+		t.Error("expected error when assigning slot for nonexistent session")
+	}
+}
+
+func TestNumberedSlots_EvictAllZeroLastAttached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	// Create 10 sessions, all with zero LastAttached
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("sess-%d", i)
+		_ = store.AddSession(name, "main", fmt.Sprintf("/%d", i), map[string]int{})
+	}
+	for i := 1; i <= 9; i++ {
+		_, _ = store.AssignSlot(fmt.Sprintf("sess-%d", i))
+	}
+
+	// All zero LastAttached: eviction should still succeed deterministically
+	// (lowest slot number with zero time gets evicted)
+	slot, err := store.AssignSlot("sess-10")
+	if err != nil {
+		t.Fatalf("failed to assign slot with all-zero LastAttached: %v", err)
+	}
+	if slot < 1 || slot > 9 {
+		t.Errorf("expected valid slot 1-9, got %d", slot)
+	}
+
+	// Verify sess-10 now has the slot
+	if got := store.GetSlotForSession("sess-10"); got != slot {
+		t.Errorf("expected sess-10 at slot %d, got %d", slot, got)
+	}
+}
+
+func TestNumberedSlots_StaleSlotReuse(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	// Create 9 sessions and fill all slots
+	for i := 1; i <= 9; i++ {
+		name := fmt.Sprintf("sess-%d", i)
+		_ = store.AddSession(name, "main", fmt.Sprintf("/%d", i), map[string]int{})
+		_, _ = store.AssignSlot(name)
+	}
+
+	// Remove sess-3 from sessions but leave its slot (simulates stale slot)
+	delete(store.Sessions, "sess-3")
+
+	// Add a new session
+	_ = store.AddSession("sess-new", "main", "/new", map[string]int{})
+
+	// Assign slot — should reuse the stale slot 3
+	slot, err := store.AssignSlot("sess-new")
+	if err != nil {
+		t.Fatalf("failed to assign slot: %v", err)
+	}
+	if slot != 3 {
+		t.Errorf("expected stale slot 3 to be reused, got %d", slot)
+	}
+}
+
+func TestNumberedSlots_GetSessionForSlot(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+	_ = store.AddSession("sess-a", "main", "/a", map[string]int{})
+	_, _ = store.AssignSlot("sess-a")
+
+	name := store.GetSessionForSlot(1)
+	if name != "sess-a" {
+		t.Errorf("expected 'sess-a' for slot 1, got '%s'", name)
+	}
+
+	name = store.GetSessionForSlot(5)
+	if name != "" {
+		t.Errorf("expected empty for unassigned slot 5, got '%s'", name)
 	}
 }

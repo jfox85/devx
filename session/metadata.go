@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,12 +25,14 @@ type Session struct {
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
 	AttentionTime   time.Time         `json:"attention_time,omitempty"`
+	LastAttached    time.Time         `json:"last_attached,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 type SessionStore struct {
-	Sessions map[string]*Session `json:"sessions"`
+	Sessions      map[string]*Session `json:"sessions"`
+	NumberedSlots map[int]string      `json:"numbered_slots,omitempty"`
 }
 
 // LoadSessions loads the sessions from the metadata file
@@ -44,7 +47,10 @@ func LoadSessions() (*SessionStore, error) {
 
 	// If file doesn't exist, return empty store
 	if _, err := os.Stat(sessionsPath); os.IsNotExist(err) {
-		return &SessionStore{Sessions: make(map[string]*Session)}, nil
+		return &SessionStore{
+			Sessions:      make(map[string]*Session),
+			NumberedSlots: make(map[int]string),
+		}, nil
 	}
 
 	data, err := os.ReadFile(sessionsPath)
@@ -59,6 +65,9 @@ func LoadSessions() (*SessionStore, error) {
 
 	if store.Sessions == nil {
 		store.Sessions = make(map[string]*Session)
+	}
+	if store.NumberedSlots == nil {
+		store.NumberedSlots = make(map[int]string)
 	}
 
 	return &store, nil
@@ -140,6 +149,13 @@ func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error
 	return s.Save()
 }
 
+// RecordAttach updates the LastAttached timestamp for a session
+func (s *SessionStore) RecordAttach(name string) error {
+	return s.UpdateSession(name, func(sess *Session) {
+		sess.LastAttached = time.Now()
+	})
+}
+
 // RemoveSession removes a session from the store
 func (s *SessionStore) RemoveSession(name string) error {
 	if _, exists := s.Sessions[name]; !exists {
@@ -157,7 +173,10 @@ func LoadRegistry() (*SessionStore, error) {
 
 // ClearRegistry removes all sessions and clears the sessions file
 func ClearRegistry() error {
-	store := &SessionStore{Sessions: make(map[string]*Session)}
+	store := &SessionStore{
+		Sessions:      make(map[string]*Session),
+		NumberedSlots: make(map[int]string),
+	}
 	return store.Save()
 }
 
@@ -303,4 +322,78 @@ func GetCurrentSessionName() string {
 	}
 
 	return ""
+}
+
+// AssignSlot assigns a numbered slot (1-9) to a session.
+// If the session already has a slot, returns the existing slot (stable).
+// If a free slot exists, assigns the lowest available.
+// If all 9 are full, evicts the session with the oldest LastAttached.
+func (s *SessionStore) AssignSlot(name string) (int, error) {
+	if _, exists := s.Sessions[name]; !exists {
+		return 0, fmt.Errorf("session '%s' not found", name)
+	}
+
+	// Check if session already has a slot
+	if slot := s.GetSlotForSession(name); slot != 0 {
+		return slot, nil
+	}
+
+	// Find lowest available slot (1-9)
+	for i := 1; i <= 9; i++ {
+		if _, taken := s.NumberedSlots[i]; !taken {
+			s.NumberedSlots[i] = name
+			return i, s.Save()
+		}
+	}
+
+	// All slots full — evict the session with the oldest LastAttached.
+	// Iterate slots in ascending order for deterministic tie-breaking.
+	slots := make([]int, 0, len(s.NumberedSlots))
+	for slot := range s.NumberedSlots {
+		slots = append(slots, slot)
+	}
+	sort.Ints(slots)
+
+	oldestSlot := 0
+	var oldestTime time.Time
+	for _, slot := range slots {
+		sessName := s.NumberedSlots[slot]
+		sess, exists := s.Sessions[sessName]
+		if !exists {
+			// Stale slot, use it immediately
+			s.NumberedSlots[slot] = name
+			return slot, s.Save()
+		}
+		if oldestSlot == 0 || sess.LastAttached.Before(oldestTime) {
+			oldestSlot = slot
+			oldestTime = sess.LastAttached
+		}
+	}
+
+	s.NumberedSlots[oldestSlot] = name
+	return oldestSlot, s.Save()
+}
+
+// GetSlotForSession returns the slot number for a session, or 0 if unassigned.
+func (s *SessionStore) GetSlotForSession(name string) int {
+	for slot, sessName := range s.NumberedSlots {
+		if sessName == name {
+			return slot
+		}
+	}
+	return 0
+}
+
+// GetSessionForSlot returns the session name assigned to a slot, or "" if empty.
+func (s *SessionStore) GetSessionForSlot(slot int) string {
+	return s.NumberedSlots[slot]
+}
+
+// ReconcileSlots removes slot assignments for sessions that no longer exist.
+func (s *SessionStore) ReconcileSlots() {
+	for slot, name := range s.NumberedSlots {
+		if _, exists := s.Sessions[name]; !exists {
+			delete(s.NumberedSlots, slot)
+		}
+	}
 }
