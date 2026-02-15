@@ -49,6 +49,12 @@ type projectItem struct {
 	description string
 }
 
+// displayEntry maps a session index to its position in the filtered view.
+type displayEntry struct {
+	sessIdx   int // index into model.sessions
+	filterIdx int // position in filtered view (-1 if not filtered)
+}
+
 type state int
 
 const (
@@ -500,6 +506,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.searchInput.Blur()
 					m.searchFilter = ""
 					m.filteredIndices = nil
+					m.searchCursor = 0
 
 				case key.Matches(msg, m.keys.Up):
 					if m.searchCursor > 0 {
@@ -842,9 +849,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if slotErr == nil {
 			slotStore.ReconcileSlots()
 			// Bootstrap: assign slots to any session that doesn't have one yet
-			for name := range slotStore.Sessions {
-				if slotStore.GetSlotForSession(name) == 0 {
-					slotStore.AssignSlot(name)
+			if len(slotStore.NumberedSlots) < 9 || len(slotStore.NumberedSlots) < len(slotStore.Sessions) {
+				for name := range slotStore.Sessions {
+					if slotStore.GetSlotForSession(name) == 0 {
+						_, _ = slotStore.AssignSlot(name)
+					}
 				}
 			}
 			_ = slotStore.Save()
@@ -1087,6 +1096,108 @@ func (m *model) View() string {
 		Render(content) + "\n" + footer
 }
 
+func (m *model) buildFilteredEntries() []displayEntry {
+	if m.filterActive && m.searchFilter != "" && m.filteredIndices != nil {
+		entries := make([]displayEntry, len(m.filteredIndices))
+		for fi, si := range m.filteredIndices {
+			entries[fi] = displayEntry{sessIdx: si, filterIdx: fi}
+		}
+		return entries
+	}
+	entries := make([]displayEntry, len(m.sessions))
+	for i := range m.sessions {
+		entries[i] = displayEntry{sessIdx: i, filterIdx: -1}
+	}
+	return entries
+}
+
+func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, showDetails bool) {
+	if m.filterActive && m.searchFilter != "" && len(entries) == 0 {
+		w.WriteString(dimStyle.Render("  No matching sessions") + "\n")
+		return
+	}
+
+	var currentProject string
+	for _, entry := range entries {
+		sess := m.sessions[entry.sessIdx]
+
+		// Add project header if this is a new project
+		if sess.projectAlias != currentProject {
+			if currentProject != "" {
+				w.WriteString("\n")
+			}
+			currentProject = sess.projectAlias
+
+			projectHeader := "No Project"
+			if sess.projectAlias != "" {
+				if sess.projectName != "" {
+					projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
+				} else {
+					projectHeader = sess.projectAlias
+				}
+			}
+
+			w.WriteString(headerStyle.Render(projectHeader) + "\n")
+		}
+
+		// Cursor logic: use searchCursor when filtering, else main cursor
+		isSelected := false
+		if entry.filterIdx >= 0 {
+			isSelected = entry.filterIdx == m.searchCursor
+		} else {
+			isSelected = m.cursor == entry.sessIdx
+		}
+
+		cursor := "  "
+		if isSelected {
+			cursor = "> "
+		}
+
+		// Add MRU slot number if this session has one
+		numberPrefix := "   "
+		for slot, name := range m.numberedSlots {
+			if name == sess.name {
+				numberPrefix = fmt.Sprintf("%d. ", slot)
+				break
+			}
+		}
+
+		// Add attention indicator
+		indicator := " "
+		if sess.attentionFlag {
+			indicator = "🔔"
+		}
+
+		line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
+		if isSelected {
+			line = selectedStyle.Render(line)
+		}
+		w.WriteString(line + "\n")
+
+		// Show details for selected session (inline, only when not filtering)
+		if showDetails && !m.filterActive && m.cursor == entry.sessIdx {
+			details := m.getSessionDetails(sess)
+			lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
+			for _, line := range lines {
+				w.WriteString(dimStyle.Render(line) + "\n")
+			}
+		}
+	}
+}
+
+func (m *model) renderSearchBox(w *strings.Builder) {
+	if m.filterActive {
+		w.WriteString("\n")
+		searchBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("170")).
+			Padding(0, 1).
+			Width(40).
+			MarginLeft(2)
+		w.WriteString(searchBox.Render("/ " + m.searchInput.View()))
+	}
+}
+
 func (m *model) listView() string {
 	logo := logoStyle.Width(m.width).Render(`
   ____            __  __
@@ -1121,106 +1232,9 @@ func (m *model) listView() string {
 			b.WriteString(warningStyle.Render(m.caddyWarning) + "\n\n")
 		}
 
-		// Determine which sessions to display
-		type displayEntry struct {
-			sessIdx   int // index into m.sessions
-			filterIdx int // position in filtered view (-1 if not filtered)
-		}
-
-		var entries []displayEntry
-		if m.filterActive && m.searchFilter != "" && m.filteredIndices != nil {
-			for fi, si := range m.filteredIndices {
-				entries = append(entries, displayEntry{sessIdx: si, filterIdx: fi})
-			}
-		} else {
-			for i := range m.sessions {
-				entries = append(entries, displayEntry{sessIdx: i, filterIdx: -1})
-			}
-		}
-
-		if m.filterActive && m.searchFilter != "" && len(entries) == 0 {
-			b.WriteString(dimStyle.Render("  No matching sessions") + "\n")
-		} else {
-			// Group sessions by project for display
-			var currentProject string
-			for _, entry := range entries {
-				sess := m.sessions[entry.sessIdx]
-
-				// Add project header if this is a new project
-				if sess.projectAlias != currentProject {
-					if currentProject != "" {
-						b.WriteString("\n")
-					}
-					currentProject = sess.projectAlias
-
-					projectHeader := "No Project"
-					if sess.projectAlias != "" {
-						if sess.projectName != "" {
-							projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
-						} else {
-							projectHeader = sess.projectAlias
-						}
-					}
-
-					b.WriteString(headerStyle.Render(projectHeader) + "\n")
-				}
-
-				// Cursor logic: use searchCursor when filtering, else main cursor
-				isSelected := false
-				if entry.filterIdx >= 0 {
-					isSelected = entry.filterIdx == m.searchCursor
-				} else {
-					isSelected = m.cursor == entry.sessIdx
-				}
-
-				cursor := "  "
-				if isSelected {
-					cursor = "> "
-				}
-
-				// Add MRU slot number if this session has one
-				numberPrefix := "   "
-				for slot, name := range m.numberedSlots {
-					if name == sess.name {
-						numberPrefix = fmt.Sprintf("%d. ", slot)
-						break
-					}
-				}
-
-				// Add attention indicator
-				indicator := " "
-				if sess.attentionFlag {
-					indicator = "🔔"
-				}
-
-				line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
-				if isSelected {
-					line = selectedStyle.Render(line)
-				}
-				b.WriteString(line + "\n")
-
-				// Show details for selected session (inline, only when not filtering)
-				if !m.filterActive && m.cursor == entry.sessIdx {
-					details := m.getSessionDetails(sess)
-					lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
-					for _, line := range lines {
-						b.WriteString(dimStyle.Render(line) + "\n")
-					}
-				}
-			}
-		}
-
-		// Show search input at bottom when filter is active
-		if m.filterActive {
-			b.WriteString("\n")
-			searchBox := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("170")).
-				Padding(0, 1).
-				Width(40).
-				MarginLeft(2)
-			b.WriteString(searchBox.Render("/ " + m.searchInput.View()))
-		}
+		entries := m.buildFilteredEntries()
+		m.renderSessionList(&b, entries, true) // true = show inline details
+		m.renderSearchBox(&b)
 
 		return b.String()
 	}
@@ -1249,92 +1263,9 @@ func (m *model) listView() string {
 		sessionList.WriteString(warningStyle.Render("⚠️ "+condensedWarning) + "\n\n")
 	}
 
-	// Determine which sessions to display
-	type displayEntry struct {
-		sessIdx   int
-		filterIdx int
-	}
-
-	var entries []displayEntry
-	if m.filterActive && m.searchFilter != "" && m.filteredIndices != nil {
-		for fi, si := range m.filteredIndices {
-			entries = append(entries, displayEntry{sessIdx: si, filterIdx: fi})
-		}
-	} else {
-		for i := range m.sessions {
-			entries = append(entries, displayEntry{sessIdx: i, filterIdx: -1})
-		}
-	}
-
-	if m.filterActive && m.searchFilter != "" && len(entries) == 0 {
-		sessionList.WriteString(dimStyle.Render("  No matching sessions") + "\n")
-	} else {
-		var currentProject string
-		for _, entry := range entries {
-			sess := m.sessions[entry.sessIdx]
-
-			if sess.projectAlias != currentProject {
-				if currentProject != "" {
-					sessionList.WriteString("\n")
-				}
-				currentProject = sess.projectAlias
-
-				projectHeader := "No Project"
-				if sess.projectAlias != "" {
-					if sess.projectName != "" {
-						projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
-					} else {
-						projectHeader = sess.projectAlias
-					}
-				}
-
-				sessionList.WriteString(headerStyle.Render(projectHeader) + "\n")
-			}
-
-			isSelected := false
-			if entry.filterIdx >= 0 {
-				isSelected = entry.filterIdx == m.searchCursor
-			} else {
-				isSelected = m.cursor == entry.sessIdx
-			}
-
-			cursor := "  "
-			if isSelected {
-				cursor = "> "
-			}
-
-			numberPrefix := "   "
-			for slot, name := range m.numberedSlots {
-				if name == sess.name {
-					numberPrefix = fmt.Sprintf("%d. ", slot)
-					break
-				}
-			}
-
-			indicator := " "
-			if sess.attentionFlag {
-				indicator = "🔔"
-			}
-
-			line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
-			if isSelected {
-				line = selectedStyle.Render(line)
-			}
-			sessionList.WriteString(line + "\n")
-		}
-	}
-
-	// Show search input at bottom when filter is active
-	if m.filterActive {
-		sessionList.WriteString("\n")
-		searchBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("170")).
-			Padding(0, 1).
-			Width(40).
-			MarginLeft(2)
-		sessionList.WriteString(searchBox.Render("/ " + m.searchInput.View()))
-	}
+	entries := m.buildFilteredEntries()
+	m.renderSessionList(&sessionList, entries, false) // false = no inline details
+	m.renderSearchBox(&sessionList)
 
 	// Build preview pane
 	var preview string
