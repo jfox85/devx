@@ -108,6 +108,8 @@ type model struct {
 	gitStatsTTLOthers       time.Duration
 	baseBranchTTL           time.Duration
 	maxStatsUpdatesPerCycle int
+	// MRU slots
+	numberedSlots map[int]string // slot number -> session name
 }
 
 // gitStatsEntry holds cached additions/deletions for a repo+branch
@@ -268,6 +270,7 @@ func InitialModel() *model {
 		gitStatsTTLOthers:       2 * time.Minute,
 		baseBranchTTL:           time.Hour,
 		maxStatsUpdatesPerCycle: 5,
+		numberedSlots:           make(map[int]string),
 	}
 
 	if debugMode {
@@ -533,12 +536,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
 
-			// Handle number keys 1-9 for quick navigation
+			// Handle number keys 1-9 for quick navigation (MRU slot-based)
 			case msg.String() >= "1" && msg.String() <= "9":
-				// Convert to 0-based index
-				targetIndex := int(msg.String()[0] - '1')
-				if targetIndex < len(m.sessions) {
-					m.cursor = targetIndex
+				slot := int(msg.String()[0] - '0')
+				if sessName, ok := m.numberedSlots[slot]; ok {
+					if idx := m.sessionIndexByName(sessName); idx >= 0 {
+						m.cursor = idx
+					}
 				}
 			}
 
@@ -760,6 +764,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessions[i].additions = entry.additions
 				m.sessions[i].deletions = entry.deletions
 			}
+		}
+
+		// Load numbered slots
+		slotStore, slotErr := session.LoadSessions()
+		if slotErr == nil {
+			slotStore.ReconcileSlots()
+			_ = slotStore.Save()
+			m.numberedSlots = slotStore.NumberedSlots
+		} else {
+			m.numberedSlots = make(map[int]string)
 		}
 
 		// Schedule background git stats updates with TTLs (selected prioritized)
@@ -1053,12 +1067,13 @@ func (m *model) listView() string {
 				cursor = "> "
 			}
 
-			// Add number shortcut for first 9 items
-			numberPrefix := ""
-			if i < 9 {
-				numberPrefix = fmt.Sprintf("%d. ", i+1)
-			} else {
-				numberPrefix = "   " // Maintain alignment
+			// Add MRU slot number if this session has one
+			numberPrefix := "   " // Default: no number
+			for slot, name := range m.numberedSlots {
+				if name == sess.name {
+					numberPrefix = fmt.Sprintf("%d. ", slot)
+					break
+				}
 			}
 
 			// Add attention indicator
@@ -1138,12 +1153,13 @@ func (m *model) listView() string {
 			cursor = "> "
 		}
 
-		// Add number shortcut for first 9 items
-		numberPrefix := ""
-		if i < 9 {
-			numberPrefix = fmt.Sprintf("%d. ", i+1)
-		} else {
-			numberPrefix = "   " // Maintain alignment
+		// Add MRU slot number if this session has one
+		numberPrefix := "   " // Default: no number
+		for slot, name := range m.numberedSlots {
+			if name == sess.name {
+				numberPrefix = fmt.Sprintf("%d. ", slot)
+				break
+			}
 		}
 
 		// Add attention indicator
@@ -1718,6 +1734,16 @@ func (m *model) projectSelectView() string {
 	return b.String()
 }
 
+// sessionIndexByName returns the index of a session in m.sessions, or -1.
+func (m *model) sessionIndexByName(name string) int {
+	for i, s := range m.sessions {
+		if s.name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 func (m *model) startSessionCreation() tea.Cmd {
 	// Load projects to see if we need to show project selection
 	return func() tea.Msg {
@@ -1770,6 +1796,14 @@ func (m *model) attachSession(name string) tea.Cmd {
 		checkCmd := exec.Command("tmux", "has-session", "-t", name)
 		tmuxExists := checkCmd.Run() == nil
 		m.debugLogger.Printf("Session '%s' tmux status: exists=%t", name, tmuxExists)
+
+		// Record attach time and assign a numbered slot
+		if err := store.RecordAttach(name); err != nil {
+			m.debugLogger.Printf("Warning: Failed to record attach time: %v", err)
+		}
+		if _, err := store.AssignSlot(name); err != nil {
+			m.debugLogger.Printf("Warning: Failed to assign slot: %v", err)
+		}
 
 		cmd := attachCmd(name)
 		m.debugLogger.Printf("Running attach command: %s %v", cmd.Path, cmd.Args)

@@ -52,6 +52,14 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Record attach time and assign a numbered slot
+	if err := store.RecordAttach(name); err != nil {
+		fmt.Printf("Warning: Failed to record attach time: %v\n", err)
+	}
+	if _, err := store.AssignSlot(name); err != nil {
+		fmt.Printf("Warning: Failed to assign slot: %v\n", err)
+	}
+
 	// Check if the target tmux session exists
 	if err := session.AttachTmuxSession(name); err != nil {
 		// Session doesn't exist, try to launch it
