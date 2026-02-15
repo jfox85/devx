@@ -1857,7 +1857,13 @@ func (m *model) searchView() string {
 				}
 			}
 
-			line := fmt.Sprintf("%s%s %s", cursor, numberPrefix, sess.name)
+			// Add attention indicator
+			indicator := " "
+			if sess.attentionFlag {
+				indicator = "\U0001f514"
+			}
+
+			line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
 			if filterIdx == m.searchCursor {
 				line = selectedStyle.Render(line)
 			}

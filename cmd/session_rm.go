@@ -80,6 +80,10 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to remove session metadata: %w", err)
 	}
 
+	// Clean up any numbered slot pointing to this session
+	store.ReconcileSlots()
+	_ = store.Save()
+
 	// Sync Caddy routes after removal
 	if err := syncAllCaddyRoutes(); err != nil {
 		fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)
