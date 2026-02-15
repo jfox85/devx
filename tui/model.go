@@ -838,6 +838,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		slotStore, slotErr := session.LoadSessions()
 		if slotErr == nil {
 			slotStore.ReconcileSlots()
+			// Bootstrap: assign slots to any session that doesn't have one yet
+			for name := range slotStore.Sessions {
+				if slotStore.GetSlotForSession(name) == 0 {
+					slotStore.AssignSlot(name)
+				}
+			}
 			_ = slotStore.Save()
 			m.numberedSlots = slotStore.NumberedSlots
 		} else {
