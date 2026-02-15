@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -345,10 +346,18 @@ func (s *SessionStore) AssignSlot(name string) (int, error) {
 		}
 	}
 
-	// All slots full — evict the session with the oldest LastAttached
+	// All slots full — evict the session with the oldest LastAttached.
+	// Iterate slots in ascending order for deterministic tie-breaking.
+	slots := make([]int, 0, len(s.NumberedSlots))
+	for slot := range s.NumberedSlots {
+		slots = append(slots, slot)
+	}
+	sort.Ints(slots)
+
 	oldestSlot := 0
 	var oldestTime time.Time
-	for slot, sessName := range s.NumberedSlots {
+	for _, slot := range slots {
+		sessName := s.NumberedSlots[slot]
 		sess, exists := s.Sessions[sessName]
 		if !exists {
 			// Stale slot, use it immediately

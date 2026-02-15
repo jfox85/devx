@@ -115,7 +115,8 @@ type model struct {
 	baseBranchTTL           time.Duration
 	maxStatsUpdatesPerCycle int
 	// MRU slots
-	numberedSlots map[int]string // slot number -> session name
+	numberedSlots     map[int]string // slot number -> session name
+	slotsBootstrapped bool           // true after first bootstrap pass
 	// Search/filter fields
 	filterActive    bool
 	searchInput     textinput.Model
@@ -374,7 +375,7 @@ func (m *model) loadSessions() tea.Msg {
 		return sessions[i].name < sessions[j].name
 	})
 
-	return sessionsLoadedMsg{sessions}
+	return sessionsLoadedMsg{sessions: sessions, store: store}
 }
 
 func (m *model) loadProjects() tea.Msg {
@@ -403,6 +404,7 @@ func (m *model) loadProjects() tea.Msg {
 
 type sessionsLoadedMsg struct {
 	sessions []sessionItem
+	store    *session.SessionStore // carry store to avoid reloading for slots
 }
 
 type projectsLoadedMsg struct {
@@ -508,12 +510,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.filteredIndices = nil
 					m.searchCursor = 0
 
-				case key.Matches(msg, m.keys.Up):
+				case msg.Type == tea.KeyUp:
 					if m.searchCursor > 0 {
 						m.searchCursor--
 					}
 
-				case key.Matches(msg, m.keys.Down):
+				case msg.Type == tea.KeyDown:
 					if len(m.filteredIndices) > 0 && m.searchCursor < len(m.filteredIndices)-1 {
 						m.searchCursor++
 					}
@@ -844,19 +846,54 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Load numbered slots
-		slotStore, slotErr := session.LoadSessions()
-		if slotErr == nil {
-			slotStore.ReconcileSlots()
-			// Bootstrap: assign slots to any session that doesn't have one yet
-			if len(slotStore.NumberedSlots) < 9 || len(slotStore.NumberedSlots) < len(slotStore.Sessions) {
-				for name := range slotStore.Sessions {
-					if slotStore.GetSlotForSession(name) == 0 {
-						_, _ = slotStore.AssignSlot(name)
-					}
+		// Rebuild filteredIndices if filter is active so they stay in sync
+		if m.filterActive && m.searchFilter != "" {
+			m.filteredIndices = nil
+			for i, sess := range m.sessions {
+				if strings.Contains(strings.ToLower(sess.name), m.searchFilter) {
+					m.filteredIndices = append(m.filteredIndices, i)
 				}
 			}
-			_ = slotStore.Save()
+			if m.searchCursor >= len(m.filteredIndices) {
+				m.searchCursor = len(m.filteredIndices) - 1
+			}
+			if m.searchCursor < 0 {
+				m.searchCursor = 0
+			}
+		}
+
+		// Load numbered slots from the store we already have
+		slotStore := msg.store
+		if slotStore != nil {
+			slotStore.ReconcileSlots()
+			// Bootstrap: fill any free slots (1-9) with unslotted sessions,
+			// but only on the first load to avoid repeated work every 2s.
+			if !m.slotsBootstrapped {
+				changed := false
+				// Sort session names for deterministic slot assignment
+				names := make([]string, 0, len(slotStore.Sessions))
+				for name := range slotStore.Sessions {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for i := 1; i <= 9; i++ {
+					if _, taken := slotStore.NumberedSlots[i]; taken {
+						continue
+					}
+					// Find an unslotted session to fill this free slot
+					for _, name := range names {
+						if slotStore.GetSlotForSession(name) == 0 {
+							slotStore.NumberedSlots[i] = name
+							changed = true
+							break
+						}
+					}
+				}
+				if changed {
+					_ = slotStore.Save()
+				}
+				m.slotsBootstrapped = true
+			}
 			m.numberedSlots = slotStore.NumberedSlots
 		} else {
 			m.numberedSlots = make(map[int]string)
@@ -1185,14 +1222,23 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 	}
 }
 
-func (m *model) renderSearchBox(w *strings.Builder) {
+func (m *model) renderSearchBox(w *strings.Builder, availableWidth int) {
 	if m.filterActive {
 		w.WriteString("\n")
+		// Fit search box to available width
+		// Account for MarginLeft(2) + border(2) + padding(2) = 6 chars of overhead
+		boxWidth := availableWidth - 6
+		if boxWidth > 40 {
+			boxWidth = 40
+		}
+		if boxWidth < 15 {
+			boxWidth = 15
+		}
 		searchBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("170")).
 			Padding(0, 1).
-			Width(40).
+			Width(boxWidth).
 			MarginLeft(2)
 		w.WriteString(searchBox.Render("/ " + m.searchInput.View()))
 	}
@@ -1234,7 +1280,7 @@ func (m *model) listView() string {
 
 		entries := m.buildFilteredEntries()
 		m.renderSessionList(&b, entries, true) // true = show inline details
-		m.renderSearchBox(&b)
+		m.renderSearchBox(&b, m.width)
 
 		return b.String()
 	}
@@ -1265,7 +1311,9 @@ func (m *model) listView() string {
 
 	entries := m.buildFilteredEntries()
 	m.renderSessionList(&sessionList, entries, false) // false = no inline details
-	m.renderSearchBox(&sessionList)
+	// In preview mode, the search box renders inside the left pane which has
+	// border(2) + padding(4) = 6 chars of overhead, so pass the inner width.
+	m.renderSearchBox(&sessionList, listWidth-6)
 
 	// Build preview pane
 	var preview string
@@ -1889,13 +1937,8 @@ func (m *model) attachSession(name string) tea.Cmd {
 		tmuxExists := checkCmd.Run() == nil
 		m.debugLogger.Printf("Session '%s' tmux status: exists=%t", name, tmuxExists)
 
-		// Record attach time and assign a numbered slot
-		if err := store.RecordAttach(name); err != nil {
-			m.debugLogger.Printf("Warning: Failed to record attach time: %v", err)
-		}
-		if _, err := store.AssignSlot(name); err != nil {
-			m.debugLogger.Printf("Warning: Failed to assign slot: %v", err)
-		}
+		// RecordAttach and AssignSlot are handled by the CLI command
+		// (devx session attach), so we don't duplicate them here.
 
 		cmd := attachCmd(name)
 		m.debugLogger.Printf("Running attach command: %s %v", cmd.Path, cmd.Args)

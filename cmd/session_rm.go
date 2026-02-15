@@ -75,14 +75,12 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to remove git worktree: %v\n", err)
 	}
 
-	// Remove session from metadata
-	if err := store.RemoveSession(name); err != nil {
-		return fmt.Errorf("failed to remove session metadata: %w", err)
-	}
-
-	// Clean up any numbered slot pointing to this session
+	// Remove session from metadata and reconcile slots in a single save
+	delete(store.Sessions, name)
 	store.ReconcileSlots()
-	_ = store.Save()
+	if err := store.Save(); err != nil {
+		return fmt.Errorf("failed to save session metadata: %w", err)
+	}
 
 	// Sync Caddy routes after removal
 	if err := syncAllCaddyRoutes(); err != nil {

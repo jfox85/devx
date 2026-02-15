@@ -266,6 +266,118 @@ func TestNumberedSlots_Reconcile(t *testing.T) {
 	}
 }
 
+func TestRecordAttach_NonexistentSession(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	err = store.RecordAttach("nonexistent")
+	if err == nil {
+		t.Error("expected error when recording attach for nonexistent session")
+	}
+}
+
+func TestAssignSlot_NonexistentSession(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	_, err = store.AssignSlot("nonexistent")
+	if err == nil {
+		t.Error("expected error when assigning slot for nonexistent session")
+	}
+}
+
+func TestNumberedSlots_EvictAllZeroLastAttached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	// Create 10 sessions, all with zero LastAttached
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("sess-%d", i)
+		_ = store.AddSession(name, "main", fmt.Sprintf("/%d", i), map[string]int{})
+	}
+	for i := 1; i <= 9; i++ {
+		_, _ = store.AssignSlot(fmt.Sprintf("sess-%d", i))
+	}
+
+	// All zero LastAttached: eviction should still succeed deterministically
+	// (lowest slot number with zero time gets evicted)
+	slot, err := store.AssignSlot("sess-10")
+	if err != nil {
+		t.Fatalf("failed to assign slot with all-zero LastAttached: %v", err)
+	}
+	if slot < 1 || slot > 9 {
+		t.Errorf("expected valid slot 1-9, got %d", slot)
+	}
+
+	// Verify sess-10 now has the slot
+	if got := store.GetSlotForSession("sess-10"); got != slot {
+		t.Errorf("expected sess-10 at slot %d, got %d", slot, got)
+	}
+}
+
+func TestNumberedSlots_StaleSlotReuse(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+
+	// Create 9 sessions and fill all slots
+	for i := 1; i <= 9; i++ {
+		name := fmt.Sprintf("sess-%d", i)
+		_ = store.AddSession(name, "main", fmt.Sprintf("/%d", i), map[string]int{})
+		_, _ = store.AssignSlot(name)
+	}
+
+	// Remove sess-3 from sessions but leave its slot (simulates stale slot)
+	delete(store.Sessions, "sess-3")
+
+	// Add a new session
+	_ = store.AddSession("sess-new", "main", "/new", map[string]int{})
+
+	// Assign slot — should reuse the stale slot 3
+	slot, err := store.AssignSlot("sess-new")
+	if err != nil {
+		t.Fatalf("failed to assign slot: %v", err)
+	}
+	if slot != 3 {
+		t.Errorf("expected stale slot 3 to be reused, got %d", slot)
+	}
+}
+
 func TestNumberedSlots_GetSessionForSlot(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
 	if err != nil {
