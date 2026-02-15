@@ -24,6 +24,7 @@ type Session struct {
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
 	AttentionTime   time.Time         `json:"attention_time,omitempty"`
+	LastAttached    time.Time         `json:"last_attached,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 }
@@ -138,6 +139,13 @@ func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error
 	session.UpdatedAt = time.Now()
 
 	return s.Save()
+}
+
+// RecordAttach updates the LastAttached timestamp for a session
+func (s *SessionStore) RecordAttach(name string) error {
+	return s.UpdateSession(name, func(sess *Session) {
+		sess.LastAttached = time.Now()
+	})
 }
 
 // RemoveSession removes a session from the store

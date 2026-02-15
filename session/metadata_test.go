@@ -120,3 +120,35 @@ func TestSessionStoreUpdate(t *testing.T) {
 		t.Error("expected UpdatedAt to be different from CreatedAt")
 	}
 }
+
+func TestSessionLastAttached(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	store, _ := LoadSessions()
+	_ = store.AddSession("test-sess", "main", "/path", map[string]int{"PORT": 3000})
+
+	// LastAttached should be zero initially
+	sess, _ := store.GetSession("test-sess")
+	if !sess.LastAttached.IsZero() {
+		t.Error("expected LastAttached to be zero initially")
+	}
+
+	// Record attach
+	err = store.RecordAttach("test-sess")
+	if err != nil {
+		t.Fatalf("failed to record attach: %v", err)
+	}
+
+	sess, _ = store.GetSession("test-sess")
+	if sess.LastAttached.IsZero() {
+		t.Error("expected LastAttached to be set after RecordAttach")
+	}
+}
