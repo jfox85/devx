@@ -260,6 +260,9 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	if err := syncAllCaddyRoutes(); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
+	if err := syncAllCloudflareRoutes(); err != nil {
+		fmt.Printf("Warning: Cloudflare sync failed: %v\n", err)
+	}
 
 	fmt.Printf("Created session '%s' at %s\n", name, worktreePath)
 	if len(portAllocation.Ports) > 0 {

@@ -86,6 +86,9 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 	if err := syncAllCaddyRoutes(); err != nil {
 		fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)
 	}
+	if err := syncAllCloudflareRoutes(); err != nil {
+		fmt.Printf("Warning: Cloudflare sync failed: %v\n", err)
+	}
 
 	fmt.Printf("Removed session '%s'\n", name)
 	return nil
