@@ -1,6 +1,9 @@
 package session
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -37,6 +40,76 @@ branch refs/heads/feature
 	}
 	if worktrees[1].Branch != "feature" {
 		t.Errorf("expected branch 'feature', got %s", worktrees[1].Branch)
+	}
+}
+
+// initGitRepoWithRemote initialises a bare git repo and a clone for testing remote operations.
+// Returns (bareDir, cloneDir, runGit). Both directories are cleaned up via t.Cleanup.
+func initGitRepoWithRemote(t *testing.T) (bareDir, cloneDir string, runGit func(string, ...string)) {
+	t.Helper()
+
+	bareDir = t.TempDir()
+	cloneDir = t.TempDir()
+
+	runGit = func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+		}
+	}
+
+	// Create a bare repo that will serve as origin
+	runGit(bareDir, "init", "--bare")
+
+	// Clone it to get a working directory
+	runGit(cloneDir, "clone", bareDir, ".")
+
+	// Configure identity so commits work
+	runGit(cloneDir, "config", "user.email", "test@test.com")
+	runGit(cloneDir, "config", "user.name", "Test")
+
+	// Create an initial commit so the repo is non-empty
+	initFile := filepath.Join(cloneDir, "README.md")
+	if err := os.WriteFile(initFile, []byte("init"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(cloneDir, "add", ".")
+	runGit(cloneDir, "commit", "-m", "initial")
+	runGit(cloneDir, "push", "origin", "HEAD")
+
+	return bareDir, cloneDir, runGit
+}
+
+func TestRemoteBranchExists_False(t *testing.T) {
+	_, cloneDir, _ := initGitRepoWithRemote(t)
+
+	exists, err := RemoteBranchExists(cloneDir, "nonexistent-branch")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exists {
+		t.Error("expected RemoteBranchExists to return false for nonexistent branch")
+	}
+}
+
+func TestRemoteBranchExists_True(t *testing.T) {
+	_, cloneDir, runGit := initGitRepoWithRemote(t)
+
+	// Create a branch and push it to origin
+	runGit(cloneDir, "checkout", "-b", "my-feature")
+	runGit(cloneDir, "push", "origin", "my-feature")
+
+	// Fetch so remote refs are visible in the clone
+	runGit(cloneDir, "fetch", "origin")
+
+	exists, err := RemoteBranchExists(cloneDir, "my-feature")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Error("expected RemoteBranchExists to return true for branch pushed to origin")
 	}
 }
 

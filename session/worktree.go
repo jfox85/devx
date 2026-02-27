@@ -87,27 +87,20 @@ func IsWorktreeCheckedOut(repoPath, branchName string) (bool, string, error) {
 func CreateWorktree(repoPath, name string, detach bool) error {
 	worktreePath := filepath.Join(repoPath, ".worktrees", name)
 
+	// Prune stale worktree registrations upfront. This handles the case where a
+	// worktree directory was deleted externally (e.g. via `devx session rm`) but
+	// git's internal bookkeeping still has an entry for the path, which would
+	// cause `git worktree add` to fail with "missing but already registered".
+	if err := PruneWorktrees(repoPath); err != nil {
+		fmt.Printf("Warning: failed to prune worktrees: %v\n", err)
+	}
+
 	// First, check if the worktree directory exists on disk
 	if _, err := os.Stat(worktreePath); err == nil {
 		// Directory exists, check if it's a valid worktree
 		worktreeExists, err := WorktreeExists(repoPath, worktreePath)
 		if err != nil {
 			return err
-		}
-
-		if !worktreeExists {
-			// Directory exists but not tracked as worktree - likely orphaned
-			// Try to prune stale worktree references
-			if err := PruneWorktrees(repoPath); err != nil {
-				// Pruning failed, but continue anyway
-				fmt.Printf("Warning: failed to prune worktrees: %v\n", err)
-			}
-
-			// Check again after pruning
-			worktreeExists, err = WorktreeExists(repoPath, worktreePath)
-			if err != nil {
-				return err
-			}
 		}
 
 		if worktreeExists {
@@ -152,19 +145,40 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 		}
 	}
 
-	// Check if branch exists by name (not if it's checked out)
+	// Fetch from origin to ensure remote refs are current (non-fatal)
+	if err := FetchOrigin(repoPath); err != nil {
+		fmt.Printf("Warning: could not fetch from origin: %v\n", err)
+	}
+
+	// Check local branch first
 	branchExists, err := BranchExists(repoPath, name)
 	if err != nil {
 		return err
 	}
 
-	var cmd *exec.Cmd
+	var (
+		cmd             *exec.Cmd
+		pullAfterCreate bool
+	)
 	if branchExists {
-		// Branch exists, just add worktree
+		// Local branch exists — check it out, then pull to get any remote commits
 		cmd = exec.Command("git", "worktree", "add", worktreePath, name)
+		pullAfterCreate = true
 	} else {
-		// Create new branch with worktree
-		cmd = exec.Command("git", "worktree", "add", "-b", name, worktreePath)
+		// Check for remote branch
+		remoteBranchExists, err := RemoteBranchExists(repoPath, name)
+		if err != nil {
+			return err
+		}
+		if remoteBranchExists {
+			// Create local branch from remote, tracking origin.
+			// We just fetched, so origin/<name> is already up-to-date.
+			fmt.Printf("Found existing remote branch '%s', using it for this session.\n", name)
+			cmd = exec.Command("git", "worktree", "add", "-b", name, worktreePath, "origin/"+name)
+		} else {
+			// No existing branch — create new from HEAD (current behavior)
+			cmd = exec.Command("git", "worktree", "add", "-b", name, worktreePath)
+		}
 	}
 
 	cmd.Dir = repoPath
@@ -181,7 +195,50 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 		return fmt.Errorf("failed to create worktree: %w\n%s", err, output)
 	}
 
+	// For existing local branches, pull from remote to pick up any commits we're missing
+	if pullAfterCreate {
+		if pullErr := PullFromOrigin(worktreePath, name); pullErr != nil {
+			fmt.Printf("Warning: could not pull latest changes for '%s': %v\n", name, pullErr)
+		}
+
+		// Check whether we're still behind remote after the pull attempt and warn if so
+		behindCmd := exec.Command("git", "rev-list", "--count", fmt.Sprintf("HEAD..origin/%s", name))
+		behindCmd.Dir = worktreePath
+		if out, err := behindCmd.Output(); err == nil {
+			if count := strings.TrimSpace(string(out)); count != "0" {
+				fmt.Printf("Note: session branch '%s' is %s commit(s) behind origin/%s (branches may have diverged).\n", name, count, name)
+				fmt.Printf("      Run 'git rebase origin/%s' in the session to incorporate remote changes.\n", name)
+			}
+		}
+	}
+
 	return nil
+}
+
+// FetchOrigin fetches remote refs from origin, pruning deleted branches.
+// Failure is non-fatal (caller warns and continues).
+func FetchOrigin(repoPath string) error {
+	cmd := exec.Command("git", "fetch", "origin", "--prune")
+	cmd.Dir = repoPath
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch failed: %w\n%s", err, output)
+	}
+	return nil
+}
+
+// RemoteBranchExists checks if a branch exists on origin.
+func RemoteBranchExists(repoPath, branchName string) (bool, error) {
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet",
+		fmt.Sprintf("refs/remotes/origin/%s", branchName))
+	cmd.Dir = repoPath
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check remote branch existence: %w", err)
+	}
+	return true, nil
 }
 
 // BranchExists checks if a branch exists in the repository
@@ -201,9 +258,11 @@ func BranchExists(repoPath, branchName string) (bool, error) {
 	return true, nil
 }
 
-// PruneWorktrees removes stale worktree references
+// PruneWorktrees removes stale worktree references.
+// --expire now bypasses git's default 3-month grace period so recently-deleted
+// worktrees are pruned immediately rather than showing as "missing but registered".
 func PruneWorktrees(repoPath string) error {
-	cmd := exec.Command("git", "worktree", "prune")
+	cmd := exec.Command("git", "worktree", "prune", "--expire", "now")
 	cmd.Dir = repoPath
 
 	output, err := cmd.CombinedOutput()
@@ -273,8 +332,11 @@ func PullFromOrigin(repoPath, branch string) error {
 			// Branch doesn't exist on remote - that's OK
 			return nil
 		}
-		if strings.Contains(outputStr, "Would overwrite") || strings.Contains(outputStr, "diverged") {
-			// Merge conflict or diverged branches - skip pull but don't fail
+		if strings.Contains(outputStr, "Would overwrite") ||
+			strings.Contains(outputStr, "diverged") ||
+			strings.Contains(outputStr, "Not possible to fast-forward") {
+			// Diverged branches or merge conflict - skip pull but don't fail.
+			// Caller is responsible for informing the user.
 			return nil
 		}
 		return fmt.Errorf("failed to pull from origin/%s: %w\n%s", branch, err, output)

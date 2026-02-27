@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jfox85/devx/caddy"
@@ -12,6 +13,11 @@ import (
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
 )
+
+// validSessionName matches safe session/branch names: starts with alphanumeric,
+// may contain alphanumerics, dots, underscores, hyphens, and forward slashes.
+// Forward slashes support branch conventions like "feature/my-thing".
+var validSessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/\-]{0,99}$`)
 
 var (
 	fePortFlag  int
@@ -41,6 +47,12 @@ func init() {
 
 func runSessionCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
+
+	// Validate session name to prevent shell injection and argument injection.
+	// Names are used as git branch names, tmux target names, and in shell commands.
+	if !validSessionName.MatchString(name) {
+		return fmt.Errorf("invalid session name %q: must start with a letter or digit and contain only letters, digits, dots, underscores, hyphens, or slashes", name)
+	}
 
 	// Load project registry
 	registry, err := config.LoadProjectRegistry()
