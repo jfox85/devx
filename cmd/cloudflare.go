@@ -29,8 +29,7 @@ func runCloudflareSync(cmd *cobra.Command, args []string) error {
 	domain := viper.GetString("external_domain")
 	tunnelID := viper.GetString("cloudflare_tunnel_id")
 	if domain == "" || tunnelID == "" {
-		fmt.Println("Cloudflare tunnel not configured. Set external_domain and cloudflare_tunnel_id in your config.")
-		return nil
+		return fmt.Errorf("cloudflare tunnel not configured: set external_domain and cloudflare_tunnel_id in your config")
 	}
 
 	if err := syncAllCloudflareRoutes(); err != nil {
