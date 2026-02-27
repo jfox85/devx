@@ -45,7 +45,10 @@ func init() {
 }
 
 func webPIDPath() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
 	return filepath.Join(home, ".config", "devx", "web.pid")
 }
 
@@ -53,13 +56,17 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	token := viper.GetString("web_secret_token")
 	port := viper.GetInt("web_port")
 
+	if webDaemonFlag {
+		// Validate token before daemonizing so errors are caught in foreground
+		if token == "" {
+			return fmt.Errorf("web_secret_token must be set in config to use devx web")
+		}
+		return startWebDaemon(port)
+	}
+
 	srv, err := web.New(token, port)
 	if err != nil {
 		return err
-	}
-
-	if webDaemonFlag {
-		return startWebDaemon(port)
 	}
 
 	// Foreground mode: handle SIGTERM/SIGINT for graceful shutdown
@@ -105,7 +112,8 @@ func startWebDaemon(port int) error {
 func runWebStop(cmd *cobra.Command, args []string) error {
 	data, err := os.ReadFile(webPIDPath())
 	if err != nil {
-		return fmt.Errorf("devx web is not running (no PID file found)")
+		fmt.Println("devx web is not running")
+		return nil
 	}
 
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
@@ -122,7 +130,9 @@ func runWebStop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to stop process %d: %w", pid, err)
 	}
 
-	os.Remove(webPIDPath())
+	if err := os.Remove(webPIDPath()); err != nil {
+		fmt.Printf("Warning: could not remove PID file: %v\n", err)
+	}
 	fmt.Printf("devx web stopped (pid %d)\n", pid)
 	return nil
 }
