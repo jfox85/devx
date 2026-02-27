@@ -156,7 +156,7 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := session.SetAttentionFlag(name, "manual"); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -165,7 +165,7 @@ func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := session.ClearAttentionFlag(name); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
