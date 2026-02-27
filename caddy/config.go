@@ -116,6 +116,24 @@ func BuildHostname(sessionName, serviceName, projectAlias string) string {
 	return fmt.Sprintf("%s-%s.localhost", sanitizedSession, dnsService)
 }
 
+// BuildExternalHostname constructs the hostname for a session/service on an external domain.
+// Returns "" if the service name normalizes to empty or domain is empty.
+func BuildExternalHostname(sessionName, serviceName, projectAlias, domain string) string {
+	if domain == "" {
+		return ""
+	}
+	dnsService := NormalizeDNSName(serviceName)
+	if dnsService == "" {
+		return ""
+	}
+	sanitizedSession := SanitizeHostname(sessionName)
+	if projectAlias != "" {
+		sanitizedProject := NormalizeDNSName(projectAlias)
+		return fmt.Sprintf("%s-%s-%s.%s", sanitizedProject, sanitizedSession, dnsService, domain)
+	}
+	return fmt.Sprintf("%s-%s.%s", sanitizedSession, dnsService, domain)
+}
+
 // BuildRouteID constructs the route ID for a session/service combination.
 // Returns "" if the service name normalizes to empty.
 func BuildRouteID(sessionName, serviceName, projectAlias string) string {

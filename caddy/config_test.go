@@ -196,6 +196,29 @@ func TestBuildCaddyConfig(t *testing.T) {
 	})
 }
 
+func TestBuildExternalHostname(t *testing.T) {
+	tests := []struct {
+		session  string
+		service  string
+		project  string
+		domain   string
+		expected string
+	}{
+		{"my-session", "ui", "", "example.com", "my-session-ui.example.com"},
+		{"my-session", "api", "myproject", "example.com", "myproject-my-session-api.example.com"},
+		{"feature/add-auth", "ui", "", "example.com", "feature-add-auth-ui.example.com"},
+		{"my-session", "", "", "example.com", ""},
+		{"my-session", "ui", "", "", ""},
+	}
+	for _, tt := range tests {
+		got := BuildExternalHostname(tt.session, tt.service, tt.project, tt.domain)
+		if got != tt.expected {
+			t.Errorf("BuildExternalHostname(%q,%q,%q,%q) = %q, want %q",
+				tt.session, tt.service, tt.project, tt.domain, got, tt.expected)
+		}
+	}
+}
+
 func TestSyncRoutes(t *testing.T) {
 	t.Run("writes config file", func(t *testing.T) {
 		// Use a temp dir to avoid writing to real config
