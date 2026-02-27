@@ -12,16 +12,16 @@ import (
 
 // TunnelCheckResult holds the result of a cloudflare tunnel health check
 type TunnelCheckResult struct {
-	BinaryInstalled bool
-	TunnelRunning   bool
-	TunnelError     string
-	ConfigExists    bool
-	ConfigValid     bool
-	ConfigError     string
-	IngressMismatch bool
-	MissingRules    []string
-	DNSValid        bool
-	DNSError        string
+	BinaryInstalled   bool
+	TunnelExists      bool
+	TunnelExistsError string
+	ConfigExists      bool
+	ConfigValid       bool
+	ConfigError       string
+	IngressMismatch   bool
+	MissingRules      []string
+	DNSValid          bool
+	DNSError          string
 }
 
 // CheckTunnel performs a comprehensive health check of the cloudflare tunnel setup.
@@ -32,14 +32,14 @@ func CheckTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, domain, cfgPa
 	_, err := exec.LookPath("cloudflared")
 	result.BinaryInstalled = err == nil
 
-	// Check tunnel daemon
+	// Check if tunnel is registered in Cloudflare's account
 	if result.BinaryInstalled && tunnelID != "" {
 		cmd := exec.Command("cloudflared", "tunnel", "info", tunnelID)
 		if err := cmd.Run(); err != nil {
-			result.TunnelRunning = false
-			result.TunnelError = fmt.Sprintf("cloudflared tunnel info failed: %v", err)
+			result.TunnelExists = false
+			result.TunnelExistsError = fmt.Sprintf("cloudflared tunnel info failed: %v", err)
 		} else {
-			result.TunnelRunning = true
+			result.TunnelExists = true
 		}
 	}
 

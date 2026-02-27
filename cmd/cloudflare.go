@@ -55,6 +55,9 @@ func runCloudflareCheck(cmd *cobra.Command, args []string) error {
 	domain := viper.GetString("external_domain")
 	tunnelID := viper.GetString("cloudflare_tunnel_id")
 	cfgPath := viper.GetString("cloudflare_tunnel_config")
+	if cfgPath == "" {
+		return fmt.Errorf("cloudflare_tunnel_config is not set")
+	}
 
 	if domain == "" || tunnelID == "" {
 		return fmt.Errorf("cloudflare tunnel not configured: set external_domain and cloudflare_tunnel_id in your config")
@@ -74,7 +77,7 @@ func runCloudflareCheck(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("=== Cloudflare Tunnel Status ===")
 	printCheckLine("cloudflared binary installed", result.BinaryInstalled, "")
-	printCheckLine("tunnel daemon running", result.TunnelRunning, result.TunnelError)
+	printCheckLine("tunnel registered in Cloudflare", result.TunnelExists, result.TunnelExistsError)
 	printCheckLine("config file exists", result.ConfigExists, "")
 	printCheckLine("config file valid", result.ConfigValid, result.ConfigError)
 	printCheckLine("ingress rules match sessions", !result.IngressMismatch, "")
@@ -85,6 +88,9 @@ func runCloudflareCheck(cmd *cobra.Command, args []string) error {
 		fmt.Println("  Run 'devx cloudflare sync' to fix.")
 	}
 	printCheckLine("DNS wildcard resolves", result.DNSValid, result.DNSError)
+	if !result.DNSValid && domain != "" {
+		fmt.Printf("  Ensure a wildcard CNAME record *.%s -> <tunnel-id>.cfargotunnel.com exists in Cloudflare DNS.\n", domain)
+	}
 
 	return nil
 }
