@@ -17,7 +17,28 @@ import (
 // validSessionName matches safe session/branch names: starts with alphanumeric,
 // may contain alphanumerics, dots, underscores, hyphens, and forward slashes.
 // Forward slashes support branch conventions like "feature/my-thing".
+// Use isValidSessionName for the full check including path-traversal guards.
 var validSessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/\-]{0,99}$`)
+
+// isValidSessionName returns true if name passes both the character-class regex
+// and path-traversal guards. Names are used as git branch names, tmux targets,
+// and path components under .worktrees/, so "." and ".." segments must be rejected.
+func isValidSessionName(name string) bool {
+	if !validSessionName.MatchString(name) {
+		return false
+	}
+	// Reject trailing slash or consecutive slashes (empty path segments)
+	if strings.HasSuffix(name, "/") || strings.Contains(name, "//") {
+		return false
+	}
+	// Reject any segment that is "." or ".." to block path traversal
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 var (
 	fePortFlag  int
@@ -48,10 +69,11 @@ func init() {
 func runSessionCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	// Validate session name to prevent shell injection and argument injection.
-	// Names are used as git branch names, tmux target names, and in shell commands.
-	if !validSessionName.MatchString(name) {
-		return fmt.Errorf("invalid session name %q: must start with a letter or digit and contain only letters, digits, dots, underscores, hyphens, or slashes", name)
+	// Validate session name to prevent shell injection, argument injection, and
+	// path traversal. Names are used as git branch names, tmux targets, and
+	// path components under .worktrees/.
+	if !isValidSessionName(name) {
+		return fmt.Errorf("invalid session name %q: must start with a letter or digit, contain only letters/digits/dots/underscores/hyphens/slashes, and must not contain '..' or empty path segments", name)
 	}
 
 	// Load project registry
