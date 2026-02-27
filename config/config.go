@@ -60,6 +60,12 @@ func SaveConfig(cfg *Config) error {
 	viper.Set("basedomain", cfg.BaseDomain)
 	viper.Set("caddy_api", cfg.CaddyAPI)
 	viper.Set("tmuxp_template", cfg.TmuxpTemplate)
+	viper.Set("external_domain", cfg.ExternalDomain)
+	viper.Set("cloudflare_tunnel_id", cfg.CloudflareTunnelID)
+	viper.Set("cloudflare_tunnel_config", cfg.CloudflareTunnelConfig)
+	viper.Set("web_secret_token", cfg.WebSecretToken)
+	viper.Set("web_port", cfg.WebPort)
+	viper.Set("web_autostart", cfg.WebAutostart)
 
 	// Write the config file
 	configFile := filepath.Join(configPath, "config.yaml")

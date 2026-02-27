@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -65,6 +66,25 @@ func TestTildeExpansion(t *testing.T) {
 	expected := home + "/test/path.yaml"
 	if cfg.TmuxpTemplate != expected {
 		t.Errorf("expected tilde expansion to %s, got %s", expected, cfg.TmuxpTemplate)
+	}
+}
+
+func TestCloudflareConfigTildeExpansion(t *testing.T) {
+	viper.Reset()
+	viper.Set("cloudflare_tunnel_config", "~/.cloudflared/config.yaml")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("could not get home dir: %v", err)
+	}
+	expected := filepath.Join(home, ".cloudflared/config.yaml")
+	if cfg.CloudflareTunnelConfig != expected {
+		t.Errorf("expected %q, got %q", expected, cfg.CloudflareTunnelConfig)
 	}
 }
 
