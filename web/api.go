@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,7 +26,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) // cannot change status after WriteHeader
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +132,11 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, _ := session.LoadSessions()
+	store, err := session.LoadSessions()
+	if err != nil || store == nil {
+		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+		return
+	}
 	if sess, ok := store.Sessions[req.Name]; ok {
 		writeJSON(w, http.StatusCreated, buildSessionResponse(sess))
 	} else {
@@ -150,15 +155,7 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 
 func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	store, err := session.LoadSessions()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := store.UpdateSession(name, func(s *session.Session) {
-		s.AttentionFlag = true
-		s.AttentionReason = "manual"
-	}); err != nil {
+	if err := session.SetAttentionFlag(name, "manual"); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
@@ -167,15 +164,7 @@ func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 
 func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	store, err := session.LoadSessions()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := store.UpdateSession(name, func(s *session.Session) {
-		s.AttentionFlag = false
-		s.AttentionReason = ""
-	}); err != nil {
+	if err := session.ClearAttentionFlag(name); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
@@ -189,8 +178,14 @@ func runSelf(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
+	var stderr bytes.Buffer
 	cmd := exec.Command(self, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run()
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("%w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+		}
+		return err
+	}
+	return nil
 }
