@@ -64,13 +64,17 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 
 	m.sessions[sessionName] = &ttydInstance{port: port, cmd: cmd}
 
-	// Clean up map entry when process exits
-	go func() {
-		cmd.Wait() //nolint:errcheck
+	// Clean up map entry when process exits. Pass cmd as parameter to avoid
+	// deleting a newly-started replacement instance if the session is restarted
+	// before this goroutine runs.
+	go func(trackedCmd *exec.Cmd) {
+		trackedCmd.Wait() //nolint:errcheck
 		m.mu.Lock()
-		delete(m.sessions, sessionName)
+		if inst, ok := m.sessions[sessionName]; ok && inst.cmd == trackedCmd {
+			delete(m.sessions, sessionName)
+		}
 		m.mu.Unlock()
-	}()
+	}(cmd)
 
 	return port, nil
 }
