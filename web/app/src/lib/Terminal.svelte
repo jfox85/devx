@@ -22,6 +22,17 @@
     ws.onclose = () => { wsReady = false }
   }
 
+  // Reconnect when the session changes (component reused with a different session)
+  let currentSession = session.name
+
+  $: if (session.name !== currentSession) {
+    currentSession = session.name
+    if (ws) ws.close()
+    error = ''
+    wsReady = false
+    connectWS()
+  }
+
   function sendKey(seq) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'input', data: seq }))
@@ -48,8 +59,16 @@
       <span class="text-white font-medium text-sm truncate">{session.name}</span>
       <span class="text-gray-500 text-xs ml-2">{session.branch}</span>
     </div>
-    <div class="w-2 h-2 rounded-full flex-shrink-0 {wsReady ? 'bg-green-500' : 'bg-red-500'}"
-         title={wsReady ? 'Connected' : 'Disconnected'}></div>
+    <div class="flex items-center gap-2 flex-shrink-0">
+      <div class="w-2 h-2 rounded-full {wsReady ? 'bg-green-500' : 'bg-red-500'}"
+           title={wsReady ? 'Connected' : 'Disconnected'}></div>
+      {#if !wsReady}
+        <button on:click={() => { error = ''; connectWS() }}
+          class="text-xs text-gray-400 hover:text-white px-1">
+          ↺
+        </button>
+      {/if}
+    </div>
   </div>
 
   <!-- Window nav tabs -->
@@ -68,5 +87,5 @@
   {/if}
 
   <!-- Soft key toolbar -->
-  <SoftKeybar onKey={sendKey} />
+  <SoftKeybar onKey={sendKey} disabled={!wsReady} />
 </div>

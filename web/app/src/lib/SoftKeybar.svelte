@@ -1,6 +1,7 @@
 <!-- web/app/src/lib/SoftKeybar.svelte -->
 <script>
   export let onKey
+  export let disabled = false
 
   const keys = [
     { label: 'Ctrl-C', seq: '\x03' },
@@ -18,7 +19,9 @@
   {#each keys as key}
     <button
       on:click={() => onKey(key.seq)}
-      class="min-w-[3rem] bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-xs font-mono py-2 px-3 rounded flex-shrink-0 transition-colors"
+      {disabled}
+      class="min-w-[3rem] bg-gray-700 text-white text-xs font-mono py-2 px-3 rounded flex-shrink-0 transition-colors
+             {disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-600 active:bg-gray-500'}"
     >
       {key.label}
     </button>

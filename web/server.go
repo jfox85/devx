@@ -51,11 +51,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-// authMiddleware enforces token auth on all /api/* routes.
-// Non-API routes (static assets, login) pass through unauthenticated.
+// authMiddleware enforces token auth on all /api/* and /terminal/* routes.
+// Non-API/terminal routes (static assets, login) pass through unauthenticated.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/login" {
+		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/")
+		if !needsAuth || r.URL.Path == "/api/login" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -81,8 +82,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	registerAPIRoutes(mux)
 	// Static SPA served from embedded FS (registered in embed.go)
 	registerStaticRoutes(mux)
-	// /terminal/{session}/ws is intentionally exempt from auth middleware.
-	// Access control is delegated to the Tailscale network layer.
+	// /terminal/{session}/ws requires auth (handled by authMiddleware covering /terminal/ prefix).
 	mux.HandleFunc("/terminal/{session}/ws", s.handleTerminalWS)
 }
 
