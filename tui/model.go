@@ -181,8 +181,10 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 		linesRendered++ // "↑ more sessions..." indicator
 	}
 
-	const noProjectSeen = "\x00"
-	currentProject := noProjectSeen
+	// Use "" as the initial sentinel to match renderSessionList's var currentProject string
+	// initialisation. Using "\x00" would cause a spurious blank-separator line to be
+	// counted before the very first project header, making the visible range too short.
+	currentProject := ""
 	last := scrollOffset - 1
 
 	for i, sess := range m.sessions {
@@ -1305,9 +1307,10 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 		budget = lineBudget[0]
 	}
 
-	// Scroll windowing only applies when not filtering (filter results are short).
+	// Apply scroll windowing whenever a budget is set (including filter mode, so that
+	// budget-truncated filtered results can still be reached via scrolling).
 	scrollOffset := 0
-	if !m.filterActive && budget > 0 {
+	if budget > 0 {
 		scrollOffset = m.scrollOffset
 	}
 
@@ -1319,8 +1322,8 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 
 	var currentProject string
 	for _, entry := range entries {
-		// Skip sessions before the scroll window.
-		if !m.filterActive && entry.sessIdx < scrollOffset {
+		// Skip entries whose underlying session index is before the scroll window.
+		if entry.sessIdx < scrollOffset {
 			continue
 		}
 
@@ -1513,21 +1516,8 @@ func (m *model) listView() string {
 	}
 	previewPaneHeight := m.height - 6 - logoLineCount
 
-	// Compute the line budget for the session list inside the left pane.
-	// sessionListStyle has Border(1t+1b) + Padding(1t+1b) = 4 lines of chrome.
-	// Overhead inside the pane: "Sessions\n\n" (2) + banners + ↑/↓ indicators (2 base).
-	const paneChrome = 4
-	listOverhead := 4 // base: "Sessions\n\n" (2) + scroll indicator reserve (2)
-	if m.updateAvailable {
-		listOverhead += 2
-	}
-	if m.caddyWarning != "" {
-		listOverhead += 2
-	}
-	sessionLineBudget := previewPaneHeight - paneChrome - listOverhead
-	if sessionLineBudget < 5 {
-		sessionLineBudget = 5
-	}
+	// previewSessionBudget() is the single source of truth for this calculation.
+	sessionLineBudget := m.previewSessionBudget()
 
 	entries := m.buildFilteredEntries()
 	m.renderSessionList(&sessionList, entries, false, sessionLineBudget)
