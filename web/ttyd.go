@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -152,6 +153,31 @@ func (m *ttydManager) clientDisconnected(sessionName string) {
 			m.stopSession(sessionName)
 		})
 	}
+}
+
+// portForSession returns the port of a running ttyd instance, if one exists.
+func (m *ttydManager) portForSession(name string) (int, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if inst, ok := m.sessions[name]; ok {
+		return inst.port, true
+	}
+	return 0, false
+}
+
+// findSessionByPathPrefix finds the running session whose name is the longest prefix
+// of path. Used to route asset requests from ttyd's HTML where slashes are unencoded.
+func (m *ttydManager) findSessionByPathPrefix(path string) (name string, port int, found bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for n, inst := range m.sessions {
+		if (strings.HasPrefix(path, n+"/") || path == n) && len(n) > len(name) {
+			name = n
+			port = inst.port
+			found = true
+		}
+	}
+	return
 }
 
 // stopSession kills the ttyd process for a session.

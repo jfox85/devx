@@ -12,11 +12,15 @@
   let error = ''
   let windows = []
 
-  $: iframeURL = `/terminal/${session.name}/`
+  // Encode session names so slashes ("/") don't split the URL path.
+  // The server parses %2F from RawPath for the initial request, and uses
+  // prefix-matching on active sessions for subsequent asset requests.
+  $: slug = encodeURIComponent(session.name)
+  $: iframeURL = `/terminal/${slug}/`
 
   function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/terminal/${session.name}/ws`)
+    ws = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`)
     ws.onopen = () => { wsReady = true }
     ws.onerror = () => { error = 'Terminal connection failed' }
     ws.onclose = () => { wsReady = false }

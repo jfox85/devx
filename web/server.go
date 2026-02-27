@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -87,21 +88,23 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/terminal/", s.handleTerminalProxy)
 }
 
-// handleTerminalProxy handles all /terminal/{session}/* traffic.
+// handleTerminalProxy handles all /terminal/* traffic.
 // WebSocket upgrade requests are proxied via gorilla/websocket.
 // Plain HTTP requests (iframe asset loads) are reverse-proxied via httputil.
+//
+// Session name resolution uses two strategies:
+//  1. Parse the %2F-encoded session name from RawPath (initial iframe/WS request
+//     from Terminal.svelte, which uses encodeURIComponent on the session name).
+//  2. Prefix-match against active ttyd sessions (subsequent asset requests from
+//     ttyd's own HTML, which uses decoded slashes in asset hrefs).
 func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
-	// Parse session name from path: /terminal/{session}/...
-	path := strings.TrimPrefix(r.URL.Path, "/terminal/")
-	sessionName, _, _ := strings.Cut(path, "/")
-	if sessionName == "" {
-		http.Error(w, "missing session name", http.StatusBadRequest)
+	sessionName, port, err := s.resolveTerminalSession(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	port, err := s.ttyd.startForSession(sessionName)
-	if err != nil {
-		http.Error(w, "failed to start terminal: "+err.Error(), http.StatusInternalServerError)
+	if sessionName == "" {
+		http.Error(w, "missing or unknown session", http.StatusNotFound)
 		return
 	}
 
@@ -113,4 +116,37 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxyHTTP(w, r, port)
+}
+
+// resolveTerminalSession determines the session name and ttyd port for a /terminal/* request.
+func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, port int, err error) {
+	// Strategy 1: parse %2F-encoded session name from RawPath.
+	// Terminal.svelte uses encodeURIComponent(session.name) so slashes become %2F.
+	rawPath := r.URL.RawPath
+	if rawPath == "" {
+		rawPath = r.URL.Path
+	}
+	encodedPart, _, _ := strings.Cut(strings.TrimPrefix(rawPath, "/terminal/"), "/")
+	decoded, decodeErr := url.PathUnescape(encodedPart)
+	if decodeErr == nil && decoded != "" {
+		if p, ok := s.ttyd.portForSession(decoded); ok {
+			return decoded, p, nil
+		}
+		// Session not running yet — start it.
+		p, startErr := s.ttyd.startForSession(decoded)
+		if startErr == nil {
+			return decoded, p, nil
+		}
+		// Fall through to strategy 2 if start failed (session may not exist).
+	}
+
+	// Strategy 2: prefix-match against active ttyd sessions.
+	// Handles asset requests (e.g. /terminal/foo/bar/js/app.js) where ttyd renders
+	// hrefs with decoded slashes, making it impossible to split by first "/".
+	decodedPath := strings.TrimPrefix(r.URL.Path, "/terminal/")
+	if name, p, ok := s.ttyd.findSessionByPathPrefix(decodedPath); ok {
+		return name, p, nil
+	}
+
+	return "", 0, nil
 }
