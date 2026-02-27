@@ -361,7 +361,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 func InitialModel() *model {
 	ti := textinput.New()
 	ti.Placeholder = "session-name"
-	ti.CharLimit = 50
+	ti.CharLimit = session.MaxSessionNameLen
 
 	si := textinput.New()
 	si.Placeholder = "search sessions..."
@@ -638,6 +638,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.searchFilter = ""
 					m.filteredIndices = nil
 					m.searchCursor = 0
+					m.ensureCursorVisible()
 
 				case msg.Type == tea.KeyUp:
 					if m.searchCursor > 0 {
@@ -767,6 +768,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case msg.Type == tea.KeyEnter:
 				name := strings.TrimSpace(m.textInput.Value())
 				if name != "" {
+					if !session.IsValidSessionName(name) {
+						m.err = fmt.Errorf("invalid session name %q: must start with a letter or digit and contain only letters, digits, dots, underscores, hyphens, or slashes", name)
+						m.state = stateList
+						m.textInput.Blur()
+						return m, nil
+					}
 					m.state = stateList
 					m.textInput.Blur()
 					return m, m.createSession(name)
@@ -1293,9 +1300,10 @@ func (m *model) buildFilteredEntries() []displayEntry {
 }
 
 // renderSessionList renders the session list into w.
-// lineBudget, when > 0, enables scroll-windowing: sessions before m.scrollOffset
-// are skipped, rendering stops when the budget is exhausted, and ↑/↓ indicators
-// are shown at the edges. Pass 0 for unlimited (used when lipgloss handles clipping).
+// lineBudget, when > 0, enables scroll-windowing: in normal mode sessions before
+// m.scrollOffset are skipped; in filter mode the window tracks m.searchCursor so
+// all matching sessions are reachable. Rendering stops when the budget is exhausted
+// and ↑/↓ indicators are shown at the edges. Pass 0 for unlimited.
 func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, showDetails bool, lineBudget ...int) {
 	if m.filterActive && m.searchFilter != "" && len(entries) == 0 {
 		w.WriteString(dimStyle.Render("  No matching sessions") + "\n")
@@ -1307,23 +1315,39 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 		budget = lineBudget[0]
 	}
 
-	// Apply scroll windowing whenever a budget is set (including filter mode, so that
-	// budget-truncated filtered results can still be reached via scrolling).
+	// Apply scroll windowing when a budget is set.
+	// Normal mode: skip sessions whose full-list index is before m.scrollOffset.
+	// Filter mode: derive an offset from m.searchCursor so the selected filtered
+	// result is always visible, regardless of its position in the full list.
 	scrollOffset := 0
+	filterScrollOffset := 0
 	if budget > 0 {
-		scrollOffset = m.scrollOffset
+		if m.filterActive && m.searchFilter != "" {
+			// Keep the selected filtered result visible near the bottom of the window.
+			// usableLines reserves 1 line for "↑ more" (top) and 1 for "↓ more" (bottom).
+			usableLines := budget - 2
+			if m.searchCursor >= usableLines {
+				filterScrollOffset = m.searchCursor - usableLines + 1
+			}
+		} else {
+			scrollOffset = m.scrollOffset
+		}
 	}
 
 	linesRendered := 0
-	if scrollOffset > 0 {
+	if scrollOffset > 0 || filterScrollOffset > 0 {
 		w.WriteString(dimStyle.Render("  ↑ more sessions...") + "\n")
 		linesRendered++
 	}
 
 	var currentProject string
 	for _, entry := range entries {
-		// Skip entries whose underlying session index is before the scroll window.
-		if entry.sessIdx < scrollOffset {
+		// Skip entries that are above the current scroll window.
+		if entry.filterIdx >= 0 {
+			if entry.filterIdx < filterScrollOffset {
+				continue
+			}
+		} else if entry.sessIdx < scrollOffset {
 			continue
 		}
 
