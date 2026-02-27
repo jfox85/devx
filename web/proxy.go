@@ -3,6 +3,8 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -14,15 +16,15 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// proxyWebSocket proxies a WebSocket connection to a backend ttyd instance.
-func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
+// proxyWebSocket proxies a WebSocket connection to a backend ttyd instance at wsPath.
+func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsPath string) {
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer clientConn.Close()
 
-	backendURL := fmt.Sprintf("ws://localhost:%d/ws", backendPort)
+	backendURL := fmt.Sprintf("ws://localhost:%d%s", backendPort, wsPath)
 	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
 		// Best-effort close message; if it fails, defer will still close the connection.
@@ -67,4 +69,13 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
 	}()
 
 	<-errc
+}
+
+// proxyHTTP reverse-proxies an HTTP request to a backend ttyd instance.
+func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
+	target := &url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("localhost:%d", backendPort),
+	}
+	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
 }

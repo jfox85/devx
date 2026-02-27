@@ -82,18 +82,35 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	registerAPIRoutes(mux)
 	// Static SPA served from embedded FS (registered in embed.go)
 	registerStaticRoutes(mux)
-	// /terminal/{session}/ws requires auth (handled by authMiddleware covering /terminal/ prefix).
-	mux.HandleFunc("/terminal/{session}/ws", s.handleTerminalWS)
+	// Catch-all for /terminal/* — handles both iframe HTTP requests and WebSocket upgrades.
+	// Auth is enforced by authMiddleware (covers the /terminal/ prefix).
+	mux.HandleFunc("/terminal/", s.handleTerminalProxy)
 }
 
-func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
-	sessionName := r.PathValue("session")
+// handleTerminalProxy handles all /terminal/{session}/* traffic.
+// WebSocket upgrade requests are proxied via gorilla/websocket.
+// Plain HTTP requests (iframe asset loads) are reverse-proxied via httputil.
+func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
+	// Parse session name from path: /terminal/{session}/...
+	path := strings.TrimPrefix(r.URL.Path, "/terminal/")
+	sessionName, _, _ := strings.Cut(path, "/")
+	if sessionName == "" {
+		http.Error(w, "missing session name", http.StatusBadRequest)
+		return
+	}
+
 	port, err := s.ttyd.startForSession(sessionName)
 	if err != nil {
 		http.Error(w, "failed to start terminal: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.ttyd.clientConnected(sessionName)
-	defer s.ttyd.clientDisconnected(sessionName)
-	proxyWebSocket(w, r, port)
+
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		s.ttyd.clientConnected(sessionName)
+		defer s.ttyd.clientDisconnected(sessionName)
+		proxyWebSocket(w, r, port, r.URL.Path)
+		return
+	}
+
+	proxyHTTP(w, r, port)
 }

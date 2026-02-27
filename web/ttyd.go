@@ -53,8 +53,14 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 		// Testing mode: use provided command directly (first arg is binary)
 		cmd = exec.Command(cmdAndArgs[0], cmdAndArgs[1:]...)
 	} else {
-		// Production mode: launch ttyd
-		args := []string{"-p", fmt.Sprintf("%d", port), "-W", "tmux", "attach", "-t", sessionName}
+		// Production mode: launch ttyd with --base-path so all asset URLs are absolute,
+		// allowing devx web to proxy the full /terminal/{session}/* path space.
+		args := []string{
+			"-p", fmt.Sprintf("%d", port),
+			"-W",
+			"--base-path", "/terminal/" + sessionName,
+			"tmux", "attach", "-t", sessionName,
+		}
 		cmd = exec.Command("ttyd", args...)
 	}
 
