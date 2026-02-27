@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount } from 'svelte'
-  import { listSessions, deleteSession, flagSession } from '../api.js'
+  import { listSessions, deleteSession, flagSession, unflagSession } from '../api.js'
   import SessionCard from './SessionCard.svelte'
   import NewSessionModal from './NewSessionModal.svelte'
 
@@ -28,13 +28,25 @@
 
   async function handleDelete(session) {
     if (!confirm(`Remove session "${session.name}"?`)) return
-    await deleteSession(session.name)
-    await load()
+    try {
+      await deleteSession(session.name)
+      await load()
+    } catch (e) {
+      error = e.message
+    }
   }
 
   async function handleFlag(session) {
-    await flagSession(session.name)
-    await load()
+    try {
+      if (session.attention_flag) {
+        await unflagSession(session.name)
+      } else {
+        await flagSession(session.name)
+      }
+      await load()
+    } catch (e) {
+      error = e.message
+    }
   }
 </script>
 

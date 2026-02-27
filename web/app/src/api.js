@@ -41,15 +41,18 @@ export async function createSession(name, project) {
 }
 
 export async function deleteSession(name) {
-  await apiFetch(`/sessions/${name}`, { method: 'DELETE' })
+  const res = await apiFetch(`/sessions/${name}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`)
 }
 
 export async function flagSession(name) {
-  await apiFetch(`/sessions/${name}/flag`, { method: 'POST' })
+  const res = await apiFetch(`/sessions/${name}/flag`, { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to flag session: ${res.status}`)
 }
 
 export async function unflagSession(name) {
-  await apiFetch(`/sessions/${name}/flag`, { method: 'DELETE' })
+  const res = await apiFetch(`/sessions/${name}/flag`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to unflag session: ${res.status}`)
 }
 
 export async function login(token) {
