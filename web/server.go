@@ -81,7 +81,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	registerAPIRoutes(mux)
 	// Static SPA served from embedded FS (registered in embed.go)
 	registerStaticRoutes(mux)
-	// WebSocket proxy for ttyd terminal access
+	// /terminal/{session}/ws is intentionally exempt from auth middleware.
+	// Access control is delegated to the Tailscale network layer.
 	mux.HandleFunc("/terminal/{session}/ws", s.handleTerminalWS)
 }
 

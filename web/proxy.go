@@ -3,9 +3,12 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+const wsWriteDeadline = 10 * time.Second
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -22,7 +25,8 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
 	backendURL := fmt.Sprintf("ws://localhost:%d/ws", backendPort)
 	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
-		clientConn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
+		// Best-effort close message; if it fails, defer will still close the connection.
+		_ = clientConn.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "backend unavailable"))
 		return
 	}
@@ -37,6 +41,7 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
 				errc <- err
 				return
 			}
+			backendConn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)) //nolint:errcheck
 			if err := backendConn.WriteMessage(mt, msg); err != nil {
 				errc <- err
 				return
@@ -51,6 +56,7 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
 				errc <- err
 				return
 			}
+			clientConn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)) //nolint:errcheck
 			if err := clientConn.WriteMessage(mt, msg); err != nil {
 				errc <- err
 				return
