@@ -70,6 +70,7 @@ const (
 type model struct {
 	sessions        []sessionItem
 	cursor          int
+	scrollOffset    int // index of first visible session in list
 	state           state
 	help            help.Model
 	keys            keyMap
@@ -123,6 +124,44 @@ type model struct {
 	searchFilter    string
 	filteredIndices []int // indices into m.sessions that match the filter
 	searchCursor    int   // cursor within filtered results
+}
+
+// viewOverheadLines returns the estimated number of non-session lines rendered
+// in the list view (logo, header, banners). Used by both ensureCursorVisible
+// and listView to keep scroll math consistent.
+func (m *model) viewOverheadLines() int {
+	overhead := 4 // 1 "Sessions" header line + 1 blank line + 2 scroll-indicator/buffer lines
+	if m.updateAvailable {
+		overhead += 2
+	}
+	if m.caddyWarning != "" {
+		overhead += 2
+	}
+	if m.height >= 35 {
+		overhead += 7 // logo lines
+	}
+	return overhead
+}
+
+func (m *model) ensureCursorVisible() {
+	sessionLines := (m.height - 2) - m.viewOverheadLines()
+	if sessionLines < 5 {
+		sessionLines = 5
+	}
+
+	// Scroll up if cursor is above the window
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+
+	// Scroll down if cursor is below the visible area
+	visibleEnd := m.scrollOffset + sessionLines - 1
+	if m.cursor > visibleEnd {
+		m.scrollOffset = m.cursor - sessionLines + 1
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
 }
 
 // gitStatsEntry holds cached additions/deletions for a repo+branch
@@ -472,6 +511,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.Width = msg.Width
+		m.ensureCursorVisible()
 
 	case tea.KeyMsg:
 		// Handle error state - allow user to clear error and return to list
@@ -552,11 +592,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.Up):
 				if m.cursor > 0 {
 					m.cursor--
+					m.ensureCursorVisible()
 				}
 
 			case key.Matches(msg, m.keys.Down):
 				if m.cursor < len(m.sessions)-1 {
 					m.cursor++
+					m.ensureCursorVisible()
 				}
 
 			case key.Matches(msg, m.keys.Enter):
@@ -622,6 +664,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sessName, ok := m.numberedSlots[slot]; ok {
 					if idx := m.sessionIndexByName(sessName); idx >= 0 {
 						m.cursor = idx
+						m.ensureCursorVisible()
 					}
 				}
 			}
@@ -836,6 +879,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		// Clamp scrollOffset to valid range; do NOT reset to 0 on every refresh
+		// because sessions reload every ~2s and resetting would make the list
+		// jump to the top constantly.
+		if m.scrollOffset >= len(m.sessions) && len(m.sessions) > 0 {
+			m.scrollOffset = len(m.sessions) - 1
+		}
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+		m.ensureCursorVisible()
 
 		// Apply cached git stats to the in-memory sessions (safe in Update loop)
 		for i := range m.sessions {
@@ -1028,11 +1081,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case caddyHealthMsg:
 		m.caddyWarning = msg.warning
+		m.ensureCursorVisible()
 
 	case updateAvailableMsg:
 		m.updateAvailable = msg.available
 		m.currentVersion = msg.currentVersion
 		m.updateVersion = msg.latestVersion
+		m.ensureCursorVisible()
 
 	case claudeHooksMsg:
 		if msg.success {
@@ -1245,16 +1300,23 @@ func (m *model) renderSearchBox(w *strings.Builder, availableWidth int) {
 }
 
 func (m *model) listView() string {
-	logo := logoStyle.Width(m.width).Render(`
+	var logo string
+	if m.height >= 35 {
+		logo = logoStyle.Width(m.width).Render(`
   ____            __  __
  |  _ \  _____   _\ \/ /
  | | | |/ _ \ \ / /\  / 
  | |_| |  __/\ V / /  \ 
  |____/ \___| \_/ /_/\_\
                         `)
+	}
 
 	if len(m.sessions) == 0 {
-		return logo + "\n" + headerStyle.Render("Sessions") + "\n\n" +
+		prefix := ""
+		if logo != "" {
+			prefix = logo + "\n"
+		}
+		return prefix + headerStyle.Render("Sessions") + "\n\n" +
 			"  No sessions found.\n\n" +
 			"  Press 'c' to create a new session.\n"
 	}
@@ -1262,7 +1324,10 @@ func (m *model) listView() string {
 	if !m.showPreview {
 		// Original full-width layout
 		var b strings.Builder
-		b.WriteString(logo + "\n" + headerStyle.Render("Sessions") + "\n\n")
+		if logo != "" {
+			b.WriteString(logo + "\n")
+		}
+		b.WriteString(headerStyle.Render("Sessions") + "\n\n")
 
 		// Show update banner if available
 		if m.updateAvailable {
@@ -1329,7 +1394,10 @@ func (m *model) listView() string {
 	rightPane := previewStyle.Width(previewWidth).Height(m.height - 6).Render(preview)
 
 	// Join them horizontally with the logo on top
-	return logo + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	if logo != "" {
+		return logo + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 }
 
 func (m *model) getSessionDetails(sess sessionItem) string {
