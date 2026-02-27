@@ -101,6 +101,12 @@ func initConfig() {
 	viper.SetDefault("cleanup_command", "")
 	viper.SetDefault("auto_check_updates", true)
 	viper.SetDefault("update_check_interval", "24h")
+	viper.SetDefault("external_domain", "")
+	viper.SetDefault("cloudflare_tunnel_id", "")
+	viper.SetDefault("cloudflare_tunnel_config", "~/.cloudflared/config.yaml")
+	viper.SetDefault("web_secret_token", "")
+	viper.SetDefault("web_port", 7777)
+	viper.SetDefault("web_autostart", false)
 
 	// Read in config file if found
 	_ = viper.ReadInConfig()

@@ -9,10 +9,16 @@ import (
 )
 
 type Config struct {
-	BaseDomain    string   `mapstructure:"basedomain"`
-	CaddyAPI      string   `mapstructure:"caddy_api"`
-	TmuxpTemplate string   `mapstructure:"tmuxp_template"`
-	Ports         []string `mapstructure:"ports"`
+	BaseDomain             string   `mapstructure:"basedomain"`
+	CaddyAPI               string   `mapstructure:"caddy_api"`
+	TmuxpTemplate          string   `mapstructure:"tmuxp_template"`
+	Ports                  []string `mapstructure:"ports"`
+	ExternalDomain         string   `mapstructure:"external_domain"`
+	CloudflareTunnelID     string   `mapstructure:"cloudflare_tunnel_id"`
+	CloudflareTunnelConfig string   `mapstructure:"cloudflare_tunnel_config"`
+	WebSecretToken         string   `mapstructure:"web_secret_token"`
+	WebPort                int      `mapstructure:"web_port"`
+	WebAutostart           bool     `mapstructure:"web_autostart"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -29,6 +35,15 @@ func LoadConfig() (*Config, error) {
 			return nil, err
 		}
 		cfg.TmuxpTemplate = filepath.Join(home, cfg.TmuxpTemplate[1:])
+	}
+
+	// Expand ~ in cloudflare_tunnel_config path
+	if cfg.CloudflareTunnelConfig != "" && cfg.CloudflareTunnelConfig[0] == '~' {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		cfg.CloudflareTunnelConfig = filepath.Join(home, cfg.CloudflareTunnelConfig[1:])
 	}
 
 	return &cfg, nil

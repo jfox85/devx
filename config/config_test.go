@@ -68,6 +68,27 @@ func TestTildeExpansion(t *testing.T) {
 	}
 }
 
+func TestLoadConfigExternalDomain(t *testing.T) {
+	viper.Reset()
+	viper.Set("external_domain", "example.com")
+	viper.Set("cloudflare_tunnel_id", "abc-123")
+	viper.Set("cloudflare_tunnel_config", "/tmp/cf.yaml")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ExternalDomain != "example.com" {
+		t.Errorf("expected ExternalDomain=example.com, got %q", cfg.ExternalDomain)
+	}
+	if cfg.CloudflareTunnelID != "abc-123" {
+		t.Errorf("expected CloudflareTunnelID=abc-123, got %q", cfg.CloudflareTunnelID)
+	}
+	if cfg.CloudflareTunnelConfig != "/tmp/cf.yaml" {
+		t.Errorf("expected CloudflareTunnelConfig=/tmp/cf.yaml, got %q", cfg.CloudflareTunnelConfig)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	// Reset viper for clean test
 	viper.Reset()
