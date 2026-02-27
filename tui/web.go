@@ -34,7 +34,10 @@ func ensureWebDaemonRunning() error {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
 	cmd := exec.Command(self, "web", "--daemon")
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start web daemon: %w", err)
+	}
+	return nil
 }
 
 func webDaemonPIDPath() string {
