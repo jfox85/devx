@@ -693,6 +693,58 @@ devx session rm my-feature
 curl http://localhost:2019/config/
 ```
 
+## Web Interface
+
+devx includes an optional web interface for managing sessions from mobile or desktop browsers. It has three layers:
+
+- **External domain routing** — serves your Caddy services on a custom domain via Cloudflare Tunnel
+- **devx web** — a local HTTP server with a session manager SPA (session list, service links, create/remove sessions)
+- **In-browser terminal** — tmux session access via ttyd, proxied through devx web
+
+### Quick start
+
+**1. Set required config keys** in `~/.config/devx/config.yaml`:
+
+```yaml
+web_secret_token: "your-secret-token"  # required to start devx web
+web_port: 7777                          # default port
+web_autostart: false                    # set true to auto-start with TUI
+```
+
+**2. Start the web server:**
+
+```bash
+devx web                  # foreground (Ctrl-C to stop)
+devx web --daemon         # background daemon
+devx web status           # check status
+devx web stop             # stop daemon
+```
+
+**3. Open** `http://localhost:7777` in your browser and enter your `web_secret_token`.
+
+### External domain routing (optional)
+
+To access devx services from your phone via a custom domain:
+
+**One-time Cloudflare setup:**
+1. Create a Cloudflare Tunnel and note the tunnel ID
+2. Add a wildcard DNS record: `*.your-domain.com CNAME <tunnel-id>.cfargotunnel.com`
+
+**Config:**
+```yaml
+external_domain: "your-domain.com"
+cloudflare_tunnel_id: "your-tunnel-id"
+cloudflare_tunnel_config: "~/.cloudflared/config.yaml"
+```
+
+**Sync and check:**
+```bash
+devx cloudflare sync   # regenerate cloudflared config from current sessions
+devx cloudflare check  # validate tunnel setup (binary, config, DNS)
+```
+
+devx manages the cloudflared ingress config file automatically when sessions are created or removed. You manage the cloudflared daemon separately.
+
 ## Examples
 
 ### Basic Web Development Workflow
