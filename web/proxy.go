@@ -41,7 +41,8 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
 				errc <- err
 				return
 			}
-			backendConn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)) //nolint:errcheck
+			// SetWriteDeadline errors are non-fatal; a subsequent write will fail and propagate.
+			_ = backendConn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
 			if err := backendConn.WriteMessage(mt, msg); err != nil {
 				errc <- err
 				return
@@ -56,7 +57,8 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int) {
 				errc <- err
 				return
 			}
-			clientConn.SetWriteDeadline(time.Now().Add(wsWriteDeadline)) //nolint:errcheck
+			// SetWriteDeadline errors are non-fatal; a subsequent write will fail and propagate.
+			_ = clientConn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
 			if err := clientConn.WriteMessage(mt, msg); err != nil {
 				errc <- err
 				return
