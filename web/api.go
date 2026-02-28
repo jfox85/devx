@@ -133,7 +133,7 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := []string{"session", "create", req.Name, "--no-tmux"}
+	args := []string{"session", "create", req.Name}
 	if req.Project != "" {
 		args = append(args, "--project", req.Project)
 	}

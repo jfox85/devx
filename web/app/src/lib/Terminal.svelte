@@ -3,7 +3,6 @@
   import { onMount, onDestroy } from 'svelte'
   import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
-  import PaneNav from './PaneNav.svelte'
 
   export let session
   export let onBack
@@ -15,7 +14,7 @@
   $: slug = encodeURIComponent(session.name)
   $: iframeURL = `/terminal/${slug}/`
 
-  // Reconnect iframe when session changes (component reused with different session)
+  // Reset windows when session changes (component reused with different session)
   let currentSession = session.name
   $: if (session.name !== currentSession) {
     currentSession = session.name
@@ -23,8 +22,6 @@
   }
 
   async function sendKey(key) {
-    // Use tmux send-keys so the key goes to the session's current window/pane,
-    // regardless of which client (iframe vs. any other) is in focus.
     try { await apiSendKeys(session.name, key) } catch { /* ignore */ }
   }
 
@@ -46,17 +43,28 @@
 </script>
 
 <div class="fixed inset-0 flex flex-col bg-black">
-  <!-- Header bar -->
-  <div class="flex items-center gap-3 px-3 py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+  <!-- Combined header: back button + window tabs (or session name if no tabs) -->
+  <div class="flex items-stretch bg-gray-900 border-b border-gray-800 flex-shrink-0 min-h-[44px]">
     <button on:click={onBack}
-      class="text-gray-400 hover:text-white text-sm px-2 py-1 rounded transition-colors">
+      class="px-3 text-gray-400 hover:text-white text-sm flex-shrink-0 border-r border-gray-800 flex items-center">
       ← Back
     </button>
-    <span class="text-white font-medium text-sm truncate flex-1 min-w-0">{session.name}</span>
+    {#if windows.length > 0}
+      <div class="flex items-center gap-1 px-2 overflow-x-auto flex-1">
+        {#each windows as win}
+          <button on:click={() => switchWindow(win.index)}
+            class="text-xs py-1 px-3 rounded flex-shrink-0 whitespace-nowrap transition-colors
+                   {win.active ? 'bg-blue-700 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}">
+            {win.index}: {win.name}
+          </button>
+        {/each}
+      </div>
+    {:else}
+      <span class="flex-1 flex items-center text-white font-medium text-sm truncate px-3">
+        {session.name}
+      </span>
+    {/if}
   </div>
-
-  <!-- Window nav tabs -->
-  <PaneNav {windows} onSwitch={switchWindow} />
 
   <!-- Terminal iframe -->
   <iframe
