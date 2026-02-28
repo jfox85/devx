@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/session"
@@ -21,6 +23,9 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/sessions/{name}", handleDeleteSession)
 	mux.HandleFunc("POST /api/sessions/{name}/flag", handleFlagSession)
 	mux.HandleFunc("DELETE /api/sessions/{name}/flag", handleUnflagSession)
+	// Session name passed as query param (?name=...) to avoid path-segment
+	// splitting on session names that contain slashes.
+	mux.HandleFunc("GET /api/windows", handleListWindows)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -169,6 +174,52 @@ func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// windowInfo is the JSON shape for a single tmux window.
+type windowInfo struct {
+	Index  int    `json:"index"`
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+}
+
+// handleListWindows returns the tmux windows for the session given by ?name=.
+// The query-param approach avoids Go ServeMux splitting session names on "/".
+func handleListWindows(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+
+	out, err := exec.Command("tmux", "list-windows", "-t", name, "-F",
+		"#{window_index} #{window_name} #{window_active}").Output()
+	if err != nil {
+		// tmux session not running — return empty list rather than an error.
+		writeJSON(w, http.StatusOK, map[string]any{"windows": []windowInfo{}})
+		return
+	}
+
+	var windows []windowInfo
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		idx, _ := strconv.Atoi(parts[0])
+		windows = append(windows, windowInfo{
+			Index:  idx,
+			Name:   parts[1],
+			Active: parts[2] == "1",
+		})
+	}
+	if windows == nil {
+		windows = []windowInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"windows": windows})
 }
 
 // runSelf re-invokes the devx binary with the given args.

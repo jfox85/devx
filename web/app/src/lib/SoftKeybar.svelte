@@ -4,6 +4,7 @@
   export let disabled = false
 
   const keys = [
+    { label: 'Ctrl-B', seq: '\x02' },
     { label: 'Ctrl-C', seq: '\x03' },
     { label: 'Esc',    seq: '\x1b' },
     { label: 'Tab',    seq: '\x09' },
@@ -15,12 +16,12 @@
   ]
 </script>
 
-<div class="flex gap-1 px-2 py-1 bg-gray-900 border-t border-gray-800 overflow-x-auto">
+<div class="flex gap-1 px-2 py-2 bg-gray-900 border-t border-gray-800 overflow-x-auto">
   {#each keys as key}
     <button
       on:click={() => onKey(key.seq)}
       {disabled}
-      class="min-w-[3rem] bg-gray-700 text-white text-xs font-mono py-2 px-3 rounded flex-shrink-0 transition-colors
+      class="flex-1 min-w-[2.5rem] bg-gray-700 text-white text-xs font-mono py-2 px-1 rounded flex-shrink-0 transition-colors whitespace-nowrap
              {disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-600 active:bg-gray-500'}"
     >
       {key.label}

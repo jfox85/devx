@@ -67,6 +67,12 @@ export async function login(token) {
   localStorage.setItem('devx_token', token)
 }
 
+export async function listWindows(sessionName) {
+  const res = await apiFetch('/windows?name=' + encodeURIComponent(sessionName))
+  const data = await res.json()
+  return data.windows || []
+}
+
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_token')
 }

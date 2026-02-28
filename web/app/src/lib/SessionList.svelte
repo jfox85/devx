@@ -26,6 +26,22 @@
 
   onMount(load)
 
+  // Group sessions by project_alias, sorted alphabetically.
+  // Sessions without a project go in an "" bucket rendered last.
+  $: groups = (() => {
+    const map = {}
+    for (const s of sessions) {
+      const key = s.project_alias || ''
+      if (!map[key]) map[key] = []
+      map[key].push(s)
+    }
+    return Object.entries(map).sort(([a], [b]) => {
+      if (a === '') return 1
+      if (b === '') return -1
+      return a.localeCompare(b)
+    })
+  })()
+
   async function handleDelete(session) {
     if (!confirm(`Remove session "${session.name}"?`)) return
     try {
@@ -50,7 +66,7 @@
   }
 </script>
 
-<div class="min-h-screen bg-gray-950 p-4 pb-20">
+<div class="min-h-dvh bg-gray-950 p-4 pb-20">
   <div class="max-w-2xl mx-auto">
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-2xl font-bold text-white">devx</h1>
@@ -67,9 +83,18 @@
     {:else if sessions.length === 0}
       <p class="text-gray-500 text-center py-12">No active sessions. Create one to get started.</p>
     {:else}
-      <div class="grid gap-3">
-        {#each sessions as session (session.name)}
-          <SessionCard {session} onOpen={onOpenTerminal} onDelete={handleDelete} onFlag={handleFlag} />
+      <div class="space-y-6">
+        {#each groups as [project, projectSessions]}
+          <div>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2 px-1">
+              {project || 'Other'}
+            </h2>
+            <div class="grid gap-3">
+              {#each projectSessions as session (session.name)}
+                <SessionCard {session} onOpen={onOpenTerminal} onDelete={handleDelete} onFlag={handleFlag} />
+              {/each}
+            </div>
+          </div>
         {/each}
       </div>
     {/if}

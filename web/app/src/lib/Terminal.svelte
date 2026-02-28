@@ -1,6 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
+  import { listWindows } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import PaneNav from './PaneNav.svelte'
 
@@ -11,6 +12,7 @@
   let wsReady = false
   let error = ''
   let windows = []
+  let windowPollTimer
 
   // Encode session names so slashes ("/") don't split the URL path.
   // The server parses %2F from RawPath for the initial request, and uses
@@ -48,11 +50,22 @@
     sendKey('\x02' + String(index))
   }
 
-  onMount(connectWS)
-  onDestroy(() => { if (ws) ws.close() })
+  async function loadWindows() {
+    try { windows = await listWindows(session.name) } catch { /* ignore */ }
+  }
+
+  onMount(() => {
+    connectWS()
+    loadWindows()
+    windowPollTimer = setInterval(loadWindows, 3000)
+  })
+  onDestroy(() => {
+    if (ws) ws.close()
+    clearInterval(windowPollTimer)
+  })
 </script>
 
-<div class="flex flex-col h-screen bg-black">
+<div class="flex flex-col h-dvh overflow-hidden bg-black">
   <!-- Header bar -->
   <div class="flex items-center gap-3 px-3 py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
     <button on:click={onBack}
@@ -85,7 +98,7 @@
     <iframe
       src={iframeURL}
       title="Terminal — {session.name}"
-      class="flex-1 w-full border-0"
+      class="flex-1 min-h-0 w-full border-0"
       allow="clipboard-read; clipboard-write"
     ></iframe>
   {/if}
