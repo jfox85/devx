@@ -23,7 +23,12 @@
   function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     ws = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`, ['tty'])
-    ws.onopen = () => { wsReady = true }
+    ws.onopen = () => {
+      wsReady = true
+      // Send an oversized terminal size so this control WS doesn't constrain the
+      // tmux window (tmux uses the minimum size across all attached clients).
+      ws.send('1' + JSON.stringify({ rows: 1000, cols: 1000 }))
+    }
     ws.onerror = () => { error = 'Terminal connection failed' }
     ws.onclose = () => { wsReady = false }
   }
@@ -86,7 +91,7 @@
   </div>
 
   <!-- Window nav tabs -->
-  <PaneNav {windows} onSwitch={switchWindow} />
+  <PaneNav {windows} onSwitch={switchWindow} disabled={!wsReady} />
 
   <!-- Terminal iframe -->
   {#if error}

@@ -54,9 +54,9 @@
 
 </script>
 
-<div class="min-h-dvh bg-gray-950 p-4 pb-20">
+<div class="min-h-dvh bg-gray-950 px-3 pt-4 pb-8">
   <div class="max-w-2xl mx-auto">
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-4">
       <h1 class="text-2xl font-bold text-white">devx</h1>
       <button on:click={() => showNewSession = true}
         class="bg-blue-600 hover:bg-blue-500 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors">

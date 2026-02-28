@@ -31,8 +31,20 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 		backendHeader.Set("Sec-WebSocket-Protocol", proto)
 	}
 	backendURL := fmt.Sprintf("ws://localhost:%d%s", backendPort, wsPath)
-	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, backendHeader)
-	if err != nil {
+
+	// Retry the backend dial: portForSession may return a port before waitForPort
+	// completes (the port is in the map as soon as the process starts). Retry for
+	// up to 5 s to handle this startup race.
+	var backendConn *websocket.Conn
+	for range 20 {
+		var dialErr error
+		backendConn, _, dialErr = websocket.DefaultDialer.Dial(backendURL, backendHeader)
+		if dialErr == nil {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if backendConn == nil {
 		// Best-effort close message; if it fails, defer will still close the connection.
 		_ = clientConn.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "backend unavailable"))
