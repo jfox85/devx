@@ -1,73 +1,34 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow } from '../api.js'
+  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import PaneNav from './PaneNav.svelte'
 
   export let session
   export let onBack
 
-  let ws
-  let wsReady = false
-  let error = ''
   let windows = []
   let windowPollTimer
-  let destroyed = false
-  let reconnectTimer = null
 
   // Encode session names so slashes ("/") don't split the URL path.
-  // The server parses %2F from RawPath for the initial request, and uses
-  // prefix-matching on active sessions for subsequent asset requests.
   $: slug = encodeURIComponent(session.name)
   $: iframeURL = `/terminal/${slug}/`
 
-  function connectWS() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const conn = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`, ['tty'])
-    ws = conn
-    conn.onopen = () => {
-      wsReady = true
-      // Send an oversized terminal size so this control WS doesn't constrain the
-      // tmux window (tmux uses the minimum size across all attached clients).
-      conn.send('1' + JSON.stringify({ rows: 1000, cols: 1000 }))
-    }
-    conn.onerror = () => { error = 'Terminal connection failed' }
-    conn.onclose = () => {
-      if (ws !== conn) return  // Already replaced by a newer connection
-      wsReady = false
-      // Auto-reconnect after 2s unless component is being destroyed
-      if (!destroyed) {
-        reconnectTimer = setTimeout(() => {
-          if (!destroyed && ws === conn) connectWS()
-        }, 2000)
-      }
-    }
-  }
-
-  // Reconnect when the session changes (component reused with a different session)
+  // Reconnect iframe when session changes (component reused with different session)
   let currentSession = session.name
-
   $: if (session.name !== currentSession) {
     currentSession = session.name
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
-    if (ws) ws.close()
-    error = ''
-    wsReady = false
-    connectWS()
+    windows = []
   }
 
-  function sendKey(seq) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send('0' + seq)
-    }
+  async function sendKey(key) {
+    // Use tmux send-keys so the key goes to the session's current window/pane,
+    // regardless of which client (iframe vs. any other) is in focus.
+    try { await apiSendKeys(session.name, key) } catch { /* ignore */ }
   }
 
   async function switchWindow(index) {
-    // Use the API so tmux select-window affects all clients, including the iframe's.
-    // Sending Ctrl-B+N through the control WS only switches the control WS's own
-    // tmux client viewport, not the iframe's.
     try { await apiSwitchWindow(session.name, index) } catch { /* ignore */ }
   }
 
@@ -76,14 +37,10 @@
   }
 
   onMount(() => {
-    connectWS()
     loadWindows()
     windowPollTimer = setInterval(loadWindows, 3000)
   })
   onDestroy(() => {
-    destroyed = true
-    clearTimeout(reconnectTimer)
-    if (ws) ws.close()
     clearInterval(windowPollTimer)
   })
 </script>
@@ -96,33 +53,19 @@
       ← Back
     </button>
     <span class="text-white font-medium text-sm truncate flex-1 min-w-0">{session.name}</span>
-    <div class="flex items-center gap-2 flex-shrink-0">
-      <div class="w-2 h-2 rounded-full {wsReady ? 'bg-green-500' : 'bg-red-500'}"
-           title={wsReady ? 'Connected' : 'Disconnected'}></div>
-      {#if !wsReady}
-        <button on:click={() => { error = ''; connectWS() }}
-          class="text-xs text-gray-400 hover:text-white px-1">
-          ↺
-        </button>
-      {/if}
-    </div>
   </div>
 
   <!-- Window nav tabs -->
-  <PaneNav {windows} onSwitch={switchWindow} disabled={!wsReady} />
+  <PaneNav {windows} onSwitch={switchWindow} />
 
   <!-- Terminal iframe -->
-  {#if error}
-    <div class="flex-1 flex items-center justify-center text-red-400 text-sm p-4 text-center">{error}</div>
-  {:else}
-    <iframe
-      src={iframeURL}
-      title="Terminal — {session.name}"
-      class="flex-1 min-h-0 w-full border-0"
-      allow="clipboard-read; clipboard-write"
-    ></iframe>
-  {/if}
+  <iframe
+    src={iframeURL}
+    title="Terminal — {session.name}"
+    class="flex-1 min-h-0 w-full border-0"
+    allow="clipboard-read; clipboard-write"
+  ></iframe>
 
   <!-- Soft key toolbar -->
-  <SoftKeybar onKey={sendKey} disabled={!wsReady} />
+  <SoftKeybar onKey={sendKey} />
 </div>

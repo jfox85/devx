@@ -27,6 +27,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
+	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -233,6 +234,22 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := exec.Command("tmux", "select-window", "-t", name+":"+window).Run(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSendKeys runs `tmux send-keys -t session key`, delivering the key to the
+// session's current window/pane regardless of which tmux client is active.
+func handleSendKeys(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	keys := r.URL.Query().Get("keys")
+	if name == "" || keys == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and keys required"})
+		return
+	}
+	if err := exec.Command("tmux", "send-keys", "-t", name, keys).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

@@ -80,6 +80,13 @@ export async function switchWindow(sessionName, windowIndex) {
   )
 }
 
+export async function sendKeys(sessionName, keys) {
+  await apiFetch(
+    '/send-keys?name=' + encodeURIComponent(sessionName) + '&keys=' + encodeURIComponent(keys),
+    { method: 'POST' }
+  )
+}
+
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_token')
 }

@@ -1,45 +1,41 @@
 <!-- web/app/src/lib/SoftKeybar.svelte -->
 <script>
   export let onKey
-  export let disabled = false
 
+  // Keys are tmux key names passed to `tmux send-keys -t session KEY`.
   const row1 = [
-    { label: 'Ctrl-B', seq: '\x02' },
-    { label: 'Ctrl-C', seq: '\x03' },
-    { label: 'Esc',    seq: '\x1b' },
-    { label: 'Tab',    seq: '\x09' },
-    { label: 'Ctrl-Z', seq: '\x1a' },
+    { label: 'Ctrl-B', key: 'C-b' },
+    { label: 'Ctrl-C', key: 'C-c' },
+    { label: 'Esc',    key: 'Escape' },
+    { label: 'Tab',    key: 'Tab' },
+    { label: 'Ctrl-Z', key: 'C-z' },
   ]
   const row2 = [
-    { label: '↑', seq: '\x1b[A' },
-    { label: '↓', seq: '\x1b[B' },
-    { label: '←', seq: '\x1b[D' },
-    { label: '→', seq: '\x1b[C' },
+    { label: '↑', key: 'Up' },
+    { label: '↓', key: 'Down' },
+    { label: '←', key: 'Left' },
+    { label: '→', key: 'Right' },
   ]
 </script>
 
 <div class="flex flex-col gap-1 px-2 py-2 bg-gray-900 border-t border-gray-800">
   <div class="flex gap-1">
-    {#each row1 as key}
+    {#each row1 as k}
       <button
-        on:click={() => onKey(key.seq)}
-        {disabled}
-        class="flex-1 bg-gray-700 text-white text-xs font-mono py-2 rounded text-center transition-colors
-               {disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-600 active:bg-gray-500'}"
+        on:click={() => onKey(k.key)}
+        class="flex-1 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-xs font-mono py-2 rounded text-center transition-colors"
       >
-        {key.label}
+        {k.label}
       </button>
     {/each}
   </div>
   <div class="flex gap-1">
-    {#each row2 as key}
+    {#each row2 as k}
       <button
-        on:click={() => onKey(key.seq)}
-        {disabled}
-        class="flex-1 bg-gray-700 text-white text-xs font-mono py-2 rounded text-center transition-colors
-               {disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-600 active:bg-gray-500'}"
+        on:click={() => onKey(k.key)}
+        class="flex-1 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-xs font-mono py-2 rounded text-center transition-colors"
       >
-        {key.label}
+        {k.label}
       </button>
     {/each}
   </div>
