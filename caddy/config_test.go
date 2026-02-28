@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -192,6 +193,60 @@ func TestBuildCaddyConfig(t *testing.T) {
 		routes := config.Apps.HTTP.Servers["devx"].Routes
 		if len(routes) != 0 {
 			t.Errorf("expected 0 routes for empty ports, got %d", len(routes))
+		}
+	})
+}
+
+func TestBuildHostnameLabelLength(t *testing.T) {
+	t.Run("short label is unchanged", func(t *testing.T) {
+		h := BuildHostname("my-session", "frontend", "travally")
+		label := strings.TrimSuffix(h, ".localhost")
+		if len(label) > 63 {
+			t.Errorf("label too long: %d chars: %s", len(label), label)
+		}
+		if h != "travally-my-session-frontend.localhost" {
+			t.Errorf("unexpected hostname: %s", h)
+		}
+	})
+
+	t.Run("label exceeding 63 chars is truncated with hash", func(t *testing.T) {
+		// session: "claude-update-enrichment-loading-animation-sz8dv" (48 chars)
+		// project: "travally", service: "frontend"
+		// full label would be 66 chars without truncation
+		h := BuildHostname(
+			"claude-update-enrichment-loading-animation-sz8dv",
+			"frontend",
+			"travally",
+		)
+		label := strings.TrimSuffix(h, ".localhost")
+		if len(label) > 63 {
+			t.Errorf("label exceeds 63 chars: %d: %s", len(label), label)
+		}
+		if !strings.HasSuffix(label, "-frontend") {
+			t.Errorf("label should end with service suffix: %s", label)
+		}
+		if !strings.HasPrefix(label, "travally-") {
+			t.Errorf("label should start with project prefix: %s", label)
+		}
+	})
+
+	t.Run("two distinct long session names produce different hostnames", func(t *testing.T) {
+		h1 := BuildHostname("claude-update-enrichment-loading-animation-sz8dv", "frontend", "travally")
+		h2 := BuildHostname("claude-update-enrichment-loading-animation-abc12", "frontend", "travally")
+		if h1 == h2 {
+			t.Errorf("distinct sessions should not collide: %s", h1)
+		}
+	})
+
+	t.Run("label without project is also truncated", func(t *testing.T) {
+		// No project alias, long session name
+		h := BuildHostname("claude-update-enrichment-loading-animation-sz8dv-extra", "frontend", "")
+		label := strings.TrimSuffix(h, ".localhost")
+		if len(label) > 63 {
+			t.Errorf("label exceeds 63 chars: %d: %s", len(label), label)
+		}
+		if !strings.HasSuffix(label, "-frontend") {
+			t.Errorf("label should end with service suffix: %s", label)
 		}
 	})
 }
