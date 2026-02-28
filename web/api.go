@@ -279,13 +279,22 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 
 // runSelf re-invokes the devx binary with the given args.
 // This reuses all existing CLI logic without duplicating it.
+// TMUX and TMUX_PANE are stripped so that commands like "session create"
+// don't detect they're inside tmux and skip launching the session.
 func runSelf(args ...string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "TMUX=") && !strings.HasPrefix(e, "TMUX_PANE=") {
+			env = append(env, e)
+		}
+	}
 	var stderr bytes.Buffer
 	cmd := exec.Command(self, args...)
+	cmd.Env = env
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if stderr.Len() > 0 {
