@@ -80,6 +80,12 @@ export async function switchWindow(sessionName, windowIndex) {
   )
 }
 
+export async function listProjects() {
+  const res = await apiFetch('/projects')
+  const data = await res.json()
+  return data.projects || []
+}
+
 export async function sendKeys(sessionName, keys) {
   await apiFetch(
     '/send-keys?name=' + encodeURIComponent(sessionName) + '&keys=' + encodeURIComponent(keys),

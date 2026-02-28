@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/jfox85/devx/caddy"
+	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/viper"
 )
@@ -26,6 +28,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
+	mux.HandleFunc("GET /api/projects", handleListProjects)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 }
@@ -222,6 +225,21 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		windows = []windowInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"windows": windows})
+}
+
+// handleListProjects returns the sorted list of project aliases from the registry.
+func handleListProjects(w http.ResponseWriter, r *http.Request) {
+	registry, err := config.LoadProjectRegistry()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	aliases := make([]string, 0, len(registry.Projects))
+	for alias := range registry.Projects {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches
