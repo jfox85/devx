@@ -120,33 +120,37 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 
 // resolveTerminalSession determines the session name and ttyd port for a /terminal/* request.
 func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, port int, err error) {
-	// Strategy 1: parse %2F-encoded session name from RawPath.
+	// Parse the first path segment, preserving %2F encoding.
 	// Terminal.svelte uses encodeURIComponent(session.name) so slashes become %2F.
 	rawPath := r.URL.RawPath
 	if rawPath == "" {
 		rawPath = r.URL.Path
 	}
 	encodedPart, _, _ := strings.Cut(strings.TrimPrefix(rawPath, "/terminal/"), "/")
-	decoded, decodeErr := url.PathUnescape(encodedPart)
-	if decodeErr == nil && decoded != "" {
+	decoded, _ := url.PathUnescape(encodedPart)
+
+	// 1. Exact lookup: session is already running with this name.
+	if decoded != "" {
 		if p, ok := s.ttyd.portForSession(decoded); ok {
 			return decoded, p, nil
 		}
-		// Session not running yet — start it.
-		p, startErr := s.ttyd.startForSession(decoded)
-		if startErr == nil {
-			return decoded, p, nil
-		}
-		// Fall through to strategy 2 if start failed (session may not exist).
 	}
 
-	// Strategy 2: prefix-match against active ttyd sessions.
-	// Handles asset requests (e.g. /terminal/foo/bar/js/app.js) where ttyd renders
-	// hrefs with decoded slashes, making it impossible to split by first "/".
+	// 2. Prefix-match against active sessions — handles asset requests from ttyd's HTML
+	//    where slashes are unencoded (e.g. /terminal/claude/session-name/js/app.js).
+	//    Check this BEFORE starting, to avoid a 5-second waitForPort timeout on every asset.
 	decodedPath := strings.TrimPrefix(r.URL.Path, "/terminal/")
 	if name, p, ok := s.ttyd.findSessionByPathPrefix(decodedPath); ok {
 		return name, p, nil
 	}
 
-	return "", 0, nil
+	// 3. Start a new ttyd instance — only reached on the initial request.
+	if decoded == "" {
+		return "", 0, nil
+	}
+	p, startErr := s.ttyd.startForSession(decoded)
+	if startErr != nil {
+		return "", 0, fmt.Errorf("failed to start terminal: %s", startErr)
+	}
+	return decoded, p, nil
 }

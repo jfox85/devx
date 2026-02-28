@@ -13,7 +13,8 @@ import (
 const wsWriteDeadline = 10 * time.Second
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin:  func(r *http.Request) bool { return true },
+	Subprotocols: []string{"tty"},
 }
 
 // proxyWebSocket proxies a WebSocket connection to a backend ttyd instance at wsPath.
@@ -24,8 +25,13 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 	}
 	defer clientConn.Close()
 
+	// Forward the Sec-WebSocket-Protocol header so ttyd accepts the connection.
+	backendHeader := http.Header{}
+	if proto := r.Header.Get("Sec-WebSocket-Protocol"); proto != "" {
+		backendHeader.Set("Sec-WebSocket-Protocol", proto)
+	}
 	backendURL := fmt.Sprintf("ws://localhost:%d%s", backendPort, wsPath)
-	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
+	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, backendHeader)
 	if err != nil {
 		// Best-effort close message; if it fails, defer will still close the connection.
 		_ = clientConn.WriteMessage(websocket.CloseMessage,
