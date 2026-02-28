@@ -10,7 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const wsWriteDeadline = 10 * time.Second
+const wsWriteDeadline = 60 * time.Second
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin:  func(r *http.Request) bool { return true },

@@ -13,6 +13,8 @@
   let error = ''
   let windows = []
   let windowPollTimer
+  let destroyed = false
+  let reconnectTimer = null
 
   // Encode session names so slashes ("/") don't split the URL path.
   // The server parses %2F from RawPath for the initial request, and uses
@@ -22,15 +24,25 @@
 
   function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`, ['tty'])
-    ws.onopen = () => {
+    const conn = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`, ['tty'])
+    ws = conn
+    conn.onopen = () => {
       wsReady = true
       // Send an oversized terminal size so this control WS doesn't constrain the
       // tmux window (tmux uses the minimum size across all attached clients).
-      ws.send('1' + JSON.stringify({ rows: 1000, cols: 1000 }))
+      conn.send('1' + JSON.stringify({ rows: 1000, cols: 1000 }))
     }
-    ws.onerror = () => { error = 'Terminal connection failed' }
-    ws.onclose = () => { wsReady = false }
+    conn.onerror = () => { error = 'Terminal connection failed' }
+    conn.onclose = () => {
+      if (ws !== conn) return  // Already replaced by a newer connection
+      wsReady = false
+      // Auto-reconnect after 2s unless component is being destroyed
+      if (!destroyed) {
+        reconnectTimer = setTimeout(() => {
+          if (!destroyed && ws === conn) connectWS()
+        }, 2000)
+      }
+    }
   }
 
   // Reconnect when the session changes (component reused with a different session)
@@ -38,6 +50,8 @@
 
   $: if (session.name !== currentSession) {
     currentSession = session.name
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
     if (ws) ws.close()
     error = ''
     wsReady = false
@@ -65,6 +79,8 @@
     windowPollTimer = setInterval(loadWindows, 3000)
   })
   onDestroy(() => {
+    destroyed = true
+    clearTimeout(reconnectTimer)
     if (ws) ws.close()
     clearInterval(windowPollTimer)
   })
