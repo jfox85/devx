@@ -31,6 +31,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects", handleListProjects)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
+	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -255,6 +256,19 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRefreshTerminal resizes the tmux window to its largest attached client,
+// which forces a SIGWINCH to all pane processes and triggers a full redraw.
+// Call this after the ttyd iframe has fully loaded to fix blank-pane rendering.
+func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name required"})
+		return
+	}
+	_ = exec.Command("tmux", "resize-window", "-t", name, "-A").Run()
 	w.WriteHeader(http.StatusNoContent)
 }
 

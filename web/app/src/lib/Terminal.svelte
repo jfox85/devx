@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys } from '../api.js'
+  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, refreshTerminal } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
 
   export let session
@@ -19,6 +19,14 @@
   $: if (session.name !== currentSession) {
     currentSession = session.name
     windows = []
+  }
+
+  // When the iframe finishes loading, give ttyd ~800ms to connect and negotiate
+  // terminal size, then trigger a tmux resize-window -A. This sends SIGWINCH to
+  // all pane processes and forces a full redraw — fixes blank panes on first open.
+  async function handleIframeLoad() {
+    await new Promise(r => setTimeout(r, 800))
+    try { await refreshTerminal(session.name) } catch { /* ignore */ }
   }
 
   async function sendKey(key) {
@@ -72,6 +80,7 @@
     title="Terminal — {session.name}"
     class="flex-1 min-h-0 w-full border-0"
     allow="clipboard-read; clipboard-write"
+    on:load={handleIframeLoad}
   ></iframe>
 
   <!-- Soft key toolbar -->

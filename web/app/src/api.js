@@ -86,6 +86,10 @@ export async function listProjects() {
   return data.projects || []
 }
 
+export async function refreshTerminal(sessionName) {
+  await apiFetch('/refresh?name=' + encodeURIComponent(sessionName), { method: 'POST' })
+}
+
 export async function sendKeys(sessionName, keys) {
   await apiFetch(
     '/send-keys?name=' + encodeURIComponent(sessionName) + '&keys=' + encodeURIComponent(keys),
