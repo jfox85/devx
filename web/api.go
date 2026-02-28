@@ -67,6 +67,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
+		MaxAge:   30 * 24 * 60 * 60, // 30 days — survive browser restarts
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
