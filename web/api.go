@@ -249,7 +249,10 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and keys required"})
 		return
 	}
-	if err := exec.Command("tmux", "send-keys", "-t", name, keys).Run(); err != nil {
+	// Split on whitespace so callers can send multiple keystrokes (e.g. "C-b C-b").
+	keyList := strings.Fields(keys)
+	args := append([]string{"send-keys", "-t", name}, keyList...)
+	if err := exec.Command("tmux", args...).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
