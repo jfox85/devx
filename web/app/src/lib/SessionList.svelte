@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount } from 'svelte'
-  import { listSessions, deleteSession, flagSession, unflagSession } from '../api.js'
+  import { listSessions, deleteSession } from '../api.js'
   import SessionCard from './SessionCard.svelte'
   import NewSessionModal from './NewSessionModal.svelte'
 
@@ -52,18 +52,6 @@
     }
   }
 
-  async function handleFlag(session) {
-    try {
-      if (session.attention_flag) {
-        await unflagSession(session.name)
-      } else {
-        await flagSession(session.name)
-      }
-      await load()
-    } catch (e) {
-      error = e.message
-    }
-  }
 </script>
 
 <div class="min-h-dvh bg-gray-950 p-4 pb-20">
@@ -91,7 +79,7 @@
             </h2>
             <div class="grid gap-3">
               {#each projectSessions as session (session.name)}
-                <SessionCard {session} onOpen={onOpenTerminal} onDelete={handleDelete} onFlag={handleFlag} />
+                <SessionCard {session} onOpen={onOpenTerminal} onDelete={handleDelete} />
               {/each}
             </div>
           </div>

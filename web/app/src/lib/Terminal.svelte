@@ -22,7 +22,7 @@
 
   function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`)
+    ws = new WebSocket(`${proto}://${location.host}/terminal/${slug}/ws`, ['tty'])
     ws.onopen = () => { wsReady = true }
     ws.onerror = () => { error = 'Terminal connection failed' }
     ws.onclose = () => { wsReady = false }
@@ -41,7 +41,7 @@
 
   function sendKey(seq) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data: seq }))
+      ws.send('0' + seq)
     }
   }
 
@@ -65,17 +65,14 @@
   })
 </script>
 
-<div class="flex flex-col h-dvh overflow-hidden bg-black">
+<div class="fixed inset-0 flex flex-col bg-black">
   <!-- Header bar -->
   <div class="flex items-center gap-3 px-3 py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
     <button on:click={onBack}
       class="text-gray-400 hover:text-white text-sm px-2 py-1 rounded transition-colors">
       ← Back
     </button>
-    <div class="flex-1 min-w-0">
-      <span class="text-white font-medium text-sm truncate">{session.name}</span>
-      <span class="text-gray-500 text-xs ml-2">{session.branch}</span>
-    </div>
+    <span class="text-white font-medium text-sm truncate flex-1 min-w-0">{session.name}</span>
     <div class="flex items-center gap-2 flex-shrink-0">
       <div class="w-2 h-2 rounded-full {wsReady ? 'bg-green-500' : 'bg-red-500'}"
            title={wsReady ? 'Connected' : 'Disconnected'}></div>

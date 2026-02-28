@@ -3,50 +3,74 @@
   export let session
   export let onOpen
   export let onDelete
-  export let onFlag
+
+  let showServices = false
+
+  $: allRoutes = (() => {
+    const result = {}
+    for (const [svc, url] of Object.entries(session.routes || {})) {
+      result[svc] = url.startsWith('http') ? url : 'https://' + url
+    }
+    for (const [svc, host] of Object.entries(session.external_routes || {})) {
+      result[svc] = 'https://' + host
+    }
+    return result
+  })()
+
+  $: hasRoutes = Object.keys(allRoutes).length > 0
 </script>
 
-<div class="bg-gray-900 rounded-xl p-4 shadow {session.attention_flag ? 'border border-yellow-500' : ''}">
-  <div class="flex items-start justify-between mb-2">
-    <div>
-      <h2 class="text-white font-semibold text-lg leading-tight">{session.name}</h2>
-      <p class="text-gray-400 text-sm">{session.branch}</p>
-      {#if session.project_alias}
-        <span class="text-xs bg-gray-700 text-gray-300 rounded px-2 py-0.5 mt-1 inline-block">{session.project_alias}</span>
+<div class="bg-gray-900 rounded-xl overflow-hidden {session.attention_flag ? 'ring-1 ring-yellow-500' : ''}">
+  <!-- Main tap target = open terminal -->
+  <button on:click={() => onOpen(session)}
+    class="w-full px-4 py-5 text-left hover:bg-gray-800 active:bg-gray-700 transition-colors">
+    <div class="flex items-center gap-2">
+      <span class="text-white font-semibold text-base leading-tight flex-1">{session.name}</span>
+      {#if session.attention_flag}
+        <span class="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0"></span>
       {/if}
     </div>
-    {#if session.attention_flag}
-      <span class="text-yellow-400 text-xl" aria-label="Attention flag">!</span>
+  </button>
+
+  <!-- Action strip -->
+  <div class="flex border-t border-gray-800">
+    {#if hasRoutes}
+      <button on:click={() => showServices = true}
+        class="flex-1 text-blue-400 text-sm py-2 px-3 hover:bg-gray-800 active:bg-gray-700 transition-colors text-center">
+        Services
+      </button>
     {/if}
-  </div>
-
-  <!-- Service links -->
-  {#if session.external_routes && Object.keys(session.external_routes).length > 0}
-    <div class="flex flex-wrap gap-2 mb-3">
-      {#each Object.entries(session.external_routes) as [svc, host]}
-        <a href="https://{host}" target="_blank" rel="noopener noreferrer"
-           class="text-xs bg-blue-900 text-blue-200 rounded-full px-3 py-1 hover:bg-blue-700 transition-colors">
-          {svc}
-        </a>
-      {/each}
-    </div>
-  {/if}
-
-  <!-- Actions -->
-  <div class="flex gap-2 mt-3">
-    <button on:click={() => onOpen(session)}
-      class="flex-1 bg-green-700 hover:bg-green-600 text-white text-sm font-medium py-2 rounded-lg transition-colors">
-      Terminal
-    </button>
-    <button on:click={() => onFlag(session)}
-      aria-label="Toggle attention flag"
-      class="bg-gray-700 hover:bg-gray-600 text-white text-sm py-2 px-3 rounded-lg transition-colors">
-      !
-    </button>
     <button on:click={() => onDelete(session)}
-      aria-label="Delete session"
-      class="bg-red-900 hover:bg-red-700 text-white text-sm py-2 px-3 rounded-lg transition-colors">
-      x
+      class="text-red-500 text-sm py-2 px-4 hover:bg-gray-800 active:bg-gray-700 transition-colors
+             {hasRoutes ? 'border-l border-gray-800' : 'flex-1 text-center'}">
+      Delete
     </button>
   </div>
 </div>
+
+<!-- Services bottom sheet -->
+{#if showServices}
+  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+  <div class="fixed inset-0 bg-black/60 flex items-end justify-center z-50"
+       role="dialog" aria-modal="true" tabindex="-1"
+       on:click|self={() => showServices = false}
+       on:keydown={(e) => e.key === 'Escape' && (showServices = false)}>
+    <div class="w-full max-w-md bg-gray-900 rounded-t-2xl p-5 pb-10">
+      <div class="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-4"></div>
+      <h2 class="text-white font-semibold text-base mb-4">{session.name}</h2>
+      <div class="flex flex-col gap-2">
+        {#each Object.entries(allRoutes) as [name, url]}
+          <a href={url} target="_blank" rel="noopener noreferrer"
+             class="flex items-center justify-between bg-gray-800 hover:bg-gray-700 active:bg-gray-600 rounded-xl px-4 py-3 transition-colors">
+            <span class="text-white font-medium">{name}</span>
+            <span class="text-gray-400 text-xs ml-3 truncate max-w-[180px]">{url.replace('https://', '')}</span>
+          </a>
+        {/each}
+      </div>
+      <button on:click={() => showServices = false}
+        class="mt-4 w-full bg-gray-800 hover:bg-gray-700 text-gray-300 py-3 rounded-xl text-sm transition-colors">
+        Close
+      </button>
+    </div>
+  </div>
+{/if}

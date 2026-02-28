@@ -21,7 +21,7 @@
     <button
       on:click={() => onKey(key.seq)}
       {disabled}
-      class="flex-1 min-w-[2.5rem] bg-gray-700 text-white text-xs font-mono py-2 px-1 rounded flex-shrink-0 transition-colors whitespace-nowrap
+      class="flex-1 min-w-[2.5rem] bg-gray-700 text-white text-xs font-mono py-2 px-1 rounded flex-shrink-0 transition-colors whitespace-nowrap text-center justify-center
              {disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-600 active:bg-gray-500'}"
     >
       {key.label}
