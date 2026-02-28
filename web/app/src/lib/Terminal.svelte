@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows } from '../api.js'
+  import { listWindows, switchWindow as apiSwitchWindow } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import PaneNav from './PaneNav.svelte'
 
@@ -64,9 +64,11 @@
     }
   }
 
-  function switchWindow(index) {
-    // Ctrl-B (tmux prefix) + window number
-    sendKey('\x02' + String(index))
+  async function switchWindow(index) {
+    // Use the API so tmux select-window affects all clients, including the iframe's.
+    // Sending Ctrl-B+N through the control WS only switches the control WS's own
+    // tmux client viewport, not the iframe's.
+    try { await apiSwitchWindow(session.name, index) } catch { /* ignore */ }
   }
 
   async function loadWindows() {

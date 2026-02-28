@@ -73,6 +73,13 @@ export async function listWindows(sessionName) {
   return data.windows || []
 }
 
+export async function switchWindow(sessionName, windowIndex) {
+  await apiFetch(
+    '/switch-window?name=' + encodeURIComponent(sessionName) + '&window=' + windowIndex,
+    { method: 'POST' }
+  )
+}
+
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_token')
 }

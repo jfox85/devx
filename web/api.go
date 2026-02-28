@@ -26,6 +26,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
+	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -220,6 +221,22 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		windows = []windowInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"windows": windows})
+}
+
+// handleSwitchWindow runs `tmux select-window -t session:index`, which switches
+// the active window for ALL clients attached to the session (including the iframe).
+func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	window := r.URL.Query().Get("window")
+	if name == "" || window == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and window required"})
+		return
+	}
+	if err := exec.Command("tmux", "select-window", "-t", name+":"+window).Run(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // runSelf re-invokes the devx binary with the given args.
