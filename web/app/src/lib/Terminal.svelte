@@ -22,13 +22,33 @@
     windows = []
   }
 
+  // Focus the terminal inside the iframe.
+  //
+  // iframeEl.focus() routes keyboard events to the iframe's window, but
+  // xterm.js captures input through its own textarea (.xterm-helper-textarea).
+  // We need to focus that element directly; otherwise typing after a programmatic
+  // focus still requires a manual click.
+  //
+  // This is same-origin (ttyd is served by the same server) so contentDocument
+  // access is allowed.
+  function focusTerminal() {
+    try {
+      const textarea = iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')
+      if (textarea) {
+        textarea.focus()
+        return
+      }
+    } catch { /* ignore any cross-origin / not-yet-loaded errors */ }
+    // Fallback: at minimum route events to the iframe window
+    iframeEl?.focus()
+  }
+
   // When the iframe finishes loading, give ttyd ~800ms to connect and negotiate
   // terminal size, then refresh and focus.
   async function handleIframeLoad() {
     await new Promise(r => setTimeout(r, 800))
-    // Focus first so keyboard input goes to the terminal immediately
-    iframeEl?.focus()
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
+    focusTerminal()
   }
 
   async function sendKey(key) {
@@ -36,20 +56,14 @@
   }
 
   async function switchWindow(index) {
-    // Focus synchronously while still inside the click user-gesture context.
-    // Browsers won't honour .focus() after an await (outside the gesture).
-    iframeEl?.focus()
+    // Must focus synchronously while still in the click user-gesture context.
+    // After an await, browsers may ignore .focus() calls.
+    focusTerminal()
     try { await apiSwitchWindow(session.name, index) } catch { /* ignore */ }
   }
 
   async function loadWindows() {
     try { windows = await listWindows(session.name) } catch { /* ignore */ }
-  }
-
-  // Tell the session list sidebar to focus its search input so the user can
-  // quickly switch sessions from the keyboard.
-  function focusSessionList() {
-    window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
   }
 
   onMount(() => {
@@ -64,16 +78,14 @@
 <!-- Fill parent container (flex-1 set by App.svelte) -->
 <div class="flex flex-col flex-1 min-h-0 bg-black">
 
-  <!-- Header: back + session-list shortcut + window tabs -->
+  <!-- Header: back + window tabs (or session name) -->
   <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] flex-shrink-0 h-9">
-    <!-- Back / deselect -->
     <button
       on:click={onBack}
       class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono flex-shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
       title="back to session list"
     >←</button>
 
-    <!-- Window tabs (or session name if no tabs) -->
     {#if windows.length > 0}
       <div class="flex items-center gap-1 px-2 overflow-x-auto flex-1 min-w-0">
         {#each windows as win}
@@ -93,13 +105,6 @@
         {session.name}
       </span>
     {/if}
-
-    <!-- "/ sessions" button: desktop only — focuses the sidebar search for fast switching -->
-    <button
-      on:click={focusSessionList}
-      class="hidden lg:flex items-center px-3 text-[10px] font-mono text-gray-700 hover:text-cyan-400 border-l border-[#1e2d4a] flex-shrink-0 transition-colors"
-      title="focus session list (press / to search, ↑↓ to navigate, ⏎ to open)"
-    >/ sessions</button>
   </div>
 
   <!-- Terminal iframe -->

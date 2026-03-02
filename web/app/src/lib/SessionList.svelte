@@ -60,21 +60,24 @@
   $: { searchQuery; selectedIndex = 0 }
 
   function handleKeydown(e) {
-    const inInput = document.activeElement?.tagName === 'INPUT'
-      || document.activeElement?.tagName === 'TEXTAREA'
+    // True if focused on something other than our own search box
+    const inOtherInput = (document.activeElement?.tagName === 'INPUT'
+      || document.activeElement?.tagName === 'TEXTAREA')
+      && document.activeElement !== searchInputEl
 
-    if (e.key === 'ArrowDown' && !inInput) {
+    // Arrow keys and Enter work even while search is focused (combobox pattern)
+    if (e.key === 'ArrowDown' && !inOtherInput) {
       e.preventDefault()
       selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1)
-    } else if (e.key === 'ArrowUp' && !inInput) {
+    } else if (e.key === 'ArrowUp' && !inOtherInput) {
       e.preventDefault()
       selectedIndex = Math.max(selectedIndex - 1, 0)
-    } else if (e.key === 'Enter' && !inInput) {
+    } else if (e.key === 'Enter' && !inOtherInput) {
       if (filtered[selectedIndex]) onOpenTerminal(filtered[selectedIndex])
     } else if (e.key === 'Escape') {
       searchQuery = ''
       searchInputEl?.blur()
-    } else if (e.key === '/' && !inInput) {
+    } else if (e.key === '/' && !inOtherInput && document.activeElement !== searchInputEl) {
       e.preventDefault()
       focusSearch()
     }
@@ -206,7 +209,7 @@
               </button>
 
               <!-- Action buttons:
-                   Mobile (< lg): always visible (flex)
+                   Mobile (< lg): always visible, generous touch targets
                    Desktop (≥ lg): invisible by default, fade in on group hover -->
               <div class="
                 flex items-center gap-px pr-1
@@ -216,9 +219,10 @@
                   <button
                     on:click={() => expandedRoutes = expandedRoutes === session.name ? null : session.name}
                     class="
-                      text-[11px] lg:text-[10px] font-mono
-                      text-blue-600 hover:text-blue-300
-                      px-2 lg:px-1.5 py-3 lg:py-1.5
+                      font-mono
+                      text-blue-600 hover:text-blue-300 active:text-blue-200
+                      text-sm lg:text-[10px]
+                      px-3 lg:px-1.5 py-4 lg:py-1.5
                       transition-colors
                     "
                     title="services"
@@ -227,9 +231,10 @@
                 <button
                   on:click={() => handleDelete(session)}
                   class="
-                    text-[11px] lg:text-[10px] font-mono
-                    text-red-800 hover:text-red-500
-                    px-2 lg:px-1.5 py-3 lg:py-1.5
+                    font-mono
+                    text-red-700 hover:text-red-400 active:text-red-300
+                    text-lg lg:text-[10px]
+                    px-3 lg:px-1.5 py-4 lg:py-1.5
                     transition-colors
                   "
                   title="delete"

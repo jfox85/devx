@@ -162,7 +162,9 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
 		return
 	}
-	if err := runSelf("session", "rm", name); err != nil {
+	// Pass --force to skip the interactive y/N prompt. runSelf has no stdin
+	// connected, so Scanln blocks forever without it.
+	if err := runSelf("session", "rm", "--force", name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
