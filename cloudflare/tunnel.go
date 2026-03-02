@@ -5,10 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jfox85/devx/caddy"
 	"gopkg.in/yaml.v3"
 )
+
+// expandPath expands a leading ~/ to the user's home directory.
+func expandPath(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
+}
 
 // CloudflaredConfig represents the full cloudflared YAML config
 type CloudflaredConfig struct {
@@ -85,6 +97,9 @@ func SyncTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, credentialsFil
 	if domain == "" || tunnelID == "" {
 		return nil
 	}
+
+	cfgPath = expandPath(cfgPath)
+	credentialsFile = expandPath(credentialsFile)
 
 	cfg := buildCloudflaredConfig(sessions, tunnelID, credentialsFile, domain)
 

@@ -27,6 +27,7 @@ type TunnelCheckResult struct {
 // CheckTunnel performs a comprehensive health check of the cloudflare tunnel setup.
 func CheckTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, domain, cfgPath string) TunnelCheckResult {
 	result := TunnelCheckResult{}
+	cfgPath = expandPath(cfgPath)
 
 	// Check binary
 	_, err := exec.LookPath("cloudflared")

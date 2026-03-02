@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/jfox85/devx/cloudflare"
 	"github.com/jfox85/devx/config"
@@ -29,10 +30,31 @@ var cloudflareCheckCmd = &cobra.Command{
 	RunE:  runCloudflareCheck,
 }
 
+var cloudflareStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start cloudflared tunnel daemon",
+	RunE:  runCloudflareStart,
+}
+
+var cloudflareStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop cloudflared tunnel daemon",
+	RunE:  runCloudflareStop,
+}
+
+var cloudflareStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show cloudflared tunnel daemon status",
+	RunE:  runCloudflareStatus,
+}
+
 func init() {
 	rootCmd.AddCommand(cloudflareCmd)
 	cloudflareCmd.AddCommand(cloudflareSyncCmd)
 	cloudflareCmd.AddCommand(cloudflareCheckCmd)
+	cloudflareCmd.AddCommand(cloudflareStartCmd)
+	cloudflareCmd.AddCommand(cloudflareStopCmd)
+	cloudflareCmd.AddCommand(cloudflareStatusCmd)
 }
 
 func runCloudflareSync(cmd *cobra.Command, args []string) error {
@@ -103,4 +125,55 @@ func printCheckLine(label string, ok bool, errMsg string) {
 	} else {
 		fmt.Printf("[FAIL] %s\n", label)
 	}
+}
+
+func runCloudflareStart(cmd *cobra.Command, args []string) error {
+	tunnelID := viper.GetString("cloudflare_tunnel_id")
+	domain := viper.GetString("external_domain")
+	if domain == "" || tunnelID == "" {
+		return fmt.Errorf("cloudflare tunnel not configured: set external_domain and cloudflare_tunnel_id in your config")
+	}
+
+	cfgPath := viper.GetString("cloudflare_tunnel_config")
+	pidPath := cloudflare.DefaultPIDPath()
+
+	// Sync config before starting so ingress rules are current
+	if err := syncAllCloudflareRoutes(); err != nil {
+		return fmt.Errorf("failed to sync cloudflare config: %w", err)
+	}
+
+	pid, err := cloudflare.StartDaemon(cfgPath, tunnelID, pidPath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("cloudflared started (pid %d)\n", pid)
+	fmt.Printf("logs: %s\n", pidPath[:len(pidPath)-4]+".log")
+	return nil
+}
+
+func runCloudflareStop(cmd *cobra.Command, args []string) error {
+	pidPath := cloudflare.DefaultPIDPath()
+	pid, err := cloudflare.StopDaemon(pidPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cloudflared stopped (pid %d)\n", pid)
+	return nil
+}
+
+func runCloudflareStatus(cmd *cobra.Command, args []string) error {
+	pidPath := cloudflare.DefaultPIDPath()
+	pid, err := cloudflare.ReadPID(pidPath)
+	if err != nil {
+		fmt.Println("cloudflared is not running")
+		return nil
+	}
+	if cloudflare.IsRunning(pid) {
+		fmt.Printf("cloudflared is running (pid %d)\n", pid)
+	} else {
+		fmt.Printf("cloudflared is not running (stale pid %d)\n", pid)
+		_ = os.Remove(pidPath)
+	}
+	return nil
 }

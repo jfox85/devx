@@ -108,8 +108,22 @@ func initConfig() {
 	viper.SetDefault("web_port", 7777)
 	viper.SetDefault("web_autostart", false)
 
-	// Read in config file if found
+	// Read primary config (project-level if found, otherwise global)
 	_ = viper.ReadInConfig()
+
+	// If a project-level config was loaded, also merge the global config so
+	// machine-wide settings (external_domain, web_secret_token, etc.) are
+	// available even when running from inside a project directory.
+	if cfgFile == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			globalCfg := viper.New()
+			globalCfg.SetConfigFile(home + "/.config/devx/config.yaml")
+			if err := globalCfg.ReadInConfig(); err == nil {
+				_ = viper.MergeConfigMap(globalCfg.AllSettings())
+			}
+		}
+	}
 }
 
 // checkForUpdatesBackground performs a background update check
