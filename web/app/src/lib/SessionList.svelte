@@ -13,6 +13,7 @@
   let error = ''
   let searchQuery = ''
   let selectedIndex = 0
+  let searchFocused = false   // true while the filter input has focus
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
 
@@ -32,6 +33,9 @@
   })
 
   function focusSearch() {
+    // Start nav cursor at the active session so arrows move from a known position
+    const activeIdx = displayOrdered.findIndex(s => s.name === activeSessionName)
+    if (activeIdx >= 0) selectedIndex = activeIdx
     searchInputEl?.focus()
     searchInputEl?.select()
   }
@@ -56,8 +60,24 @@
     })
   })()
 
+  // displayOrdered matches the visual top-to-bottom order (projects sorted
+  // alphabetically, sessions in original API order within each project).
+  // Use this for keyboard nav so ArrowDown moves to the visually next item.
+  $: displayOrdered = groups.flatMap(([, sessions]) => sessions)
+
   // Reset keyboard selection when search changes
   $: { searchQuery; selectedIndex = 0 }
+
+  // Only show the keyboard cursor highlight while the search box is in use.
+  // When idle, only the cyan activeSession highlight shows — no competing states.
+  $: showKbCursor = searchFocused || searchQuery.length > 0
+
+  function selectSession(sess) {
+    // Clear the filter so the full list reappears after switching
+    searchQuery = ''
+    selectedIndex = 0
+    onOpenTerminal(sess)
+  }
 
   function handleKeydown(e) {
     // True if focused on something other than our own search box
@@ -68,12 +88,12 @@
     // Arrow keys and Enter work even while search is focused (combobox pattern)
     if (e.key === 'ArrowDown' && !inOtherInput) {
       e.preventDefault()
-      selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1)
+      selectedIndex = Math.min(selectedIndex + 1, displayOrdered.length - 1)
     } else if (e.key === 'ArrowUp' && !inOtherInput) {
       e.preventDefault()
       selectedIndex = Math.max(selectedIndex - 1, 0)
     } else if (e.key === 'Enter' && !inOtherInput) {
-      if (filtered[selectedIndex]) onOpenTerminal(filtered[selectedIndex])
+      if (displayOrdered[selectedIndex]) selectSession(displayOrdered[selectedIndex])
     } else if (e.key === 'Escape') {
       searchQuery = ''
       searchInputEl?.blur()
@@ -129,6 +149,8 @@
       bind:this={searchInputEl}
       bind:value={searchQuery}
       placeholder="filter sessions…"
+      on:focus={() => searchFocused = true}
+      on:blur={() => searchFocused = false}
       class="flex-1 bg-transparent text-gray-300 text-xs font-mono outline-none placeholder-gray-700 min-w-0"
     />
     {#if searchQuery}
@@ -183,11 +205,12 @@
             {@const hasRoutes = Object.keys(routes).length > 0}
 
             <!-- Session row: flex container so name and actions sit side by side -->
+            {@const kbHighlight = showKbCursor && isKbSelected}
             <div class="
               group flex items-stretch border-l-2 transition-colors
               {isActive
                 ? 'bg-cyan-950/30 border-cyan-500'
-                : isKbSelected
+                : kbHighlight
                   ? 'bg-gray-800/30 border-gray-600'
                   : 'hover:bg-[#0d1117] border-transparent'}
             ">
@@ -199,7 +222,7 @@
                   pl-4 pr-2 py-3 lg:py-2
                   font-mono text-sm lg:text-xs
                   min-w-0
-                  {isActive ? 'text-cyan-300' : isKbSelected ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
+                  {isActive ? 'text-cyan-300' : kbHighlight ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
                 <span class="flex-1 truncate leading-none">{session.name}</span>

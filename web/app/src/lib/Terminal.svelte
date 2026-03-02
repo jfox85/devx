@@ -107,15 +107,21 @@
     {/if}
   </div>
 
-  <!-- Terminal iframe -->
-  <iframe
-    bind:this={iframeEl}
-    src={iframeURL}
-    title="Terminal — {session.name}"
-    class="flex-1 min-h-0 w-full border-0"
-    allow="clipboard-read; clipboard-write"
-    on:load={handleIframeLoad}
-  ></iframe>
+  <!--
+    Wrap in {#key} so switching sessions destroys the old iframe element rather
+    than navigating it. Navigating triggers ttyd's beforeunload handler and shows
+    the browser's "Leave site?" dialog. Removing an iframe element does not.
+  -->
+  {#key session.name}
+    <iframe
+      bind:this={iframeEl}
+      src={iframeURL}
+      title="Terminal — {session.name}"
+      class="flex-1 min-h-0 w-full border-0"
+      allow="clipboard-read; clipboard-write"
+      on:load={handleIframeLoad}
+    ></iframe>
+  {/key}
 
   <!-- Soft key toolbar — mobile only -->
   <div class="lg:hidden">
