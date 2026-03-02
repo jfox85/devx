@@ -297,6 +297,7 @@
     <span>↑↓ nav</span>
     <span>⏎ open</span>
     <span>/ search</span>
+    <span class="ml-auto">^⇧S focus</span>
   </div>
 
 </div>

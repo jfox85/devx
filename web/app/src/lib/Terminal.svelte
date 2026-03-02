@@ -43,12 +43,27 @@
     iframeEl?.focus()
   }
 
+  // Ctrl+Shift+S, registered on the iframe's document in capture phase so
+  // xterm never sees it. Dispatches to the parent window (lexical `window`
+  // is the parent since this function is defined in the parent scope).
+  function iframeHotkey(e) {
+    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault()
+      e.stopPropagation()
+      window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
+    }
+  }
+
   // When the iframe finishes loading, give ttyd ~800ms to connect and negotiate
-  // terminal size, then refresh and focus.
+  // terminal size, then refresh, focus, and register the focus-sessions hotkey.
   async function handleIframeLoad() {
     await new Promise(r => setTimeout(r, 800))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
     focusTerminal()
+    // Register the hotkey after focus so xterm is initialised
+    try {
+      iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
+    } catch { /* ignore if contentDocument isn't accessible yet */ }
   }
 
   async function sendKey(key) {
