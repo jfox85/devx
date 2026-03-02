@@ -40,8 +40,8 @@ func TestBuildCloudflaredConfig(t *testing.T) {
 	for _, rule := range cfg.Ingress {
 		if rule.Hostname == "my-session-ui.example.com" {
 			foundUI = true
-			if !strings.Contains(rule.Service, "my-session-ui.localhost") {
-				t.Errorf("ui service should proxy to localhost hostname, got %q", rule.Service)
+			if !strings.Contains(rule.Service, "localhost") {
+				t.Errorf("ui service should proxy to localhost, got %q", rule.Service)
 			}
 		}
 		if rule.Hostname == "my-session-api.example.com" {

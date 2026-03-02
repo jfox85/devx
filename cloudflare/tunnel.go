@@ -31,8 +31,14 @@ type CloudflaredConfig struct {
 
 // IngressRule represents one cloudflared ingress rule
 type IngressRule struct {
-	Hostname string `yaml:"hostname,omitempty"`
-	Service  string `yaml:"service"`
+	Hostname      string         `yaml:"hostname,omitempty"`
+	Service       string         `yaml:"service"`
+	OriginRequest *OriginRequest `yaml:"originRequest,omitempty"`
+}
+
+// OriginRequest holds per-rule origin connection options.
+type OriginRequest struct {
+	HTTPHostHeader string `yaml:"httpHostHeader,omitempty"`
 }
 
 // buildCloudflaredConfig generates the cloudflared config from current sessions.
@@ -61,13 +67,19 @@ func buildCloudflaredConfig(sessions map[string]*caddy.SessionInfo, tunnelID, cr
 			if externalHost == "" {
 				continue
 			}
-			localHost := caddy.BuildHostname(sessionName, serviceName, info.ProjectAlias)
-			if localHost == "" {
+			port, ok := info.Ports[serviceName]
+			if !ok || port == 0 {
 				continue
 			}
+			// Connect directly to the service port, bypassing Caddy's reverse
+			// proxy. This avoids transfer-encoding mismatches in the proxy chain
+			// and ensures cloudflared speaks directly to the origin.
 			rules = append(rules, IngressRule{
 				Hostname: externalHost,
-				Service:  fmt.Sprintf("http://%s", localHost),
+				Service:  fmt.Sprintf("http://localhost:%d", port),
+				// Send Host: localhost so dev servers (Vite, webpack-dev-server, etc.)
+				// don't reject the request as an unrecognised external hostname.
+				OriginRequest: &OriginRequest{HTTPHostHeader: "localhost"},
 			})
 		}
 	}
