@@ -24,7 +24,7 @@
   })
 
   async function handleSubmit() {
-    if (!name.trim()) { error = 'Session name is required'; return }
+    if (!name.trim()) { error = 'session name is required'; return }
     loading = true
     error = ''
     try {
@@ -40,38 +40,78 @@
   }
 </script>
 
-<div class="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4"
-     role="dialog" aria-modal="true" tabindex="-1"
-     on:click|self={() => dispatch('close')}
-     on:keydown={(e) => e.key === 'Escape' && dispatch('close')}>
-  <div class="w-full max-w-sm bg-gray-900 rounded-2xl p-6 shadow-xl">
-    <h2 class="text-white font-semibold text-lg mb-4">New Session</h2>
-    <form on:submit|preventDefault={handleSubmit}>
-      <label for="session-name" class="block text-gray-400 text-sm mb-1">Branch / session name</label>
-      <input id="session-name" bind:value={name} placeholder="feature/my-branch"
-        class="w-full bg-gray-800 text-white rounded-lg px-4 py-3 mb-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500" />
+<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+<div
+  class="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4"
+  role="dialog" aria-modal="true" tabindex="-1"
+  on:click|self={() => dispatch('close')}
+  on:keydown={(e) => e.key === 'Escape' && dispatch('close')}
+>
+  <div class="w-full max-w-sm bg-[#0d1117] border border-[#1e2d4a]">
+    <!-- Modal title bar -->
+    <div class="flex items-center justify-between px-4 py-2 border-b border-[#1e2d4a]">
+      <span class="text-cyan-400 text-xs font-mono font-bold tracking-widest">new session</span>
+      <button
+        on:click={() => dispatch('close')}
+        class="text-gray-600 hover:text-gray-400 font-mono text-xs"
+      >×</button>
+    </div>
+
+    <form on:submit|preventDefault={handleSubmit} class="p-4 space-y-3">
+      <div>
+        <label for="session-name" class="block text-gray-600 text-[11px] font-mono mb-1">
+          branch / session name
+        </label>
+        <input
+          id="session-name"
+          bind:value={name}
+          placeholder="feature/my-branch"
+          autofocus
+          class="
+            w-full bg-transparent border border-[#1e2d4a] focus:border-cyan-800
+            text-gray-300 text-xs font-mono px-3 py-2
+            outline-none transition-colors placeholder-gray-700
+          "
+        />
+      </div>
 
       {#if projects.length > 0}
-        <label for="session-project" class="block text-gray-400 text-sm mb-1">Project</label>
-        <select id="session-project" bind:value={project}
-          class="w-full bg-gray-800 text-white rounded-lg px-4 py-3 mb-4 text-base focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none">
-          <option value="">— none —</option>
-          {#each projects as p}
-            <option value={p}>{p}</option>
-          {/each}
-        </select>
+        <div>
+          <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
+            project
+          </label>
+          <select
+            id="session-project"
+            bind:value={project}
+            class="
+              w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
+              text-gray-300 text-xs font-mono px-3 py-2
+              outline-none transition-colors appearance-none
+            "
+          >
+            <option value="">— none —</option>
+            {#each projects as p}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        </div>
       {/if}
 
-      {#if error}<p class="text-red-400 text-sm mb-3">{error}</p>{/if}
-      <div class="flex gap-3">
-        <button type="button" on:click={() => dispatch('close')}
-          class="flex-1 bg-gray-700 text-white py-3 rounded-lg font-medium hover:bg-gray-600 transition-colors">
-          Cancel
-        </button>
-        <button type="submit" disabled={loading}
-          class="flex-1 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-500 transition-colors">
-          {loading ? 'Creating...' : 'Create'}
-        </button>
+      {#if error}
+        <p class="text-red-500 text-xs font-mono">{error}</p>
+      {/if}
+
+      <div class="flex gap-2 pt-1">
+        <button
+          type="button"
+          on:click={() => dispatch('close')}
+          class="flex-1 border border-[#1e2d4a] hover:border-gray-600 text-gray-600 hover:text-gray-400 py-2 text-xs font-mono transition-colors"
+        >cancel</button>
+        <button
+          type="submit"
+          disabled={loading}
+          class="flex-1 border border-cyan-900 hover:border-cyan-700 text-cyan-500 hover:text-cyan-300 py-2 text-xs font-mono transition-colors disabled:opacity-40"
+        >{loading ? 'creating...' : '[ create ]'}</button>
       </div>
     </form>
   </div>

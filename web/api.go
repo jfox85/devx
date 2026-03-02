@@ -22,7 +22,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login", handleLogin)
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
-	mux.HandleFunc("DELETE /api/sessions/{name}", handleDeleteSession)
+	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
 	mux.HandleFunc("POST /api/sessions/{name}/flag", handleFlagSession)
 	mux.HandleFunc("DELETE /api/sessions/{name}/flag", handleUnflagSession)
 	// Session name passed as query param (?name=...) to avoid path-segment
@@ -157,7 +157,11 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
 	if err := runSelf("session", "rm", name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

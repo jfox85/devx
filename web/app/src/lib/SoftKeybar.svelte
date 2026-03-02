@@ -5,11 +5,11 @@
   // Keys are tmux key names passed to `tmux send-keys -t session KEY`.
   // Space-separated values send multiple keystrokes (e.g. 'C-b C-b').
   const row1 = [
-    { label: 'Ctrl-B', key: 'C-b' },
-    { label: 'Ctrl-C', key: 'C-c' },
-    { label: 'Esc',    key: 'Escape' },
-    { label: 'Tab',    key: 'Tab' },
-    { label: 'Ctrl-Z', key: 'C-z' },
+    { label: 'C-b',   key: 'C-b' },
+    { label: 'C-c',   key: 'C-c' },
+    { label: 'Esc',   key: 'Escape' },
+    { label: 'Tab',   key: 'Tab' },
+    { label: 'C-z',   key: 'C-z' },
   ]
   const row2 = [
     { label: '↑', key: 'Up' },
@@ -19,40 +19,25 @@
   ]
   const row3 = [
     { label: 'S-Tab',   key: 'BTab' },
-    { label: 'Ctrl-O',  key: 'C-o' },
+    { label: 'C-o',     key: 'C-o' },
     { label: 'C-b C-b', key: 'C-b C-b' },
   ]
 </script>
 
-<div class="flex flex-col gap-1 px-2 py-2 bg-gray-900 border-t border-gray-800">
-  <div class="flex gap-1">
-    {#each row1 as k}
-      <button
-        on:click={() => onKey(k.key)}
-        class="flex-1 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-xs font-mono py-2 rounded text-center transition-colors"
-      >
-        {k.label}
-      </button>
-    {/each}
-  </div>
-  <div class="flex gap-1">
-    {#each row2 as k}
-      <button
-        on:click={() => onKey(k.key)}
-        class="flex-1 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-xs font-mono py-2 rounded text-center transition-colors"
-      >
-        {k.label}
-      </button>
-    {/each}
-  </div>
-  <div class="flex gap-1">
-    {#each row3 as k}
-      <button
-        on:click={() => onKey(k.key)}
-        class="flex-1 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white text-xs font-mono py-2 rounded text-center transition-colors"
-      >
-        {k.label}
-      </button>
-    {/each}
-  </div>
+<div class="flex flex-col gap-px bg-[#1e2d4a] border-t border-[#1e2d4a]">
+  {#each [row1, row2, row3] as row}
+    <div class="flex gap-px">
+      {#each row as k}
+        <button
+          on:click={() => onKey(k.key)}
+          class="
+            flex-1 bg-[#0a0e1a] hover:bg-[#0d1117] active:bg-cyan-950/30
+            text-gray-600 hover:text-gray-300 active:text-cyan-400
+            text-[10px] font-mono py-2.5 text-center
+            transition-colors
+          "
+        >{k.label}</button>
+      {/each}
+    </div>
+  {/each}
 </div>

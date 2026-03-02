@@ -9,6 +9,7 @@
 
   let windows = []
   let windowPollTimer
+  let iframeEl
 
   // Encode session names so slashes ("/") don't split the URL path.
   $: slug = encodeURIComponent(session.name)
@@ -22,8 +23,7 @@
   }
 
   // When the iframe finishes loading, give ttyd ~800ms to connect and negotiate
-  // terminal size, then trigger a tmux resize-window -A. This sends SIGWINCH to
-  // all pane processes and forces a full redraw — fixes blank panes on first open.
+  // terminal size, then trigger a tmux resize-window -A to fix blank panes.
   async function handleIframeLoad() {
     await new Promise(r => setTimeout(r, 800))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
@@ -34,7 +34,11 @@
   }
 
   async function switchWindow(index) {
-    try { await apiSwitchWindow(session.name, index) } catch { /* ignore */ }
+    try {
+      await apiSwitchWindow(session.name, index)
+      // Move focus into the terminal iframe so keyboard input goes there
+      iframeEl?.focus()
+    } catch { /* ignore */ }
   }
 
   async function loadWindows() {
@@ -50,25 +54,33 @@
   })
 </script>
 
-<div class="fixed inset-0 flex flex-col bg-black">
-  <!-- Combined header: back button + window tabs (or session name if no tabs) -->
-  <div class="flex items-stretch bg-gray-900 border-b border-gray-800 flex-shrink-0 min-h-[44px]">
-    <button on:click={onBack}
-      class="px-3 text-gray-400 hover:text-white text-sm flex-shrink-0 border-r border-gray-800 flex items-center">
-      ← Back
-    </button>
+<!-- Fill parent container (flex-1 set by parent) -->
+<div class="flex flex-col flex-1 min-h-0 bg-black">
+
+  <!-- Header: back button + window tabs (or session name if no tabs) -->
+  <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] flex-shrink-0 h-9">
+    <button
+      on:click={onBack}
+      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono flex-shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
+      title="back to session list"
+    >←</button>
+
     {#if windows.length > 0}
       <div class="flex items-center gap-1 px-2 overflow-x-auto flex-1">
         {#each windows as win}
-          <button on:click={() => switchWindow(win.index)}
-            class="text-xs py-1 px-3 rounded flex-shrink-0 whitespace-nowrap transition-colors
-                   {win.active ? 'bg-blue-700 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}">
-            {win.index}: {win.name}
-          </button>
+          <button
+            on:click={() => switchWindow(win.index)}
+            class="
+              text-[11px] font-mono py-1 px-2.5 flex-shrink-0 whitespace-nowrap transition-colors
+              {win.active
+                ? 'text-cyan-300 bg-cyan-950/50 border-b-2 border-cyan-500'
+                : 'text-gray-600 hover:text-gray-300 border-b-2 border-transparent'}
+            "
+          >{win.index}:{win.name}</button>
         {/each}
       </div>
     {:else}
-      <span class="flex-1 flex items-center text-white font-medium text-sm truncate px-3">
+      <span class="flex-1 flex items-center text-gray-500 font-mono text-xs truncate px-3">
         {session.name}
       </span>
     {/if}
@@ -76,6 +88,7 @@
 
   <!-- Terminal iframe -->
   <iframe
+    bind:this={iframeEl}
     src={iframeURL}
     title="Terminal — {session.name}"
     class="flex-1 min-h-0 w-full border-0"
@@ -83,6 +96,9 @@
     on:load={handleIframeLoad}
   ></iframe>
 
-  <!-- Soft key toolbar -->
-  <SoftKeybar onKey={sendKey} />
+  <!-- Soft key toolbar — mobile only -->
+  <div class="lg:hidden">
+    <SoftKeybar onKey={sendKey} />
+  </div>
+
 </div>

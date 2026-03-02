@@ -6,6 +6,8 @@
   import SessionList from './lib/SessionList.svelte'
   import Terminal from './lib/Terminal.svelte'
 
+  // view is only used on mobile to toggle between sessions and terminal.
+  // On desktop, both panels are always visible.
   let view = 'sessions'  // 'sessions' | 'terminal'
   let activeSession = null
 
@@ -20,9 +22,7 @@
   }
 
   // Re-set the auth cookie on load using the stored token. The cookie is a
-  // browser session cookie by default, so it's cleared on browser restart even
-  // though localStorage survives. Without it the terminal iframe (which can't
-  // send an Authorization header) gets 401.
+  // persistent cookie but refresh on mount ensures it stays valid.
   onMount(async () => {
     const stored = localStorage.getItem('devx_token')
     if (stored) {
@@ -33,8 +33,35 @@
 
 {#if !isLoggedIn()}
   <Login />
-{:else if view === 'sessions'}
-  <SessionList onOpenTerminal={openTerminal} />
-{:else if view === 'terminal' && activeSession}
-  <Terminal session={activeSession} onBack={goHome} />
+{:else}
+  <!--
+    Two-column layout:
+    - Mobile: show sidebar OR terminal (toggled via `view`)
+    - Desktop (lg+): both panels always visible side by side
+  -->
+  <div class="flex h-dvh overflow-hidden bg-[#0a0e1a]">
+
+    <!-- Session list sidebar -->
+    <div class="
+      flex flex-col flex-shrink-0
+      {view === 'terminal' ? 'hidden lg:flex lg:w-72 xl:w-80' : 'flex w-full lg:w-72 xl:w-80'}
+      border-r border-[#1e2d4a]
+    ">
+      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} />
+    </div>
+
+    <!-- Terminal / empty state -->
+    <div class="flex-1 flex flex-col min-w-0 {view === 'sessions' ? 'hidden lg:flex' : 'flex'}">
+      {#if activeSession}
+        <Terminal session={activeSession} onBack={goHome} />
+      {:else}
+        <!-- Desktop: no session selected yet -->
+        <div class="flex-1 flex flex-col items-center justify-center text-gray-700 select-none">
+          <div class="text-5xl mb-4 opacity-10">⌨</div>
+          <p class="text-xs font-mono tracking-widest uppercase opacity-50">select a session</p>
+        </div>
+      {/if}
+    </div>
+
+  </div>
 {/if}

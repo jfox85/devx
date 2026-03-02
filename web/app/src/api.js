@@ -41,7 +41,7 @@ export async function createSession(name, project) {
 }
 
 export async function deleteSession(name) {
-  const res = await apiFetch(`/sessions/${name}`, { method: 'DELETE' })
+  const res = await apiFetch('/sessions?name=' + encodeURIComponent(name), { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`)
 }
 
