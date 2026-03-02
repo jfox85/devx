@@ -24,7 +24,17 @@
     finally { loading = false }
   }
 
-  onMount(load)
+  onMount(() => {
+    load()
+    // Listen for focus-search events dispatched from the Terminal header button
+    window.addEventListener('devx:focusSessionList', focusSearch)
+    return () => window.removeEventListener('devx:focusSessionList', focusSearch)
+  })
+
+  function focusSearch() {
+    searchInputEl?.focus()
+    searchInputEl?.select()
+  }
 
   // Flat filtered list for keyboard navigation
   $: filtered = sessions.filter(s =>
@@ -66,7 +76,7 @@
       searchInputEl?.blur()
     } else if (e.key === '/' && !inInput) {
       e.preventDefault()
-      searchInputEl?.focus()
+      focusSearch()
     }
   }
 
@@ -83,11 +93,13 @@
 
   async function handleDelete(session) {
     if (!confirm(`Remove session "${session.name}"?`)) return
+    const prevError = error
+    error = ''
     try {
       await deleteSession(session.name)
       await load()
     } catch (e) {
-      error = e.message
+      error = e.message || 'Delete failed'
     }
   }
 </script>
@@ -101,7 +113,7 @@
     <span class="text-cyan-400 font-mono font-bold text-sm tracking-widest">devx</span>
     <button
       on:click={() => showNewSession = true}
-      class="text-gray-500 hover:text-cyan-400 text-[11px] font-mono px-2 py-0.5 border border-[#1e2d4a] hover:border-cyan-800 rounded-none transition-colors leading-none"
+      class="text-gray-500 hover:text-cyan-400 text-[11px] font-mono px-2 py-0.5 border border-[#1e2d4a] hover:border-cyan-800 transition-colors leading-none"
     >
       [+ new]
     </button>
@@ -118,19 +130,24 @@
     />
     {#if searchQuery}
       <button
-        on:click={() => searchQuery = ''}
+        on:click={() => { searchQuery = ''; searchInputEl?.focus() }}
         class="text-gray-600 hover:text-gray-400 text-xs font-mono ml-1"
       >×</button>
     {/if}
   </div>
 
+  <!-- Error banner (shown above list, doesn't replace it) -->
+  {#if error}
+    <div class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between flex-shrink-0">
+      <span>{error}</span>
+      <button on:click={() => error = ''} class="text-red-600 hover:text-red-400 ml-2">×</button>
+    </div>
+  {/if}
+
   <!-- Session list -->
   <div class="flex-1 overflow-y-auto">
     {#if loading}
       <div class="px-3 py-8 text-gray-700 text-xs font-mono">loading...</div>
-
-    {:else if error}
-      <div class="px-3 py-4 text-red-600 text-xs font-mono">{error}</div>
 
     {:else if sessions.length === 0}
       <div class="px-3 py-8 text-center">
@@ -162,44 +179,59 @@
             {@const routes = allRoutes(session)}
             {@const hasRoutes = Object.keys(routes).length > 0}
 
-            <div class="group relative">
-              <!-- Session row -->
+            <!-- Session row: flex container so name and actions sit side by side -->
+            <div class="
+              group flex items-stretch border-l-2 transition-colors
+              {isActive
+                ? 'bg-cyan-950/30 border-cyan-500'
+                : isKbSelected
+                  ? 'bg-gray-800/30 border-gray-600'
+                  : 'hover:bg-[#0d1117] border-transparent'}
+            ">
+              <!-- Name (main tap target) -->
               <button
                 on:click={() => onOpenTerminal(session)}
                 class="
-                  w-full text-left flex items-center gap-2
-                  pl-5 pr-14 py-3 lg:py-2
+                  flex-1 text-left flex items-center gap-2
+                  pl-4 pr-2 py-3 lg:py-2
                   font-mono text-sm lg:text-xs
-                  border-l-2 transition-colors
-                  {isActive
-                    ? 'text-cyan-300 bg-cyan-950/30 border-cyan-500'
-                    : isKbSelected
-                      ? 'text-gray-200 bg-gray-800/30 border-gray-600'
-                      : 'text-gray-500 hover:text-gray-200 hover:bg-[#0d1117] border-transparent'}
+                  min-w-0
+                  {isActive ? 'text-cyan-300' : isKbSelected ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
                 <span class="flex-1 truncate leading-none">{session.name}</span>
                 {#if session.attention_flag}
-                  <span class="text-yellow-500 text-[10px] flex-shrink-0" title="needs attention">◆</span>
+                  <span class="text-yellow-500 text-[10px] flex-shrink-0">◆</span>
                 {/if}
               </button>
 
-              <!-- Action buttons: visible on hover -->
+              <!-- Action buttons:
+                   Mobile (< lg): always visible (flex)
+                   Desktop (≥ lg): invisible by default, fade in on group hover -->
               <div class="
-                absolute right-1 top-1/2 -translate-y-1/2
-                hidden group-hover:flex items-center gap-0.5
-                bg-[#0a0e1a] pl-2
+                flex items-center gap-px pr-1
+                lg:opacity-0 lg:group-hover:opacity-100 lg:transition-opacity
               ">
                 {#if hasRoutes}
                   <button
-                    on:click|stopPropagation={() => expandedRoutes = expandedRoutes === session.name ? null : session.name}
-                    class="text-[10px] font-mono text-blue-600 hover:text-blue-400 px-1.5 py-1 transition-colors"
+                    on:click={() => expandedRoutes = expandedRoutes === session.name ? null : session.name}
+                    class="
+                      text-[11px] lg:text-[10px] font-mono
+                      text-blue-600 hover:text-blue-300
+                      px-2 lg:px-1.5 py-3 lg:py-1.5
+                      transition-colors
+                    "
                     title="services"
                   >svc</button>
                 {/if}
                 <button
-                  on:click|stopPropagation={() => handleDelete(session)}
-                  class="text-[10px] font-mono text-red-800 hover:text-red-500 px-1.5 py-1 transition-colors"
+                  on:click={() => handleDelete(session)}
+                  class="
+                    text-[11px] lg:text-[10px] font-mono
+                    text-red-800 hover:text-red-500
+                    px-2 lg:px-1.5 py-3 lg:py-1.5
+                    transition-colors
+                  "
                   title="delete"
                 >×</button>
               </div>
@@ -207,19 +239,23 @@
 
             <!-- Routes inline expansion -->
             {#if expandedRoutes === session.name}
-              <div class="bg-[#0d1117] border-b border-[#1e2d4a] pl-7 pr-3 py-2 space-y-1.5">
+              <div class="bg-[#0d1117] border-b border-[#1e2d4a] pl-6 pr-3 py-2 space-y-1.5">
                 {#each Object.entries(routes) as [svc, url]}
                   <a
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="flex items-center gap-2 text-[11px] font-mono text-gray-600 hover:text-cyan-400 transition-colors group/link"
+                    class="flex items-center gap-2 text-[11px] font-mono hover:text-cyan-400 transition-colors"
                   >
-                    <span class="text-gray-700 group-hover/link:text-cyan-600">↗</span>
+                    <span class="text-gray-700">↗</span>
                     <span class="text-gray-500">{svc}</span>
                     <span class="text-gray-700 truncate">{url.replace('https://', '')}</span>
                   </a>
                 {/each}
+                <button
+                  on:click={() => expandedRoutes = null}
+                  class="text-[10px] font-mono text-gray-700 hover:text-gray-500 mt-1 transition-colors"
+                >close ×</button>
               </div>
             {/if}
           {/each}
