@@ -116,3 +116,23 @@ func IsRunning(pid int) bool {
 	// Signal 0 checks process existence without sending a real signal
 	return proc.Signal(syscall.Signal(0)) == nil
 }
+
+// ReloadDaemon restarts the cloudflared daemon so it picks up an updated
+// config file. If the daemon is not running, this is a no-op (returns nil).
+func ReloadDaemon(cfgPath, tunnelID, pidPath string) error {
+	pid, err := ReadPID(pidPath)
+	if err != nil || !IsRunning(pid) {
+		// Not running — nothing to reload
+		return nil
+	}
+
+	if _, err := StopDaemon(pidPath); err != nil {
+		return fmt.Errorf("failed to stop cloudflared for reload: %w", err)
+	}
+
+	if _, err := StartDaemon(cfgPath, tunnelID, pidPath); err != nil {
+		return fmt.Errorf("failed to restart cloudflared: %w", err)
+	}
+
+	return nil
+}

@@ -187,6 +187,13 @@ func buildRoutes(sessions map[string]*SessionInfo) []Route {
 					{
 						Handler:   "reverse_proxy",
 						Upstreams: []RouteUpstream{{Dial: fmt.Sprintf("localhost:%d", port)}},
+						// Override Host so dev servers (e.g. Vite) see "localhost"
+						// rather than the *.localhost virtual hostname.
+						Headers: &RouteHeaders{
+							Request: &RouteHeaderOps{
+								Set: map[string][]string{"Host": {"localhost"}},
+							},
+						},
 					},
 				},
 				Terminal: true,

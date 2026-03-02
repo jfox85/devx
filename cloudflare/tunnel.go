@@ -31,14 +31,8 @@ type CloudflaredConfig struct {
 
 // IngressRule represents one cloudflared ingress rule
 type IngressRule struct {
-	Hostname      string         `yaml:"hostname,omitempty"`
-	Service       string         `yaml:"service"`
-	OriginRequest *OriginRequest `yaml:"originRequest,omitempty"`
-}
-
-// OriginRequest holds per-rule origin options
-type OriginRequest struct {
-	NoTLSVerify bool `yaml:"noTLSVerify,omitempty"`
+	Hostname string `yaml:"hostname,omitempty"`
+	Service  string `yaml:"service"`
 }
 
 // buildCloudflaredConfig generates the cloudflared config from current sessions.
@@ -73,10 +67,7 @@ func buildCloudflaredConfig(sessions map[string]*caddy.SessionInfo, tunnelID, cr
 			}
 			rules = append(rules, IngressRule{
 				Hostname: externalHost,
-				Service:  fmt.Sprintf("https://%s", localHost),
-				OriginRequest: &OriginRequest{
-					NoTLSVerify: true, // Caddy uses self-signed cert for .localhost
-				},
+				Service:  fmt.Sprintf("http://%s", localHost),
 			})
 		}
 	}
