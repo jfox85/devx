@@ -100,6 +100,9 @@
     } else if (e.key === '/' && !inOtherInput && document.activeElement !== searchInputEl) {
       e.preventDefault()
       focusSearch()
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault()
+      focusSearch()
     }
   }
 
