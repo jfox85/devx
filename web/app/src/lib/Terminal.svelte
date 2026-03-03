@@ -209,11 +209,15 @@
   onMount(() => {
     loadWindows()
     windowPollTimer = setInterval(loadWindows, 3000)
+    // visualViewport fires on mobile when the address bar hides/shows or the
+    // soft keyboard appears — more reliable than ResizeObserver alone.
+    window.visualViewport?.addEventListener('resize', scheduleRefresh)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
     clearTimeout(resizeTimer)
     resizeObserver?.disconnect()
+    window.visualViewport?.removeEventListener('resize', scheduleRefresh)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
@@ -261,9 +265,11 @@
         {/each}
       </div>
     {:else}
-      <span class="flex-1 flex items-center text-gray-500 font-mono text-xs truncate px-3 min-w-0">
-        {session.name}
-      </span>
+      <button
+        on:click={scheduleRefresh}
+        title="tap to re-sync terminal size"
+        class="flex-1 flex items-center text-gray-500 font-mono text-xs truncate px-3 min-w-0 text-left"
+      >{session.name}</button>
     {/if}
 
     <!-- Attach image button -->
