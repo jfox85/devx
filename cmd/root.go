@@ -124,9 +124,7 @@ func initConfig() {
 			globalCfg.SetConfigFile(filepath.Join(home, ".config", "devx", "config.yaml"))
 			if err := globalCfg.ReadInConfig(); err == nil {
 				for key, val := range globalCfg.AllSettings() {
-					if !viper.IsSet(key) {
-						viper.SetDefault(key, val)
-					}
+					viper.SetDefault(key, val)
 				}
 			}
 		}
