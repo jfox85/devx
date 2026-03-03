@@ -161,8 +161,8 @@ func LaunchTmuxSession(worktreePath, sessionName string) error {
 	// Also try to kill any window that just shows the directory cd command
 	_ = exec.Command("bash", "-c", fmt.Sprintf(`tmux list-windows -t %s -F "#{window_index}:#{window_name}" | grep "^0:" | cut -d: -f1 | xargs -I {} tmux kill-window -t %s:{} 2>/dev/null || true`, sessionName, sessionName)).Run()
 
-	// Attach to the session
-	cmd = exec.Command("tmux", "attach", "-t", sessionName)
+	// Attach to the session (switch-client when already inside tmux, attach otherwise)
+	cmd = attachOrSwitchCmd(sessionName)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -183,6 +183,16 @@ func IsTmuxRunning() bool {
 	return os.Getenv("TMUX") != ""
 }
 
+// attachOrSwitchCmd returns the appropriate tmux command for attaching to a session.
+// When already inside tmux, switch-client is used instead of attach to avoid the
+// "sessions should be nested with care" error.
+func attachOrSwitchCmd(sessionName string) *exec.Cmd {
+	if IsTmuxRunning() {
+		return exec.Command("tmux", "switch-client", "-t", sessionName)
+	}
+	return exec.Command("tmux", "attach", "-t", sessionName)
+}
+
 // AttachTmuxSession attaches to an existing tmux session
 func AttachTmuxSession(sessionName string) error {
 	// Check if tmux is available
@@ -196,8 +206,8 @@ func AttachTmuxSession(sessionName string) error {
 		return fmt.Errorf("tmux session '%s' does not exist", sessionName)
 	}
 
-	// Attach to the session
-	cmd = exec.Command("tmux", "attach", "-t", sessionName)
+	// Attach to the session (switch-client when already inside tmux, attach otherwise)
+	cmd = attachOrSwitchCmd(sessionName)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

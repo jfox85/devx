@@ -70,6 +70,7 @@ const (
 type model struct {
 	sessions        []sessionItem
 	cursor          int
+	scrollOffset    int // index of first visible session in list
 	state           state
 	help            help.Model
 	keys            keyMap
@@ -123,6 +124,133 @@ type model struct {
 	searchFilter    string
 	filteredIndices []int // indices into m.sessions that match the filter
 	searchCursor    int   // cursor within filtered results
+}
+
+// viewOverheadLines returns the estimated number of non-session lines rendered
+// in the non-preview list view (logo, header, banners). Used by listView and
+// the non-preview path of ensureCursorVisible to keep scroll math consistent.
+func (m *model) viewOverheadLines() int {
+	overhead := 4 // 1 "Sessions" header line + 1 blank line + 2 scroll-indicator/buffer lines
+	if m.updateAvailable {
+		overhead += 2
+	}
+	if m.caddyWarning != "" {
+		overhead += 2
+	}
+	if m.height >= 35 {
+		overhead += 10 // logo: 9 lines (MarginTop 1 + 7 content + MarginBottom 1) + "\n" separator
+	}
+	return overhead
+}
+
+// previewSessionBudget returns the line budget passed to renderSessionList in
+// preview mode. Must stay in sync with the calculation in listView().
+func (m *model) previewSessionBudget() int {
+	logoLineCount := 0
+	if m.height >= 35 {
+		logoLineCount = 10 // logo: 9 lines (MarginTop 1 + 7 content + MarginBottom 1) + "\n" separator
+	}
+	paneHeight := m.height - 6 - logoLineCount
+	const paneChrome = 4 // sessionListStyle: border top+bottom (2) + padding top+bottom (2)
+	overhead := 4        // base: "Sessions\n\n" (2) + scroll indicator reserve (2)
+	if m.updateAvailable {
+		overhead += 2
+	}
+	if m.caddyWarning != "" {
+		overhead += 2
+	}
+	lines := paneHeight - paneChrome - overhead
+	if lines < 5 {
+		return 5
+	}
+	return lines
+}
+
+// lastVisibleSession simulates the session rendering loop to find the index of
+// the last session that would actually be rendered for the given scrollOffset.
+// This accounts for project-group headers and blank separators consuming extra
+// lines — something a simple index-arithmetic estimate cannot do.
+func (m *model) lastVisibleSession(scrollOffset int) int {
+	if len(m.sessions) == 0 {
+		return -1
+	}
+	sessionLines := m.previewSessionBudget()
+
+	linesRendered := 0
+	if scrollOffset > 0 {
+		linesRendered++ // "↑ more sessions..." indicator
+	}
+
+	// Use "" as the initial sentinel to match renderSessionList's var currentProject string
+	// initialisation. Using "\x00" would cause a spurious blank-separator line to be
+	// counted before the very first project header, making the visible range too short.
+	currentProject := ""
+	last := scrollOffset - 1
+
+	for i, sess := range m.sessions {
+		if i < scrollOffset {
+			continue
+		}
+		if linesRendered >= sessionLines-1 {
+			break
+		}
+
+		if sess.projectAlias != currentProject {
+			if currentProject != "" && linesRendered > 0 {
+				linesRendered++ // blank separator between project groups
+				if linesRendered >= sessionLines-1 {
+					break
+				}
+			}
+			currentProject = sess.projectAlias
+			linesRendered++ // project header
+			if linesRendered >= sessionLines-1 {
+				break
+			}
+		}
+
+		last = i
+		linesRendered++
+	}
+
+	return last
+}
+
+func (m *model) ensureCursorVisible() {
+	if m.showPreview {
+		// Scroll up if cursor is above the window.
+		if m.cursor < m.scrollOffset {
+			m.scrollOffset = m.cursor
+			return
+		}
+		// Scroll down: increment scrollOffset until the cursor session is rendered.
+		// lastVisibleSession simulates the real render loop so project-header overhead
+		// is accounted for correctly.
+		for m.scrollOffset < len(m.sessions)-1 && m.cursor > m.lastVisibleSession(m.scrollOffset) {
+			m.scrollOffset++
+		}
+		return
+	}
+
+	// Non-preview mode: simple line-budget estimate (no per-session inline details).
+	sessionLines := (m.height - 2) - m.viewOverheadLines()
+	if sessionLines < 5 {
+		sessionLines = 5
+	}
+
+	// Scroll up if cursor is above the window
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+
+	// Scroll down if cursor is below the visible area
+	visibleEnd := m.scrollOffset + sessionLines - 1
+	if m.cursor > visibleEnd {
+		m.scrollOffset = m.cursor - sessionLines + 1
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+	}
 }
 
 // gitStatsEntry holds cached additions/deletions for a repo+branch
@@ -233,7 +361,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 func InitialModel() *model {
 	ti := textinput.New()
 	ti.Placeholder = "session-name"
-	ti.CharLimit = 50
+	ti.CharLimit = session.MaxSessionNameLen
 
 	si := textinput.New()
 	si.Placeholder = "search sessions..."
@@ -472,6 +600,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.Width = msg.Width
+		m.ensureCursorVisible()
 
 	case tea.KeyMsg:
 		// Handle error state - allow user to clear error and return to list
@@ -509,6 +638,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.searchFilter = ""
 					m.filteredIndices = nil
 					m.searchCursor = 0
+					m.ensureCursorVisible()
 
 				case msg.Type == tea.KeyUp:
 					if m.searchCursor > 0 {
@@ -552,11 +682,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.Up):
 				if m.cursor > 0 {
 					m.cursor--
+					m.ensureCursorVisible()
 				}
 
 			case key.Matches(msg, m.keys.Down):
 				if m.cursor < len(m.sessions)-1 {
 					m.cursor++
+					m.ensureCursorVisible()
 				}
 
 			case key.Matches(msg, m.keys.Enter):
@@ -622,6 +754,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sessName, ok := m.numberedSlots[slot]; ok {
 					if idx := m.sessionIndexByName(sessName); idx >= 0 {
 						m.cursor = idx
+						m.ensureCursorVisible()
 					}
 				}
 			}
@@ -635,6 +768,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case msg.Type == tea.KeyEnter:
 				name := strings.TrimSpace(m.textInput.Value())
 				if name != "" {
+					if !session.IsValidSessionName(name) {
+						m.err = fmt.Errorf("invalid session name %q: must start with a letter or digit and contain only letters, digits, dots, underscores, hyphens, or slashes", name)
+						m.state = stateList
+						m.textInput.Blur()
+						return m, nil
+					}
 					m.state = stateList
 					m.textInput.Blur()
 					return m, m.createSession(name)
@@ -836,6 +975,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		// Clamp scrollOffset to valid range; do NOT reset to 0 on every refresh
+		// because sessions reload every ~2s and resetting would make the list
+		// jump to the top constantly.
+		if m.scrollOffset >= len(m.sessions) && len(m.sessions) > 0 {
+			m.scrollOffset = len(m.sessions) - 1
+		}
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+		m.ensureCursorVisible()
 
 		// Apply cached git stats to the in-memory sessions (safe in Update loop)
 		for i := range m.sessions {
@@ -1028,11 +1177,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case caddyHealthMsg:
 		m.caddyWarning = msg.warning
+		m.ensureCursorVisible()
 
 	case updateAvailableMsg:
 		m.updateAvailable = msg.available
 		m.currentVersion = msg.currentVersion
 		m.updateVersion = msg.latestVersion
+		m.ensureCursorVisible()
 
 	case claudeHooksMsg:
 		if msg.success {
@@ -1148,20 +1299,75 @@ func (m *model) buildFilteredEntries() []displayEntry {
 	return entries
 }
 
-func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, showDetails bool) {
+// renderSessionList renders the session list into w.
+// lineBudget, when > 0, enables scroll-windowing: in normal mode sessions before
+// m.scrollOffset are skipped; in filter mode the window tracks m.searchCursor so
+// all matching sessions are reachable. Rendering stops when the budget is exhausted
+// and ↑/↓ indicators are shown at the edges. Pass 0 for unlimited.
+func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, showDetails bool, lineBudget ...int) {
 	if m.filterActive && m.searchFilter != "" && len(entries) == 0 {
 		w.WriteString(dimStyle.Render("  No matching sessions") + "\n")
 		return
 	}
 
+	budget := 0
+	if len(lineBudget) > 0 {
+		budget = lineBudget[0]
+	}
+
+	// Apply scroll windowing when a budget is set.
+	// Normal mode: skip sessions whose full-list index is before m.scrollOffset.
+	// Filter mode: derive an offset from m.searchCursor so the selected filtered
+	// result is always visible, regardless of its position in the full list.
+	scrollOffset := 0
+	filterScrollOffset := 0
+	if budget > 0 {
+		if m.filterActive && m.searchFilter != "" {
+			// Keep the selected filtered result visible near the bottom of the window.
+			// usableLines reserves 1 line for "↑ more" (top) and 1 for "↓ more" (bottom).
+			usableLines := budget - 2
+			if m.searchCursor >= usableLines {
+				filterScrollOffset = m.searchCursor - usableLines + 1
+			}
+		} else {
+			scrollOffset = m.scrollOffset
+		}
+	}
+
+	linesRendered := 0
+	if scrollOffset > 0 || filterScrollOffset > 0 {
+		w.WriteString(dimStyle.Render("  ↑ more sessions...") + "\n")
+		linesRendered++
+	}
+
 	var currentProject string
 	for _, entry := range entries {
+		// Skip entries that are above the current scroll window.
+		if entry.filterIdx >= 0 {
+			if entry.filterIdx < filterScrollOffset {
+				continue
+			}
+		} else if entry.sessIdx < scrollOffset {
+			continue
+		}
+
+		// Reserve the last line for the "↓ more" indicator.
+		if budget > 0 && linesRendered >= budget-1 {
+			w.WriteString(dimStyle.Render("  ↓ more sessions...") + "\n")
+			return
+		}
+
 		sess := m.sessions[entry.sessIdx]
 
 		// Add project header if this is a new project
 		if sess.projectAlias != currentProject {
 			if currentProject != "" {
 				w.WriteString("\n")
+				linesRendered++
+				if budget > 0 && linesRendered >= budget-1 {
+					w.WriteString(dimStyle.Render("  ↓ more sessions...") + "\n")
+					return
+				}
 			}
 			currentProject = sess.projectAlias
 
@@ -1175,6 +1381,11 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			}
 
 			w.WriteString(headerStyle.Render(projectHeader) + "\n")
+			linesRendered++
+			if budget > 0 && linesRendered >= budget-1 {
+				w.WriteString(dimStyle.Render("  ↓ more sessions...") + "\n")
+				return
+			}
 		}
 
 		// Cursor logic: use searchCursor when filtering, else main cursor
@@ -1210,6 +1421,7 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			line = selectedStyle.Render(line)
 		}
 		w.WriteString(line + "\n")
+		linesRendered++
 
 		// Show details for selected session (inline, only when not filtering)
 		if showDetails && !m.filterActive && m.cursor == entry.sessIdx {
@@ -1217,6 +1429,7 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
 			for _, line := range lines {
 				w.WriteString(dimStyle.Render(line) + "\n")
+				linesRendered++
 			}
 		}
 	}
@@ -1245,16 +1458,23 @@ func (m *model) renderSearchBox(w *strings.Builder, availableWidth int) {
 }
 
 func (m *model) listView() string {
-	logo := logoStyle.Width(m.width).Render(`
+	var logo string
+	if m.height >= 35 {
+		logo = logoStyle.Width(m.width).Render(`
   ____            __  __
  |  _ \  _____   _\ \/ /
  | | | |/ _ \ \ / /\  / 
  | |_| |  __/\ V / /  \ 
  |____/ \___| \_/ /_/\_\
                         `)
+	}
 
 	if len(m.sessions) == 0 {
-		return logo + "\n" + headerStyle.Render("Sessions") + "\n\n" +
+		prefix := ""
+		if logo != "" {
+			prefix = logo + "\n"
+		}
+		return prefix + headerStyle.Render("Sessions") + "\n\n" +
 			"  No sessions found.\n\n" +
 			"  Press 'c' to create a new session.\n"
 	}
@@ -1262,7 +1482,10 @@ func (m *model) listView() string {
 	if !m.showPreview {
 		// Original full-width layout
 		var b strings.Builder
-		b.WriteString(logo + "\n" + headerStyle.Render("Sessions") + "\n\n")
+		if logo != "" {
+			b.WriteString(logo + "\n")
+		}
+		b.WriteString(headerStyle.Render("Sessions") + "\n\n")
 
 		// Show update banner if available
 		if m.updateAvailable {
@@ -1309,8 +1532,19 @@ func (m *model) listView() string {
 		sessionList.WriteString(warningStyle.Render("⚠️ "+condensedWarning) + "\n\n")
 	}
 
+	// The logo (when shown) sits above the panes; subtract its height so the panes
+	// are sized to fit in the remaining terminal space.
+	logoLineCount := 0
+	if logo != "" {
+		logoLineCount = lipgloss.Height(logo) + 1 // +1 for the "\n" separator
+	}
+	previewPaneHeight := m.height - 6 - logoLineCount
+
+	// previewSessionBudget() is the single source of truth for this calculation.
+	sessionLineBudget := m.previewSessionBudget()
+
 	entries := m.buildFilteredEntries()
-	m.renderSessionList(&sessionList, entries, false) // false = no inline details
+	m.renderSessionList(&sessionList, entries, false, sessionLineBudget)
 	// In preview mode, the search box renders inside the left pane which has
 	// border(2) + padding(4) = 6 chars of overhead, so pass the inner width.
 	m.renderSearchBox(&sessionList, listWidth-6)
@@ -1325,11 +1559,14 @@ func (m *model) listView() string {
 	}
 
 	// Style the panes
-	leftPane := sessionListStyle.Width(listWidth).Height(m.height - 6).Render(sessionList.String())
-	rightPane := previewStyle.Width(previewWidth).Height(m.height - 6).Render(preview)
+	leftPane := sessionListStyle.Width(listWidth).Height(previewPaneHeight).Render(sessionList.String())
+	rightPane := previewStyle.Width(previewWidth).Height(previewPaneHeight).Render(preview)
 
 	// Join them horizontally with the logo on top
-	return logo + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	if logo != "" {
+		return logo + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 }
 
 func (m *model) getSessionDetails(sess sessionItem) string {

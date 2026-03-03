@@ -43,6 +43,13 @@ func init() {
 func runSessionCreate(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
+	// Validate session name to prevent shell injection, argument injection, and
+	// path traversal. Names are used as git branch names, tmux targets, and
+	// path components under .worktrees/.
+	if !session.IsValidSessionName(name) {
+		return fmt.Errorf("invalid session name %q: must start with a letter or digit, contain only letters/digits/dots/underscores/hyphens/slashes, and must not contain '..' or empty path segments", name)
+	}
+
 	// Load project registry
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
