@@ -2,11 +2,16 @@ package web
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +37,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
+	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -296,6 +302,88 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+var allowedImageTypes = map[string]string{
+	"image/png":  ".png",
+	"image/jpeg": ".jpg",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+}
+
+// handleUploadImage accepts a multipart image upload, saves it to
+// ~/.devx/uploads/{hex}.ext, and returns the absolute path as JSON.
+func handleUploadImage(w http.ResponseWriter, r *http.Request) {
+	// Cap the raw request body to 20 MB before parsing to prevent disk exhaustion.
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
+		return
+	}
+
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image field required"})
+		return
+	}
+	defer file.Close()
+
+	// Always sniff magic bytes to determine MIME type — never trust the
+	// client-supplied Content-Type header, which is trivially spoofable.
+	buf := make([]byte, 512)
+	n, _ := file.Read(buf)
+	ct := http.DetectContentType(buf[:n])
+	// Seek back to start so io.Copy gets the full file contents.
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seek failed"})
+		return
+	}
+
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid content type"})
+		return
+	}
+
+	ext, ok := allowedImageTypes[mediaType]
+	if !ok {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot find home dir"})
+		return
+	}
+
+	uploadDir := filepath.Join(home, ".devx", "uploads")
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create upload dir"})
+		return
+	}
+
+	var randBytes [16]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "random generation failed"})
+		return
+	}
+	filename := hex.EncodeToString(randBytes[:]) + ext
+	destPath := filepath.Join(uploadDir, filename)
+
+	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create file"})
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"path": destPath})
 }
 
 // runSelf re-invokes the devx binary with the given args.

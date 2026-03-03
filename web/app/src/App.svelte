@@ -10,6 +10,7 @@
   // On desktop, both panels are always visible.
   let view = 'sessions'  // 'sessions' | 'terminal'
   let activeSession = null
+  let terminalComponent
 
   function openTerminal(session) {
     activeSession = session
@@ -21,6 +22,20 @@
     activeSession = null
   }
 
+  // Global paste handler: routes image pastes to the terminal component when
+  // focus is in the parent window (e.g. sidebar). The iframe-document paste
+  // handler in Terminal.svelte covers paste events when xterm has focus.
+  function handleGlobalPaste(e) {
+    if (!activeSession || !terminalComponent) return
+    for (const item of (e.clipboardData?.items || [])) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        e.preventDefault()
+        terminalComponent.handleImagePaste(item.getAsFile())
+        return
+      }
+    }
+  }
+
   // Re-set the auth cookie on load using the stored token. The cookie is a
   // persistent cookie but refresh on mount ensures it stays valid.
   onMount(async () => {
@@ -30,6 +45,8 @@
     }
   })
 </script>
+
+<svelte:window on:paste={handleGlobalPaste} />
 
 {#if !isLoggedIn()}
   <Login />
@@ -53,7 +70,7 @@
     <!-- Terminal / empty state -->
     <div class="flex-1 flex flex-col min-w-0 {view === 'sessions' ? 'hidden lg:flex' : 'flex'}">
       {#if activeSession}
-        <Terminal session={activeSession} onBack={goHome} />
+        <Terminal bind:this={terminalComponent} session={activeSession} onBack={goHome} />
       {:else}
         <!-- Desktop: no session selected yet -->
         <div class="flex-1 flex flex-col items-center justify-center text-gray-700 select-none">

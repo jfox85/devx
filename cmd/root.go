@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -111,16 +112,22 @@ func initConfig() {
 	// Read primary config (project-level if found, otherwise global)
 	_ = viper.ReadInConfig()
 
-	// If a project-level config was loaded, also merge the global config so
+	// If a project-level config was loaded, also pull in the global config so
 	// machine-wide settings (external_domain, web_secret_token, etc.) are
 	// available even when running from inside a project directory.
+	// Global values are registered as defaults so project settings take
+	// precedence: defaults → global → project → env vars.
 	if cfgFile == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
 			globalCfg := viper.New()
-			globalCfg.SetConfigFile(home + "/.config/devx/config.yaml")
+			globalCfg.SetConfigFile(filepath.Join(home, ".config", "devx", "config.yaml"))
 			if err := globalCfg.ReadInConfig(); err == nil {
-				_ = viper.MergeConfigMap(globalCfg.AllSettings())
+				for key, val := range globalCfg.AllSettings() {
+					if !viper.IsSet(key) {
+						viper.SetDefault(key, val)
+					}
+				}
 			}
 		}
 	}

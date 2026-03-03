@@ -25,11 +25,16 @@
     finally { loading = false }
   }
 
+  function openNewSession() { showNewSession = true }
+
   onMount(() => {
     load()
-    // Listen for focus-search events dispatched from the Terminal header button
     window.addEventListener('devx:focusSessionList', focusSearch)
-    return () => window.removeEventListener('devx:focusSessionList', focusSearch)
+    window.addEventListener('devx:newSession', openNewSession)
+    return () => {
+      window.removeEventListener('devx:focusSessionList', focusSearch)
+      window.removeEventListener('devx:newSession', openNewSession)
+    }
   })
 
   function focusSearch() {
@@ -103,6 +108,9 @@
     } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       focusSearch()
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault()
+      if (!showNewSession) showNewSession = true
     }
   }
 
@@ -300,7 +308,8 @@
     <span>↑↓ nav</span>
     <span>⏎ open</span>
     <span>/ search</span>
-    <span class="ml-auto">^⇧S focus</span>
+    <span class="ml-auto">^⇧C new</span>
+    <span>^⇧S focus</span>
   </div>
 
 </div>

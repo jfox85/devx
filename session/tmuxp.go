@@ -48,10 +48,11 @@ windows:
 `
 
 type TmuxpData struct {
-	Name   string
-	Path   string
-	Ports  map[string]int    // service name -> port number
-	Routes map[string]string // service name -> hostname
+	Name           string
+	Path           string
+	Ports          map[string]int    // service name -> port number
+	Routes         map[string]string // service name -> local hostname (*.localhost)
+	ExternalRoutes map[string]string // service name -> external hostname (*.domain.com), if CF configured
 }
 
 // GenerateTmuxpConfig creates a .tmuxp.yaml file in the worktree directory
@@ -74,6 +75,12 @@ func GenerateTmuxpConfig(worktreePath string, data TmuxpData) error {
 			// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
 			upper := strings.ToUpper(serviceName)
 			return strings.ReplaceAll(upper, "-", "_") + "_HOST"
+		},
+		"toExternalHostVar": func(serviceName string) string {
+			// Convert service name to EXTERNAL_HOST variable name
+			// e.g., "frontend" -> "FRONTEND_EXTERNAL_HOST"
+			upper := strings.ToUpper(serviceName)
+			return strings.ReplaceAll(upper, "-", "_") + "_EXTERNAL_HOST"
 		},
 	}
 

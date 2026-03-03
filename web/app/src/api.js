@@ -97,6 +97,26 @@ export async function sendKeys(sessionName, keys) {
   )
 }
 
+export async function uploadImage(file) {
+  const form = new FormData()
+  form.append('image', file)
+  const res = await fetch(base + '/upload-image', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + getToken() },
+    body: form,
+  })
+  if (res.status === 401) {
+    localStorage.removeItem('devx_token')
+    window.location.reload()
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Upload failed')
+  }
+  return res.json()  // { path: '/Users/.../.devx/uploads/abc123.png' }
+}
+
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_token')
 }

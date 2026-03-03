@@ -258,10 +258,11 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 
 	// Generate tmuxp config
 	tmuxpData := session.TmuxpData{
-		Name:   name,
-		Path:   worktreePath,
-		Ports:  portAllocation.Ports,
-		Routes: hostnames,
+		Name:           name,
+		Path:           worktreePath,
+		Ports:          portAllocation.Ports,
+		Routes:         hostnames,
+		ExternalRoutes: externalHostnames,
 	}
 	if err := session.GenerateTmuxpConfig(worktreePath, tmuxpData); err != nil {
 		return fmt.Errorf("failed to generate tmuxp config: %w", err)

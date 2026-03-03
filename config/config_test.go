@@ -82,7 +82,7 @@ func TestCloudflareConfigTildeExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not get home dir: %v", err)
 	}
-	expected := filepath.Join(home, ".cloudflared/config.yaml")
+	expected := filepath.Join(home, ".cloudflared", "config.yaml")
 	if cfg.CloudflareTunnelConfig != expected {
 		t.Errorf("expected %q, got %q", expected, cfg.CloudflareTunnelConfig)
 	}

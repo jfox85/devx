@@ -3,6 +3,7 @@ package caddy
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +102,22 @@ func BuildCaddyConfig(sessions map[string]*SessionInfo) CaddyConfig {
 	}
 }
 
+// truncateDNSLabel ensures a DNS label stays within the 63-character RFC 1035
+// limit. If the label is already within the limit it is returned unchanged.
+// When it exceeds the limit the prefix is shortened and a 5-hex-char FNV hash
+// of the original label is appended so truncated labels remain unique.
+func truncateDNSLabel(label string) string {
+	if len(label) <= 63 {
+		return label
+	}
+	h := fnv.New32a()
+	h.Write([]byte(label))
+	suffix := fmt.Sprintf("%05x", h.Sum32()&0xfffff) // 5 hex chars
+	// Reserve 6 chars for "-" + suffix; trim any trailing dash from the prefix.
+	prefix := strings.TrimRight(label[:57], "-")
+	return prefix + "-" + suffix
+}
+
 // BuildHostname constructs the hostname for a session/service combination.
 // Returns "" if the service name normalizes to empty.
 func BuildHostname(sessionName, serviceName, projectAlias string) string {
@@ -109,11 +126,14 @@ func BuildHostname(sessionName, serviceName, projectAlias string) string {
 		return ""
 	}
 	sanitizedSession := SanitizeHostname(sessionName)
+	var label string
 	if projectAlias != "" {
 		sanitizedProject := NormalizeDNSName(projectAlias)
-		return fmt.Sprintf("%s-%s-%s.localhost", sanitizedProject, sanitizedSession, dnsService)
+		label = fmt.Sprintf("%s-%s-%s", sanitizedProject, sanitizedSession, dnsService)
+	} else {
+		label = fmt.Sprintf("%s-%s", sanitizedSession, dnsService)
 	}
-	return fmt.Sprintf("%s-%s.localhost", sanitizedSession, dnsService)
+	return truncateDNSLabel(label) + ".localhost"
 }
 
 // BuildExternalHostname constructs the hostname for a session/service on an external domain.
@@ -127,11 +147,14 @@ func BuildExternalHostname(sessionName, serviceName, projectAlias, domain string
 		return ""
 	}
 	sanitizedSession := SanitizeHostname(sessionName)
+	var label string
 	if projectAlias != "" {
 		sanitizedProject := NormalizeDNSName(projectAlias)
-		return fmt.Sprintf("%s-%s-%s.%s", sanitizedProject, sanitizedSession, dnsService, domain)
+		label = fmt.Sprintf("%s-%s-%s", sanitizedProject, sanitizedSession, dnsService)
+	} else {
+		label = fmt.Sprintf("%s-%s", sanitizedSession, dnsService)
 	}
-	return fmt.Sprintf("%s-%s.%s", sanitizedSession, dnsService, domain)
+	return truncateDNSLabel(label) + "." + domain
 }
 
 // BuildRouteID constructs the route ID for a session/service combination.

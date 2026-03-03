@@ -12,8 +12,11 @@
   let projects = []
   let error = ''
   let loading = false
+  let nameInputEl
 
   onMount(async () => {
+    // Explicitly focus the name field — autofocus alone fails when an iframe held focus
+    nameInputEl?.focus()
     try {
       projects = await listProjects()
       // If the remembered project is no longer in the list, clear it
@@ -64,9 +67,9 @@
         </label>
         <input
           id="session-name"
+          bind:this={nameInputEl}
           bind:value={name}
           placeholder="feature/my-branch"
-          autofocus
           class="
             w-full bg-transparent border border-[#1e2d4a] focus:border-cyan-800
             text-gray-300 text-xs font-mono px-3 py-2
@@ -83,6 +86,7 @@
           <select
             id="session-project"
             bind:value={project}
+            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
             class="
               w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
               text-gray-300 text-xs font-mono px-3 py-2

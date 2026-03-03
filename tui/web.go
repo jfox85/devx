@@ -45,5 +45,7 @@ func webDaemonPIDPath() string {
 	if err != nil {
 		home = os.TempDir()
 	}
-	return filepath.Join(home, ".config", "devx", "web.pid")
+	path := filepath.Join(home, ".config", "devx", "web.pid")
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	return path
 }

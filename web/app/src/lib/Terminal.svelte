@@ -1,8 +1,9 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, refreshTerminal } from '../api.js'
+  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, refreshTerminal, uploadImage } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
+  import ImageToast from './ImageToast.svelte'
 
   export let session
   export let onBack
@@ -10,6 +11,18 @@
   let windows = []
   let windowPollTimer
   let iframeEl
+  let fileInputEl
+
+  // Drag-and-drop state
+  let isDragOver = false
+  let dragCounter = 0
+
+  // Toast state
+  let toastUpload = null  // { path, objectURL } | null
+  let toastError = null   // string | null
+  let uploading = false   // guard against concurrent uploads
+
+  const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
   // Encode session names so slashes ("/") don't split the URL path.
   $: slug = encodeURIComponent(session.name)
@@ -51,7 +64,25 @@
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault()
+      e.stopPropagation()
+      window.dispatchEvent(new CustomEvent('devx:newSession'))
     }
+  }
+
+  // Intercept paste events inside the iframe to capture image pastes.
+  function iframePaste(e) {
+    const items = e.clipboardData?.items || []
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        e.preventDefault()
+        e.stopPropagation()
+        processImageFile(item.getAsFile())
+        return
+      }
+    }
+    // No image found — let text paste proceed normally
   }
 
   // When the iframe finishes loading, give ttyd ~800ms to connect and negotiate
@@ -63,7 +94,12 @@
     // Register the hotkey after focus so xterm is initialised
     try {
       iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
+      iframeEl.contentDocument?.addEventListener('paste', iframePaste, { capture: true })
     } catch { /* ignore if contentDocument isn't accessible yet */ }
+    // Watch for iframe size changes (mobile browser chrome, keyboard, orientation)
+    resizeObserver?.disconnect()
+    resizeObserver = new ResizeObserver(scheduleRefresh)
+    resizeObserver.observe(iframeEl)
   }
 
   async function sendKey(key) {
@@ -81,19 +117,128 @@
     try { windows = await listWindows(session.name) } catch { /* ignore */ }
   }
 
+  // Debounced resize handler: fires refreshTerminal whenever the iframe changes
+  // size (mobile browser chrome, soft keyboard, orientation, window resize).
+  // This sends tmux resize-window -A which triggers SIGWINCH so the shell and
+  // any running TUIs reflow to the actual viewport dimensions.
+  let resizeTimer
+  let resizeObserver
+  function scheduleRefresh() {
+    clearTimeout(resizeTimer)
+    resizeTimer = setTimeout(async () => {
+      try { await refreshTerminal(session.name) } catch { /* ignore */ }
+    }, 300)
+  }
+
+  // Core image upload and path injection logic.
+  async function processImageFile(file) {
+    if (!file || uploading) return
+
+    // Fast client-side MIME check before uploading
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      toastUpload = null
+      toastError = `Unsupported type: ${file.type || 'unknown'}`
+      return
+    }
+
+    uploading = true
+    const objectURL = URL.createObjectURL(file)
+
+    try {
+      const result = await uploadImage(file)
+      const path = result.path
+      // Inject path into active tmux pane (no Enter — user confirms)
+      await apiSendKeys(session.name, path)
+      toastError = null
+      toastUpload = { path, objectURL }
+    } catch (e) {
+      URL.revokeObjectURL(objectURL)
+      toastUpload = null
+      toastError = e.message || 'Upload failed'
+    } finally {
+      uploading = false
+    }
+  }
+
+  function dismissToast() {
+    if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
+    toastUpload = null
+    toastError = null
+  }
+
+  // Exported so App.svelte can route parent-window paste events here.
+  export function handleImagePaste(file) {
+    processImageFile(file)
+  }
+
+  function handleFileInput(e) {
+    const file = e.target.files?.[0]
+    if (file) processImageFile(file)
+    // Reset so the same file can be selected again
+    e.target.value = ''
+  }
+
+  // Drag-and-drop handlers on the outer div (not the iframe).
+  function handleDragEnter(e) {
+    const hasFiles = Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')
+    if (!hasFiles) return
+    dragCounter++
+    isDragOver = true
+  }
+
+  function handleDragLeave() {
+    dragCounter--
+    if (dragCounter <= 0) {
+      dragCounter = 0
+      isDragOver = false
+    }
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault()
+  }
+
+  function handleDrop(e) {
+    e.preventDefault()
+    dragCounter = 0
+    isDragOver = false
+    const file = e.dataTransfer?.files?.[0]
+    if (file) processImageFile(file)
+  }
+
   onMount(() => {
     loadWindows()
     windowPollTimer = setInterval(loadWindows, 3000)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
+    clearTimeout(resizeTimer)
+    resizeObserver?.disconnect()
+    if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
 
 <!-- Fill parent container (flex-1 set by App.svelte) -->
-<div class="flex flex-col flex-1 min-h-0 bg-black">
+<div
+  class="flex flex-col flex-1 min-h-0 bg-black relative"
+  role="region"
+  aria-label="terminal with image drop target"
+  on:dragenter={handleDragEnter}
+  on:dragleave={handleDragLeave}
+  on:dragover={handleDragOver}
+  on:drop={handleDrop}
+>
 
-  <!-- Header: back + window tabs (or session name) -->
+  <!-- Drag-and-drop overlay -->
+  {#if isDragOver}
+    <div class="absolute inset-0 z-40 bg-cyan-950/60 border-2 border-cyan-500 border-dashed
+                flex flex-col items-center justify-center pointer-events-none">
+      <div class="text-cyan-400 font-mono text-lg">drop image</div>
+      <div class="text-cyan-600 font-mono text-[11px]">png · jpg · gif · webp · svg</div>
+    </div>
+  {/if}
+
+  <!-- Header: back + window tabs (or session name) + attach button -->
   <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] flex-shrink-0 h-9">
     <button
       on:click={onBack}
@@ -120,6 +265,20 @@
         {session.name}
       </span>
     {/if}
+
+    <!-- Attach image button -->
+    <button
+      on:click={() => fileInputEl?.click()}
+      title="attach image"
+      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono flex-shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+    >[img]</button>
+    <input
+      bind:this={fileInputEl}
+      type="file"
+      accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+      class="hidden"
+      on:change={handleFileInput}
+    />
   </div>
 
   <!--
@@ -142,5 +301,10 @@
   <div class="lg:hidden">
     <SoftKeybar onKey={sendKey} />
   </div>
+
+  <!-- Image upload confirmation / error toast -->
+  {#if toastUpload || toastError}
+    <ImageToast upload={toastUpload} error={toastError} onDismiss={dismissToast} />
+  {/if}
 
 </div>

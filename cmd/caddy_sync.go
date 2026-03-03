@@ -70,11 +70,16 @@ func syncAllCloudflareRoutes() error {
 	credentialsFile := viper.GetString("cloudflare_credentials_file")
 	cfgPath := viper.GetString("cloudflare_tunnel_config")
 
-	return cloudflare.SyncTunnel(
+	if err := cloudflare.SyncTunnel(
 		buildSessionInfoMap(store, registry),
 		tunnelID,
 		credentialsFile,
 		domain,
 		cfgPath,
-	)
+	); err != nil {
+		return err
+	}
+
+	// Restart the daemon if it's running so it picks up the new ingress rules.
+	return cloudflare.ReloadDaemon(cfgPath, tunnelID, cloudflare.DefaultPIDPath())
 }
