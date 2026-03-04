@@ -27,11 +27,28 @@
 
   function openNewSession() { showNewSession = true }
 
+  const POLL_INTERVAL = 5000
+
   onMount(() => {
     load()
+
+    // Poll for session changes (e.g. new sessions created in the terminal).
+    // Pauses when the tab is hidden to avoid unnecessary requests.
+    let pollTimer = null
+    function startPolling() {
+      pollTimer = setInterval(() => { if (!document.hidden) load() }, POLL_INTERVAL)
+    }
+    function handleVisibilityChange() {
+      if (!document.hidden) load() // immediate refresh when tab becomes visible
+    }
+    startPolling()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     window.addEventListener('devx:focusSessionList', focusSearch)
     window.addEventListener('devx:newSession', openNewSession)
     return () => {
+      clearInterval(pollTimer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('devx:focusSessionList', focusSearch)
       window.removeEventListener('devx:newSession', openNewSession)
     }

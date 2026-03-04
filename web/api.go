@@ -122,6 +122,7 @@ func handleListSessions(w http.ResponseWriter, r *http.Request) {
 	for _, sess := range store.Sessions {
 		sessions = append(sessions, buildSessionResponse(sess))
 	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Name < sessions[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }
 

@@ -59,11 +59,17 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 	} else {
 		// Production mode: launch ttyd with --base-path so all asset URLs are absolute,
 		// allowing devx web to proxy the full /terminal/{session}/* path space.
+		//
+		// Use "tmux new-session -A -s <name>-web -t <name>" instead of plain
+		// "tmux attach" so the web client gets its own grouped session with
+		// independent sizing. This prevents the browser window dimensions from
+		// constraining the terminal session used by the real terminal client.
+		webSession := sessionName + "-web"
 		args := []string{
 			"-p", fmt.Sprintf("%d", port),
 			"-W",
 			"--base-path", "/terminal/" + sessionName,
-			"tmux", "attach", "-t", sessionName,
+			"tmux", "new-session", "-A", "-s", webSession, "-t", sessionName,
 		}
 		cmd = exec.Command("ttyd", args...)
 	}
@@ -180,7 +186,8 @@ func (m *ttydManager) findSessionByPathPrefix(path string) (name string, port in
 	return
 }
 
-// stopSession kills the ttyd process for a session.
+// stopSession kills the ttyd process for a session and cleans up the grouped
+// tmux session that was created for the web client.
 func (m *ttydManager) stopSession(sessionName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -192,4 +199,7 @@ func (m *ttydManager) stopSession(sessionName string) {
 		inst.cmd.Process.Kill() //nolint:errcheck
 	}
 	delete(m.sessions, sessionName)
+	// Kill the grouped tmux session that was created for the web client so it
+	// doesn't linger after the web view is closed.
+	go exec.Command("tmux", "kill-session", "-t", sessionName+"-web").Run() //nolint:errcheck
 }
