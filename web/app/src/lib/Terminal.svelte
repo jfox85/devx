@@ -113,10 +113,27 @@
     // No image found — let text paste proceed normally
   }
 
-  // When the iframe finishes loading, give ttyd ~800ms to connect and negotiate
-  // terminal size, then refresh, focus, and register the focus-sessions hotkey.
+  // When the iframe finishes loading, wait for xterm.js to fully initialise
+  // (indicated by the helper textarea appearing), then refresh terminal size,
+  // focus, and register hotkeys.
+  //
+  // We poll instead of using a fixed delay because the ttyd WebSocket
+  // handshake + xterm.js FitAddon resize can take anywhere from 200ms to
+  // several seconds depending on load. If we call refreshTerminal before
+  // xterm.js has sent its own resize event, the PTY ends up with the wrong
+  // dimensions and the prompt disappears below the visible area.
   async function handleIframeLoad() {
-    await new Promise(r => setTimeout(r, 800))
+    // Poll until xterm's helper textarea appears (signals full init), or 5 s.
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      try {
+        if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) break
+      } catch { /* cross-origin / not-yet-loaded */ }
+      await new Promise(r => setTimeout(r, 100))
+    }
+    // Small buffer so xterm FitAddon can fire its resize event before we ask
+    // tmux to resize-window -A (which would race and win with stale dims).
+    await new Promise(r => setTimeout(r, 150))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
     focusTerminal()
     // Register the hotkey after focus so xterm is initialised

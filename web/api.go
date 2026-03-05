@@ -205,6 +205,10 @@ type windowInfo struct {
 
 // handleListWindows returns the tmux windows for the session given by ?name=.
 // The query-param approach avoids Go ServeMux splitting session names on "/".
+//
+// We query the web-grouped session (<name>-web) so that #{window_active}
+// reflects the window currently visible in the browser, not the terminal
+// client's current window.
 func handleListWindows(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
@@ -212,7 +216,13 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := exec.Command("tmux", "list-windows", "-t", name, "-F",
+	// Prefer the web grouped session for correct #{window_active} state.
+	target := name
+	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
+		target = name + "-web"
+	}
+
+	out, err := exec.Command("tmux", "list-windows", "-t", target, "-F",
 		"#{window_index} #{window_name} #{window_active}").Output()
 	if err != nil {
 		// tmux session not running — return empty list rather than an error.
@@ -259,6 +269,9 @@ func handleListProjects(w http.ResponseWriter, r *http.Request) {
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches
 // the active window for ALL clients attached to the session (including the iframe).
+//
+// We target the web-grouped session (<name>-web) so the switch is visible in
+// the browser. Because it is a grouped session, the base session follows too.
 func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	window := r.URL.Query().Get("window")
@@ -266,7 +279,12 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and window required"})
 		return
 	}
-	if err := exec.Command("tmux", "select-window", "-t", name+":"+window).Run(); err != nil {
+	// Prefer the web grouped session; fall back to the base session.
+	target := name
+	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
+		target = name + "-web"
+	}
+	if err := exec.Command("tmux", "select-window", "-t", target+":"+window).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
