@@ -28,11 +28,39 @@
   $: slug = encodeURIComponent(session.name)
   $: iframeURL = `/terminal/${slug}/`
 
-  // Reset windows when session changes (component reused with different session)
+  // iframeKey drives the {#key} block around the iframe. Changing it destroys
+  // and recreates the iframe element, causing xterm.js to reconnect and
+  // re-report the correct terminal dimensions to the server.
+  //
+  // We bump it in two situations:
+  //   1. Session changes — same as the old {#key session.name} behaviour.
+  //   2. Tab was hidden for > 30 s — handles the case where another device
+  //      (e.g. phone) resized the PTY while this tab was in the background.
+  //      On return, xterm.js reconnects and immediately sends the correct
+  //      dimensions, so the terminal reflowes to this viewport.
+  let iframeKey = session.name
+  let hiddenAt = null
+
+  // Reset windows and iframe key when session changes (component reused with
+  // different session).
   let currentSession = session.name
   $: if (session.name !== currentSession) {
     currentSession = session.name
     windows = []
+    iframeKey = session.name
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      hiddenAt = Date.now()
+      return
+    }
+    // Only reload if the tab was hidden long enough that another device may
+    // have resized the PTY. Quick task-switches (< 30 s) are left alone.
+    if (hiddenAt !== null && Date.now() - hiddenAt > 180_000) {
+      iframeKey = session.name + '::' + Date.now()
+    }
+    hiddenAt = null
   }
 
   // Focus the terminal inside the iframe.
@@ -212,12 +240,14 @@
     // visualViewport fires on mobile when the address bar hides/shows or the
     // soft keyboard appears — more reliable than ResizeObserver alone.
     window.visualViewport?.addEventListener('resize', scheduleRefresh)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
     clearTimeout(resizeTimer)
     resizeObserver?.disconnect()
     window.visualViewport?.removeEventListener('resize', scheduleRefresh)
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
@@ -292,7 +322,7 @@
     than navigating it. Navigating triggers ttyd's beforeunload handler and shows
     the browser's "Leave site?" dialog. Removing an iframe element does not.
   -->
-  {#key session.name}
+  {#key iframeKey}
     <iframe
       bind:this={iframeEl}
       src={iframeURL}

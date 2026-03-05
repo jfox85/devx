@@ -276,13 +276,27 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 // handleRefreshTerminal resizes the tmux window to its largest attached client,
 // which forces a SIGWINCH to all pane processes and triggers a full redraw.
 // Call this after the ttyd iframe has fully loaded to fix blank-pane rendering.
+//
+// The web client attaches via a grouped session named "<session>-web" (see
+// ttyd.go). We must target that session so the window resizes to fit the
+// *browser* viewport, not the terminal client attached to the base session.
+// Without this, resize-window -A picks up the terminal's (possibly larger)
+// dimensions, the shell renders more rows than xterm.js can show, and the
+// prompt ends up below the visible area of the iframe.
 func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name required"})
 		return
 	}
-	_ = exec.Command("tmux", "resize-window", "-t", name, "-A").Run()
+	// Prefer the web-specific grouped session; fall back to the base session
+	// for non-web callers or if the web session hasn't been created yet.
+	webSession := name + "-web"
+	if exec.Command("tmux", "has-session", "-t", webSession).Run() == nil {
+		_ = exec.Command("tmux", "resize-window", "-t", webSession, "-A").Run()
+	} else {
+		_ = exec.Command("tmux", "resize-window", "-t", name, "-A").Run()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
