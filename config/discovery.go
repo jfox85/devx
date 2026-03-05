@@ -74,7 +74,10 @@ func GetSessionsPath() string {
 	return filepath.Join(home, ".config", "devx", "sessions.json")
 }
 
-// GetTmuxTemplatePath returns the path to the session.yaml.tmpl file, checking project-level first
+// GetTmuxTemplatePath returns the path to the session.yaml.tmpl file, checking project-level first.
+// Project discovery uses os.Getwd(), so this is only reliable when the caller's working directory
+// is inside the project. Prefer passing projectPath explicitly and using GetGlobalTmuxTemplatePath
+// for the fallback when the project root is known.
 func GetTmuxTemplatePath() string {
 	// Check for project-level template first
 	if projectDir := FindProjectConfigDir(); projectDir != "" {
@@ -84,7 +87,12 @@ func GetTmuxTemplatePath() string {
 		}
 	}
 
-	// Fall back to global template
+	return GetGlobalTmuxTemplatePath()
+}
+
+// GetGlobalTmuxTemplatePath returns the path to the global session.yaml.tmpl file
+// without any CWD-based project discovery.
+func GetGlobalTmuxTemplatePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

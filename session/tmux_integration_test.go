@@ -33,7 +33,7 @@ func TestTmuxSessionLaunch(t *testing.T) {
 		Ports: map[string]int{"ui": 3000, "api": 3001},
 	}
 
-	if err := GenerateTmuxpConfig(tmpDir, data); err != nil {
+	if err := GenerateTmuxpConfig(tmpDir, data, ""); err != nil {
 		t.Fatalf("failed to generate tmuxp config: %v", err)
 	}
 
