@@ -13,7 +13,18 @@ import (
 const wsWriteDeadline = 60 * time.Second
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin:  func(r *http.Request) bool { return true },
+	// Only allow requests whose Origin matches the server's own host.
+	// This prevents cross-site WebSocket hijacking: a malicious page opened
+	// in the same browser cannot connect to ws://localhost:<port>/terminal/*
+	// because its Origin won't match r.Host.
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// No Origin header = same-origin browser request; allow it.
+			return true
+		}
+		return origin == "http://"+r.Host || origin == "https://"+r.Host
+	},
 	Subprotocols: []string{"tty"},
 }
 

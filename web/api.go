@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -62,7 +63,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	expectedToken := viper.GetString("web_secret_token")
-	if req.Token != expectedToken {
+	if subtle.ConstantTimeCompare([]byte(req.Token), []byte(expectedToken)) != 1 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return
 	}
@@ -141,11 +142,18 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
+	if !session.IsValidSessionName(req.Name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session name"})
+		return
+	}
 
-	args := []string{"session", "create", req.Name}
+	// Use -- to separate flags from the positional session name, preventing
+	// a name starting with "-" from being misinterpreted as a flag by Cobra.
+	args := []string{"session", "create"}
 	if req.Project != "" {
 		args = append(args, "--project", req.Project)
 	}
+	args = append(args, "--", req.Name)
 	if err := runSelf(args...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -169,9 +177,13 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
 		return
 	}
+	if !requireValidSession(w, name) {
+		return
+	}
 	// Pass --force to skip the interactive y/N prompt. runSelf has no stdin
 	// connected, so Scanln blocks forever without it.
-	if err := runSelf("session", "rm", "--force", name); err != nil {
+	// Use -- to separate flags from the positional name argument.
+	if err := runSelf("session", "rm", "--force", "--", name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -196,6 +208,28 @@ func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// resolveWebSession returns "<name>-web" if the web-grouped session exists,
+// otherwise returns name. All web-facing tmux operations should target the
+// web session so that active-window state and client sizes are correct for
+// the browser viewport, not a terminal client that may be attached to the
+// base session.
+func resolveWebSession(name string) string {
+	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
+		return name + "-web"
+	}
+	return name
+}
+
+// requireValidSession validates that name is a legal devx session name and
+// returns a 400 response if it is not. Returns true if the name is valid.
+func requireValidSession(w http.ResponseWriter, name string) bool {
+	if !session.IsValidSessionName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session name"})
+		return false
+	}
+	return true
+}
+
 // windowInfo is the JSON shape for a single tmux window.
 type windowInfo struct {
 	Index  int    `json:"index"`
@@ -215,14 +249,11 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
 		return
 	}
-
-	// Prefer the web grouped session for correct #{window_active} state.
-	target := name
-	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
-		target = name + "-web"
+	if !requireValidSession(w, name) {
+		return
 	}
 
-	out, err := exec.Command("tmux", "list-windows", "-t", target, "-F",
+	out, err := exec.Command("tmux", "list-windows", "-t", resolveWebSession(name), "-F",
 		"#{window_index} #{window_name} #{window_active}").Output()
 	if err != nil {
 		// tmux session not running — return empty list rather than an error.
@@ -279,12 +310,14 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and window required"})
 		return
 	}
-	// Prefer the web grouped session; fall back to the base session.
-	target := name
-	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
-		target = name + "-web"
+	if !requireValidSession(w, name) {
+		return
 	}
-	if err := exec.Command("tmux", "select-window", "-t", target+":"+window).Run(); err != nil {
+	if _, err := strconv.Atoi(window); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "window must be a numeric index"})
+		return
+	}
+	if err := exec.Command("tmux", "select-window", "-t", resolveWebSession(name)+":"+window).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -307,13 +340,10 @@ func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name required"})
 		return
 	}
-	// Prefer the web-specific grouped session; fall back to the base session.
-	webSession := name + "-web"
-	if exec.Command("tmux", "has-session", "-t", webSession).Run() == nil {
-		_ = exec.Command("tmux", "refresh-client", "-t", webSession).Run()
-	} else {
-		_ = exec.Command("tmux", "refresh-client", "-t", name).Run()
+	if !requireValidSession(w, name) {
+		return
 	}
+	_ = exec.Command("tmux", "refresh-client", "-t", resolveWebSession(name)).Run()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -324,6 +354,9 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	keys := r.URL.Query().Get("keys")
 	if name == "" || keys == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and keys required"})
+		return
+	}
+	if !requireValidSession(w, name) {
 		return
 	}
 	// Split on whitespace so callers can send multiple keystrokes (e.g. "C-b C-b").

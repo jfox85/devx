@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"net/http"
@@ -62,19 +63,22 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 			return
 		}
 
-		// Check Authorization: Bearer <token>
-		if r.Header.Get("Authorization") == "Bearer "+token {
+		// Check Authorization: Bearer <token> (constant-time to prevent timing attacks)
+		bearer := []byte("Bearer " + token)
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), bearer) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Check session cookie
-		if cookie, err := r.Cookie("devx_token"); err == nil && cookie.Value == token {
-			next.ServeHTTP(w, r)
-			return
+		// Check session cookie (constant-time)
+		if cookie, err := r.Cookie("devx_token"); err == nil {
+			if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) == 1 {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 	})
 }
 

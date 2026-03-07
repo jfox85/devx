@@ -132,6 +132,11 @@
     // No image found — let text paste proceed normally
   }
 
+  // Timing constants for xterm.js / FitAddon initialisation.
+  const XTERM_POLL_DEADLINE_MS = 5000  // max time to wait for xterm.js init
+  const XTERM_POLL_INTERVAL_MS = 100   // polling interval while waiting
+  const FITADDON_SETTLE_MS     = 200   // time for FitAddon → ioctl to propagate
+
   // When the iframe finishes loading, wait for xterm.js to fully initialise
   // (indicated by the helper textarea appearing), then:
   //   1. Dispatch a synthetic 'resize' event → FitAddon re-measures the
@@ -144,19 +149,19 @@
   // picks the LARGEST attached client, which may be a stale larger-screen
   // device, overriding the correct size xterm.js just set.
   async function handleIframeLoad() {
-    // Poll until xterm's helper textarea appears (signals full init), or 5 s.
-    const deadline = Date.now() + 5000
+    // Poll until xterm's helper textarea appears (signals full init).
+    const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
     while (Date.now() < deadline) {
       try {
         if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) break
       } catch { /* cross-origin / not-yet-loaded */ }
-      await new Promise(r => setTimeout(r, 100))
+      await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
     }
     // Re-trigger FitAddon so it sends the current browser viewport dimensions
     // to the PTY. Small wait after so ioctl has time to propagate before the
     // subsequent refresh-client call.
     triggerFitAddon()
-    await new Promise(r => setTimeout(r, 200))
+    await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
     focusTerminal()
     // Register the hotkey after focus so xterm is initialised
