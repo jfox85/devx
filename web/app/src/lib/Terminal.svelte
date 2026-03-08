@@ -55,9 +55,13 @@
   // fitAddon.fit(), so dispatching a synthetic resize event is the most
   // reliable way to resync dimensions from the browser side without any
   // server-side resize-window that might pick up stale client dimensions.
+  // ttyd exposes window.term.fit = () => fitAddon.fit() on the same origin.
+  // Calling it directly is more reliable than dispatching a synthetic 'resize'
+  // event, since ttyd's FitAddon uses ResizeObserver internally and does not
+  // listen to window resize events.
   function triggerFitAddon() {
     try {
-      iframeEl?.contentWindow?.dispatchEvent(new Event('resize'))
+      iframeEl?.contentWindow?.term?.fit?.()
     } catch { /* ignore cross-origin / not-yet-loaded */ }
   }
 
