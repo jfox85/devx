@@ -347,39 +347,47 @@ func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// resizeWindowToClient reads the largest connected client's dimensions for the
-// given tmux target and explicitly resizes the window to match.  This works
-// around a tmux grouped-session behaviour where the base session's stored size
-// acts as a constraint, preventing ioctl TIOCSWINSZ from resizing the window.
+// resizeWindowToClient reads the most-recently-active connected client's
+// dimensions for the given tmux target and explicitly resizes the window to
+// match.  This works around a tmux grouped-session behaviour where the base
+// session's stored size acts as a constraint, preventing ioctl TIOCSWINSZ from
+// resizing the window.
+//
+// We use the most recently active client ("latest") rather than the largest so
+// that whichever device you're currently using determines the terminal size.
+// If the session is open in a large desktop browser and a small phone, the
+// phone shouldn't inherit the desktop's dots-filled viewport just because the
+// desktop window is bigger.
 func resizeWindowToClient(target string) {
-	out, err := exec.Command("tmux", "list-clients", "-t", target, "-F", "#{client_width} #{client_height}").Output()
+	// client_activity is a Unix timestamp; pick the client with the highest value.
+	out, err := exec.Command("tmux", "list-clients", "-t", target, "-F", "#{client_activity} #{client_width} #{client_height}").Output()
 	if err != nil || len(out) == 0 {
 		return
 	}
-	var maxW, maxH int
+	var latestActivity, latestW, latestH int
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		parts := strings.Fields(line)
-		if len(parts) != 2 {
+		if len(parts) != 3 {
 			continue
 		}
-		cw, err1 := strconv.Atoi(parts[0])
-		ch, err2 := strconv.Atoi(parts[1])
-		if err1 != nil || err2 != nil || cw <= 0 || ch <= 0 {
+		act, err0 := strconv.Atoi(parts[0])
+		cw, err1 := strconv.Atoi(parts[1])
+		ch, err2 := strconv.Atoi(parts[2])
+		if err0 != nil || err1 != nil || err2 != nil || cw <= 0 || ch <= 0 {
 			continue
 		}
-		if cw > maxW {
-			maxW = cw
-		}
-		if ch > maxH {
-			maxH = ch
+		if act > latestActivity {
+			latestActivity = act
+			latestW = cw
+			latestH = ch
 		}
 	}
-	if maxW <= 0 || maxH <= 0 {
+	if latestW <= 0 || latestH <= 0 {
 		return
 	}
 	_ = exec.Command("tmux", "resize-window", "-t", target,
-		"-x", strconv.Itoa(maxW),
-		"-y", strconv.Itoa(maxH)).Run()
+		"-x", strconv.Itoa(latestW),
+		"-y", strconv.Itoa(latestH)).Run()
 }
 
 // handleSendKeys runs `tmux send-keys -t session key`, delivering the key to the
