@@ -324,16 +324,14 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRefreshTerminal forces a tmux display redraw for the web session.
+// handleRefreshTerminal forces the tmux window to match the browser viewport.
 //
-// We use "refresh-client" rather than "resize-window -A" because the sizing
-// is handled entirely by xterm.js's FitAddon: when the iframe dispatches a
-// synthetic 'resize' event, FitAddon measures the element, sends the correct
-// cols/rows to ttyd via WebSocket, and ttyd calls ioctl(TIOCSWINSZ).
-//
-// Using resize-window -A here would be actively harmful: it picks the LARGEST
-// attached tmux client, which may be a stale connection from a larger-screen
-// device the user switched away from, overriding the correct ioctl size.
+// In tmux grouped sessions the shared window can get stuck at the base
+// session's stored size (e.g. 49x39) even after the browser's FitAddon sends
+// the correct dimensions via ioctl(TIOCSWINSZ). Explicitly reading the
+// client's current dimensions and calling resize-window fixes the dots/padding
+// issue without relying on ioctl propagation through tmux's grouped-session
+// size-recalculation logic.
 func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
@@ -343,8 +341,45 @@ func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	_ = exec.Command("tmux", "refresh-client", "-t", resolveWebSession(name)).Run()
+	webSess := resolveWebSession(name)
+	_ = exec.Command("tmux", "refresh-client", "-t", webSess).Run()
+	resizeWindowToClient(webSess)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// resizeWindowToClient reads the largest connected client's dimensions for the
+// given tmux target and explicitly resizes the window to match.  This works
+// around a tmux grouped-session behaviour where the base session's stored size
+// acts as a constraint, preventing ioctl TIOCSWINSZ from resizing the window.
+func resizeWindowToClient(target string) {
+	out, err := exec.Command("tmux", "list-clients", "-t", target, "-F", "#{client_width} #{client_height}").Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+	var maxW, maxH int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			continue
+		}
+		cw, err1 := strconv.Atoi(parts[0])
+		ch, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil || cw <= 0 || ch <= 0 {
+			continue
+		}
+		if cw > maxW {
+			maxW = cw
+		}
+		if ch > maxH {
+			maxH = ch
+		}
+	}
+	if maxW <= 0 || maxH <= 0 {
+		return
+	}
+	_ = exec.Command("tmux", "resize-window", "-t", target,
+		"-x", strconv.Itoa(maxW),
+		"-y", strconv.Itoa(maxH)).Run()
 }
 
 // handleSendKeys runs `tmux send-keys -t session key`, delivering the key to the
