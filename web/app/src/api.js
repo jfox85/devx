@@ -105,6 +105,15 @@ export async function sendKeys(sessionName, keys) {
   )
 }
 
+// sendLiteral injects text verbatim into the active pane — spaces are preserved.
+// Use this for file paths; use sendKeys for named tmux key sequences (C-b, Enter, etc.).
+export async function sendLiteral(sessionName, text) {
+  await apiFetch(
+    '/send-keys?mode=literal&name=' + encodeURIComponent(sessionName) + '&keys=' + encodeURIComponent(text),
+    { method: 'POST' }
+  )
+}
+
 export async function uploadImage(file) {
   const form = new FormData()
   form.append('image', file)

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/jfox85/devx/session"
 )
 
 // Server is the devx web HTTP server
@@ -31,8 +33,10 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
+	// Bind to loopback only — devx web is a local developer tool and must not
+	// be reachable from the network over plain HTTP.
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
+		Addr:    fmt.Sprintf("127.0.0.1:%d", s.port),
 		Handler: authMiddleware(s.token, mux),
 	}
 
@@ -151,6 +155,18 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 	// 3. Start a new ttyd instance — only reached on the initial request.
 	if decoded == "" {
 		return "", 0, nil
+	}
+	// Validate that decoded is a known devx session before starting ttyd.
+	// This prevents authenticated users from attaching to arbitrary tmux sessions
+	// that were not created by devx (e.g. other users' sessions on a shared host).
+	if !session.IsValidSessionName(decoded) {
+		return "", 0, nil // treat as missing → 404
+	}
+	store, err := session.LoadSessions()
+	if err == nil && store != nil {
+		if _, ok := store.Sessions[decoded]; !ok {
+			return "", 0, nil // not a devx-managed session → 404
+		}
 	}
 	p, startErr := s.ttyd.startForSession(decoded)
 	if startErr != nil {

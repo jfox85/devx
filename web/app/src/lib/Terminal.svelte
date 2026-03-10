@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, refreshTerminal, uploadImage } from '../api.js'
+  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
 
@@ -241,8 +241,9 @@
     try {
       const result = await uploadImage(file)
       const path = result.path
-      // Inject path into active tmux pane (no Enter — user confirms)
-      await apiSendKeys(session.name, path)
+      // Inject path into active tmux pane (no Enter — user confirms).
+      // Use sendLiteral so spaces in the path are preserved verbatim.
+      await sendLiteral(session.name, path)
       toastError = null
       toastUpload = { path, objectURL }
     } catch (e) {

@@ -196,6 +196,12 @@ func (m *ttydManager) stopSession(sessionName string) {
 	if !ok {
 		return
 	}
+	// A client may have reconnected between when the idle timer was started and
+	// when this callback fired. Re-check under the lock so we don't kill an
+	// instance that is actively in use.
+	if inst.conns > 0 {
+		return
+	}
 	if inst.cmd != nil && inst.cmd.Process != nil {
 		inst.cmd.Process.Kill() //nolint:errcheck
 	}
