@@ -358,13 +358,22 @@ func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 // If the session is open in a large desktop browser and a small phone, the
 // phone shouldn't inherit the desktop's dots-filled viewport just because the
 // desktop window is bigger.
+//
+// Note: in tmux grouped sessions, windows are shared. resize-window changes
+// the shared window size, so a terminal client also attached to the base
+// session will momentarily see the web viewport's dimensions. With
+// window-size=latest this self-corrects on the next terminal keystroke (tmux
+// re-evaluates the most recently active client), so the tradeoff is acceptable
+// compared to the alternative of leaving the web session stuck at the base
+// session's stale size.
 func resizeWindowToClient(target string) {
 	// client_activity is a Unix timestamp; pick the client with the highest value.
 	out, err := exec.Command("tmux", "list-clients", "-t", target, "-F", "#{client_activity} #{client_width} #{client_height}").Output()
 	if err != nil || len(out) == 0 {
 		return
 	}
-	var latestActivity, latestW, latestH int
+	latestActivity := -1 // sentinel so a client with activity=0 is still selected
+	var latestW, latestH int
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		parts := strings.Fields(line)
 		if len(parts) != 3 {
