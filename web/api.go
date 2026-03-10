@@ -80,7 +80,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   30 * 24 * 60 * 60, // 30 days — survive browser restarts
+		// Secure is intentionally omitted: devx web runs on localhost over plain
+		// HTTP. Browsers permit httpOnly cookies on localhost without Secure.
+		// If you expose devx web through a TLS proxy, add Secure: true here.
+		MaxAge: 30 * 24 * 60 * 60, // 30 days — survive browser restarts
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -429,14 +432,28 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and keys required"})
 		return
 	}
+	// Guard against oversized payloads before any further processing.
+	if len(keys) > 256 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "keys parameter too long"})
+		return
+	}
 	if !requireValidSession(w, name) {
 		return
 	}
 	// Split on whitespace so callers can send multiple keystrokes (e.g. "C-b C-b").
 	keyList := strings.Fields(keys)
+	// Reject tokens starting with "-" to prevent them from being parsed as
+	// tmux flags rather than key names.
+	for _, key := range keyList {
+		if strings.HasPrefix(key, "-") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid key sequence"})
+			return
+		}
+	}
 	// Use resolveWebSession so keys land in the correct pane when the browser
 	// and a terminal client are on different windows.
-	args := append([]string{"send-keys", "-t", resolveWebSession(name)}, keyList...)
+	// Use -- to ensure no key token is misinterpreted as a tmux send-keys flag.
+	args := append([]string{"send-keys", "-t", resolveWebSession(name), "--"}, keyList...)
 	if err := exec.Command("tmux", args...).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

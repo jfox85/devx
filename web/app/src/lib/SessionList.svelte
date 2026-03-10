@@ -17,6 +17,7 @@
   let searchFocused = false   // true while the filter input has focus
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
+  let pendingDelete = null   // session.name awaiting second-click confirmation
 
   async function load({ background = false } = {}) {
     if (!background) loading = true
@@ -145,7 +146,15 @@
   }
 
   async function handleDelete(session) {
-    if (!confirm(`Remove session "${session.name}"?`)) return
+    // Two-click confirmation: first click arms the delete, second click fires it.
+    // Click outside (blur/hover-leave) resets via the pendingDelete timeout below.
+    if (pendingDelete !== session.name) {
+      pendingDelete = session.name
+      // Auto-reset after 3 s so the UI doesn't stay in armed state indefinitely.
+      setTimeout(() => { if (pendingDelete === session.name) pendingDelete = null }, 3000)
+      return
+    }
+    pendingDelete = null
     error = ''
     try {
       await deleteSession(session.name)
@@ -178,6 +187,7 @@
     <input
       bind:this={searchInputEl}
       bind:value={searchQuery}
+      aria-label="filter sessions"
       placeholder="filter sessions…"
       on:focus={() => searchFocused = true}
       on:blur={() => searchFocused = false}
@@ -206,13 +216,19 @@
 
     {:else if sessions.length === 0}
       <div class="px-3 py-8 text-center">
-        <p class="text-gray-700 text-xs font-mono mb-4">no active sessions</p>
-        <button
-          on:click={() => showNewSession = true}
-          class="text-cyan-600 hover:text-cyan-400 text-xs font-mono border border-[#1e2d4a] hover:border-cyan-900 px-3 py-1.5 transition-colors"
-        >
-          create first session
-        </button>
+        <!-- error is shown in the banner above; here we only reach this branch  -->
+        <!-- when load succeeded but returned zero sessions.                     -->
+        {#if error}
+          <p class="text-gray-700 text-xs font-mono">could not load sessions</p>
+        {:else}
+          <p class="text-gray-700 text-xs font-mono mb-4">no active sessions</p>
+          <button
+            on:click={() => showNewSession = true}
+            class="text-cyan-600 hover:text-cyan-400 text-xs font-mono border border-[#1e2d4a] hover:border-cyan-900 px-3 py-1.5 transition-colors"
+          >
+            create first session
+          </button>
+        {/if}
       </div>
 
     {:else if filtered.length === 0}
@@ -285,13 +301,15 @@
                   on:click={() => handleDelete(session)}
                   class="
                     font-mono
-                    text-red-700 hover:text-red-400 active:text-red-300
+                    {pendingDelete === session.name
+                      ? 'text-red-400'
+                      : 'text-red-700 hover:text-red-400 active:text-red-300'}
                     text-lg lg:text-[10px]
                     px-3 lg:px-1.5 py-4 lg:py-1.5
                     transition-colors
                   "
-                  title="delete"
-                >×</button>
+                  title={pendingDelete === session.name ? 'click again to confirm' : 'delete'}
+                >{pendingDelete === session.name ? '!×' : '×'}</button>
               </div>
             </div>
 

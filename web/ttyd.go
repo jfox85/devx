@@ -67,6 +67,7 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 		webSession := sessionName + "-web"
 		args := []string{
 			"-p", fmt.Sprintf("%d", port),
+			"-i", "127.0.0.1", // bind to loopback only — not reachable from the network
 			"-W",
 			"--base-path", "/terminal/" + sessionName,
 			"tmux", "new-session", "-A", "-s", webSession, "-t", sessionName,

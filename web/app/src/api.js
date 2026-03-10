@@ -1,6 +1,12 @@
 // web/app/src/api.js
 const base = '/api'
 
+// handle401 clears the auth marker and reloads so the login form reappears.
+function handle401() {
+  localStorage.removeItem('devx_authed')
+  window.location.reload()
+}
+
 // apiFetch sends requests relying on the httpOnly session cookie for auth.
 // The bearer-token approach is intentionally omitted — storing the raw token
 // in script-readable localStorage would expose it to XSS. The server's auth
@@ -15,8 +21,7 @@ async function apiFetch(path, options = {}) {
     },
   })
   if (res.status === 401) {
-    localStorage.removeItem('devx_authed')
-    window.location.reload()
+    handle401()
     throw new Error('Unauthorized')
   }
   return res
@@ -109,8 +114,7 @@ export async function uploadImage(file) {
     body: form,
   })
   if (res.status === 401) {
-    localStorage.removeItem('devx_authed')
-    window.location.reload()
+    handle401()
     throw new Error('Unauthorized')
   }
   if (!res.ok) {
