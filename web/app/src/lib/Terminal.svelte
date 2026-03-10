@@ -51,14 +51,10 @@
   }
 
   // Trigger ttyd's FitAddon to re-measure the terminal element and send the
-  // correct cols/rows to the PTY. ttyd listens to window.resize and calls
-  // fitAddon.fit(), so dispatching a synthetic resize event is the most
-  // reliable way to resync dimensions from the browser side without any
-  // server-side resize-window that might pick up stale client dimensions.
-  // ttyd exposes window.term.fit = () => fitAddon.fit() on the same origin.
-  // Calling it directly is more reliable than dispatching a synthetic 'resize'
-  // event, since ttyd's FitAddon uses ResizeObserver internally and does not
-  // listen to window resize events.
+  // correct cols/rows to the PTY via WebSocket. ttyd exposes
+  // window.term.fit = () => fitAddon.fit() on the same origin; calling it
+  // directly is required because ttyd's FitAddon uses ResizeObserver
+  // internally and does not listen to window resize events.
   function triggerFitAddon() {
     try {
       iframeEl?.contentWindow?.term?.fit?.()
@@ -143,15 +139,12 @@
 
   // When the iframe finishes loading, wait for xterm.js to fully initialise
   // (indicated by the helper textarea appearing), then:
-  //   1. Dispatch a synthetic 'resize' event → FitAddon re-measures the
-  //      element and sends the correct cols/rows to the PTY via WebSocket.
-  //      ttyd calls ioctl(TIOCSWINSZ) → SIGWINCH → shell redraws.
-  //   2. Call refreshTerminal for a tmux refresh-client (forces display
-  //      redraw in case tmux's own screen is stale).
-  //
-  // We intentionally do NOT call tmux resize-window -A here because that
-  // picks the LARGEST attached client, which may be a stale larger-screen
-  // device, overriding the correct size xterm.js just set.
+  //   1. Call term.fit() → FitAddon re-measures the element and sends the
+  //      correct cols/rows to the PTY via WebSocket (ioctl TIOCSWINSZ →
+  //      SIGWINCH → shell redraws).
+  //   2. Call refreshTerminal which does refresh-client (forces display
+  //      redraw) and resize-window to the current client's dimensions,
+  //      working around the tmux grouped-session size-constraint bug.
   async function handleIframeLoad() {
     // Poll until xterm's helper textarea appears (signals full init).
     const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
@@ -196,16 +189,16 @@
 
   // Debounced resize handler: fires when the iframe changes size (mobile
   // browser chrome, soft keyboard, orientation, window resize).
-  // Dispatches a synthetic 'resize' to the iframe so FitAddon re-measures
-  // and sends the correct dims to the PTY, then follows up with a
-  // refresh-client for a tmux display redraw.
+  // Calls term.fit() so FitAddon re-measures and sends the correct dims to
+  // the PTY, then follows up with refreshTerminal (refresh-client +
+  // resize-window) for a full tmux sync.
   let resizeTimer
   let resizeObserver
   function scheduleRefresh() {
     clearTimeout(resizeTimer)
     resizeTimer = setTimeout(async () => {
       triggerFitAddon()
-      await new Promise(r => setTimeout(r, 200))
+      await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
       try { await refreshTerminal(session.name) } catch { /* ignore */ }
     }, 300)
   }
