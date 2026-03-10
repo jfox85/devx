@@ -95,11 +95,20 @@ func startWebDaemon(port int) error {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
 
+	pidPath := webPIDPath()
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
+		return fmt.Errorf("failed to create web state dir: %w", err)
+	}
+
 	cmd := exec.Command(self, "web")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Stdout = nil
-	cmd.Stderr = nil
 	cmd.Stdin = nil
+	// Redirect daemon output to a log file so errors are not silently lost.
+	logPath := strings.TrimSuffix(pidPath, ".pid") + ".log"
+	if lf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
@@ -132,8 +141,7 @@ func startWebDaemon(port int) error {
 		return fmt.Errorf("web daemon failed to start (port %d may be in use)", port)
 	}
 
-	pidPath := webPIDPath()
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600); err != nil {
 		fmt.Printf("Warning: could not write PID file: %v\n", err)
 	}
 
@@ -168,6 +176,11 @@ func runWebStop(cmd *cobra.Command, args []string) error {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Only remove the PID file if the process has actually exited.
+	if proc.Signal(syscall.Signal(0)) == nil {
+		return fmt.Errorf("process %d did not stop within 1 second; PID file left in place", pid)
 	}
 
 	if err := os.Remove(webPIDPath()); err != nil {

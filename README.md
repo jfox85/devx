@@ -695,11 +695,32 @@ curl http://localhost:2019/config/
 
 ## Web Interface
 
-devx includes an optional web interface for managing sessions from mobile or desktop browsers. It has three layers:
+devx includes an optional web interface for managing sessions from any browser — phone, tablet, or desktop.
 
-- **External domain routing** — serves your Caddy services on a custom domain via Cloudflare Tunnel
-- **devx web** — a local HTTP server with a session manager SPA (session list, service links, create/remove sessions)
-- **In-browser terminal** — tmux session access via ttyd, proxied through devx web
+<table>
+<tr>
+<td><img src="screenshots/web-sessions.png" alt="Session list — desktop" width="480"></td>
+<td><img src="screenshots/web-mobile.png" alt="Session list — mobile" width="200"></td>
+</tr>
+<tr>
+<td colspan="2"><img src="screenshots/web-terminal.png" alt="In-browser terminal" width="700"></td>
+</tr>
+</table>
+
+**Features:**
+- **Session list** — view all sessions grouped by project, with attention flag indicators (◆)
+- **In-browser terminal** — full tmux access via ttyd, with tmux window tabs in the header
+- **Mobile-friendly** — responsive layout, soft key toolbar (Tab, Ctrl, arrows) for touchscreens
+- **Image upload** — paste, drag-and-drop, or use the `[img]` button to inject an image path into the terminal
+- **Create & delete sessions** — from the browser, same as the CLI
+- **Service links** — tap "svc" on any session to open its Caddy routes in the browser
+- **Keyboard shortcuts** — `↑↓` navigate, `Enter` open, `/` filter, `Ctrl+Shift+C` new session
+
+The web server has three layers:
+
+- **devx web** — local HTTP server with session manager SPA
+- **In-browser terminal** — tmux access via ttyd, proxied through devx web
+- **External domain routing** — optional Cloudflare Tunnel to reach sessions from your phone over the internet
 
 ### Quick start
 
@@ -721,6 +742,8 @@ devx web stop             # stop daemon
 ```
 
 **3. Open** `http://localhost:7777` in your browser and enter your `web_secret_token`.
+
+> **Auto-start:** Set `web_autostart: true` to have the web daemon start automatically when you open the TUI.
 
 ### External domain routing (optional)
 

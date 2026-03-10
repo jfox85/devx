@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, refreshTerminal, uploadImage } from '../api.js'
+  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
 
@@ -42,7 +42,9 @@
   let hiddenAt = null
 
   // Reset windows and iframe key when session changes (component reused with
-  // different session).
+  // different session). currentSession stores the previous value of session.name
+  // so the reactive block can detect the transition — Svelte reactive statements
+  // don't receive the old value, so we track it manually.
   let currentSession = session.name
   $: if (session.name !== currentSession) {
     currentSession = session.name
@@ -165,6 +167,25 @@
     try {
       iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
       iframeEl.contentDocument?.addEventListener('paste', iframePaste, { capture: true })
+      // Drag events do not bubble across iframe boundaries, so a file dragged
+      // over the iframe never reaches the outer div's dragenter/drop handlers.
+      // Mirror the events onto the parent window so the drop overlay appears
+      // and the file is processed correctly.
+      iframeEl.contentDocument?.addEventListener('dragenter', (e) => {
+        const hasFiles = Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')
+        if (hasFiles) { dragCounter++; isDragOver = true }
+      })
+      iframeEl.contentDocument?.addEventListener('dragleave', () => {
+        dragCounter--
+        if (dragCounter <= 0) { dragCounter = 0; isDragOver = false }
+      })
+      iframeEl.contentDocument?.addEventListener('dragover', (e) => e.preventDefault())
+      iframeEl.contentDocument?.addEventListener('drop', (e) => {
+        e.preventDefault()
+        dragCounter = 0; isDragOver = false
+        const file = e.dataTransfer?.files?.[0]
+        if (file) processImageFile(file)
+      })
     } catch { /* ignore if contentDocument isn't accessible yet */ }
     // Watch for iframe size changes (mobile browser chrome, keyboard, orientation)
     resizeObserver?.disconnect()
@@ -220,8 +241,9 @@
     try {
       const result = await uploadImage(file)
       const path = result.path
-      // Inject path into active tmux pane (no Enter — user confirms)
-      await apiSendKeys(session.name, path)
+      // Inject path into active tmux pane (no Enter — user confirms).
+      // Use sendLiteral so spaces in the path are preserved verbatim.
+      await sendLiteral(session.name, path)
       toastError = null
       toastUpload = { path, objectURL }
     } catch (e) {
@@ -313,7 +335,7 @@
     <div class="absolute inset-0 z-40 bg-cyan-950/60 border-2 border-cyan-500 border-dashed
                 flex flex-col items-center justify-center pointer-events-none">
       <div class="text-cyan-400 font-mono text-lg">drop image</div>
-      <div class="text-cyan-600 font-mono text-[11px]">png · jpg · gif · webp · svg</div>
+      <div class="text-cyan-600 font-mono text-[11px]">png · jpg · gif · webp</div>
     </div>
   {/if}
 
@@ -321,14 +343,16 @@
   <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] shrink-0 h-9">
     <button
       on:click={onBack}
-      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
+      class="px-3 text-gray-400 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
       title="back to session list"
     >←</button>
 
     {#if windows.length > 0}
-      <div class="flex items-center gap-1 px-2 overflow-x-auto flex-1 min-w-0">
+      <div role="tablist" class="flex items-center gap-1 px-2 overflow-x-auto flex-1 min-w-0">
         {#each windows as win}
           <button
+            role="tab"
+            aria-selected={win.active}
             on:click={() => switchWindow(win.index)}
             class="
               text-[11px] font-mono py-1 px-2.5 shrink-0 whitespace-nowrap transition-colors
@@ -356,7 +380,7 @@
     <input
       bind:this={fileInputEl}
       type="file"
-      accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+      accept="image/png,image/jpeg,image/gif,image/webp"
       class="hidden"
       on:change={handleFileInput}
     />

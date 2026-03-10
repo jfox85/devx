@@ -13,11 +13,12 @@
     ? upload.path.split('/').slice(-2).join('/')
     : ''
 
-  // Restart auto-dismiss timer whenever upload changes (handles back-to-back
-  // uploads where the component stays mounted and onMount doesn't re-fire).
+  // Restart auto-dismiss timer whenever upload or error changes. Errors
+  // auto-dismiss just like successes — without this, toastError would linger
+  // until manually dismissed because the timer only ran for upload=truthy.
   $: {
     clearTimeout(timer)
-    if (upload) {
+    if (upload || error) {
       timer = setTimeout(onDismiss, 3000)
     }
   }

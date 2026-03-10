@@ -67,6 +67,7 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 		webSession := sessionName + "-web"
 		args := []string{
 			"-p", fmt.Sprintf("%d", port),
+			"-i", "127.0.0.1", // bind to loopback only — not reachable from the network
 			"-W",
 			"--base-path", "/terminal/" + sessionName,
 			"tmux", "new-session", "-A", "-s", webSession, "-t", sessionName,
@@ -162,10 +163,16 @@ func (m *ttydManager) clientDisconnected(sessionName string) {
 }
 
 // portForSession returns the port of a running ttyd instance, if one exists.
+// It also cancels any pending idle timer so the instance is not killed while
+// a new HTTP or WebSocket connection is being established.
 func (m *ttydManager) portForSession(name string) (int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if inst, ok := m.sessions[name]; ok {
+		if inst.timer != nil {
+			inst.timer.Stop()
+			inst.timer = nil
+		}
 		return inst.port, true
 	}
 	return 0, false
@@ -193,6 +200,12 @@ func (m *ttydManager) stopSession(sessionName string) {
 	defer m.mu.Unlock()
 	inst, ok := m.sessions[sessionName]
 	if !ok {
+		return
+	}
+	// A client may have reconnected between when the idle timer was started and
+	// when this callback fired. Re-check under the lock so we don't kill an
+	// instance that is actively in use.
+	if inst.conns > 0 {
 		return
 	}
 	if inst.cmd != nil && inst.cmd.Process != nil {

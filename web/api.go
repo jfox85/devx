@@ -80,7 +80,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   30 * 24 * 60 * 60, // 30 days — survive browser restarts
+		// Secure is intentionally omitted: devx web runs on localhost over plain
+		// HTTP. Browsers permit httpOnly cookies on localhost without Secure.
+		// If you expose devx web through a TLS proxy, add Secure: true here.
+		MaxAge: 30 * 24 * 60 * 60, // 30 days — survive browser restarts
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -422,6 +425,12 @@ func resizeWindowToClient(target string) {
 
 // handleSendKeys runs `tmux send-keys -t session key`, delivering the key to the
 // session's current window/pane regardless of which tmux client is active.
+//
+// mode=literal (query param): send the entire keys string verbatim using
+// tmux's -l flag. Used for injecting file paths (which may contain spaces).
+//
+// mode=keys (default): split on whitespace, validate each token, and send as
+// named tmux key sequences (e.g. "C-b Enter Escape").
 func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	keys := r.URL.Query().Get("keys")
@@ -429,14 +438,52 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and keys required"})
 		return
 	}
+	// Guard against oversized payloads before any further processing.
+	if len(keys) > 4096 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "keys parameter too long"})
+		return
+	}
 	if !requireValidSession(w, name) {
 		return
 	}
-	// Split on whitespace so callers can send multiple keystrokes (e.g. "C-b C-b").
+
+	target := resolveWebSession(name)
+	mode := r.URL.Query().Get("mode")
+
+	if mode == "literal" {
+		// Send the text verbatim — used for inserting file paths into the active pane.
+		// -l disables special-key interpretation so spaces are not split by tmux.
+		if err := exec.Command("tmux", "send-keys", "-t", target, "-l", "--", keys).Run(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Default mode: split on whitespace so callers can send multiple named keystrokes
+	// (e.g. "C-b C-b"). Cap at 256 chars for named-key payloads.
+	if len(keys) > 256 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "keys parameter too long"})
+		return
+	}
 	keyList := strings.Fields(keys)
+	if len(keyList) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid key sequence"})
+		return
+	}
+	// Reject tokens starting with "-" to prevent them from being parsed as
+	// tmux flags rather than key names.
+	for _, key := range keyList {
+		if strings.HasPrefix(key, "-") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid key sequence"})
+			return
+		}
+	}
 	// Use resolveWebSession so keys land in the correct pane when the browser
 	// and a terminal client are on different windows.
-	args := append([]string{"send-keys", "-t", resolveWebSession(name)}, keyList...)
+	// Use -- to ensure no key token is misinterpreted as a tmux send-keys flag.
+	args := append([]string{"send-keys", "-t", target, "--"}, keyList...)
 	if err := exec.Command("tmux", args...).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
