@@ -10,9 +10,10 @@ import (
 )
 
 type EnvrcData struct {
-	Ports  map[string]int    // service name -> port number
-	Routes map[string]string // service name -> hostname
-	Name   string
+	Ports          map[string]int    // service name -> port number
+	Routes         map[string]string // service name -> local hostname (*.localhost)
+	ExternalRoutes map[string]string // service name -> external hostname (*.domain.com), if CF configured
+	Name           string
 }
 
 // GenerateEnvrc creates an .envrc file in the worktree directory
@@ -52,6 +53,24 @@ func GenerateEnvrc(worktreePath string, data EnvrcData) error {
 			// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
 			hostVar := strings.ToUpper(strings.ReplaceAll(serviceName, "-", "_")) + "_HOST"
 			lines = append(lines, fmt.Sprintf("export %s=http://%s", hostVar, hostname))
+		}
+	}
+
+	// Add external hostname variables if CF tunnel is configured
+	if len(data.ExternalRoutes) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "# External hostnames (Cloudflare tunnel)")
+
+		var extRouteNames []string
+		for name := range data.ExternalRoutes {
+			extRouteNames = append(extRouteNames, name)
+		}
+		sort.Strings(extRouteNames)
+
+		for _, serviceName := range extRouteNames {
+			hostname := data.ExternalRoutes[serviceName]
+			hostVar := strings.ToUpper(strings.ReplaceAll(serviceName, "-", "_")) + "_EXTERNAL_HOST"
+			lines = append(lines, fmt.Sprintf("export %s=https://%s", hostVar, hostname))
 		}
 	}
 

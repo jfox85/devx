@@ -28,11 +28,22 @@ type RouteMatch struct {
 type RouteHandler struct {
 	Handler   string          `json:"handler"`
 	Upstreams []RouteUpstream `json:"upstreams,omitempty"`
+	Headers   *RouteHeaders   `json:"headers,omitempty"`
 }
 
 // RouteUpstream represents an upstream server
 type RouteUpstream struct {
 	Dial string `json:"dial"`
+}
+
+// RouteHeaders configures header manipulation in a reverse_proxy handler.
+type RouteHeaders struct {
+	Request *RouteHeaderOps `json:"request,omitempty"`
+}
+
+// RouteHeaderOps holds header set/add/delete operations.
+type RouteHeaderOps struct {
+	Set map[string][]string `json:"set,omitempty"`
 }
 
 // CaddyClient manages communication with Caddy's admin API

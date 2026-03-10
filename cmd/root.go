@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -101,9 +102,33 @@ func initConfig() {
 	viper.SetDefault("cleanup_command", "")
 	viper.SetDefault("auto_check_updates", true)
 	viper.SetDefault("update_check_interval", "24h")
+	viper.SetDefault("external_domain", "")
+	viper.SetDefault("cloudflare_tunnel_id", "")
+	viper.SetDefault("cloudflare_tunnel_config", "~/.cloudflared/config.yaml")
+	viper.SetDefault("web_secret_token", "")
+	viper.SetDefault("web_port", 7777)
+	viper.SetDefault("web_autostart", false)
 
-	// Read in config file if found
+	// Read primary config (project-level if found, otherwise global)
 	_ = viper.ReadInConfig()
+
+	// If a project-level config was loaded, also pull in the global config so
+	// machine-wide settings (external_domain, web_secret_token, etc.) are
+	// available even when running from inside a project directory.
+	// Global values are registered as defaults so project settings take
+	// precedence: defaults → global → project → env vars.
+	if cfgFile == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			globalCfg := viper.New()
+			globalCfg.SetConfigFile(filepath.Join(home, ".config", "devx", "config.yaml"))
+			if err := globalCfg.ReadInConfig(); err == nil {
+				for key, val := range globalCfg.AllSettings() {
+					viper.SetDefault(key, val)
+				}
+			}
+		}
+	}
 }
 
 // checkForUpdatesBackground performs a background update check

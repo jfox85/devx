@@ -1,5 +1,7 @@
 devx
 .envrc
 .tmuxp.yaml
-dist/
+/dist/
 .devx/
+web/app/node_modules/
+web/dist/

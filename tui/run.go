@@ -5,10 +5,19 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/spf13/viper"
 )
 
 // Run starts the TUI application
 func Run() error {
+	// Auto-start web daemon if configured
+	if viper.GetBool("web_autostart") {
+		if err := ensureWebDaemonRunning(); err != nil {
+			// Non-fatal: just log and continue
+			fmt.Printf("Warning: could not start web daemon: %v\n", err)
+		}
+	}
+
 	p := tea.NewProgram(
 		InitialModel(),
 		tea.WithAltScreen(),

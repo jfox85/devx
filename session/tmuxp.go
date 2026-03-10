@@ -48,15 +48,20 @@ windows:
 `
 
 type TmuxpData struct {
-	Name   string
-	Path   string
-	Ports  map[string]int    // service name -> port number
-	Routes map[string]string // service name -> hostname
+	Name           string
+	Path           string
+	Ports          map[string]int    // service name -> port number
+	Routes         map[string]string // service name -> local hostname (*.localhost)
+	ExternalRoutes map[string]string // service name -> external hostname (*.domain.com), if CF configured
 }
 
-// GenerateTmuxpConfig creates a .tmuxp.yaml file in the worktree directory
-func GenerateTmuxpConfig(worktreePath string, data TmuxpData) error {
-	templateContent, err := loadTmuxpTemplate()
+// GenerateTmuxpConfig creates a .tmuxp.yaml file in the worktree directory.
+// projectPath is the root of the project (containing .devx/) and is used to
+// find the project-level template. It must be passed explicitly so that config
+// lookup is project-path-based rather than relying on os.Getwd(), which is
+// unreliable when creating sessions via --project flag or the web UI.
+func GenerateTmuxpConfig(worktreePath string, data TmuxpData, projectPath string) error {
+	templateContent, err := loadTmuxpTemplate(projectPath)
 	if err != nil {
 		return fmt.Errorf("failed to load tmuxp template: %w", err)
 	}
@@ -74,6 +79,12 @@ func GenerateTmuxpConfig(worktreePath string, data TmuxpData) error {
 			// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
 			upper := strings.ToUpper(serviceName)
 			return strings.ReplaceAll(upper, "-", "_") + "_HOST"
+		},
+		"toExternalHostVar": func(serviceName string) string {
+			// Convert service name to EXTERNAL_HOST variable name
+			// e.g., "frontend" -> "FRONTEND_EXTERNAL_HOST"
+			upper := strings.ToUpper(serviceName)
+			return strings.ReplaceAll(upper, "-", "_") + "_EXTERNAL_HOST"
 		},
 	}
 
@@ -95,27 +106,27 @@ func GenerateTmuxpConfig(worktreePath string, data TmuxpData) error {
 	return nil
 }
 
-// loadTmuxpTemplate loads the tmuxp template from file, with fallback to embedded template
-func loadTmuxpTemplate() (string, error) {
-	// Get template path from config (using project-level first, then global)
-	templatePath := config.GetTmuxTemplatePath()
-
-	// Try to load from file
-	if templatePath != "" {
-		// Expand ~ if present
-		if templatePath[0] == '~' {
-			home, err := os.UserHomeDir()
-			if err == nil {
-				templatePath = filepath.Join(home, templatePath[1:])
-			}
-		}
-
-		if content, err := os.ReadFile(templatePath); err == nil {
+// loadTmuxpTemplate loads the tmuxp template from file, with fallback to embedded template.
+// projectPath is used to locate the project-level .devx/session.yaml.tmpl directly,
+// avoiding the CWD-based discovery that config.GetTmuxTemplatePath() uses.
+func loadTmuxpTemplate(projectPath string) (string, error) {
+	// 1. Project-level template: <projectPath>/.devx/session.yaml.tmpl
+	if projectPath != "" {
+		projectTemplate := filepath.Join(projectPath, ".devx", "session.yaml.tmpl")
+		if content, err := os.ReadFile(projectTemplate); err == nil {
 			return string(content), nil
 		}
 	}
 
-	// Fall back to embedded template
+	// 2. Global template: ~/.config/devx/session.yaml.tmpl (or configured path)
+	globalTemplatePath := config.GetGlobalTmuxTemplatePath()
+	if globalTemplatePath != "" {
+		if content, err := os.ReadFile(globalTemplatePath); err == nil {
+			return string(content), nil
+		}
+	}
+
+	// 3. Fall back to embedded template
 	return tmuxpTemplate, nil
 }
 

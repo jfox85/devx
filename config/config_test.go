@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -65,6 +66,46 @@ func TestTildeExpansion(t *testing.T) {
 	expected := home + "/test/path.yaml"
 	if cfg.TmuxpTemplate != expected {
 		t.Errorf("expected tilde expansion to %s, got %s", expected, cfg.TmuxpTemplate)
+	}
+}
+
+func TestCloudflareConfigTildeExpansion(t *testing.T) {
+	viper.Reset()
+	viper.Set("cloudflare_tunnel_config", "~/.cloudflared/config.yaml")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("could not get home dir: %v", err)
+	}
+	expected := filepath.Join(home, ".cloudflared", "config.yaml")
+	if cfg.CloudflareTunnelConfig != expected {
+		t.Errorf("expected %q, got %q", expected, cfg.CloudflareTunnelConfig)
+	}
+}
+
+func TestLoadConfigExternalDomain(t *testing.T) {
+	viper.Reset()
+	viper.Set("external_domain", "example.com")
+	viper.Set("cloudflare_tunnel_id", "abc-123")
+	viper.Set("cloudflare_tunnel_config", "/tmp/cf.yaml")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ExternalDomain != "example.com" {
+		t.Errorf("expected ExternalDomain=example.com, got %q", cfg.ExternalDomain)
+	}
+	if cfg.CloudflareTunnelID != "abc-123" {
+		t.Errorf("expected CloudflareTunnelID=abc-123, got %q", cfg.CloudflareTunnelID)
+	}
+	if cfg.CloudflareTunnelConfig != "/tmp/cf.yaml" {
+		t.Errorf("expected CloudflareTunnelConfig=/tmp/cf.yaml, got %q", cfg.CloudflareTunnelConfig)
 	}
 }
 

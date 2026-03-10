@@ -4,8 +4,10 @@ import (
 	"fmt"
 
 	"github.com/jfox85/devx/caddy"
+	"github.com/jfox85/devx/cloudflare"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
+	"github.com/spf13/viper"
 )
 
 // buildSessionInfoMap converts stored sessions and project registry into
@@ -44,4 +46,40 @@ func syncAllCaddyRoutes() error {
 	}
 
 	return caddy.SyncRoutes(buildSessionInfoMap(store, registry))
+}
+
+// syncAllCloudflareRoutes regenerates the cloudflared config from current sessions.
+// Skips silently if external_domain or cloudflare_tunnel_id is not configured.
+func syncAllCloudflareRoutes() error {
+	domain := viper.GetString("external_domain")
+	tunnelID := viper.GetString("cloudflare_tunnel_id")
+	if domain == "" || tunnelID == "" {
+		return nil
+	}
+
+	store, err := session.LoadSessions()
+	if err != nil {
+		return fmt.Errorf("failed to load sessions for Cloudflare sync: %w", err)
+	}
+
+	registry, err := config.LoadProjectRegistry()
+	if err != nil {
+		return fmt.Errorf("failed to load project registry for Cloudflare sync: %w", err)
+	}
+
+	credentialsFile := viper.GetString("cloudflare_credentials_file")
+	cfgPath := viper.GetString("cloudflare_tunnel_config")
+
+	if err := cloudflare.SyncTunnel(
+		buildSessionInfoMap(store, registry),
+		tunnelID,
+		credentialsFile,
+		domain,
+		cfgPath,
+	); err != nil {
+		return err
+	}
+
+	// Restart the daemon if it's running so it picks up the new ingress rules.
+	return cloudflare.ReloadDaemon(cfgPath, tunnelID, cloudflare.DefaultPIDPath())
 }

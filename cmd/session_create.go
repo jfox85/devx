@@ -11,6 +11,7 @@ import (
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -233,11 +234,23 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		hostnames[serviceName] = hostname
 	}
 
+	// Build external hostnames if CF tunnel is configured
+	externalHostnames := make(map[string]string)
+	if domain := viper.GetString("external_domain"); domain != "" {
+		for serviceName := range portAllocation.Ports {
+			h := caddy.BuildExternalHostname(name, serviceName, projectAlias, domain)
+			if h != "" {
+				externalHostnames[serviceName] = h
+			}
+		}
+	}
+
 	// Generate .envrc file
 	envData := session.EnvrcData{
-		Ports:  portAllocation.Ports,
-		Routes: hostnames,
-		Name:   name,
+		Ports:          portAllocation.Ports,
+		Routes:         hostnames,
+		ExternalRoutes: externalHostnames,
+		Name:           name,
 	}
 	if err := session.GenerateEnvrc(worktreePath, envData); err != nil {
 		return fmt.Errorf("failed to generate .envrc: %w", err)
@@ -245,12 +258,13 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 
 	// Generate tmuxp config
 	tmuxpData := session.TmuxpData{
-		Name:   name,
-		Path:   worktreePath,
-		Ports:  portAllocation.Ports,
-		Routes: hostnames,
+		Name:           name,
+		Path:           worktreePath,
+		Ports:          portAllocation.Ports,
+		Routes:         hostnames,
+		ExternalRoutes: externalHostnames,
 	}
-	if err := session.GenerateTmuxpConfig(worktreePath, tmuxpData); err != nil {
+	if err := session.GenerateTmuxpConfig(worktreePath, tmuxpData, projectPath); err != nil {
 		return fmt.Errorf("failed to generate tmuxp config: %w", err)
 	}
 
@@ -266,6 +280,9 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	// Sync all Caddy routes (writes config file + reloads)
 	if err := syncAllCaddyRoutes(); err != nil {
 		fmt.Printf("Warning: %v\n", err)
+	}
+	if err := syncAllCloudflareRoutes(); err != nil {
+		fmt.Printf("Warning: Cloudflare sync failed: %v\n", err)
 	}
 
 	fmt.Printf("Created session '%s' at %s\n", name, worktreePath)

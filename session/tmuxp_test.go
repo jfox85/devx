@@ -32,7 +32,7 @@ func TestGenerateTmuxpConfig(t *testing.T) {
 	}
 
 	// Generate config
-	if err := GenerateTmuxpConfig(tmpDir, data); err != nil {
+	if err := GenerateTmuxpConfig(tmpDir, data, ""); err != nil {
 		t.Fatalf("failed to generate tmuxp config: %v", err)
 	}
 
@@ -134,19 +134,6 @@ windows:
 		t.Fatalf("failed to write custom template: %v", err)
 	}
 
-	// Save and change working directory to project dir
-	originalWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get working directory: %v", err)
-	}
-	defer func() {
-		_ = os.Chdir(originalWd)
-	}()
-
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("failed to change working directory: %v", err)
-	}
-
 	// Test data
 	data := TmuxpData{
 		Name:  "test-custom",
@@ -154,8 +141,8 @@ windows:
 		Ports: map[string]int{"ui": 3000, "api": 3001},
 	}
 
-	// Generate config using custom template
-	if err := GenerateTmuxpConfig(projectDir, data); err != nil {
+	// Generate config — pass projectDir explicitly so template lookup doesn't depend on CWD
+	if err := GenerateTmuxpConfig(projectDir, data, projectDir); err != nil {
 		t.Fatalf("failed to generate tmuxp config: %v", err)
 	}
 

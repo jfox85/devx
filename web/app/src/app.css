@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, 'Liberation Mono', 'Courier New', monospace;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: #0a0e1a;
+  overflow: hidden;
+}
+
+#app {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

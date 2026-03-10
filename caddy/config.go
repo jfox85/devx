@@ -144,6 +144,30 @@ func BuildHostname(sessionName, serviceName, projectAlias string) string {
 	return label + ".localhost"
 }
 
+// BuildExternalHostname constructs the hostname for a session/service on an external domain.
+// Returns "" if the service name normalizes to empty or domain is empty.
+func BuildExternalHostname(sessionName, serviceName, projectAlias, domain string) string {
+	if domain == "" {
+		return ""
+	}
+	dnsService := NormalizeDNSName(serviceName)
+	if dnsService == "" {
+		return ""
+	}
+	sanitizedSession := SanitizeHostname(sessionName)
+	var label string
+	if projectAlias != "" {
+		sanitizedProject := NormalizeDNSName(projectAlias)
+		label = fmt.Sprintf("%s-%s-%s", sanitizedProject, sanitizedSession, dnsService)
+	} else {
+		label = fmt.Sprintf("%s-%s", sanitizedSession, dnsService)
+	}
+	if len(label) > 63 {
+		label = truncateRFC1035Label(label, dnsService)
+	}
+	return label + "." + domain
+}
+
 // BuildRouteID constructs the route ID for a session/service combination.
 // Returns "" if the service name normalizes to empty.
 func BuildRouteID(sessionName, serviceName, projectAlias string) string {
@@ -197,6 +221,13 @@ func buildRoutes(sessions map[string]*SessionInfo) []Route {
 					{
 						Handler:   "reverse_proxy",
 						Upstreams: []RouteUpstream{{Dial: fmt.Sprintf("localhost:%d", port)}},
+						// Override Host so dev servers (e.g. Vite) see "localhost"
+						// rather than the *.localhost virtual hostname.
+						Headers: &RouteHeaders{
+							Request: &RouteHeaderOps{
+								Set: map[string][]string{"Host": {"localhost"}},
+							},
+						},
 					},
 				},
 				Terminal: true,
