@@ -468,6 +468,10 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	keyList := strings.Fields(keys)
+	if len(keyList) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid key sequence"})
+		return
+	}
 	// Reject tokens starting with "-" to prevent them from being parsed as
 	// tmux flags rather than key names.
 	for _, key := range keyList {

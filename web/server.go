@@ -163,10 +163,14 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 		return "", 0, nil // treat as missing → 404
 	}
 	store, err := session.LoadSessions()
-	if err == nil && store != nil {
-		if _, ok := store.Sessions[decoded]; !ok {
-			return "", 0, nil // not a devx-managed session → 404
-		}
+	if err != nil {
+		return "", 0, fmt.Errorf("could not load session store: %w", err)
+	}
+	if store == nil || store.Sessions == nil {
+		return "", 0, nil // no sessions exist → 404
+	}
+	if _, ok := store.Sessions[decoded]; !ok {
+		return "", 0, nil // not a devx-managed session → 404
 	}
 	p, startErr := s.ttyd.startForSession(decoded)
 	if startErr != nil {

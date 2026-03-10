@@ -95,11 +95,16 @@ func startWebDaemon(port int) error {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
 
+	pidPath := webPIDPath()
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
+		return fmt.Errorf("failed to create web state dir: %w", err)
+	}
+
 	cmd := exec.Command(self, "web")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 	// Redirect daemon output to a log file so errors are not silently lost.
-	logPath := strings.TrimSuffix(webPIDPath(), ".pid") + ".log"
+	logPath := strings.TrimSuffix(pidPath, ".pid") + ".log"
 	if lf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
 		cmd.Stdout = lf
 		cmd.Stderr = lf
@@ -136,7 +141,6 @@ func startWebDaemon(port int) error {
 		return fmt.Errorf("web daemon failed to start (port %d may be in use)", port)
 	}
 
-	pidPath := webPIDPath()
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600); err != nil {
 		fmt.Printf("Warning: could not write PID file: %v\n", err)
 	}

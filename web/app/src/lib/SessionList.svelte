@@ -309,6 +309,7 @@
                     transition-colors
                   "
                   title={pendingDelete === session.name ? 'click again to confirm' : 'delete'}
+                  aria-label={pendingDelete === session.name ? `confirm delete ${session.name}` : `delete ${session.name}`}
                 >{pendingDelete === session.name ? '!×' : '×'}</button>
               </div>
             </div>

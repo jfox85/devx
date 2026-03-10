@@ -163,10 +163,16 @@ func (m *ttydManager) clientDisconnected(sessionName string) {
 }
 
 // portForSession returns the port of a running ttyd instance, if one exists.
+// It also cancels any pending idle timer so the instance is not killed while
+// a new HTTP or WebSocket connection is being established.
 func (m *ttydManager) portForSession(name string) (int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if inst, ok := m.sessions[name]; ok {
+		if inst.timer != nil {
+			inst.timer.Stop()
+			inst.timer = nil
+		}
 		return inst.port, true
 	}
 	return 0, false
