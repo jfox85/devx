@@ -9,7 +9,7 @@
     {#each windows as win}
       <button
         on:click={() => onSwitch(win.index)}
-        class="text-xs py-1 px-3 rounded flex-shrink-0 transition-colors
+        class="text-xs py-1 px-3 rounded shrink-0 transition-colors
                {win.active ? 'bg-blue-700 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}"
       >
         {win.index}: {win.name}

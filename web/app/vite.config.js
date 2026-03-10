@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 
+const backendOrigin = process.env.DEVX_WEB_ORIGIN ?? 'http://localhost:7777'
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
@@ -11,7 +13,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:7777',
+      '/api': backendOrigin,
     },
   },
 })

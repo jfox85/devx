@@ -3,10 +3,12 @@
 package cloudflare
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 )
+
+var errNotSupported = errors.New("cloudflared daemon not supported on Windows")
 
 // DefaultPIDPath returns the default path for the cloudflared PID file.
 func DefaultPIDPath() string {
@@ -18,15 +20,15 @@ func DefaultPIDPath() string {
 }
 
 func StartDaemon(cfgPath, tunnelID, pidPath string) (int, error) {
-	return 0, fmt.Errorf("cloudflared daemon not supported on Windows")
+	return 0, errNotSupported
 }
 
 func StopDaemon(pidPath string) (int, error) {
-	return 0, fmt.Errorf("cloudflared daemon not supported on Windows")
+	return 0, errNotSupported
 }
 
 func ReadPID(pidPath string) (int, error) {
-	return 0, fmt.Errorf("cloudflared daemon not supported on Windows")
+	return 0, errNotSupported
 }
 
 func IsRunning(pid int) bool {
@@ -34,5 +36,6 @@ func IsRunning(pid int) bool {
 }
 
 func ReloadDaemon(cfgPath, tunnelID, pidPath string) error {
-	return fmt.Errorf("cloudflared daemon not supported on Windows")
+	// Consistent with the Unix implementation: no-op when daemon is not running.
+	return nil
 }

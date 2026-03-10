@@ -6,6 +6,7 @@
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
+  export let onDeleteSession = null    // called when the currently-active session is deleted
 
   let sessions = []
   let loading = true
@@ -17,12 +18,12 @@
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
 
-  async function load() {
-    loading = true
+  async function load({ background = false } = {}) {
+    if (!background) loading = true
     error = ''
     try { sessions = await listSessions() }
     catch (e) { error = e.message }
-    finally { loading = false }
+    finally { if (!background) loading = false }
   }
 
   function openNewSession() { showNewSession = true }
@@ -33,13 +34,14 @@
     load()
 
     // Poll for session changes (e.g. new sessions created in the terminal).
+    // Background polls skip the loading spinner to avoid flickering the list.
     // Pauses when the tab is hidden to avoid unnecessary requests.
     let pollTimer = null
     function startPolling() {
-      pollTimer = setInterval(() => { if (!document.hidden) load() }, POLL_INTERVAL)
+      pollTimer = setInterval(() => { if (!document.hidden) load({ background: true }) }, POLL_INTERVAL)
     }
     function handleVisibilityChange() {
-      if (!document.hidden) load() // immediate refresh when tab becomes visible
+      if (!document.hidden) load({ background: true }) // immediate refresh when tab becomes visible
     }
     startPolling()
     document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -144,10 +146,10 @@
 
   async function handleDelete(session) {
     if (!confirm(`Remove session "${session.name}"?`)) return
-    const prevError = error
     error = ''
     try {
       await deleteSession(session.name)
+      if (session.name === activeSessionName) onDeleteSession?.()
       await load()
     } catch (e) {
       error = e.message || 'Delete failed'
@@ -160,7 +162,7 @@
 <div class="flex flex-col h-full bg-[#0a0e1a]">
 
   <!-- Header -->
-  <div class="flex items-center justify-between px-3 h-10 border-b border-[#1e2d4a] flex-shrink-0">
+  <div class="flex items-center justify-between px-3 h-10 border-b border-[#1e2d4a] shrink-0">
     <span class="text-cyan-400 font-mono font-bold text-sm tracking-widest">devx</span>
     <button
       on:click={() => showNewSession = true}
@@ -171,7 +173,7 @@
   </div>
 
   <!-- Search -->
-  <div class="flex items-center px-3 h-8 border-b border-[#1e2d4a] flex-shrink-0">
+  <div class="flex items-center px-3 h-8 border-b border-[#1e2d4a] shrink-0">
     <span class="text-gray-600 font-mono text-xs mr-2 select-none">/</span>
     <input
       bind:this={searchInputEl}
@@ -191,7 +193,7 @@
 
   <!-- Error banner (shown above list, doesn't replace it) -->
   {#if error}
-    <div class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between flex-shrink-0">
+    <div class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between shrink-0">
       <span>{error}</span>
       <button on:click={() => error = ''} class="text-red-600 hover:text-red-400 ml-2">×</button>
     </div>
@@ -227,7 +229,7 @@
 
           {#each projectSessions as session (session.name)}
             {@const isActive = session.name === activeSessionName}
-            {@const flatIdx = filtered.indexOf(session)}
+            {@const flatIdx = displayOrdered.indexOf(session)}
             {@const isKbSelected = flatIdx === selectedIndex}
             {@const routes = allRoutes(session)}
             {@const hasRoutes = Object.keys(routes).length > 0}
@@ -255,7 +257,7 @@
               >
                 <span class="flex-1 truncate leading-none">{session.name}</span>
                 {#if session.attention_flag}
-                  <span class="text-yellow-500 text-[10px] flex-shrink-0">◆</span>
+                  <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
                 {/if}
               </button>
 
@@ -321,7 +323,7 @@
   </div>
 
   <!-- Key hint bar (desktop only) -->
-  <div class="hidden lg:flex items-center gap-4 px-3 h-7 border-t border-[#1e2d4a] text-[10px] font-mono text-gray-700 flex-shrink-0 select-none">
+  <div class="hidden lg:flex items-center gap-4 px-3 h-7 border-t border-[#1e2d4a] text-[10px] font-mono text-gray-700 shrink-0 select-none">
     <span>↑↓ nav</span>
     <span>⏎ open</span>
     <span>/ search</span>

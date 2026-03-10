@@ -1,7 +1,6 @@
 <!-- web/app/src/App.svelte -->
 <script>
-  import { onMount } from 'svelte'
-  import { isLoggedIn, login } from './api.js'
+  import { isLoggedIn } from './api.js'
   import Login from './lib/Login.svelte'
   import SessionList from './lib/SessionList.svelte'
   import Terminal from './lib/Terminal.svelte'
@@ -11,6 +10,11 @@
   let view = 'sessions'  // 'sessions' | 'terminal'
   let activeSession = null
   let terminalComponent
+
+  // Reactive: determined at page load from the localStorage marker set on login.
+  // The marker is non-sensitive — the actual auth token lives in an httpOnly
+  // cookie. Any API 401 clears the marker and reloads to show the login screen.
+  let loggedIn = isLoggedIn()
 
   function openTerminal(session) {
     activeSession = session
@@ -35,20 +39,11 @@
       }
     }
   }
-
-  // Re-set the auth cookie on load using the stored token. The cookie is a
-  // persistent cookie but refresh on mount ensures it stays valid.
-  onMount(async () => {
-    const stored = localStorage.getItem('devx_token')
-    if (stored) {
-      try { await login(stored) } catch { /* token invalid — login screen will show */ }
-    }
-  })
 </script>
 
 <svelte:window on:paste={handleGlobalPaste} />
 
-{#if !isLoggedIn()}
+{#if !loggedIn}
   <Login />
 {:else}
   <!--
@@ -60,11 +55,11 @@
 
     <!-- Session list sidebar -->
     <div class="
-      flex flex-col flex-shrink-0
+      flex flex-col shrink-0
       {view === 'terminal' ? 'hidden lg:flex lg:w-72 xl:w-80' : 'flex w-full lg:w-72 xl:w-80'}
       border-r border-[#1e2d4a]
     ">
-      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} />
+      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} onDeleteSession={goHome} />
     </div>
 
     <!-- Terminal / empty state -->

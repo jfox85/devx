@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // DefaultPIDPath returns the default path for the cloudflared PID file.
@@ -130,6 +131,17 @@ func ReloadDaemon(cfgPath, tunnelID, pidPath string) error {
 
 	if _, err := StopDaemon(pidPath); err != nil {
 		return fmt.Errorf("failed to stop cloudflared for reload: %w", err)
+	}
+
+	// Wait for the old process to exit before starting the new one to avoid
+	// port conflicts. Give it up to 3 seconds.
+	if proc, err := os.FindProcess(pid); err == nil {
+		for i := 0; i < 30; i++ {
+			if proc.Signal(syscall.Signal(0)) != nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	if _, err := StartDaemon(cfgPath, tunnelID, pidPath); err != nil {

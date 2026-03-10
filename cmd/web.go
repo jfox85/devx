@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jfox85/devx/web"
 	"github.com/spf13/cobra"
@@ -132,6 +133,14 @@ func runWebStop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to stop process %d: %w", pid, err)
 	}
 
+	// Wait briefly for the process to exit before removing the PID file.
+	for i := 0; i < 10; i++ {
+		if proc.Signal(syscall.Signal(0)) != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	if err := os.Remove(webPIDPath()); err != nil {
 		fmt.Printf("Warning: could not remove PID file: %v\n", err)
 	}
@@ -147,7 +156,18 @@ func runWebStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	pid := strings.TrimSpace(string(data))
-	fmt.Printf("devx web is running (pid %s, port %d)\n", pid, port)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		fmt.Println("devx web is not running (invalid PID file)")
+		return nil
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil || proc.Signal(syscall.Signal(0)) != nil {
+		fmt.Println("devx web is not running (stale PID file)")
+		return nil
+	}
+
+	fmt.Printf("devx web is running (pid %d, port %d)\n", pid, port)
 	return nil
 }

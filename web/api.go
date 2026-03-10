@@ -29,8 +29,10 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
 	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
-	mux.HandleFunc("POST /api/sessions/{name}/flag", handleFlagSession)
-	mux.HandleFunc("DELETE /api/sessions/{name}/flag", handleUnflagSession)
+	// Session name passed as query param (?name=...) so names containing
+	// slashes (branch-style names) are handled correctly.
+	mux.HandleFunc("POST /api/sessions/flag", handleFlagSession)
+	mux.HandleFunc("DELETE /api/sessions/flag", handleUnflagSession)
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
@@ -63,7 +65,11 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	expectedToken := viper.GetString("web_secret_token")
-	if subtle.ConstantTimeCompare([]byte(req.Token), []byte(expectedToken)) != 1 {
+	if expectedToken == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "web auth is not configured"})
+		return
+	}
+	if req.Token == "" || subtle.ConstantTimeCompare([]byte(req.Token), []byte(expectedToken)) != 1 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return
 	}
@@ -191,7 +197,14 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFlagSession(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
 	if err := session.SetAttentionFlag(name, "manual"); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -200,7 +213,14 @@ func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
 	if err := session.ClearAttentionFlag(name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

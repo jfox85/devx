@@ -1,21 +1,21 @@
 // web/app/src/api.js
 const base = '/api'
 
-function getToken() {
-  return localStorage.getItem('devx_token') || ''
-}
-
+// apiFetch sends requests relying on the httpOnly session cookie for auth.
+// The bearer-token approach is intentionally omitted — storing the raw token
+// in script-readable localStorage would expose it to XSS. The server's auth
+// middleware checks the cookie that was set at login time.
 async function apiFetch(path, options = {}) {
   const res = await fetch(base + path, {
     ...options,
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + getToken(),
       ...options.headers,
     },
   })
   if (res.status === 401) {
-    localStorage.removeItem('devx_token')
+    localStorage.removeItem('devx_authed')
     window.location.reload()
     throw new Error('Unauthorized')
   }
@@ -46,25 +46,28 @@ export async function deleteSession(name) {
 }
 
 export async function flagSession(name) {
-  const res = await apiFetch(`/sessions/${name}/flag`, { method: 'POST' })
+  const res = await apiFetch('/sessions/flag?name=' + encodeURIComponent(name), { method: 'POST' })
   if (!res.ok) throw new Error(`Failed to flag session: ${res.status}`)
 }
 
 export async function unflagSession(name) {
-  const res = await apiFetch(`/sessions/${name}/flag`, { method: 'DELETE' })
+  const res = await apiFetch('/sessions/flag?name=' + encodeURIComponent(name), { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to unflag session: ${res.status}`)
 }
 
 export async function login(token) {
   const res = await fetch(base + '/login', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
   })
   if (!res.ok) {
     throw new Error('Invalid token')
   }
-  localStorage.setItem('devx_token', token)
+  // Store a non-sensitive marker so the app knows to show the session list.
+  // The actual auth token lives only in the httpOnly cookie set by the server.
+  localStorage.setItem('devx_authed', '1')
 }
 
 export async function listWindows(sessionName) {
@@ -102,11 +105,11 @@ export async function uploadImage(file) {
   form.append('image', file)
   const res = await fetch(base + '/upload-image', {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + getToken() },
+    credentials: 'same-origin',
     body: form,
   })
   if (res.status === 401) {
-    localStorage.removeItem('devx_token')
+    localStorage.removeItem('devx_authed')
     window.location.reload()
     throw new Error('Unauthorized')
   }
@@ -118,5 +121,5 @@ export async function uploadImage(file) {
 }
 
 export function isLoggedIn() {
-  return !!localStorage.getItem('devx_token')
+  return !!localStorage.getItem('devx_authed')
 }
