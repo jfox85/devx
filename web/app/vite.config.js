@@ -14,6 +14,11 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': backendOrigin,
+      // Proxy /terminal/* to the backend, with WebSocket support for ttyd.
+      '/terminal': {
+        target: backendOrigin,
+        ws: true,
+      },
     },
   },
 })

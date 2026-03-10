@@ -25,12 +25,12 @@
   <button on:click={() => onOpen(session)}
     class="w-full px-4 py-5 text-left hover:bg-gray-800 active:bg-gray-700 transition-colors">
     <div class="flex items-center gap-2">
-      <span class="text-gray-500 text-lg leading-none flex-shrink-0">⌨</span>
+      <span class="text-gray-500 text-lg leading-none shrink-0">⌨</span>
       <span class="text-white font-semibold text-base leading-tight flex-1">{session.name}</span>
       {#if session.attention_flag}
-        <span class="w-2 h-2 rounded-full bg-yellow-400 flex-shrink-0"></span>
+        <span class="w-2 h-2 rounded-full bg-yellow-400 shrink-0"></span>
       {/if}
-      <span class="text-gray-500 text-sm flex-shrink-0">›</span>
+      <span class="text-gray-500 text-sm shrink-0">›</span>
     </div>
   </button>
 

@@ -318,10 +318,10 @@
   {/if}
 
   <!-- Header: back + window tabs (or session name) + attach button -->
-  <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] flex-shrink-0 h-9">
+  <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] shrink-0 h-9">
     <button
       on:click={onBack}
-      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono flex-shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
+      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
       title="back to session list"
     >←</button>
 
@@ -331,7 +331,7 @@
           <button
             on:click={() => switchWindow(win.index)}
             class="
-              text-[11px] font-mono py-1 px-2.5 flex-shrink-0 whitespace-nowrap transition-colors
+              text-[11px] font-mono py-1 px-2.5 shrink-0 whitespace-nowrap transition-colors
               {win.active
                 ? 'text-cyan-300 bg-cyan-950/50 border-b-2 border-cyan-500'
                 : 'text-gray-600 hover:text-gray-300 border-b-2 border-transparent'}
@@ -351,7 +351,7 @@
     <button
       on:click={() => fileInputEl?.click()}
       title="attach image"
-      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono flex-shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
     >[img]</button>
     <input
       bind:this={fileInputEl}

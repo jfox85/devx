@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -103,12 +104,40 @@ func startWebDaemon(port int) error {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
+	pid := cmd.Process.Pid
+
+	// Poll the health endpoint to confirm the child is actually listening before
+	// writing the PID file and reporting success. This catches immediate failures
+	// like port-already-in-use that cmd.Start() cannot detect.
+	healthURL := fmt.Sprintf("http://localhost:%d/api/health", port)
+	deadline := time.Now().Add(5 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(healthURL) //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				ready = true
+				break
+			}
+		}
+		// Check if the child already exited (failed fast).
+		if cmd.ProcessState != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("web daemon failed to start (port %d may be in use)", port)
+	}
+
 	pidPath := webPIDPath()
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
 		fmt.Printf("Warning: could not write PID file: %v\n", err)
 	}
 
-	fmt.Printf("devx web daemon started (pid %d, port %d)\n", cmd.Process.Pid, port)
+	fmt.Printf("devx web daemon started (pid %d, port %d)\n", pid, port)
 	return nil
 }
 

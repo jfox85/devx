@@ -33,8 +33,10 @@
     if (!activeSession || !terminalComponent) return
     for (const item of (e.clipboardData?.items || [])) {
       if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (!file) return
         e.preventDefault()
-        terminalComponent.handleImagePaste(item.getAsFile())
+        terminalComponent.handleImagePaste(file)
         return
       }
     }

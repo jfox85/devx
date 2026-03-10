@@ -273,8 +273,9 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Use tab as delimiter so window names that contain spaces are preserved.
 	out, err := exec.Command("tmux", "list-windows", "-t", resolveWebSession(name), "-F",
-		"#{window_index} #{window_name} #{window_active}").Output()
+		"#{window_index}\t#{window_name}\t#{window_active}").Output()
 	if err != nil {
 		// tmux session not running — return empty list rather than an error.
 		writeJSON(w, http.StatusOK, map[string]any{"windows": []windowInfo{}})
@@ -286,7 +287,7 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 3)
+		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) != 3 {
 			continue
 		}
@@ -433,7 +434,9 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	// Split on whitespace so callers can send multiple keystrokes (e.g. "C-b C-b").
 	keyList := strings.Fields(keys)
-	args := append([]string{"send-keys", "-t", name}, keyList...)
+	// Use resolveWebSession so keys land in the correct pane when the browser
+	// and a terminal client are on different windows.
+	args := append([]string{"send-keys", "-t", resolveWebSession(name)}, keyList...)
 	if err := exec.Command("tmux", args...).Run(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

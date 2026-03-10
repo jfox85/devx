@@ -30,14 +30,14 @@
 <div class="absolute bottom-12 right-3 z-50 max-w-xs font-mono text-xs shadow-lg">
   {#if upload}
     <div class="flex items-center gap-2 bg-[#0d1117] border border-cyan-800 px-3 py-2">
-      <img src={upload.objectURL} alt="" class="w-10 h-10 object-cover rounded flex-shrink-0" />
+      <img src={upload.objectURL} alt="" class="w-10 h-10 object-cover rounded shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="text-cyan-300 truncate">{shortPath}</div>
         <div class="text-green-500 text-[10px]">inserted</div>
       </div>
       <button
         on:click={onDismiss}
-        class="text-gray-600 hover:text-gray-300 ml-1 flex-shrink-0"
+        class="text-gray-600 hover:text-gray-300 ml-1 shrink-0"
         aria-label="dismiss"
       >×</button>
     </div>
@@ -48,7 +48,7 @@
       </div>
       <button
         on:click={onDismiss}
-        class="text-gray-600 hover:text-gray-300 ml-1 flex-shrink-0"
+        class="text-gray-600 hover:text-gray-300 ml-1 shrink-0"
         aria-label="dismiss"
       >×</button>
     </div>
