@@ -3,7 +3,7 @@ package caddy
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,24 +102,29 @@ func BuildCaddyConfig(sessions map[string]*SessionInfo) CaddyConfig {
 	}
 }
 
-// truncateDNSLabel ensures a DNS label stays within the 63-character RFC 1035
-// limit. If the label is already within the limit it is returned unchanged.
-// When it exceeds the limit the prefix is shortened and a 5-hex-char FNV hash
-// of the original label is appended so truncated labels remain unique.
-func truncateDNSLabel(label string) string {
-	if len(label) <= 63 {
-		return label
+// truncateRFC1035Label truncates a DNS label to at most 63 characters (RFC 1035
+// limit) while preserving the service suffix and appending a 4-char hash of the
+// full label to maintain uniqueness.
+func truncateRFC1035Label(label, serviceSuffix string) string {
+	const maxLen = 63
+	// Mask CRC32 to 16 bits for a compact 4-char hex suffix. Collision
+	// probability is negligible at typical session counts (~1% at ~36 sessions).
+	hash := fmt.Sprintf("%04x", crc32.ChecksumIEEE([]byte(label))&0xffff)
+	// suffix shape: "-<hash>-<service>"
+	suffix := "-" + hash + "-" + serviceSuffix
+	if len(suffix) >= maxLen {
+		// Degenerate: service name itself is absurdly long; just hash-truncate.
+		return strings.TrimRight(label[:maxLen-5], "-") + "-" + hash
 	}
-	h := fnv.New32a()
-	h.Write([]byte(label))
-	suffix := fmt.Sprintf("%05x", h.Sum32()&0xfffff) // 5 hex chars
-	// Reserve 6 chars for "-" + suffix; trim any trailing dash from the prefix.
-	prefix := strings.TrimRight(label[:57], "-")
-	return prefix + "-" + suffix
+	prefixLen := maxLen - len(suffix)
+	prefix := strings.TrimRight(label[:prefixLen], "-")
+	return prefix + suffix
 }
 
 // BuildHostname constructs the hostname for a session/service combination.
 // Returns "" if the service name normalizes to empty.
+// Labels are capped at 63 characters per RFC 1035; longer labels are truncated
+// with a 4-character hash appended to preserve uniqueness.
 func BuildHostname(sessionName, serviceName, projectAlias string) string {
 	dnsService := NormalizeDNSName(serviceName)
 	if dnsService == "" {
@@ -133,7 +138,10 @@ func BuildHostname(sessionName, serviceName, projectAlias string) string {
 	} else {
 		label = fmt.Sprintf("%s-%s", sanitizedSession, dnsService)
 	}
-	return truncateDNSLabel(label) + ".localhost"
+	if len(label) > 63 {
+		label = truncateRFC1035Label(label, dnsService)
+	}
+	return label + ".localhost"
 }
 
 // BuildExternalHostname constructs the hostname for a session/service on an external domain.
@@ -154,7 +162,10 @@ func BuildExternalHostname(sessionName, serviceName, projectAlias, domain string
 	} else {
 		label = fmt.Sprintf("%s-%s", sanitizedSession, dnsService)
 	}
-	return truncateDNSLabel(label) + "." + domain
+	if len(label) > 63 {
+		label = truncateRFC1035Label(label, dnsService)
+	}
+	return label + "." + domain
 }
 
 // BuildRouteID constructs the route ID for a session/service combination.
