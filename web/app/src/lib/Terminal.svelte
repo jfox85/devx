@@ -148,6 +148,18 @@
   //      redraw) and resize-window to the current client's dimensions,
   //      working around the tmux grouped-session size-constraint bug.
   async function handleIframeLoad() {
+    // Inject Nerd Font into the iframe immediately so the font is available
+    // before xterm.js initialises and measures character cell size.
+    // The font file is already cached by the parent page's preload hint.
+    try {
+      const link = iframeEl.contentDocument.createElement('link')
+      link.rel = 'stylesheet'
+      link.href = '/nerd-font.css'
+      iframeEl.contentDocument.head.appendChild(link)
+      // Wait for the font to be ready before xterm starts measuring.
+      await iframeEl.contentWindow.document.fonts.load('12px HackNerdFontMono')
+    } catch { /* ignore cross-origin / not-yet-loaded */ }
+
     // Poll until xterm's helper textarea appears (signals full init).
     const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
     while (Date.now() < deadline) {

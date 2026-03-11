@@ -70,6 +70,7 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 			"-i", "127.0.0.1", // bind to loopback only — not reachable from the network
 			"-W",
 			"--base-path", "/terminal/" + sessionName,
+			"-t", "fontFamily=HackNerdFontMono, monospace",
 			"tmux", "new-session", "-A", "-s", webSession, "-t", sessionName,
 		}
 		cmd = exec.Command("ttyd", args...)
