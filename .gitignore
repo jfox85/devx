@@ -5,3 +5,5 @@ devx
 .devx/
 web/app/node_modules/
 web/dist/
+.DS_Store
+.playwright-mcp/
