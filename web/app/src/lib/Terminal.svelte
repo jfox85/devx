@@ -157,7 +157,7 @@
       link.href = '/nerd-font.css'
       iframeEl.contentDocument.head.appendChild(link)
       // Wait for the font to be ready before xterm starts measuring.
-      await iframeEl.contentWindow.document.fonts.load('12px JetBrainsMonoNerdFontMono')
+      await iframeEl.contentWindow.document.fonts.load('12px HackNerdFontMono')
     } catch { /* ignore cross-origin / not-yet-loaded */ }
 
     // Poll until xterm's helper textarea appears (signals full init).
