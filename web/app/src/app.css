@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: 'JetBrainsMonoNerdFontMono';
+  src: url('/JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
 :root {
   font-family: ui-monospace, 'SFMono-Regular', Menlo, 'Liberation Mono', 'Courier New', monospace;
   color-scheme: dark;
