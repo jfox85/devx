@@ -1,9 +1,11 @@
 <!-- web/app/src/App.svelte -->
 <script>
-  import { isLoggedIn } from './api.js'
+  import { onMount, onDestroy } from 'svelte'
+  import { isLoggedIn, subscribeToEvents } from './api.js'
   import Login from './lib/Login.svelte'
   import SessionList from './lib/SessionList.svelte'
   import Terminal from './lib/Terminal.svelte'
+  import ImageToast from './lib/ImageToast.svelte'
 
   // view is only used on mobile to toggle between sessions and terminal.
   // On desktop, both panels are always visible.
@@ -15,6 +17,27 @@
   // The marker is non-sensitive — the actual auth token lives in an httpOnly
   // cookie. Any API 401 clears the marker and reloads to show the login screen.
   let loggedIn = isLoggedIn()
+
+  // Remote show toast: set when a "show" SSE event arrives from the CLI.
+  let remoteShow = null  // { url, name } | null
+
+  let unsubscribeSSE
+
+  onMount(() => {
+    if (loggedIn) {
+      unsubscribeSSE = subscribeToEvents((event) => {
+        remoteShow = event
+      })
+    }
+  })
+
+  onDestroy(() => {
+    unsubscribeSSE?.()
+  })
+
+  function dismissRemoteShow() {
+    remoteShow = null
+  }
 
   function openTerminal(session) {
     activeSession = session
@@ -53,7 +76,7 @@
     - Mobile: show sidebar OR terminal (toggled via `view`)
     - Desktop (lg+): both panels always visible side by side
   -->
-  <div class="flex h-dvh overflow-hidden bg-[#0a0e1a]">
+  <div class="relative flex h-dvh overflow-hidden bg-[#0a0e1a]">
 
     <!-- Session list sidebar -->
     <div class="
@@ -76,6 +99,14 @@
         </div>
       {/if}
     </div>
+
+    <!-- Remote show toast: triggered by devx show <path> from the CLI -->
+    {#if remoteShow}
+      <ImageToast
+        upload={{ path: remoteShow.name, objectURL: remoteShow.url, url: remoteShow.url }}
+        onDismiss={dismissRemoteShow}
+      />
+    {/if}
 
   </div>
 {/if}

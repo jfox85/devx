@@ -136,3 +136,16 @@ export async function uploadImage(file) {
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_authed')
 }
+
+// subscribeToEvents opens an SSE connection to /api/events and calls onEvent
+// with the parsed JSON payload whenever a "show" event arrives.
+// Returns a cleanup function that closes the connection.
+export function subscribeToEvents(onEvent) {
+  const es = new EventSource('/api/events', { withCredentials: true })
+  es.addEventListener('show', (e) => {
+    try {
+      onEvent(JSON.parse(e.data))
+    } catch { /* ignore malformed events */ }
+  })
+  return () => es.close()
+}

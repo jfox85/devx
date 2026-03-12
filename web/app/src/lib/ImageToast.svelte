@@ -34,7 +34,13 @@
       <img src={upload.objectURL} alt="" class="w-10 h-10 object-cover rounded shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="text-cyan-300 truncate">{shortPath}</div>
-        <div class="text-green-500 text-[10px]">inserted</div>
+        <div class="text-green-500 text-[10px]">
+          {#if upload?.url}
+            <a href={upload.url} target="_blank" rel="noopener" class="underline hover:text-green-300">Open ↗</a>
+          {:else}
+            inserted
+          {/if}
+        </div>
       </div>
       <button
         on:click={onDismiss}

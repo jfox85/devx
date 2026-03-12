@@ -18,6 +18,7 @@ type Server struct {
 	port   int
 	server *http.Server
 	ttyd   *ttydManager
+	hub    *sseHub
 }
 
 // New creates a new Server. token must be non-empty.
@@ -25,7 +26,7 @@ func New(token string, port int) (*Server, error) {
 	if token == "" {
 		return nil, fmt.Errorf("web_secret_token must be set in config to use devx web")
 	}
-	return &Server{token: token, port: port, ttyd: newTtydManager()}, nil
+	return &Server{token: token, port: port, ttyd: newTtydManager(), hub: newSSEHub()}, nil
 }
 
 // Start begins listening and serving.
@@ -61,7 +62,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Non-API/terminal routes (static assets, login) pass through unauthenticated.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/")
+		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/") || strings.HasPrefix(r.URL.Path, "/uploads/")
 		if !needsAuth || r.URL.Path == "/api/login" {
 			next.ServeHTTP(w, r)
 			return
@@ -89,6 +90,10 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// API routes registered in api.go
 	registerAPIRoutes(mux)
+	// SSE event stream — auth covered by /api/ prefix in authMiddleware.
+	mux.HandleFunc("GET /api/events", s.hub.handleEvents)
+	// Remote show — uploads a file and broadcasts to all SSE clients.
+	mux.HandleFunc("POST /api/show", s.handleShow)
 	// Static SPA served from embedded FS (registered in embed.go)
 	registerStaticRoutes(mux)
 	// Catch-all for /terminal/* — handles both iframe HTTP requests and WebSocket upgrades.

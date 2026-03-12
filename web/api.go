@@ -41,6 +41,8 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
+	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
+	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -571,6 +573,106 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"path": destPath})
+}
+
+// handleServeUpload serves files from ~/.devx/uploads/ by filename.
+// Path traversal is prevented by rejecting any filename that contains a slash.
+func handleServeUpload(w http.ResponseWriter, r *http.Request) {
+	filename := strings.TrimPrefix(r.URL.Path, "/uploads/")
+	// Reject empty names and any path traversal attempts.
+	if filename == "" || strings.ContainsAny(filename, "/\\") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "cannot find home dir", http.StatusInternalServerError)
+		return
+	}
+	filePath := filepath.Join(home, ".devx", "uploads", filename)
+
+	// Serve the file — http.ServeFile sets Content-Type, ETag, etc.
+	http.ServeFile(w, r, filePath)
+}
+
+// handleShow accepts a multipart image upload from the CLI, saves it to
+// ~/.devx/uploads/, then broadcasts its URL to all connected SSE clients.
+func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
+	// Cap the raw request body to 20 MB before parsing.
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image field required"})
+		return
+	}
+	defer file.Close()
+
+	// Sniff magic bytes to determine MIME type — never trust client Content-Type.
+	buf := make([]byte, 512)
+	n, _ := file.Read(buf)
+	ct := http.DetectContentType(buf[:n])
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seek failed"})
+		return
+	}
+
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid content type"})
+		return
+	}
+	ext, ok := allowedImageTypes[mediaType]
+	if !ok {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot find home dir"})
+		return
+	}
+	uploadDir := filepath.Join(home, ".devx", "uploads")
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create upload dir"})
+		return
+	}
+
+	var randBytes [16]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "random generation failed"})
+		return
+	}
+	filename := hex.EncodeToString(randBytes[:]) + ext
+	destPath := filepath.Join(uploadDir, filename)
+
+	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create file"})
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write failed"})
+		return
+	}
+
+	uploadURL := "/uploads/" + filename
+	// Broadcast to all connected browser clients.
+	payload, _ := json.Marshal(map[string]string{
+		"url":  uploadURL,
+		"name": header.Filename,
+	})
+	s.hub.broadcast(string(payload))
+
+	writeJSON(w, http.StatusOK, map[string]string{"path": destPath, "url": uploadURL})
 }
 
 // runSelf re-invokes the devx binary with the given args.
