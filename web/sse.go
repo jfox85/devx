@@ -31,13 +31,20 @@ func (h *sseHub) unsubscribe(ch chan string) {
 	h.mu.Unlock()
 }
 
-// broadcast sends data to all connected clients, dropping slow ones.
+// broadcast sends data to all connected clients as a "show" event, dropping slow ones.
 func (h *sseHub) broadcast(data string) {
+	h.broadcastEvent("show", data)
+}
+
+// broadcastEvent sends a named SSE event to all connected clients, dropping slow ones.
+// The message is formatted as "event: <name>\ndata: <data>\n\n".
+func (h *sseHub) broadcastEvent(event, data string) {
+	msg := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for ch := range h.clients {
 		select {
-		case ch <- data:
+		case ch <- msg:
 		default: // drop if buffer full — client is too slow
 		}
 	}
@@ -63,8 +70,8 @@ func (h *sseHub) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case data := <-ch:
-			fmt.Fprintf(w, "event: show\ndata: %s\n\n", data)
+		case msg := <-ch:
+			fmt.Fprint(w, msg)
 			flusher.Flush()
 		case <-ticker.C:
 			fmt.Fprintf(w, ": heartbeat\n\n")

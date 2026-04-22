@@ -66,7 +66,7 @@ func createTestSession(t *testing.T, sessionName string) {
 	})
 
 	// Create the session using our existing functionality
-	if err := session.CreateWorktree(tempDir, sessionName, false); err != nil {
+	if _, err := session.CreateWorktree(tempDir, sessionName, false); err != nil {
 		t.Fatalf("Failed to create worktree: %v", err)
 	}
 

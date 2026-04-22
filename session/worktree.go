@@ -83,8 +83,11 @@ func IsWorktreeCheckedOut(repoPath, branchName string) (bool, string, error) {
 	return false, "", nil
 }
 
-// CreateWorktree creates a new git worktree
-func CreateWorktree(repoPath, name string, detach bool) error {
+// CreateWorktree creates a new git worktree and returns the path to it.
+// If the branch is already checked out in an existing worktree (anywhere in
+// the repo — including paths created by external tools like Claude Code),
+// that existing worktree path is returned and reused rather than failing.
+func CreateWorktree(repoPath, name string, detach bool) (string, error) {
 	worktreePath := filepath.Join(repoPath, ".worktrees", name)
 
 	// Prune stale worktree registrations upfront. This handles the case where a
@@ -100,7 +103,7 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 		// Directory exists, check if it's a valid worktree
 		worktreeExists, err := WorktreeExists(repoPath, worktreePath)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		if worktreeExists {
@@ -108,7 +111,7 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 			// Check if it's on the expected branch
 			worktrees, err := ListWorktrees(repoPath)
 			if err != nil {
-				return err
+				return "", err
 			}
 
 			for _, wt := range worktrees {
@@ -116,9 +119,9 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 					if wt.Branch == name {
 						// Already on correct branch, we can reuse it
 						fmt.Printf("Reusing existing worktree at %s (branch: %s)\n", worktreePath, name)
-						return nil
+						return worktreePath, nil
 					} else if !detach {
-						return fmt.Errorf("worktree at %s exists but is on branch %s, not %s. Use --detach to override", worktreePath, wt.Branch, name)
+						return "", fmt.Errorf("worktree at %s exists but is on branch %s, not %s. Use --detach to override", worktreePath, wt.Branch, name)
 					}
 					// If detach is true, we'll remove and recreate below
 					break
@@ -130,17 +133,17 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 				cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
 				cmd.Dir = repoPath
 				if output, err := cmd.CombinedOutput(); err != nil {
-					return fmt.Errorf("failed to remove existing worktree: %w\n%s", err, output)
+					return "", fmt.Errorf("failed to remove existing worktree: %w\n%s", err, output)
 				}
 			}
 		} else if !detach {
 			// Directory exists but isn't a worktree - this shouldn't happen in normal flow
-			return fmt.Errorf("directory %s exists but is not a git worktree. Remove it manually or use --detach", worktreePath)
+			return "", fmt.Errorf("directory %s exists but is not a git worktree. Remove it manually or use --detach", worktreePath)
 		} else {
 			// detach is true and directory exists but isn't a worktree
 			// Remove the directory
 			if err := os.RemoveAll(worktreePath); err != nil {
-				return fmt.Errorf("failed to remove existing directory: %w", err)
+				return "", fmt.Errorf("failed to remove existing directory: %w", err)
 			}
 		}
 	}
@@ -153,7 +156,7 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 	// Check local branch first
 	branchExists, err := BranchExists(repoPath, name)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var (
@@ -168,7 +171,7 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 		// Check for remote branch
 		remoteBranchExists, err := RemoteBranchExists(repoPath, name)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if remoteBranchExists {
 			// Create local branch from remote, tracking origin.
@@ -184,15 +187,20 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 	cmd.Dir = repoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Check if error is due to branch being already checked out elsewhere
-		if strings.Contains(string(output), "is already checked out") {
-			// Try to find where it's checked out
-			checkedOut, path, checkErr := IsWorktreeCheckedOut(repoPath, name)
+		// Both old and new git versions report the branch-in-use error differently:
+		//   old: "is already checked out at <path>"
+		//   new: "is already used by worktree at <path>"
+		// In both cases, find the existing worktree and adopt it for this session.
+		outputStr := string(output)
+		if strings.Contains(outputStr, "is already checked out") ||
+			strings.Contains(outputStr, "is already used by worktree") {
+			checkedOut, existingPath, checkErr := IsWorktreeCheckedOut(repoPath, name)
 			if checkErr == nil && checkedOut {
-				return fmt.Errorf("branch '%s' is already checked out at %s", name, path)
+				fmt.Printf("Branch '%s' is already checked out at %s, adopting it for this session.\n", name, existingPath)
+				return existingPath, nil
 			}
 		}
-		return fmt.Errorf("failed to create worktree: %w\n%s", err, output)
+		return "", fmt.Errorf("failed to create worktree: %w\n%s", err, output)
 	}
 
 	// For existing local branches, pull from remote to pick up any commits we're missing
@@ -212,7 +220,7 @@ func CreateWorktree(repoPath, name string, detach bool) error {
 		}
 	}
 
-	return nil
+	return worktreePath, nil
 }
 
 // FetchOrigin fetches remote refs from origin, pruning deleted branches.

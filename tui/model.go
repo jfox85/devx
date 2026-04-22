@@ -1723,7 +1723,7 @@ func (m *model) getTmuxSessionContent(sessionName string, maxWidth int) string {
 	}
 
 	// Check if tmux session exists
-	checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
+	checkCmd := exec.Command("tmux", "has-session", "-t", "="+sessionName)
 	if err := checkCmd.Run(); err != nil {
 		// Cache the "session doesn't exist" result for 5 seconds to avoid spam
 		noSessionResult := "Session not running"
@@ -2170,7 +2170,7 @@ func (m *model) attachSession(name string) tea.Cmd {
 		}
 
 		// Check if tmux session is already running
-		checkCmd := exec.Command("tmux", "has-session", "-t", name)
+		checkCmd := exec.Command("tmux", "has-session", "-t", "="+name)
 		tmuxExists := checkCmd.Run() == nil
 		m.debugLogger.Printf("Session '%s' tmux status: exists=%t", name, tmuxExists)
 

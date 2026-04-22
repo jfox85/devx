@@ -83,6 +83,6 @@ func runShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid server response: %w", err)
 	}
 
-	fmt.Printf("http://localhost:%d%s\n", port, result["url"])
+	fmt.Printf("sent to browser\n")
 	return nil
 }

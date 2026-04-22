@@ -29,10 +29,6 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
 	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
-	// Session name passed as query param (?name=...) so names containing
-	// slashes (branch-style names) are handled correctly.
-	mux.HandleFunc("POST /api/sessions/flag", handleFlagSession)
-	mux.HandleFunc("DELETE /api/sessions/flag", handleUnflagSession)
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
@@ -201,7 +197,7 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleFlagSession(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleFlagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
@@ -210,14 +206,24 @@ func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	if err := session.SetAttentionFlag(name, "manual"); err != nil {
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		reason = "manual"
+	}
+	if err := session.SetAttentionFlag(name, reason); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	payload, _ := json.Marshal(map[string]any{
+		"session": name,
+		"flagged": true,
+		"reason":  reason,
+	})
+	s.hub.broadcastEvent("flag", string(payload))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
@@ -230,6 +236,37 @@ func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	payload, _ := json.Marshal(map[string]any{
+		"session": name,
+		"flagged": false,
+	})
+	s.hub.broadcastEvent("flag", string(payload))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleFlagNotify broadcasts a flag SSE event without touching metadata.
+// Used by the CLI after it has already written metadata via session.SetAttentionFlag.
+func (s *Server) handleFlagNotify(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	flaggedStr := r.URL.Query().Get("flagged")
+	flagged := flaggedStr != "false"
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		reason = "manual"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"session": name,
+		"flagged": flagged,
+		"reason":  reason,
+	})
+	s.hub.broadcastEvent("flag", string(payload))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -239,7 +276,7 @@ func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 // the browser viewport, not a terminal client that may be attached to the
 // base session.
 func resolveWebSession(name string) string {
-	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
+	if exec.Command("tmux", "has-session", "-t", "="+name+"-web").Run() == nil {
 		return name + "-web"
 	}
 	return name

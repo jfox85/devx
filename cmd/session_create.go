@@ -198,13 +198,11 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create the worktree (or reuse if it exists and matches)
-	if err := session.CreateWorktree(projectPath, name, detachFlag); err != nil {
+	// Create the worktree (or adopt an existing one if the branch is already checked out)
+	worktreePath, err := session.CreateWorktree(projectPath, name, detachFlag)
+	if err != nil {
 		return err
 	}
-
-	// Copy bootstrap files from project root to worktree
-	worktreePath := filepath.Join(projectPath, ".worktrees", name)
 	if err := session.CopyBootstrapFiles(projectPath, worktreePath); err != nil {
 		return fmt.Errorf("failed to copy bootstrap files: %w", err)
 	}

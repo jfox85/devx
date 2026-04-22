@@ -137,15 +137,18 @@ export function isLoggedIn() {
   return !!localStorage.getItem('devx_authed')
 }
 
-// subscribeToEvents opens an SSE connection to /api/events and calls onEvent
-// with the parsed JSON payload whenever a "show" event arrives.
+// subscribeToEvents opens an SSE connection to /api/events and registers
+// handlers for each named event type in the handlers map.
+// Example: subscribeToEvents({ show: fn, flag: fn })
 // Returns a cleanup function that closes the connection.
-export function subscribeToEvents(onEvent) {
+export function subscribeToEvents(handlers) {
   const es = new EventSource('/api/events', { withCredentials: true })
-  es.addEventListener('show', (e) => {
-    try {
-      onEvent(JSON.parse(e.data))
-    } catch { /* ignore malformed events */ }
-  })
+  for (const [event, fn] of Object.entries(handlers)) {
+    es.addEventListener(event, (e) => {
+      try {
+        fn(JSON.parse(e.data))
+      } catch { /* ignore malformed events */ }
+    })
+  }
   return () => es.close()
 }

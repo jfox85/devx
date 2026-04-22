@@ -7,6 +7,8 @@
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
   export let onDeleteSession = null    // called when the currently-active session is deleted
+  export let refreshTrigger = 0        // bump to force an immediate background reload
+  export let flashSession = null       // session name to momentarily highlight
 
   let sessions = []
   let loading = true
@@ -89,6 +91,10 @@
   // alphabetically, sessions in original API order within each project).
   // Use this for keyboard nav so ArrowDown moves to the visually next item.
   $: displayOrdered = groups.flatMap(([, sessions]) => sessions)
+
+  // Immediate background reload when parent bumps refreshTrigger (e.g. on SSE flag event)
+  let _prevTrigger = refreshTrigger
+  $: if (refreshTrigger !== _prevTrigger) { _prevTrigger = refreshTrigger; load({ background: true }) }
 
   // Reset keyboard selection when search changes
   $: { searchQuery; selectedIndex = 0 }
@@ -252,14 +258,18 @@
 
             <!-- Session row: flex container so name and actions sit side by side -->
             {@const kbHighlight = showKbCursor && isKbSelected}
-            <div class="
-              group flex items-stretch border-l-2 transition-colors
-              {isActive
-                ? 'bg-cyan-950/30 border-cyan-500'
-                : kbHighlight
-                  ? 'bg-gray-800/30 border-gray-600'
-                  : 'hover:bg-[#0d1117] border-transparent'}
-            ">
+            {@const isFlashing = session.name === flashSession}
+            <div
+              class="
+                group flex items-stretch border-l-2 transition-colors
+                {isActive
+                  ? 'bg-cyan-950/30 border-cyan-500'
+                  : kbHighlight
+                    ? 'bg-gray-800/30 border-gray-600'
+                    : 'hover:bg-[#0d1117] border-transparent'}
+              "
+              class:flag-flash={isFlashing}
+            >
               <!-- Name (main tap target) -->
               <button
                 on:click={() => onOpenTerminal(session)}
@@ -355,3 +365,14 @@
 {#if showNewSession}
   <NewSessionModal on:close={() => showNewSession = false} on:created={load} />
 {/if}
+
+<style>
+  @keyframes flag-flash {
+    0%   { background-color: transparent; }
+    8%   { background-color: rgba(234, 179, 8, 0.22); } /* amber burst */
+    100% { background-color: transparent; }
+  }
+  .flag-flash {
+    animation: flag-flash 3s ease-out forwards;
+  }
+</style>

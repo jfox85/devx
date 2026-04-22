@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jfox85/devx/cloudflare"
 	"github.com/jfox85/devx/config"
@@ -10,6 +11,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+// cloudflareStopMarkerPath returns the path of the file written by
+// "devx cloudflare stop" to signal an intentional shutdown. Its presence
+// prevents ensureCloudflaredRunning from auto-restarting the daemon.
+func cloudflareStopMarkerPath() string {
+	return strings.TrimSuffix(cloudflare.DefaultPIDPath(), ".pid") + ".stopped"
+}
 
 var cloudflareCmd = &cobra.Command{
 	Use:   "cloudflare",
@@ -147,6 +155,8 @@ func runCloudflareStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Clear any intentional-stop marker so TUI auto-restart works again.
+	_ = os.Remove(cloudflareStopMarkerPath())
 	fmt.Printf("cloudflared started (pid %d)\n", pid)
 	fmt.Printf("logs: %s\n", pidPath[:len(pidPath)-4]+".log")
 	return nil
@@ -158,8 +168,41 @@ func runCloudflareStop(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Write a marker so ensureCloudflaredRunning skips auto-restart at TUI
+	// launch. Cleared by "devx cloudflare start".
+	_ = os.WriteFile(cloudflareStopMarkerPath(), nil, 0600)
 	fmt.Printf("cloudflared stopped (pid %d)\n", pid)
 	return nil
+}
+
+// ensureCloudflaredRunning starts cloudflared if it is configured but not
+// currently running. Intended to be called in a background goroutine at TUI
+// launch so tunnels resume automatically after a reboot.
+//
+// It respects an intentional stop: if "devx cloudflare stop" was run, a marker
+// file is present and this function returns without starting the daemon.
+func ensureCloudflaredRunning() {
+	tunnelID := viper.GetString("cloudflare_tunnel_id")
+	domain := viper.GetString("external_domain")
+	if tunnelID == "" || domain == "" {
+		return
+	}
+	// Skip auto-restart when the user explicitly stopped the daemon.
+	if _, err := os.Stat(cloudflareStopMarkerPath()); err == nil {
+		return
+	}
+	pidPath := cloudflare.DefaultPIDPath()
+	if pid, err := cloudflare.ReadPID(pidPath); err == nil && cloudflare.IsRunning(pid) {
+		return // already running
+	}
+	// Sync config first so ingress rules reflect current sessions, then start.
+	if err := syncAllCloudflareRoutes(); err != nil {
+		fmt.Fprintf(os.Stderr, "cloudflare: failed to sync routes: %v\n", err)
+	}
+	cfgPath := viper.GetString("cloudflare_tunnel_config")
+	if _, err := cloudflare.StartDaemon(cfgPath, tunnelID, pidPath); err != nil {
+		fmt.Fprintf(os.Stderr, "cloudflare: failed to start daemon: %v\n", err)
+	}
 }
 
 func runCloudflareStatus(cmd *cobra.Command, args []string) error {
