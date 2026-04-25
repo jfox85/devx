@@ -109,7 +109,7 @@ Display names are capped at 100 characters (matching session name limit). All us
 ### Keybindings
 
 - `r` — Rename selected session. Opens inline text input. Pre-fills current display name if one exists.
-- `C` (shift-c) — Cycle color for selected session. Each press advances to the next palette color, immediately updating the dot. (Lowercase `c` is already bound to "create new".)
+- `K` (shift-k) — Cycle color for selected session. Each press advances to the next palette color, immediately updating the dot. (Lowercase `c` is already bound to "create new".)
 
 ---
 

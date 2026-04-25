@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -38,6 +39,9 @@ func runShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("web_secret_token is not set in config; devx web is not configured")
 	}
 	port := viper.GetInt("web_port")
+	if port == 0 {
+		return fmt.Errorf("web_port is not set; devx web is not configured")
+	}
 
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -64,7 +68,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		return fmt.Errorf("web server not reachable (is devx web running?): %w", err)
 	}

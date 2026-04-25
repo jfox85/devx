@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jfox85/devx/session"
 )
@@ -208,10 +209,14 @@ func logWebError(format string, args ...any) {
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(home+"/.devx/web.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	dir := home + "/.devx"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(dir+"/web.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "web: "+format+"\n", args...)
+	fmt.Fprintf(f, time.Now().Format(time.RFC3339)+" web: "+format+"\n", args...)
 }

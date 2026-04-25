@@ -789,10 +789,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					newColor := session.Palette[nextIdx]
 					store, err := session.LoadSessions()
-					if err == nil {
-						_ = store.UpdateSession(sess.name, func(s *session.Session) {
-							s.Color = newColor
-						})
+					if err != nil {
+						m.statusMsg = fmt.Sprintf("color: load failed: %v", err)
+					} else if err := store.UpdateSession(sess.name, func(s *session.Session) {
+						s.Color = newColor
+					}); err != nil {
+						m.statusMsg = fmt.Sprintf("color: save failed: %v", err)
+					} else {
 						m.sessions[m.cursor].color = newColor
 					}
 				}
@@ -1023,19 +1026,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case key.Matches(msg, m.keys.Enter):
 				newName := m.textInput.Value()
-				if session.IsValidDisplayName(newName) {
-					sess := m.sessions[m.cursor]
-					displayName := newName
-					if displayName == sess.name {
-						displayName = ""
-					}
-					store, err := session.LoadSessions()
-					if err == nil {
-						_ = store.UpdateSession(sess.name, func(s *session.Session) {
-							s.DisplayName = displayName
-						})
-						m.sessions[m.cursor].displayName = displayName
-					}
+				if !session.IsValidDisplayName(newName) {
+					m.statusMsg = fmt.Sprintf("invalid name (max %d chars, no control characters)", session.MaxDisplayNameLen)
+					return m, nil
+				}
+				sess := m.sessions[m.cursor]
+				displayName := newName
+				if displayName == sess.name {
+					displayName = ""
+				}
+				store, err := session.LoadSessions()
+				if err != nil {
+					m.statusMsg = fmt.Sprintf("rename: load failed: %v", err)
+				} else if err := store.UpdateSession(sess.name, func(s *session.Session) {
+					s.DisplayName = displayName
+				}); err != nil {
+					m.statusMsg = fmt.Sprintf("rename: save failed: %v", err)
+				} else {
+					m.sessions[m.cursor].displayName = displayName
 				}
 				m.state = stateList
 				m.textInput.Blur()

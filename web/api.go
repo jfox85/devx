@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
+	mux.HandleFunc("GET /api/pane-content", handlePaneContent)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
@@ -312,7 +314,7 @@ func (s *Server) handleFlagNotify(w http.ResponseWriter, r *http.Request) {
 	flaggedStr := r.URL.Query().Get("flagged")
 	flagged := flaggedStr != "false"
 	reason := r.URL.Query().Get("reason")
-	if reason == "" {
+	if reason == "" && flagged {
 		reason = "manual"
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -351,6 +353,28 @@ type windowInfo struct {
 	Index  int    `json:"index"`
 	Name   string `json:"name"`
 	Active bool   `json:"active"`
+}
+
+type paneContentResponse struct {
+	Content string `json:"content"`
+	Target  string `json:"target"`
+}
+
+var ansiEscapePattern = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])`)
+
+func stripANSI(s string) string {
+	return ansiEscapePattern.ReplaceAllString(s, "")
+}
+
+func paneCaptureTarget(name, pane string) (string, error) {
+	target := resolveWebSession(name)
+	if pane == "" {
+		return target, nil
+	}
+	if _, err := strconv.Atoi(pane); err != nil {
+		return "", fmt.Errorf("pane must be a numeric index")
+	}
+	return target + ":." + pane, nil
 }
 
 // handleListWindows returns the tmux windows for the session given by ?name=.
@@ -398,6 +422,37 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		windows = []windowInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"windows": windows})
+}
+
+// handlePaneContent captures recent scrollback from the active pane in the
+// web-facing tmux session. Optional ?pane=<index> selects a specific pane in
+// the active window; otherwise tmux uses the active pane for the target.
+func handlePaneContent(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+
+	target, err := paneCaptureTarget(name, r.URL.Query().Get("pane"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-5000").Output()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, paneContentResponse{
+		Content: strings.TrimRight(stripANSI(string(out)), "\n"),
+		Target:  target,
+	})
 }
 
 // handleListProjects returns the sorted list of project aliases from the registry.
@@ -671,7 +726,7 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 func handleServeUpload(w http.ResponseWriter, r *http.Request) {
 	filename := strings.TrimPrefix(r.URL.Path, "/uploads/")
 	// Reject empty names and any path traversal attempts.
-	if filename == "" || strings.ContainsAny(filename, "/\\") {
+	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\") {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}

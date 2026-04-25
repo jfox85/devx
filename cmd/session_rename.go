@@ -54,7 +54,7 @@ func runSessionRename(cmd *cobra.Command, args []string) error {
 
 	displayName := args[1]
 	if !session.IsValidDisplayName(displayName) {
-		return fmt.Errorf("display name too long (max %d characters)", session.MaxDisplayNameLen)
+		return fmt.Errorf("invalid display name (max %d characters, no control characters)", session.MaxDisplayNameLen)
 	}
 
 	if err := store.UpdateSession(sessionName, func(s *session.Session) {

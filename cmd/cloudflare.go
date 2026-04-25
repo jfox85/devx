@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jfox85/devx/cloudflare"
 	"github.com/jfox85/devx/config"
@@ -197,11 +198,11 @@ func ensureCloudflaredRunning() {
 	}
 	// Sync config first so ingress rules reflect current sessions, then start.
 	if err := syncAllCloudflareRoutes(); err != nil {
-		fmt.Fprintf(os.Stderr, "cloudflare: failed to sync routes: %v\n", err)
+		logCloudflareError("failed to sync routes: %v", err)
 	}
 	cfgPath := viper.GetString("cloudflare_tunnel_config")
 	if _, err := cloudflare.StartDaemon(cfgPath, tunnelID, pidPath); err != nil {
-		fmt.Fprintf(os.Stderr, "cloudflare: failed to start daemon: %v\n", err)
+		logCloudflareError("failed to start daemon: %v", err)
 	}
 }
 
@@ -219,4 +220,24 @@ func runCloudflareStatus(cmd *cobra.Command, args []string) error {
 		_ = os.Remove(pidPath)
 	}
 	return nil
+}
+
+// logCloudflareError appends a timestamped error line to ~/.devx/cloudflare.log.
+// Used by background goroutines (e.g. ensureCloudflaredRunning) where writing to
+// stderr would corrupt the TUI display.
+func logCloudflareError(format string, args ...any) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dir := home + "/.devx"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(dir+"/cloudflare.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, time.Now().Format(time.RFC3339)+" cloudflare: "+format+"\n", args...)
 }

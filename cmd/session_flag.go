@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
@@ -92,7 +93,7 @@ func notifyWebServer(name string, flagged bool, reason string) {
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
 	if err != nil {
 		return
 	}

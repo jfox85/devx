@@ -1,6 +1,9 @@
 package session
 
-import "unicode"
+import (
+	"unicode"
+	"unicode/utf8"
+)
 
 // MaxDisplayNameLen is the maximum length of a session display name.
 const MaxDisplayNameLen = 100
@@ -26,13 +29,10 @@ func (s *Session) EffectiveColor() string {
 // Control characters (including null bytes, ANSI escapes, newlines) are rejected
 // to prevent terminal escape injection.
 func IsValidDisplayName(dn string) bool {
-	if len(dn) > MaxDisplayNameLen {
+	if utf8.RuneCountInString(dn) > MaxDisplayNameLen {
 		return false
 	}
 	for _, r := range dn {
-		if r == unicode.ReplacementChar {
-			continue // allow valid UTF-8 replacement chars
-		}
 		if unicode.IsControl(r) {
 			return false
 		}
