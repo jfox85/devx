@@ -37,6 +37,8 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
+	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
+	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
 	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
@@ -89,6 +91,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 // sessionResponse is the JSON shape returned for each session.
 type sessionResponse struct {
 	Name           string            `json:"name"`
+	DisplayName    string            `json:"display_name,omitempty"`
+	Color          string            `json:"color"`
 	Branch         string            `json:"branch"`
 	ProjectAlias   string            `json:"project_alias,omitempty"`
 	Ports          map[string]int    `json:"ports"`
@@ -108,8 +112,14 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 			}
 		}
 	}
+	color := sess.Color
+	if color == "" {
+		color = session.AutoColor(sess.Name)
+	}
 	return sessionResponse{
 		Name:           sess.Name,
+		DisplayName:    sess.DisplayName,
+		Color:          color,
 		Branch:         sess.Branch,
 		ProjectAlias:   sess.ProjectAlias,
 		Ports:          sess.Ports,
@@ -191,6 +201,46 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	// connected, so Scanln blocks forever without it.
 	// Use -- to separate flags from the positional name argument.
 	if err := runSelf("session", "rm", "--force", "--", name); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	displayName := r.URL.Query().Get("display_name")
+	args := []string{"session", "rename"}
+	if displayName == "" {
+		args = append(args, "--clear", "--", name)
+	} else {
+		args = append(args, "--", name, displayName)
+	}
+	if err := runSelf(args...); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleColorSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	color := r.URL.Query().Get("color")
+	if name == "" || color == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and color query params required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	if err := runSelf("session", "color", "--", name, color); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
