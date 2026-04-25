@@ -234,18 +234,18 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
-	// Set color (auto-assign if not specified) and display name
-	color := createColorFlag
-	if color == "" {
-		color = session.AutoColor(name)
-	}
-	if err := store.UpdateSession(name, func(s *session.Session) {
-		s.Color = color
-		if createDisplayNameFlag != "" {
-			s.DisplayName = createDisplayNameFlag
+	// Override color and display name if flags were provided
+	if createColorFlag != "" || createDisplayNameFlag != "" {
+		if err := store.UpdateSession(name, func(s *session.Session) {
+			if createColorFlag != "" {
+				s.Color = createColorFlag
+			}
+			if createDisplayNameFlag != "" {
+				s.DisplayName = createDisplayNameFlag
+			}
+		}); err != nil {
+			fmt.Printf("Warning: failed to set color/display-name: %v\n", err)
 		}
-	}); err != nil {
-		fmt.Printf("Warning: failed to set color/display-name: %v\n", err)
 	}
 
 	// Build hostname map for environment variables

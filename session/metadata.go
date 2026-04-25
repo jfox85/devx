@@ -116,6 +116,9 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 		return fmt.Errorf("session %s already exists", name)
 	}
 
+	// Auto-assign color if not already set by caller
+	color := AutoColor(name)
+
 	now := time.Now()
 	s.Sessions[name] = &Session{
 		Name:         name,
@@ -125,6 +128,7 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 		Path:         path,
 		Ports:        ports,
 		Routes:       make(map[string]string),
+		Color:        color,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

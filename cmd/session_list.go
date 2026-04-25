@@ -58,14 +58,10 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	// Collect session statuses
 	var statuses []SessionStatus
 	for name, sess := range store.Sessions {
-		color := sess.Color
-		if color == "" {
-			color = session.AutoColor(name)
-		}
 		status := SessionStatus{
 			Name:        name,
 			DisplayName: sess.DisplayName,
-			Color:       color,
+			Color:       sess.EffectiveColor(),
 			Branch:      sess.Branch,
 			Ports:       sess.Ports,
 			Routes:      sess.Routes,
@@ -183,13 +179,6 @@ func getCaddyRoutes() map[string]bool {
 	return routes
 }
 
-var ansiColors = map[string]string{
-	"red": "\033[31m", "blue": "\033[34m", "green": "\033[32m", "yellow": "\033[33m",
-	"purple": "\033[35m", "orange": "\033[38;5;208m", "pink": "\033[38;5;213m", "cyan": "\033[36m",
-}
-
-const ansiReset = "\033[0m"
-
 func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
@@ -254,8 +243,8 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 		statusStr := strings.Join(statusParts, ",")
 
 		dot := "●"
-		if c, ok := ansiColors[status.Color]; ok {
-			dot = c + "●" + ansiReset
+		if c, ok := session.AnsiColors[status.Color]; ok {
+			dot = c + "●" + session.AnsiReset
 		}
 
 		nameDisplay := status.Name

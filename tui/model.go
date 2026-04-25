@@ -475,10 +475,7 @@ func (m *model) loadSessions() tea.Msg {
 		// Defer filling git stats until Update (avoid concurrent map access)
 		additions, deletions := 0, 0
 
-		color := sess.Color
-		if color == "" {
-			color = session.AutoColor(name)
-		}
+		color := sess.EffectiveColor()
 
 		sessions = append(sessions, sessionItem{
 			name:            name,

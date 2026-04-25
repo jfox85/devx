@@ -27,7 +27,7 @@ func TestLabel(t *testing.T) {
 
 func TestIsValidDisplayName(t *testing.T) {
 	// Valid display names
-	valid := []string{"My Feature", "a", "Web UI Feature", strings.Repeat("x", 100)}
+	valid := []string{"My Feature", "a", "Web UI Feature", strings.Repeat("x", 100), "café", "日本語"}
 	for _, dn := range valid {
 		if !IsValidDisplayName(dn) {
 			t.Errorf("expected %q to be valid display name", dn)
@@ -42,5 +42,40 @@ func TestIsValidDisplayName(t *testing.T) {
 	// Empty is valid (means "clear")
 	if !IsValidDisplayName("") {
 		t.Error("expected empty display name to be valid")
+	}
+
+	// Invalid: control characters
+	controlChars := []string{
+		"\x00null",           // null byte
+		"\x1b[31mred\x1b[0m", // ANSI escape
+		"line\nbreak",        // newline
+		"line\rreturn",       // carriage return
+		"\ttabbed",           // tab
+		"\x07bell",           // bell
+	}
+	for _, dn := range controlChars {
+		if IsValidDisplayName(dn) {
+			t.Errorf("expected display name with control chars to be invalid: %q", dn)
+		}
+	}
+}
+
+func TestEffectiveColor(t *testing.T) {
+	// Explicit valid color is returned as-is
+	s := &Session{Name: "test", Color: "blue"}
+	if got := s.EffectiveColor(); got != "blue" {
+		t.Errorf("expected blue, got %q", got)
+	}
+
+	// Empty color falls back to AutoColor
+	s2 := &Session{Name: "test", Color: ""}
+	if got := s2.EffectiveColor(); !IsValidColor(got) {
+		t.Errorf("expected valid auto-color, got %q", got)
+	}
+
+	// Invalid stored color falls back to AutoColor
+	s3 := &Session{Name: "test", Color: "invalid-color"}
+	if got := s3.EffectiveColor(); !IsValidColor(got) {
+		t.Errorf("expected valid auto-color for invalid stored color, got %q", got)
 	}
 }

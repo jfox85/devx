@@ -112,14 +112,10 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 			}
 		}
 	}
-	color := sess.Color
-	if color == "" {
-		color = session.AutoColor(sess.Name)
-	}
 	return sessionResponse{
 		Name:           sess.Name,
 		DisplayName:    sess.DisplayName,
-		Color:          color,
+		Color:          sess.EffectiveColor(),
 		Branch:         sess.Branch,
 		ProjectAlias:   sess.ProjectAlias,
 		Ports:          sess.Ports,
@@ -217,6 +213,10 @@ func handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	displayName := r.URL.Query().Get("display_name")
+	if displayName != "" && !session.IsValidDisplayName(displayName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid display name"})
+		return
+	}
 	args := []string{"session", "rename"}
 	if displayName == "" {
 		args = append(args, "--clear", "--", name)
@@ -238,6 +238,10 @@ func handleColorSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !requireValidSession(w, name) {
+		return
+	}
+	if !session.IsValidColor(color) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid color"})
 		return
 	}
 	if err := runSelf("session", "color", "--", name, color); err != nil {

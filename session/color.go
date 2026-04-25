@@ -2,6 +2,15 @@ package session
 
 import "hash/fnv"
 
+// AnsiColors maps palette color names to ANSI escape sequences.
+var AnsiColors = map[string]string{
+	"red": "\033[31m", "blue": "\033[34m", "green": "\033[32m", "yellow": "\033[33m",
+	"purple": "\033[35m", "orange": "\033[38;5;208m", "pink": "\033[38;5;213m", "cyan": "\033[36m",
+}
+
+// AnsiReset is the ANSI escape sequence to reset terminal colors.
+const AnsiReset = "\033[0m"
+
 // Palette is the set of valid session colors, matching Claude Code's palette.
 var Palette = []string{"red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"}
 
