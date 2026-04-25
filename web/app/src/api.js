@@ -60,6 +60,27 @@ export async function unflagSession(name) {
   if (!res.ok) throw new Error(`Failed to unflag session: ${res.status}`)
 }
 
+export async function renameSession(name, displayName) {
+  const params = new URLSearchParams({ name })
+  if (displayName != null) params.set('display_name', displayName)
+  const res = await apiFetch('/sessions/rename?' + params.toString(), { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Rename failed')
+  }
+}
+
+export async function colorSession(name, color) {
+  const res = await apiFetch(
+    '/sessions/color?name=' + encodeURIComponent(name) + '&color=' + encodeURIComponent(color),
+    { method: 'POST' }
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Color change failed')
+  }
+}
+
 export async function login(token) {
   const res = await fetch(base + '/login', {
     method: 'POST',
