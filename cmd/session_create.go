@@ -15,11 +15,13 @@ import (
 )
 
 var (
-	fePortFlag  int
-	apiPortFlag int
-	noTmuxFlag  bool
-	projectFlag string
-	reuseFlag   bool
+	fePortFlag            int
+	apiPortFlag           int
+	noTmuxFlag            bool
+	projectFlag           string
+	reuseFlag             bool
+	createColorFlag       string
+	createDisplayNameFlag string
 )
 
 var sessionCreateCmd = &cobra.Command{
@@ -38,6 +40,8 @@ func init() {
 	sessionCreateCmd.Flags().IntVar(&apiPortFlag, "api-port", 0, "API port (auto-allocated if not specified)")
 	sessionCreateCmd.Flags().BoolVar(&noTmuxFlag, "no-tmux", false, "Skip launching tmux session")
 	sessionCreateCmd.Flags().StringVarP(&projectFlag, "project", "p", "", "Project alias (defaults to current directory's project)")
+	sessionCreateCmd.Flags().StringVar(&createColorFlag, "color", "", "Session color (auto-assigned if not specified)")
+	sessionCreateCmd.Flags().StringVar(&createDisplayNameFlag, "display-name", "", "Display name for the session")
 }
 
 func runSessionCreate(cmd *cobra.Command, args []string) error {
@@ -48,6 +52,14 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	// path components under .worktrees/.
 	if !session.IsValidSessionName(name) {
 		return fmt.Errorf("invalid session name %q: must start with a letter or digit, contain only letters/digits/dots/underscores/hyphens/slashes, and must not contain '..' or empty path segments", name)
+	}
+
+	// Validate --color and --display-name flags early (before side effects)
+	if createColorFlag != "" && !session.IsValidColor(createColorFlag) {
+		return fmt.Errorf("invalid color %q. Valid colors: %s", createColorFlag, strings.Join(session.Palette, ", "))
+	}
+	if createDisplayNameFlag != "" && !session.IsValidDisplayName(createDisplayNameFlag) {
+		return fmt.Errorf("display name too long (max %d characters)", session.MaxDisplayNameLen)
 	}
 
 	// Load project registry
@@ -220,6 +232,20 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		// If we fail to save metadata, we should clean up the worktree
 		// For now, we'll just return the error
 		return fmt.Errorf("failed to save session metadata: %w", err)
+	}
+
+	// Set color (auto-assign if not specified) and display name
+	color := createColorFlag
+	if color == "" {
+		color = session.AutoColor(name)
+	}
+	if err := store.UpdateSession(name, func(s *session.Session) {
+		s.Color = color
+		if createDisplayNameFlag != "" {
+			s.DisplayName = createDisplayNameFlag
+		}
+	}); err != nil {
+		fmt.Printf("Warning: failed to set color/display-name: %v\n", err)
 	}
 
 	// Build hostname map for environment variables
