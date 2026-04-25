@@ -21,7 +21,7 @@ windows:
       - cd {{.Path}}
       - export SESSION_NAME={{.Name}}
     panes:
-      - claude
+      - clauded -n "{{.Name}}"
 
   - window_name: repo-root
     layout: tiled
