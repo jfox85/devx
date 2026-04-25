@@ -25,28 +25,29 @@ DisplayName string `json:"display_name,omitempty"`
 Color       string `json:"color,omitempty"`
 ```
 
-### Color Palette
+### Color Palette & Validation
 
 8 colors (matching Claude Code's set): `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan`
 
-### Auto-Assignment
-
-When a session is created without an explicit color, assign one by hashing the session name:
+Color logic lives in a new file `session/color.go`:
 
 ```go
+var Palette = []string{"red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"}
+
+func IsValidColor(c string) bool { /* check against Palette */ }
+
 func AutoColor(name string) string {
-    palette := []string{"red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"}
     h := fnv.New32a()
     h.Write([]byte(name))
-    return palette[h.Sum32()%uint32(len(palette))]
+    return Palette[h.Sum32()%uint32(len(Palette))]
 }
 ```
 
-This is deterministic (same name always gets the same color) and requires no state tracking.
+`IsValidColor` is the single source of truth used by CLI commands, web API handlers, and TUI input. `AutoColor` is deterministic (same name always gets the same color) and requires no state tracking.
 
-### Display Name Resolution
+### Display Name Resolution & Validation
 
-A helper method on `Session`:
+A helper method on `Session` (in `session/display.go`):
 
 ```go
 func (s *Session) Label() string {
@@ -57,7 +58,7 @@ func (s *Session) Label() string {
 }
 ```
 
-All user-facing display points call `Label()` instead of accessing `Name` directly.
+Display names are capped at 100 characters (matching session name limit). All user-facing display points call `Label()` instead of accessing `Name` directly.
 
 ---
 
@@ -66,13 +67,16 @@ All user-facing display points call `Label()` instead of accessing `Name` direct
 ### New: `devx session rename <name> <display-name>`
 
 - Sets the display name for an existing session
-- Pass empty string `""` to clear back to the real name
+- `--clear` flag to remove display name (consistent with `session flag --clear` pattern)
+- Fires SSE notification to web server (via `notifyWebServer`) so connected browsers update immediately
 - Example: `devx session rename jf-add-web "Web UI Feature"`
+- Example: `devx session rename jf-add-web --clear`
 
 ### New: `devx session color <name> <color>`
 
 - Sets the color override for a session
-- Validates against the 8-color palette
+- Validates against the palette via shared `session.IsValidColor()`
+- Fires SSE notification to web server so connected browsers update immediately
 - Example: `devx session color jf-add-web blue`
 
 ### Modified: `devx session create`
@@ -105,7 +109,7 @@ All user-facing display points call `Label()` instead of accessing `Name` direct
 ### Keybindings
 
 - `r` — Rename selected session. Opens inline text input. Pre-fills current display name if one exists.
-- `c` — Cycle color for selected session. Each press advances to the next palette color, immediately updating the dot.
+- `C` (shift-c) — Cycle color for selected session. Each press advances to the next palette color, immediately updating the dot. (Lowercase `c` is already bound to "create new".)
 
 ---
 
@@ -126,10 +130,12 @@ DisplayName string `json:"display_name,omitempty"`
 Color       string `json:"color"`
 ```
 
-Two new endpoints:
+Two new endpoints (both delegate to CLI via `runSelf()`, consistent with existing create/delete/flag pattern):
 
-- `POST /api/sessions/rename?name=<session>&display_name=<new-label>` — set or clear display name
-- `POST /api/sessions/color?name=<session>&color=<color>` — set color override
+- `POST /api/sessions/rename?name=<session>&display_name=<new-label>` — calls `runSelf("session", "rename", ...)`
+- `POST /api/sessions/color?name=<session>&color=<color>` — calls `runSelf("session", "color", ...)`
+
+Web create modal: color/display-name support in the create form is out of scope for this spec. The auto-assigned color from the CLI is sufficient initially.
 
 ### Web UI Interactions
 
@@ -160,13 +166,15 @@ This sets the Claude Code session name to match the devx session name at startup
 
 | File | Change |
 |------|--------|
-| `session/metadata.go` | Add `DisplayName`, `Color` fields; add `Label()`, `AutoColor()` |
+| `session/metadata.go` | Add `DisplayName`, `Color` fields to `Session` struct |
+| `session/color.go` | New file: `Palette`, `IsValidColor()`, `AutoColor()` |
+| `session/display.go` | New file: `Label()` method |
 | `cmd/session_create.go` | Auto-assign color; add `--color`, `--display-name` flags |
-| `cmd/session_list.go` | Show colored dot and display name |
+| `cmd/session_list.go` | Show colored dot and display name; update `SessionStatus` struct |
 | `cmd/session_rename.go` | New command (set display name) |
 | `cmd/session_color.go` | New command (set/override color) |
-| `tui/model.go` | Colored dots, display name rendering, `r`/`c` keybindings |
+| `tui/model.go` | Colored dots, display name rendering, keybindings; update `sessionItem` struct |
 | `tui/styles.go` | Color-to-lipgloss mapping |
-| `web/api.go` | New fields in `sessionResponse`; new rename/color endpoints |
+| `web/api.go` | New fields in `sessionResponse`; update `buildSessionResponse()`; new rename/color endpoints (via `runSelf`) |
 | `web/app/src/lib/SessionList.svelte` | Colored dots, display name, inline edit, color cycling |
 | `.devx/session.yaml.tmpl` | `clauded -n "{{.Name}}"` |
