@@ -25,6 +25,8 @@ type Session struct {
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
 	AttentionTime   time.Time         `json:"attention_time,omitempty"`
+	DisplayName     string            `json:"display_name,omitempty"`
+	Color           string            `json:"color,omitempty"`
 	LastAttached    time.Time         `json:"last_attached,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
