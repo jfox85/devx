@@ -38,8 +38,10 @@ type sessionItem struct {
 	attentionFlag   bool
 	attentionReason string
 	attentionTime   time.Time
-	additions       int // Git diff additions count
-	deletions       int // Git diff deletions count
+	additions       int    // Git diff additions count
+	deletions       int    // Git diff deletions count
+	displayName     string // raw DisplayName from metadata (empty if not set)
+	color           string
 }
 
 type projectItem struct {
@@ -65,6 +67,7 @@ const (
 	stateHostnames
 	stateProjectManagement
 	stateProjectAdd
+	stateRenaming
 )
 
 type model struct {
@@ -277,6 +280,8 @@ type keyMap struct {
 	Help        key.Binding
 	Back        key.Binding
 	Search      key.Binding
+	Rename      key.Binding
+	ColorCycle  key.Binding
 }
 
 var keys = keyMap{
@@ -343,6 +348,14 @@ var keys = keyMap{
 	Search: key.NewBinding(
 		key.WithKeys("/"),
 		key.WithHelp("/", "search"),
+	),
+	Rename: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "rename"),
+	),
+	ColorCycle: key.NewBinding(
+		key.WithKeys("K"),
+		key.WithHelp("K", "cycle color"),
 	),
 }
 
@@ -462,6 +475,11 @@ func (m *model) loadSessions() tea.Msg {
 		// Defer filling git stats until Update (avoid concurrent map access)
 		additions, deletions := 0, 0
 
+		color := sess.Color
+		if color == "" {
+			color = session.AutoColor(name)
+		}
+
 		sessions = append(sessions, sessionItem{
 			name:            name,
 			projectAlias:    sess.ProjectAlias,
@@ -475,6 +493,8 @@ func (m *model) loadSessions() tea.Msg {
 			attentionTime:   sess.AttentionTime,
 			additions:       additions,
 			deletions:       deletions,
+			displayName:     sess.DisplayName,
+			color:           color,
 		})
 	}
 
@@ -748,6 +768,38 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
 
+			case key.Matches(msg, m.keys.Rename):
+				if len(m.sessions) > 0 {
+					sess := m.sessions[m.cursor]
+					m.state = stateRenaming
+					prefill := sess.displayName
+					if prefill == "" {
+						prefill = sess.name
+					}
+					m.textInput.SetValue(prefill)
+					m.textInput.Focus()
+				}
+
+			case key.Matches(msg, m.keys.ColorCycle):
+				if len(m.sessions) > 0 {
+					sess := m.sessions[m.cursor]
+					nextIdx := 0
+					for i, c := range session.Palette {
+						if c == sess.color {
+							nextIdx = (i + 1) % len(session.Palette)
+							break
+						}
+					}
+					newColor := session.Palette[nextIdx]
+					store, err := session.LoadSessions()
+					if err == nil {
+						_ = store.UpdateSession(sess.name, func(s *session.Session) {
+							s.Color = newColor
+						})
+						m.sessions[m.cursor].color = newColor
+					}
+				}
+
 			// Handle number keys 1-9 for quick navigation (MRU slot-based)
 			case msg.String() >= "1" && msg.String() <= "9":
 				slot := int(msg.String()[0] - '0')
@@ -964,6 +1016,35 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.textInput, cmd = m.textInput.Update(msg)
 				return m, cmd
+			}
+
+		case stateRenaming:
+			switch {
+			case key.Matches(msg, m.keys.Back):
+				m.state = stateList
+				m.textInput.Blur()
+
+			case key.Matches(msg, m.keys.Enter):
+				newName := m.textInput.Value()
+				if session.IsValidDisplayName(newName) {
+					sess := m.sessions[m.cursor]
+					displayName := newName
+					if displayName == sess.name {
+						displayName = ""
+					}
+					store, err := session.LoadSessions()
+					if err == nil {
+						_ = store.UpdateSession(sess.name, func(s *session.Session) {
+							s.DisplayName = displayName
+						})
+						m.sessions[m.cursor].displayName = displayName
+					}
+				}
+				m.state = stateList
+				m.textInput.Blur()
+
+			default:
+				m.textInput, _ = m.textInput.Update(msg)
 			}
 		}
 
@@ -1238,6 +1319,8 @@ func (m *model) View() string {
 		content = m.projectManagementView()
 	case stateProjectAdd:
 		content = m.projectAddView()
+	case stateRenaming:
+		content = m.renameView()
 	}
 
 	// Create footer with commands
@@ -1250,7 +1333,7 @@ func (m *model) View() string {
 			if m.filterActive {
 				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: jump to session • esc: cancel search")
 			} else {
-				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump (MRU) • /: search • enter: attach • c: create • d: delete • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
+				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump (MRU) • /: search • enter: attach • c: create • d: delete • r: rename • K: color • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
 			}
 		case stateCreating:
 			footer = footerStyle.Width(m.width).Render("enter: create session • esc: cancel")
@@ -1264,6 +1347,8 @@ func (m *model) View() string {
 			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • c: add project • d: remove project • C: init Claude hooks • esc: back • q: quit")
 		case stateProjectAdd:
 			footer = footerStyle.Width(m.width).Render("enter: add project • esc: cancel")
+		case stateRenaming:
+			footer = footerStyle.Width(m.width).Render("enter: save rename • esc: cancel")
 		}
 	}
 
@@ -1416,7 +1501,20 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			indicator = "🔔"
 		}
 
-		line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, sess.name)
+		// Colored dot
+		dotStyle, ok := SessionColorStyles[sess.color]
+		if !ok {
+			dotStyle = dimStyle
+		}
+		dot := dotStyle.Render("●")
+
+		// Show display name if set, with real name dimmed
+		label := sess.name
+		if sess.displayName != "" {
+			label = sess.displayName + " " + dimStyle.Render("("+sess.name+")")
+		}
+
+		line := fmt.Sprintf("%s%s%s %s %s", cursor, numberPrefix, indicator, dot, label)
 		if isSelected {
 			line = selectedStyle.Render(line)
 		}
@@ -2043,6 +2141,16 @@ func (m *model) createView() string {
 	return headerStyle.Render("Create New Session") + "\n\n" +
 		"  Session name: " + m.textInput.View() + "\n\n" +
 		dimStyle.Render("  Press Enter to create, Esc to cancel")
+}
+
+func (m *model) renameView() string {
+	sessName := ""
+	if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
+		sessName = m.sessions[m.cursor].name
+	}
+	return headerStyle.Render("Rename: "+sessName) + "\n\n" +
+		"  Display name: " + m.textInput.View() + "\n\n" +
+		dimStyle.Render("  Press Enter to save, Esc to cancel")
 }
 
 func (m *model) confirmView() string {

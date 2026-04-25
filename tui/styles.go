@@ -50,3 +50,15 @@ var (
 	deletionsStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("1")) // Red
 )
+
+// SessionColorStyles maps session color names to lipgloss styles for the dot indicator.
+var SessionColorStyles = map[string]lipgloss.Style{
+	"red":    lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+	"blue":   lipgloss.NewStyle().Foreground(lipgloss.Color("4")),
+	"green":  lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+	"yellow": lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+	"purple": lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+	"orange": lipgloss.NewStyle().Foreground(lipgloss.Color("208")),
+	"pink":   lipgloss.NewStyle().Foreground(lipgloss.Color("213")),
+	"cyan":   lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
+}
