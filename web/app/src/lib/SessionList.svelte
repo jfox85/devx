@@ -1,12 +1,14 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listSessions, deleteSession } from '../api.js'
+  import { listSessions, deleteSession, renameSession, colorSession } from '../api.js'
   import NewSessionModal from './NewSessionModal.svelte'
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
   export let onDeleteSession = null    // called when the currently-active session is deleted
+  export let refreshTrigger = 0        // bump to force an immediate background reload
+  export let flashSession = null       // session name to momentarily highlight
 
   let sessions = []
   let loading = true
@@ -18,6 +20,51 @@
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
   let pendingDelete = null   // session.name awaiting second-click confirmation
+  let editingName = null     // session.name being renamed
+  let editValue = ''         // current text input value
+
+  const colorMap = {
+    red: '#ef4444', blue: '#3b82f6', green: '#22c55e', yellow: '#eab308',
+    purple: '#a855f7', orange: '#f97316', pink: '#ec4899', cyan: '#06b6d4',
+  }
+  const colorOrder = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']
+
+  function startRename(session) {
+    editingName = session.name
+    editValue = session.display_name || session.name
+  }
+
+  async function submitRename(session) {
+    const newName = editValue.trim()
+    try {
+      if (newName === '' || newName === session.name) {
+        await renameSession(session.name, null)  // clear
+      } else {
+        await renameSession(session.name, newName)
+      }
+      await load({ background: true })
+    } catch (e) {
+      error = e.message
+    }
+    editingName = null
+  }
+
+  function cancelRename() {
+    editingName = null
+  }
+
+  async function cycleColor(session) {
+    const currentIdx = colorOrder.indexOf(session.color || 'blue')
+    const nextColor = colorOrder[(currentIdx + 1) % colorOrder.length]
+    try {
+      await colorSession(session.name, nextColor)
+      // Optimistic update
+      session.color = nextColor
+      sessions = [...sessions]
+    } catch (e) {
+      error = e.message
+    }
+  }
 
   async function load({ background = false } = {}) {
     if (!background) loading = true
@@ -68,6 +115,7 @@
   // Flat filtered list for keyboard navigation
   $: filtered = sessions.filter(s =>
     !searchQuery || s.name.toLowerCase().includes(searchQuery.toLowerCase())
+      || (s.display_name && s.display_name.toLowerCase().includes(searchQuery.toLowerCase()))
   )
 
   // Grouped for display
@@ -89,6 +137,10 @@
   // alphabetically, sessions in original API order within each project).
   // Use this for keyboard nav so ArrowDown moves to the visually next item.
   $: displayOrdered = groups.flatMap(([, sessions]) => sessions)
+
+  // Immediate background reload when parent bumps refreshTrigger (e.g. on SSE flag event)
+  let _prevTrigger = refreshTrigger
+  $: if (refreshTrigger !== _prevTrigger) { _prevTrigger = refreshTrigger; load({ background: true }) }
 
   // Reset keyboard selection when search changes
   $: { searchQuery; selectedIndex = 0 }
@@ -252,30 +304,71 @@
 
             <!-- Session row: flex container so name and actions sit side by side -->
             {@const kbHighlight = showKbCursor && isKbSelected}
-            <div class="
-              group flex items-stretch border-l-2 transition-colors
-              {isActive
-                ? 'bg-cyan-950/30 border-cyan-500'
-                : kbHighlight
-                  ? 'bg-gray-800/30 border-gray-600'
-                  : 'hover:bg-[#0d1117] border-transparent'}
-            ">
-              <!-- Name (main tap target) -->
-              <button
-                on:click={() => onOpenTerminal(session)}
+            {@const isFlashing = session.name === flashSession}
+            <div
+              class="
+                group flex items-stretch border-l-2 transition-colors
+                {isActive
+                  ? 'bg-cyan-950/30 border-cyan-500'
+                  : kbHighlight
+                    ? 'bg-gray-800/30 border-gray-600'
+                    : 'hover:bg-[#0d1117] border-transparent'}
+              "
+              class:flag-flash={isFlashing}
+            >
+              <!-- Name row: color dot + name/rename + attention flag -->
+              <div
                 class="
-                  flex-1 text-left flex items-center gap-2
+                  flex-1 flex items-center gap-2
                   pl-4 pr-2 py-3 lg:py-2
                   font-mono text-sm lg:text-xs
                   min-w-0
                   {isActive ? 'text-cyan-300' : kbHighlight ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
-                <span class="flex-1 truncate leading-none">{session.name}</span>
+                <!-- Color dot -->
+                <span
+                  on:click|stopPropagation={() => cycleColor(session)}
+                  class="shrink-0 text-[10px] hover:scale-125 transition-transform cursor-pointer"
+                  style="color: {colorMap[session.color] || colorMap.blue}"
+                  title="click to change color"
+                  role="button"
+                  tabindex="-1"
+                >●</span>
+
+                {#if editingName === session.name}
+                  <input
+                    bind:value={editValue}
+                    on:click|stopPropagation
+                    on:keydown|stopPropagation={(e) => {
+                      if (e.key === 'Enter') { e.target.blur(); submitRename(session) }
+                      else if (e.key === 'Escape') cancelRename()
+                    }}
+                    on:blur={() => {
+                      setTimeout(() => { if (editingName === session.name) cancelRename() }, 0)
+                    }}
+                    class="flex-1 bg-transparent text-gray-200 text-sm lg:text-xs font-mono outline-none border-b border-cyan-800 min-w-0"
+                    autofocus
+                  />
+                {:else}
+                  <span
+                    class="flex-1 truncate leading-none cursor-pointer"
+                    on:click={() => onOpenTerminal(session)}
+                    on:dblclick|stopPropagation={() => startRename(session)}
+                    title="click to open, double-click to rename"
+                    role="button"
+                    tabindex="-1"
+                  >
+                    {session.display_name || session.name}
+                    {#if session.display_name && session.display_name !== session.name}
+                      <span class="text-gray-700 text-[10px] ml-1">({session.name})</span>
+                    {/if}
+                  </span>
+                {/if}
                 {#if session.attention_flag}
                   <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
                 {/if}
-              </button>
+              </div>
 
               <!-- Action buttons:
                    Mobile (< lg): always visible, generous touch targets
@@ -355,3 +448,14 @@
 {#if showNewSession}
   <NewSessionModal on:close={() => showNewSession = false} on:created={load} />
 {/if}
+
+<style>
+  @keyframes flag-flash {
+    0%   { background-color: transparent; }
+    8%   { background-color: rgba(234, 179, 8, 0.22); } /* amber burst */
+    100% { background-color: transparent; }
+  }
+  .flag-flash {
+    animation: flag-flash 3s ease-out forwards;
+  }
+</style>

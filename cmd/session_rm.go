@@ -101,7 +101,8 @@ func killTmuxSession(sessionName string) error {
 	}
 
 	// Try to kill the session
-	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+	// "=name" forces exact matching so "/" in session names is literal.
+	cmd := exec.Command("tmux", "kill-session", "-t", "="+sessionName)
 	err := cmd.Run()
 
 	// Don't treat "session not found" as an error

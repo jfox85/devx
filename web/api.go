@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,18 +30,19 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
 	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
-	// Session name passed as query param (?name=...) so names containing
-	// slashes (branch-style names) are handled correctly.
-	mux.HandleFunc("POST /api/sessions/flag", handleFlagSession)
-	mux.HandleFunc("DELETE /api/sessions/flag", handleUnflagSession)
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
+	mux.HandleFunc("GET /api/pane-content", handlePaneContent)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
+	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
+	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
+	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
+	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -91,6 +93,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 // sessionResponse is the JSON shape returned for each session.
 type sessionResponse struct {
 	Name           string            `json:"name"`
+	DisplayName    string            `json:"display_name,omitempty"`
+	Color          string            `json:"color"`
 	Branch         string            `json:"branch"`
 	ProjectAlias   string            `json:"project_alias,omitempty"`
 	Ports          map[string]int    `json:"ports"`
@@ -112,6 +116,8 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 	}
 	return sessionResponse{
 		Name:           sess.Name,
+		DisplayName:    sess.DisplayName,
+		Color:          sess.EffectiveColor(),
 		Branch:         sess.Branch,
 		ProjectAlias:   sess.ProjectAlias,
 		Ports:          sess.Ports,
@@ -199,7 +205,7 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleFlagSession(w http.ResponseWriter, r *http.Request) {
+func handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
@@ -208,14 +214,72 @@ func handleFlagSession(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	if err := session.SetAttentionFlag(name, "manual"); err != nil {
+	displayName := r.URL.Query().Get("display_name")
+	if displayName != "" && !session.IsValidDisplayName(displayName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid display name"})
+		return
+	}
+	args := []string{"session", "rename"}
+	if displayName == "" {
+		args = append(args, "--clear", "--", name)
+	} else {
+		args = append(args, "--", name, displayName)
+	}
+	if err := runSelf(args...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
+func handleColorSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	color := r.URL.Query().Get("color")
+	if name == "" || color == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and color query params required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	if !session.IsValidColor(color) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid color"})
+		return
+	}
+	if err := runSelf("session", "color", "--", name, color); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleFlagSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		reason = "manual"
+	}
+	if err := session.SetAttentionFlag(name, reason); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"session": name,
+		"flagged": true,
+		"reason":  reason,
+	})
+	s.hub.broadcastEvent("flag", string(payload))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
@@ -228,6 +292,37 @@ func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	payload, _ := json.Marshal(map[string]any{
+		"session": name,
+		"flagged": false,
+	})
+	s.hub.broadcastEvent("flag", string(payload))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleFlagNotify broadcasts a flag SSE event without touching metadata.
+// Used by the CLI after it has already written metadata via session.SetAttentionFlag.
+func (s *Server) handleFlagNotify(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	flaggedStr := r.URL.Query().Get("flagged")
+	flagged := flaggedStr != "false"
+	reason := r.URL.Query().Get("reason")
+	if reason == "" && flagged {
+		reason = "manual"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"session": name,
+		"flagged": flagged,
+		"reason":  reason,
+	})
+	s.hub.broadcastEvent("flag", string(payload))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -237,7 +332,7 @@ func handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 // the browser viewport, not a terminal client that may be attached to the
 // base session.
 func resolveWebSession(name string) string {
-	if exec.Command("tmux", "has-session", "-t", name+"-web").Run() == nil {
+	if exec.Command("tmux", "has-session", "-t", "="+name+"-web").Run() == nil {
 		return name + "-web"
 	}
 	return name
@@ -258,6 +353,28 @@ type windowInfo struct {
 	Index  int    `json:"index"`
 	Name   string `json:"name"`
 	Active bool   `json:"active"`
+}
+
+type paneContentResponse struct {
+	Content string `json:"content"`
+	Target  string `json:"target"`
+}
+
+var ansiEscapePattern = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])`)
+
+func stripANSI(s string) string {
+	return ansiEscapePattern.ReplaceAllString(s, "")
+}
+
+func paneCaptureTarget(name, pane string) (string, error) {
+	target := resolveWebSession(name)
+	if pane == "" {
+		return target, nil
+	}
+	if _, err := strconv.Atoi(pane); err != nil {
+		return "", fmt.Errorf("pane must be a numeric index")
+	}
+	return target + ":." + pane, nil
 }
 
 // handleListWindows returns the tmux windows for the session given by ?name=.
@@ -305,6 +422,37 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 		windows = []windowInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"windows": windows})
+}
+
+// handlePaneContent captures recent scrollback from the active pane in the
+// web-facing tmux session. Optional ?pane=<index> selects a specific pane in
+// the active window; otherwise tmux uses the active pane for the target.
+func handlePaneContent(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+
+	target, err := paneCaptureTarget(name, r.URL.Query().Get("pane"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-5000").Output()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, paneContentResponse{
+		Content: strings.TrimRight(stripANSI(string(out)), "\n"),
+		Target:  target,
+	})
 }
 
 // handleListProjects returns the sorted list of project aliases from the registry.
@@ -571,6 +719,106 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"path": destPath})
+}
+
+// handleServeUpload serves files from ~/.devx/uploads/ by filename.
+// Path traversal is prevented by rejecting any filename that contains a slash.
+func handleServeUpload(w http.ResponseWriter, r *http.Request) {
+	filename := strings.TrimPrefix(r.URL.Path, "/uploads/")
+	// Reject empty names and any path traversal attempts.
+	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, "cannot find home dir", http.StatusInternalServerError)
+		return
+	}
+	filePath := filepath.Join(home, ".devx", "uploads", filename)
+
+	// Serve the file — http.ServeFile sets Content-Type, ETag, etc.
+	http.ServeFile(w, r, filePath)
+}
+
+// handleShow accepts a multipart image upload from the CLI, saves it to
+// ~/.devx/uploads/, then broadcasts its URL to all connected SSE clients.
+func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
+	// Cap the raw request body to 20 MB before parsing.
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image field required"})
+		return
+	}
+	defer file.Close()
+
+	// Sniff magic bytes to determine MIME type — never trust client Content-Type.
+	buf := make([]byte, 512)
+	n, _ := file.Read(buf)
+	ct := http.DetectContentType(buf[:n])
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seek failed"})
+		return
+	}
+
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid content type"})
+		return
+	}
+	ext, ok := allowedImageTypes[mediaType]
+	if !ok {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot find home dir"})
+		return
+	}
+	uploadDir := filepath.Join(home, ".devx", "uploads")
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create upload dir"})
+		return
+	}
+
+	var randBytes [16]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "random generation failed"})
+		return
+	}
+	filename := hex.EncodeToString(randBytes[:]) + ext
+	destPath := filepath.Join(uploadDir, filename)
+
+	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create file"})
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write failed"})
+		return
+	}
+
+	uploadURL := "/uploads/" + filename
+	// Broadcast to all connected browser clients.
+	payload, _ := json.Marshal(map[string]string{
+		"url":  uploadURL,
+		"name": header.Filename,
+	})
+	s.hub.broadcast(string(payload))
+
+	writeJSON(w, http.StatusOK, map[string]string{"path": destPath, "url": uploadURL})
 }
 
 // runSelf re-invokes the devx binary with the given args.

@@ -130,50 +130,84 @@ func loadTmuxpTemplate(projectPath string) (string, error) {
 	return tmuxpTemplate, nil
 }
 
-// LaunchTmuxSession launches a tmux session using tmuxp
-func LaunchTmuxSession(worktreePath, sessionName string) error {
-	// Check if tmuxp is available
+// launchTmuxDetached is the shared core of EnsureTmuxSession and
+// LaunchTmuxSession. It checks for tmuxp, loads the .tmuxp.yaml in detached
+// mode, waits for panes to initialise, and kills the initial window that tmuxp
+// inserts before the template windows.
+//
+// tmux -t targets use the "=name" exact-match prefix (tmux 2.6+) so that
+// session names containing "/" are not misinterpreted as pane separators.
+func launchTmuxDetached(worktreePath, sessionName string) error {
 	if _, err := exec.LookPath("tmuxp"); err != nil {
 		return fmt.Errorf("tmuxp not found in PATH. Install with: pip install tmuxp")
 	}
 
-	// Check if tmux is available
-	if _, err := exec.LookPath("tmux"); err != nil {
-		return fmt.Errorf("tmux not found in PATH")
-	}
-
 	tmuxpConfigPath := filepath.Join(worktreePath, ".tmuxp.yaml")
-
-	// Check if config exists
 	if _, err := os.Stat(tmuxpConfigPath); os.IsNotExist(err) {
 		return fmt.Errorf("tmuxp config not found at %s", tmuxpConfigPath)
 	}
 
-	// Kill any existing session first
-	_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-
-	// Set default terminal size for new sessions
 	_ = exec.Command("tmux", "set-option", "-g", "default-size", "120x40").Run()
 
-	// Load the tmuxp session in detached mode
 	cmd := exec.Command("tmuxp", "load", "-d", tmuxpConfigPath, "-s", sessionName)
 	cmd.Dir = worktreePath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to load tmuxp session: %w\n%s", err, output)
 	}
 
-	// Wait a moment for tmuxp to fully load, then kill the initial window
+	// Give tmuxp time to finish initialising all panes.
 	time.Sleep(500 * time.Millisecond)
 
-	// Kill all windows with index 0 (the initial directory window)
-	_ = exec.Command("tmux", "kill-window", "-t", sessionName+":0").Run()
+	// Kill the initial window that tmuxp inserts before the template windows.
+	// "=name" forces exact session-name matching so "/" in names is literal.
+	_ = exec.Command("tmux", "kill-window", "-t", "="+sessionName+":0").Run()
 
-	// Also try to kill any window that just shows the directory cd command
+	return nil
+}
+
+// EnsureTmuxSession checks whether the named tmux session is alive and, if
+// not, recreates it via tmuxp so the full pane layout and startup commands are
+// restored. Called by the web server before attaching ttyd, so sessions
+// survive a machine reboot without any manual steps.
+func EnsureTmuxSession(sessionName, worktreePath string) error {
+	// "=name" forces exact matching so "/" in session names is not treated as a
+	// pane separator in tmux target syntax.
+	if exec.Command("tmux", "has-session", "-t", "="+sessionName).Run() == nil {
+		return nil // already alive
+	}
+	if err := launchTmuxDetached(worktreePath, sessionName); err != nil {
+		return err
+	}
+	// Verify the session was actually created — tmuxp can exit 0 but fail to
+	// create the session if e.g. the template has errors.
+	if exec.Command("tmux", "has-session", "-t", "="+sessionName).Run() != nil {
+		return fmt.Errorf("tmuxp exited successfully but session %q was not created", sessionName)
+	}
+	return nil
+}
+
+// LaunchTmuxSession launches a tmux session using tmuxp
+func LaunchTmuxSession(worktreePath, sessionName string) error {
+	// Check if tmux is available (tmuxp check is inside launchTmuxDetached)
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux not found in PATH")
+	}
+
+	// Kill any existing session first
+	// "=name" forces exact matching so "/" in session names is not treated as a
+	// pane separator in tmux target syntax.
+	_ = exec.Command("tmux", "kill-session", "-t", "="+sessionName).Run()
+
+	if err := launchTmuxDetached(worktreePath, sessionName); err != nil {
+		return err
+	}
+
+	// Belt-and-suspenders: also remove any remaining index-0 window that may
+	// have survived if tmuxp added extra windows during startup.
 	_ = exec.Command("bash", "-c", fmt.Sprintf(`tmux list-windows -t %s -F "#{window_index}:#{window_name}" | grep "^0:" | cut -d: -f1 | xargs -I {} tmux kill-window -t %s:{} 2>/dev/null || true`, sessionName, sessionName)).Run()
 
 	// Attach to the session (switch-client when already inside tmux, attach otherwise)
-	cmd = attachOrSwitchCmd(sessionName)
+	cmd := attachOrSwitchCmd(sessionName)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -211,8 +245,8 @@ func AttachTmuxSession(sessionName string) error {
 		return fmt.Errorf("tmux not found in PATH")
 	}
 
-	// Check if session exists
-	cmd := exec.Command("tmux", "has-session", "-t", sessionName)
+	// Check if session exists ("=name" forces exact matching)
+	cmd := exec.Command("tmux", "has-session", "-t", "="+sessionName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("tmux session '%s' does not exist", sessionName)
 	}

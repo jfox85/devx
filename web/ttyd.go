@@ -57,6 +57,14 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 		// Testing mode: use provided command directly (first arg is binary)
 		cmd = exec.Command(cmdAndArgs[0], cmdAndArgs[1:]...)
 	} else {
+		// Verify the base tmux session exists before launching ttyd. Without this
+		// check, "tmux new-session -A -s <name>-web -t <name>" silently creates a
+		// standalone session (bare shell) when the target doesn't exist.
+		if exec.Command("tmux", "has-session", "-t", "="+sessionName).Run() != nil {
+			m.mu.Unlock()
+			return 0, fmt.Errorf("tmux session %q does not exist", sessionName)
+		}
+
 		// Production mode: launch ttyd with --base-path so all asset URLs are absolute,
 		// allowing devx web to proxy the full /terminal/{session}/* path space.
 		//
@@ -215,5 +223,5 @@ func (m *ttydManager) stopSession(sessionName string) {
 	delete(m.sessions, sessionName)
 	// Kill the grouped tmux session that was created for the web client so it
 	// doesn't linger after the web view is closed.
-	go exec.Command("tmux", "kill-session", "-t", sessionName+"-web").Run() //nolint:errcheck
+	go exec.Command("tmux", "kill-session", "-t", "="+sessionName+"-web").Run() //nolint:errcheck
 }

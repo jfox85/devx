@@ -60,6 +60,7 @@ func init() {
 		// Original TUI behavior
 		if len(args) == 0 {
 			checkDependenciesQuiet()
+			go ensureCloudflaredRunning()
 			return runTUI()
 		}
 

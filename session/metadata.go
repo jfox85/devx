@@ -25,6 +25,8 @@ type Session struct {
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
 	AttentionTime   time.Time         `json:"attention_time,omitempty"`
+	DisplayName     string            `json:"display_name,omitempty"`
+	Color           string            `json:"color,omitempty"`
 	LastAttached    time.Time         `json:"last_attached,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -114,6 +116,9 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 		return fmt.Errorf("session %s already exists", name)
 	}
 
+	// Auto-assign color if not already set by caller
+	color := AutoColor(name)
+
 	now := time.Now()
 	s.Sessions[name] = &Session{
 		Name:         name,
@@ -123,6 +128,7 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 		Path:         path,
 		Ports:        ports,
 		Routes:       make(map[string]string),
+		Color:        color,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -201,7 +207,9 @@ func killTmuxSession(sessionName string) error {
 	}
 
 	// Try to kill the session
-	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+	// "=name" forces exact matching so "/" in session names is not treated as a
+	// pane separator in tmux target syntax.
+	cmd := exec.Command("tmux", "kill-session", "-t", "="+sessionName)
 	err := cmd.Run()
 
 	// Don't treat "session not found" as an error

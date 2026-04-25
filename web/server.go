@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/jfox85/devx/session"
 )
@@ -18,6 +20,7 @@ type Server struct {
 	port   int
 	server *http.Server
 	ttyd   *ttydManager
+	hub    *sseHub
 }
 
 // New creates a new Server. token must be non-empty.
@@ -25,7 +28,7 @@ func New(token string, port int) (*Server, error) {
 	if token == "" {
 		return nil, fmt.Errorf("web_secret_token must be set in config to use devx web")
 	}
-	return &Server{token: token, port: port, ttyd: newTtydManager()}, nil
+	return &Server{token: token, port: port, ttyd: newTtydManager(), hub: newSSEHub()}, nil
 }
 
 // Start begins listening and serving.
@@ -61,7 +64,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Non-API/terminal routes (static assets, login) pass through unauthenticated.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/")
+		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/") || strings.HasPrefix(r.URL.Path, "/uploads/")
 		if !needsAuth || r.URL.Path == "/api/login" {
 			next.ServeHTTP(w, r)
 			return
@@ -89,6 +92,17 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// API routes registered in api.go
 	registerAPIRoutes(mux)
+	// Flag routes require access to the SSE hub — registered as Server methods.
+	// Session name passed as query param (?name=...) so names containing
+	// slashes (branch-style names) are handled correctly.
+	mux.HandleFunc("POST /api/sessions/flag", s.handleFlagSession)
+	mux.HandleFunc("DELETE /api/sessions/flag", s.handleUnflagSession)
+	// SSE-only broadcast for CLI notify path (metadata already written by CLI).
+	mux.HandleFunc("POST /api/sessions/flag-notify", s.handleFlagNotify)
+	// SSE event stream — auth covered by /api/ prefix in authMiddleware.
+	mux.HandleFunc("GET /api/events", s.hub.handleEvents)
+	// Remote show — uploads a file and broadcasts to all SSE clients.
+	mux.HandleFunc("POST /api/show", s.handleShow)
 	// Static SPA served from embedded FS (registered in embed.go)
 	registerStaticRoutes(mux)
 	// Catch-all for /terminal/* — handles both iframe HTTP requests and WebSocket upgrades.
@@ -169,12 +183,40 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 	if store == nil || store.Sessions == nil {
 		return "", 0, nil // no sessions exist → 404
 	}
-	if _, ok := store.Sessions[decoded]; !ok {
+	sess, ok := store.Sessions[decoded]
+	if !ok {
 		return "", 0, nil // not a devx-managed session → 404
+	}
+	// Before starting ttyd, ensure the tmux session is alive. If the machine
+	// was rebooted the session will be in metadata but not in tmux; this
+	// re-runs tmuxp so the full pane layout and startup commands are restored.
+	if err := session.EnsureTmuxSession(decoded, sess.Path); err != nil {
+		// Log to a file since the TUI captures stderr.
+		logWebError("EnsureTmuxSession(%q, %q): %v", decoded, sess.Path, err)
+		return "", 0, fmt.Errorf("failed to restore tmux session %q: %w", decoded, err)
 	}
 	p, startErr := s.ttyd.startForSession(decoded)
 	if startErr != nil {
 		return "", 0, fmt.Errorf("failed to start terminal: %s", startErr)
 	}
 	return decoded, p, nil
+}
+
+// logWebError writes a timestamped error to ~/.devx/web.log for debugging
+// issues that occur in the web server goroutine (whose stderr the TUI captures).
+func logWebError(format string, args ...any) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dir := home + "/.devx"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(dir+"/web.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, time.Now().Format(time.RFC3339)+" web: "+format+"\n", args...)
 }

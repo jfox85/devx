@@ -27,6 +27,8 @@ func init() {
 
 type SessionStatus struct {
 	Name         string
+	DisplayName  string
+	Color        string
 	Branch       string
 	Ports        map[string]int
 	Routes       map[string]string
@@ -57,11 +59,13 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	var statuses []SessionStatus
 	for name, sess := range store.Sessions {
 		status := SessionStatus{
-			Name:   name,
-			Branch: sess.Branch,
-			Ports:  sess.Ports,
-			Routes: sess.Routes,
-			Path:   sess.Path,
+			Name:        name,
+			DisplayName: sess.DisplayName,
+			Color:       sess.EffectiveColor(),
+			Branch:      sess.Branch,
+			Ports:       sess.Ports,
+			Routes:      sess.Routes,
+			Path:        sess.Path,
 		}
 
 		// Check tmux status
@@ -180,8 +184,8 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 	defer w.Flush()
 
 	// Header
-	fmt.Fprintln(w, "NAME\tBRANCH\tPORTS\tHOSTS\tSTATUS")
-	fmt.Fprintln(w, "----\t------\t-----\t-----\t------")
+	fmt.Fprintln(w, "  NAME\tBRANCH\tPORTS\tHOSTS\tSTATUS")
+	fmt.Fprintln(w, "  ----\t------\t-----\t-----\t------")
 
 	for _, status := range statuses {
 		// Format ports
@@ -238,8 +242,19 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 
 		statusStr := strings.Join(statusParts, ",")
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			status.Name,
+		dot := "●"
+		if c, ok := session.AnsiColors[status.Color]; ok {
+			dot = c + "●" + session.AnsiReset
+		}
+
+		nameDisplay := status.Name
+		if status.DisplayName != "" {
+			nameDisplay = fmt.Sprintf("%s (%s)", status.DisplayName, status.Name)
+		}
+
+		fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\t%s\n",
+			dot,
+			nameDisplay,
 			status.Branch,
 			portsStr,
 			hostsStr,

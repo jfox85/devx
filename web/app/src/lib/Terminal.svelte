@@ -23,6 +23,13 @@
   let uploading = false   // guard against concurrent uploads
 
   const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+  const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+  function isImageFile(f) {
+    if (ALLOWED_TYPES.includes(f.type)) return true
+    // Fallback: check extension when MIME type is missing or generic (e.g. macOS Finder)
+    const name = (f.name || '').toLowerCase()
+    return ALLOWED_EXTS.some(ext => name.endsWith(ext))
+  }
 
   // Encode session names so slashes ("/") don't split the URL path.
   $: slug = encodeURIComponent(session.name)
@@ -175,6 +182,8 @@
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
     focusTerminal()
+    // Restore the previously-selected window for this session.
+    await restoreStoredWindow()
     // Register the hotkey after focus so xterm is initialised
     try {
       iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
@@ -195,8 +204,8 @@
       iframeEl.contentDocument?.addEventListener('drop', (e) => {
         e.preventDefault()
         dragCounter = 0; isDragOver = false
-        const file = e.dataTransfer?.files?.[0]
-        if (file) processImageFile(file)
+        const files = Array.from(e.dataTransfer?.files || [])
+        if (files.length) processImageFiles(files)
       })
     } catch { /* ignore if contentDocument isn't accessible yet */ }
     // Watch for iframe size changes (mobile browser chrome, keyboard, orientation)
@@ -209,11 +218,56 @@
     try { await apiSendKeys(session.name, key) } catch { /* ignore */ }
   }
 
+  // Stable sessionStorage key for the active window preference of a session.
+  const windowStorageKey = (name) => 'devx_activeWindow_' + name
+
+  // Persist the active window whenever the windows list changes — covers the
+  // case where the terminal is already on the right window without the user
+  // ever clicking a tab (e.g. tmux state was already set). This ensures
+  // restoreStoredWindow always has a value to work with.
+  $: {
+    const activeWin = windows.find(w => w.active)
+    if (activeWin && session?.name) {
+      sessionStorage.setItem(windowStorageKey(session.name), String(activeWin.index))
+    }
+  }
+
   async function switchWindow(index) {
     // Must focus synchronously while still in the click user-gesture context.
     // After an await, browsers may ignore .focus() calls.
     focusTerminal()
-    try { await apiSwitchWindow(session.name, index) } catch { /* ignore */ }
+    const name = session.name
+    sessionStorage.setItem(windowStorageKey(name), String(index))
+    // Optimistic update: highlight the clicked tab immediately so the user
+    // gets instant feedback without waiting for the next poll cycle.
+    windows = windows.map(w => ({ ...w, active: w.index === index }))
+    try { await apiSwitchWindow(name, index) } catch { /* ignore */ }
+  }
+
+  // Restore the last-selected window for this session. Called after the iframe
+  // loads so that switching sessions and back doesn't reset the active pane.
+  async function restoreStoredWindow() {
+    // Capture session name before any await so a mid-flight session change
+    // doesn't cause us to operate on the wrong session.
+    const name = session.name
+    const stored = sessionStorage.getItem(windowStorageKey(name))
+    if (stored === null) return
+    const storedIndex = parseInt(stored, 10)
+    if (isNaN(storedIndex)) return
+    try {
+      const wins = await listWindows(name)
+      // Bail if the session changed while we were awaiting.
+      if (session.name !== name) return
+      const target = wins.find(w => w.index === storedIndex)
+      if (target && !target.active) {
+        await apiSwitchWindow(name, storedIndex)
+        if (session.name !== name) return
+        // Update local state optimistically — no second round-trip needed.
+        windows = wins.map(w => ({ ...w, active: w.index === storedIndex }))
+      } else if (wins.length > 0) {
+        windows = wins
+      }
+    } catch { /* ignore */ }
   }
 
   async function loadWindows() {
@@ -236,35 +290,47 @@
     }, 300)
   }
 
-  // Core image upload and path injection logic.
-  async function processImageFile(file) {
-    if (!file || uploading) return
+  // Core image upload and path injection logic. Accepts one or more files,
+  // uploads them in parallel, and injects all paths space-separated into the
+  // active tmux pane.
+  async function processImageFiles(files) {
+    if (!files.length || uploading) return
 
-    // Fast client-side MIME check before uploading
-    if (!ALLOWED_TYPES.includes(file.type)) {
+    const valid = files.filter(isImageFile)
+    if (valid.length === 0) {
       toastUpload = null
-      toastError = `Unsupported type: ${file.type || 'unknown'}`
+      toastError = `Unsupported type: ${files[0].type || files[0].name || 'unknown'}`
       return
     }
 
     uploading = true
-    const objectURL = URL.createObjectURL(file)
+    const objectURLs = valid.map(f => URL.createObjectURL(f))
 
     try {
-      const result = await uploadImage(file)
-      const path = result.path
-      // Inject path into active tmux pane (no Enter — user confirms).
-      // Use sendLiteral so spaces in the path are preserved verbatim.
-      await sendLiteral(session.name, path)
+      const results = await Promise.all(valid.map(f => uploadImage(f)))
+      const paths = results.map(r => r.path)
+      // Inject all paths into active tmux pane (no Enter — user confirms).
+      // Use sendLiteral so spaces in paths are preserved verbatim.
+      await sendLiteral(session.name, paths.join(' ') + ' ')
       toastError = null
-      toastUpload = { path, objectURL }
+      toastUpload = {
+        path: paths.length === 1 ? paths[0] : `${paths.length} images uploaded`,
+        objectURL: objectURLs[0],
+      }
+      // Revoke extra objectURLs not used by the toast preview.
+      objectURLs.slice(1).forEach(u => URL.revokeObjectURL(u))
     } catch (e) {
-      URL.revokeObjectURL(objectURL)
+      objectURLs.forEach(u => URL.revokeObjectURL(u))
       toastUpload = null
       toastError = e.message || 'Upload failed'
     } finally {
       uploading = false
     }
+  }
+
+  // Single-file convenience wrapper (paste handlers).
+  function processImageFile(file) {
+    if (file) processImageFiles([file])
   }
 
   function dismissToast() {
@@ -279,9 +345,9 @@
   }
 
   function handleFileInput(e) {
-    const file = e.target.files?.[0]
-    if (file) processImageFile(file)
-    // Reset so the same file can be selected again
+    const files = Array.from(e.target.files || [])
+    if (files.length) processImageFiles(files)
+    // Reset so the same file(s) can be selected again
     e.target.value = ''
   }
 
@@ -309,8 +375,8 @@
     e.preventDefault()
     dragCounter = 0
     isDragOver = false
-    const file = e.dataTransfer?.files?.[0]
-    if (file) processImageFile(file)
+    const files = Array.from(e.dataTransfer?.files || [])
+    if (files.length) processImageFiles(files)
   }
 
   onMount(() => {
@@ -393,6 +459,7 @@
       bind:this={fileInputEl}
       type="file"
       accept="image/png,image/jpeg,image/gif,image/webp"
+      multiple
       class="hidden"
       on:change={handleFileInput}
     />

@@ -5,6 +5,7 @@
   export let upload = null  // { path, objectURL } | null
   export let error = null   // string | null
   export let onDismiss
+  export let sticky = false // if true, skip auto-dismiss (user must click open or ×)
 
   let timer
 
@@ -18,7 +19,7 @@
   // until manually dismissed because the timer only ran for upload=truthy.
   $: {
     clearTimeout(timer)
-    if (upload || error) {
+    if (!sticky && (upload || error)) {
       timer = setTimeout(onDismiss, 3000)
     }
   }
@@ -34,7 +35,13 @@
       <img src={upload.objectURL} alt="" class="w-10 h-10 object-cover rounded shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="text-cyan-300 truncate">{shortPath}</div>
-        <div class="text-green-500 text-[10px]">inserted</div>
+        <div class="text-green-500 text-[10px]">
+          {#if upload?.url}
+            <a href={upload.url} target="_blank" rel="noopener" class="underline hover:text-green-300" on:click={onDismiss}>Open ↗</a>
+          {:else}
+            inserted
+          {/if}
+        </div>
       </div>
       <button
         on:click={onDismiss}

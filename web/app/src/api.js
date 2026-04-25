@@ -60,6 +60,27 @@ export async function unflagSession(name) {
   if (!res.ok) throw new Error(`Failed to unflag session: ${res.status}`)
 }
 
+export async function renameSession(name, displayName) {
+  const params = new URLSearchParams({ name })
+  if (displayName != null) params.set('display_name', displayName)
+  const res = await apiFetch('/sessions/rename?' + params.toString(), { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Rename failed')
+  }
+}
+
+export async function colorSession(name, color) {
+  const res = await apiFetch(
+    '/sessions/color?name=' + encodeURIComponent(name) + '&color=' + encodeURIComponent(color),
+    { method: 'POST' }
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Color change failed')
+  }
+}
+
 export async function login(token) {
   const res = await fetch(base + '/login', {
     method: 'POST',
@@ -135,4 +156,20 @@ export async function uploadImage(file) {
 
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_authed')
+}
+
+// subscribeToEvents opens an SSE connection to /api/events and registers
+// handlers for each named event type in the handlers map.
+// Example: subscribeToEvents({ show: fn, flag: fn })
+// Returns a cleanup function that closes the connection.
+export function subscribeToEvents(handlers) {
+  const es = new EventSource('/api/events', { withCredentials: true })
+  for (const [event, fn] of Object.entries(handlers)) {
+    es.addEventListener(event, (e) => {
+      try {
+        fn(JSON.parse(e.data))
+      } catch { /* ignore malformed events */ }
+    })
+  }
+  return () => es.close()
 }
