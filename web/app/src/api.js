@@ -131,20 +131,28 @@ export async function refreshTerminal(sessionName) {
   await apiFetch('/refresh?name=' + encodeURIComponent(sessionName), { method: 'POST' })
 }
 
+async function requireOK(res, fallbackMessage) {
+  if (res.ok) return
+  const e = await res.json().catch(() => ({}))
+  throw new Error(e.error || fallbackMessage || `Request failed: ${res.status}`)
+}
+
 export async function sendKeys(sessionName, keys) {
-  await apiFetch(
+  const res = await apiFetch(
     '/send-keys?name=' + encodeURIComponent(sessionName) + '&keys=' + encodeURIComponent(keys),
     { method: 'POST' }
   )
+  await requireOK(res, 'Failed to send keys')
 }
 
 // sendLiteral injects text verbatim into the active pane — spaces are preserved.
 // Use this for file paths; use sendKeys for named tmux key sequences (C-b, Enter, etc.).
 export async function sendLiteral(sessionName, text) {
-  await apiFetch(
+  const res = await apiFetch(
     '/send-keys?mode=literal&name=' + encodeURIComponent(sessionName) + '&keys=' + encodeURIComponent(text),
     { method: 'POST' }
   )
+  await requireOK(res, 'Failed to send text')
 }
 
 export async function uploadImage(file) {

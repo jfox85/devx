@@ -258,7 +258,7 @@ func TestSendLiteralUsesExactTargetForSlashSessionNames(t *testing.T) {
 			switch got {
 			case "has-session -t =feature/foo-web":
 				return errors.New("no web session")
-			case "send-keys -t =feature/foo -l -- hello world":
+			case "send-keys -t =feature/foo: -l -- hello world":
 				return nil
 			default:
 				t.Fatalf("unexpected tmux args: %q", got)

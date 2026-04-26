@@ -731,7 +731,7 @@ func resizeWindowToClient(target string) {
 		"-y", strconv.Itoa(latestH))
 }
 
-// handleSendKeys runs `tmux send-keys -t session key`, delivering the key to the
+// handleSendKeys runs `tmux send-keys -t session: key`, delivering the key to the
 // session's current window/pane regardless of which tmux client is active.
 //
 // mode=literal (query param): send the entire keys string verbatim using
@@ -755,7 +755,10 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := exactTmuxSessionTarget(name)
+	// send-keys needs a pane-capable target. A bare exact session target like
+	// "=name-web" fails with "can't find pane" on tmux; append ':' to target
+	// the active pane in the active window for the resolved web session.
+	target := exactTmuxSessionTarget(name) + ":"
 	mode := r.URL.Query().Get("mode")
 
 	if mode == "literal" {
