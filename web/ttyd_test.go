@@ -37,7 +37,7 @@ func TestApplyMobileTmuxOptionsAttemptsBaseAndWebTargets(t *testing.T) {
 	logPath := filepath.Join(tmpDir, "tmux.log")
 	scriptPath := filepath.Join(tmpDir, "tmux")
 	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "has-session" ] && [ "$4" = "=demo-web" ]; then
+if [ "$1" = "has-session" ] && [ "$2" = "-t" ] && [ "$3" = "=demo-web" ]; then
   exit 0
 fi
 echo "$@" >> %s
