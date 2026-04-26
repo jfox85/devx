@@ -13,8 +13,14 @@ import (
 	"github.com/jfox85/devx/config"
 )
 
+const DefaultTmuxMouse = "off"
+const DefaultTmuxHistoryLimit = 50000
+
 const tmuxpTemplate = `session_name: {{.Name}}
 start_directory: {{.Path}}
+options:
+  mouse: {{defaultTmuxMouse}}
+  history-limit: {{defaultTmuxHistoryLimit}}
 windows:
   - window_name: editor
     layout: tiled
@@ -85,6 +91,12 @@ func GenerateTmuxpConfig(worktreePath string, data TmuxpData, projectPath string
 			// e.g., "frontend" -> "FRONTEND_EXTERNAL_HOST"
 			upper := strings.ToUpper(serviceName)
 			return strings.ReplaceAll(upper, "-", "_") + "_EXTERNAL_HOST"
+		},
+		"defaultTmuxMouse": func() string {
+			return DefaultTmuxMouse
+		},
+		"defaultTmuxHistoryLimit": func() int {
+			return DefaultTmuxHistoryLimit
 		},
 	}
 

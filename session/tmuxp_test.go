@@ -23,6 +23,8 @@ func TestGenerateTmuxpConfig(t *testing.T) {
 			os.Setenv("DEVX_TMUXP_TEMPLATE", oldTemplate)
 		}
 	}()
+	// Prevent host-global templates from affecting this test.
+	t.Setenv("HOME", tmpDir)
 
 	// Test data
 	data := TmuxpData{
@@ -56,6 +58,14 @@ func TestGenerateTmuxpConfig(t *testing.T) {
 	// Verify start directory
 	if !strings.Contains(configStr, "start_directory: "+tmpDir) {
 		t.Error("config should contain start directory")
+	}
+
+	// Verify default mobile-friendly tmux options are present.
+	if !strings.Contains(configStr, "mouse: off") {
+		t.Error("config should disable tmux mouse mode by default")
+	}
+	if !strings.Contains(configStr, "history-limit: 50000") {
+		t.Error("config should set a generous history limit")
 	}
 
 	// Verify at least one window exists

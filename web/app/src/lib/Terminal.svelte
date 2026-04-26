@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage } from '../api.js'
+  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
 
@@ -146,6 +146,25 @@
   const XTERM_POLL_INTERVAL_MS = 100   // polling interval while waiting
   const FITADDON_SETTLE_MS     = 200   // time for FitAddon → ioctl to propagate
 
+  async function openPaneViewer() {
+    // Open synchronously while still inside the click gesture context so
+    // mobile browsers do not treat it as a blocked popup after awaiting.
+    const viewerWindow = window.open('', '_blank')
+    const params = new URLSearchParams({ name: session.name })
+    try {
+      const pane = await getActivePane(session.name)
+      if (pane != null && !Number.isNaN(Number(pane))) params.set('pane', String(pane))
+    } catch {
+      // Fall back to tmux's current active pane if the lookup fails.
+    }
+    const url = `/api/pane-content/view?${params.toString()}`
+    if (viewerWindow) {
+      viewerWindow.location.replace(url)
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
+  }
+
   // When the iframe finishes loading, wait for xterm.js to fully initialise
   // (indicated by the helper textarea appearing), then:
   //   1. Call term.fit() → FitAddon re-measures the element and sends the
@@ -163,6 +182,24 @@
       link.rel = 'stylesheet'
       link.href = '/nerd-font.css'
       iframeEl.contentDocument.head.appendChild(link)
+
+      const touchStyle = iframeEl.contentDocument.createElement('style')
+      touchStyle.textContent = `
+        html, body {
+          height: 100%;
+          margin: 0;
+          overflow: hidden;
+          overscroll-behavior: none;
+        }
+        .xterm, .xterm-viewport {
+          touch-action: pan-y !important;
+        }
+        .xterm-viewport {
+          -webkit-overflow-scrolling: touch !important;
+          overscroll-behavior-y: contain;
+        }
+      `
+      iframeEl.contentDocument.head.appendChild(touchStyle)
       // Wait for the font to be ready before xterm starts measuring.
       await iframeEl.contentWindow.document.fonts.load('12px HackNerdFontMono')
     } catch { /* ignore cross-origin / not-yet-loaded */ }
@@ -448,6 +485,12 @@
         class="flex-1 flex items-center text-gray-500 font-mono text-xs truncate px-3 min-w-0 text-left"
       >{session.name}</button>
     {/if}
+
+    <button
+      on:click={openPaneViewer}
+      title="open full pane output in a new tab"
+      class="px-3 text-gray-500 hover:text-cyan-300 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center justify-center transition-colors min-w-[58px]"
+    >[view]</button>
 
     <!-- Attach image button -->
     <button

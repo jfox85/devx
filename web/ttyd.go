@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jfox85/devx/session"
 	getport "github.com/jsumners/go-getport"
 )
 
@@ -28,6 +29,20 @@ func newTtydManager() *ttydManager {
 }
 
 const ttydIdleTimeout = 30 * time.Second
+const ttydScrollbackLines = 5000
+
+func ttydArgs(sessionName string, port int) []string {
+	webSession := sessionName + "-web"
+	return []string{
+		"-p", fmt.Sprintf("%d", port),
+		"-i", "127.0.0.1", // bind to loopback only — not reachable from the network
+		"-W",
+		"--base-path", "/terminal/" + sessionName,
+		"-t", fmt.Sprintf("scrollback=%d", ttydScrollbackLines),
+		"-t", "fontFamily=HackNerdFontMono, monospace",
+		"tmux", "new-session", "-A", "-s", webSession, "-t", "=" + sessionName,
+	}
+}
 
 // startForSession returns the local port of the ttyd instance for the session,
 // starting one if not already running. cmdAndArgs overrides the default
@@ -72,16 +87,7 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 		// "tmux attach" so the web client gets its own grouped session with
 		// independent sizing. This prevents the browser window dimensions from
 		// constraining the terminal session used by the real terminal client.
-		webSession := sessionName + "-web"
-		args := []string{
-			"-p", fmt.Sprintf("%d", port),
-			"-i", "127.0.0.1", // bind to loopback only — not reachable from the network
-			"-W",
-			"--base-path", "/terminal/" + sessionName,
-			"-t", "fontFamily=HackNerdFontMono, monospace",
-			"tmux", "new-session", "-A", "-s", webSession, "-t", sessionName,
-		}
-		cmd = exec.Command("ttyd", args...)
+		cmd = exec.Command("ttyd", ttydArgs(sessionName, port)...)
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -120,9 +126,31 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 			_ = cmd.Process.Kill()
 			return 0, fmt.Errorf("ttyd did not start on port %d: %w", port, err)
 		}
+		applyMobileTmuxOptions(sessionName)
 	}
 
 	return port, nil
+}
+
+func applyMobileTmuxOptions(sessionName string) {
+	baseTarget := "=" + sessionName
+	_ = exec.Command("tmux", "set-option", "-t", baseTarget, "mouse", session.DefaultTmuxMouse).Run()
+	_ = exec.Command("tmux", "set-option", "-t", baseTarget, "history-limit", fmt.Sprintf("%d", session.DefaultTmuxHistoryLimit)).Run()
+
+	webTarget := "=" + sessionName + "-web"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.Command("tmux", "has-session", "-t", webTarget).Run() == nil {
+			mouseErr := exec.Command("tmux", "set-option", "-t", webTarget, "mouse", session.DefaultTmuxMouse).Run()
+			historyErr := exec.Command("tmux", "set-option", "-t", webTarget, "history-limit", fmt.Sprintf("%d", session.DefaultTmuxHistoryLimit)).Run()
+			if mouseErr != nil || historyErr != nil {
+				logWebError("applyMobileTmuxOptions(%q): web target update incomplete: mouse=%v history=%v", sessionName, mouseErr, historyErr)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	logWebError("applyMobileTmuxOptions(%q): web target %q not available before timeout; history-limit is not retroactive for existing windows", sessionName, webTarget)
 }
 
 // waitForPort polls addr until it accepts a TCP connection or the timeout elapses.
