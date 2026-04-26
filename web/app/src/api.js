@@ -102,6 +102,12 @@ export async function listWindows(sessionName) {
   return data.windows || []
 }
 
+export async function getActivePane(sessionName) {
+  const res = await apiFetch('/active-pane?name=' + encodeURIComponent(sessionName))
+  const data = await res.json()
+  return data.pane
+}
+
 export async function switchWindow(sessionName, windowIndex) {
   await apiFetch(
     '/switch-window?name=' + encodeURIComponent(sessionName) + '&window=' + windowIndex,
