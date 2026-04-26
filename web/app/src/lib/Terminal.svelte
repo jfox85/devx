@@ -147,6 +147,9 @@
   const FITADDON_SETTLE_MS     = 200   // time for FitAddon → ioctl to propagate
 
   async function openPaneViewer() {
+    // Open synchronously while still inside the click gesture context so
+    // mobile browsers do not treat it as a blocked popup after awaiting.
+    const viewerWindow = window.open('', '_blank')
     const params = new URLSearchParams({ name: session.name })
     try {
       const pane = await getActivePane(session.name)
@@ -154,7 +157,12 @@
     } catch {
       // Fall back to tmux's current active pane if the lookup fails.
     }
-    window.open(`/api/pane-content/view?${params.toString()}`, '_blank', 'noopener,noreferrer')
+    const url = `/api/pane-content/view?${params.toString()}`
+    if (viewerWindow) {
+      viewerWindow.location.replace(url)
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
   }
 
   // When the iframe finishes loading, wait for xterm.js to fully initialise
