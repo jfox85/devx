@@ -28,7 +28,7 @@ func newTtydManager() *ttydManager {
 	return &ttydManager{sessions: make(map[string]*ttydInstance)}
 }
 
-const ttydIdleTimeout = 30 * time.Second
+const ttydIdleTimeout = 10 * time.Minute
 const ttydScrollbackLines = 5000
 
 func ttydArgs(sessionName string, port int) []string {
@@ -126,7 +126,7 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 			_ = cmd.Process.Kill()
 			return 0, fmt.Errorf("ttyd did not start on port %d: %w", port, err)
 		}
-		applyMobileTmuxOptions(sessionName)
+		go applyMobileTmuxOptions(sessionName)
 	}
 
 	return port, nil

@@ -1,6 +1,8 @@
 devx
 .envrc
 .tmuxp.yaml
+.artifacts/
+.pi/
 /dist/
 .devx/
 web/app/node_modules/

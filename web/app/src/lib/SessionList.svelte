@@ -365,6 +365,9 @@
                     {/if}
                   </span>
                 {/if}
+                {#if session.artifact_count > 0}
+                  <span class="text-cyan-500 text-[10px] shrink-0" title={`${session.artifact_count} artifact${session.artifact_count === 1 ? '' : 's'}`}>◆ {session.artifact_count}</span>
+                {/if}
                 {#if session.attention_flag}
                   <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
                 {/if}

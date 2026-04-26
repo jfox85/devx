@@ -24,6 +24,7 @@ type Session struct {
 	EditorPID       int               `json:"editor_pid,omitempty"` // PID of the editor process
 	AttentionFlag   bool              `json:"attention_flag,omitempty"`
 	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
+	AttentionSource string            `json:"attention_source,omitempty"`
 	AttentionTime   time.Time         `json:"attention_time,omitempty"`
 	DisplayName     string            `json:"display_name,omitempty"`
 	Color           string            `json:"color,omitempty"`
@@ -251,8 +252,13 @@ func getSessionsPath() string {
 	return config.GetSessionsPath()
 }
 
-// SetAttentionFlag sets the attention flag for a session
+// SetAttentionFlag sets the attention flag for a session.
 func SetAttentionFlag(sessionName, reason string) error {
+	return SetAttentionFlagWithSource(sessionName, reason, "manual")
+}
+
+// SetAttentionFlagWithSource sets the attention flag with a structured source.
+func SetAttentionFlagWithSource(sessionName, reason, source string) error {
 	store, err := LoadSessions()
 	if err != nil {
 		return fmt.Errorf("failed to load sessions: %w", err)
@@ -266,6 +272,7 @@ func SetAttentionFlag(sessionName, reason string) error {
 	return store.UpdateSession(sessionName, func(s *Session) {
 		s.AttentionFlag = true
 		s.AttentionReason = reason
+		s.AttentionSource = source
 		s.AttentionTime = time.Now()
 	})
 }
@@ -285,6 +292,7 @@ func ClearAttentionFlag(sessionName string) error {
 	return store.UpdateSession(sessionName, func(s *Session) {
 		s.AttentionFlag = false
 		s.AttentionReason = ""
+		s.AttentionSource = ""
 		s.AttentionTime = time.Time{}
 	})
 }

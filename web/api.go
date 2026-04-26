@@ -40,6 +40,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/pane-content.txt", handlePaneContentText)
 	mux.HandleFunc("GET /api/pane-content/view", handlePaneContentView)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
+	mux.HandleFunc("GET /api/settings", handleSettings)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
@@ -96,6 +97,12 @@ type loginRequest struct {
 	Token string `json:"token"`
 }
 
+func handleSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact_trigger_key": viper.GetString("artifact_trigger_key"),
+	})
+}
+
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -129,15 +136,17 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // sessionResponse is the JSON shape returned for each session.
 type sessionResponse struct {
-	Name           string            `json:"name"`
-	DisplayName    string            `json:"display_name,omitempty"`
-	Color          string            `json:"color"`
-	Branch         string            `json:"branch"`
-	ProjectAlias   string            `json:"project_alias,omitempty"`
-	Ports          map[string]int    `json:"ports"`
-	Routes         map[string]string `json:"routes"`
-	ExternalRoutes map[string]string `json:"external_routes,omitempty"`
-	AttentionFlag  bool              `json:"attention_flag"`
+	Name              string            `json:"name"`
+	DisplayName       string            `json:"display_name,omitempty"`
+	Color             string            `json:"color"`
+	Branch            string            `json:"branch"`
+	ProjectAlias      string            `json:"project_alias,omitempty"`
+	Ports             map[string]int    `json:"ports"`
+	Routes            map[string]string `json:"routes"`
+	ExternalRoutes    map[string]string `json:"external_routes,omitempty"`
+	AttentionFlag     bool              `json:"attention_flag"`
+	ArtifactCount     int               `json:"artifact_count"`
+	FocusedArtifactID string            `json:"focused_artifact_id,omitempty"`
 }
 
 func buildSessionResponse(sess *session.Session) sessionResponse {
@@ -151,16 +160,19 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 			}
 		}
 	}
+	artifactCount, focusedArtifactID := artifactCountAndFocus(sess)
 	return sessionResponse{
-		Name:           sess.Name,
-		DisplayName:    sess.DisplayName,
-		Color:          sess.EffectiveColor(),
-		Branch:         sess.Branch,
-		ProjectAlias:   sess.ProjectAlias,
-		Ports:          sess.Ports,
-		Routes:         sess.Routes,
-		ExternalRoutes: externalRoutes,
-		AttentionFlag:  sess.AttentionFlag,
+		Name:              sess.Name,
+		DisplayName:       sess.DisplayName,
+		Color:             sess.EffectiveColor(),
+		Branch:            sess.Branch,
+		ProjectAlias:      sess.ProjectAlias,
+		Ports:             sess.Ports,
+		Routes:            sess.Routes,
+		ExternalRoutes:    externalRoutes,
+		AttentionFlag:     sess.AttentionFlag,
+		ArtifactCount:     artifactCount,
+		FocusedArtifactID: focusedArtifactID,
 	}
 }
 
@@ -421,7 +433,7 @@ func stripANSI(s string) string {
 func paneCaptureTarget(name, pane string) (string, error) {
 	target := exactTmuxSessionTarget(name)
 	if pane == "" {
-		return target, nil
+		return target + ":", nil
 	}
 	if _, err := strconv.Atoi(pane); err != nil {
 		return "", errInvalidPane
@@ -503,7 +515,7 @@ func handleActivePane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := execTmuxOutput("display-message", "-t", exactTmuxSessionTarget(name), "-p", "#{pane_index}")
+	out, err := execTmuxOutput("display-message", "-t", exactTmuxSessionTarget(name)+":", "-p", "#{pane_index}")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve active pane"})
 		return

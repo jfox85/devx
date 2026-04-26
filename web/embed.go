@@ -38,6 +38,9 @@ func spaHandler(fsys fs.FS) http.Handler {
 			return
 		}
 		f.Close()
+		if strings.HasSuffix(path, ".webmanifest") {
+			w.Header().Set("Content-Type", "application/manifest+json")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 }

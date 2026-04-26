@@ -121,6 +121,12 @@ export async function listProjects() {
   return data.projects || []
 }
 
+export async function getSettings() {
+  const res = await apiFetch('/settings')
+  if (!res.ok) return { artifact_trigger_key: 'Ctrl+Space' }
+  return res.json()
+}
+
 export async function refreshTerminal(sessionName) {
   await apiFetch('/refresh?name=' + encodeURIComponent(sessionName), { method: 'POST' })
 }
@@ -158,6 +164,123 @@ export async function uploadImage(file) {
     throw new Error(e.error || 'Upload failed')
   }
   return res.json()  // { path: '/Users/.../.devx/uploads/abc123.png' }
+}
+
+export async function listArtifacts(sessionName, filters = {}) {
+  const params = new URLSearchParams({ session: sessionName })
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value)
+  }
+  const res = await apiFetch('/artifacts?' + params.toString())
+  if (!res.ok) throw new Error(`Failed to list artifacts: ${res.status}`)
+  const data = await res.json()
+  return data.artifacts || []
+}
+
+export async function uploadArtifacts(sessionName, files, { title = '', tags = '', retention = 'session', type = '', summary = '' } = {}) {
+  const form = new FormData()
+  for (const file of files || []) form.append('file', file)
+  if (title) form.append('title', title)
+  if (tags) form.append('tags', tags)
+  if (retention) form.append('retention', retention)
+  if (type) form.append('type', type)
+  if (summary) form.append('summary', summary)
+  const res = await fetch(base + '/artifacts/upload?session=' + encodeURIComponent(sessionName), {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form,
+  })
+  if (res.status === 401) {
+    handle401()
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Artifact upload failed')
+  }
+  const data = await res.json()
+  return data.artifacts || []
+}
+
+export async function createTextArtifact(sessionName, { title, text, format = 'md', tags = '', retention = 'session', type = 'document' }) {
+  const form = new FormData()
+  form.append('title', title)
+  form.append('text', text)
+  form.append('format', format)
+  form.append('type', type)
+  if (tags) form.append('tags', tags)
+  if (retention) form.append('retention', retention)
+  const res = await fetch(base + '/artifacts/upload?session=' + encodeURIComponent(sessionName), {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form,
+  })
+  if (res.status === 401) {
+    handle401()
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Artifact creation failed')
+  }
+  const data = await res.json()
+  return data.artifacts || []
+}
+
+export async function archiveArtifact(sessionName, id) {
+  const res = await apiFetch('/artifacts/archive?session=' + encodeURIComponent(sessionName) + '&id=' + encodeURIComponent(id), { method: 'POST' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Artifact archive failed')
+  }
+  return res.json()
+}
+
+export async function removeArtifact(sessionName, id) {
+  const res = await apiFetch('/artifacts/item?session=' + encodeURIComponent(sessionName) + '&id=' + encodeURIComponent(id), { method: 'DELETE' })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Artifact remove failed')
+  }
+}
+
+export async function clearArtifactFocus(sessionName) {
+  const res = await apiFetch('/artifacts/focus?session=' + encodeURIComponent(sessionName), { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to clear artifact focus: ${res.status}`)
+}
+
+export async function renameArtifact(sessionName, id, patch) {
+  const res = await apiFetch('/artifacts/rename?session=' + encodeURIComponent(sessionName) + '&id=' + encodeURIComponent(id), {
+    method: 'POST',
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Artifact rename failed')
+  }
+  return res.json()
+}
+
+export async function getShareIntent(id) {
+  const res = await apiFetch('/share-intents/' + encodeURIComponent(id))
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Shared content not found')
+  }
+  return res.json()
+}
+
+export async function commitShareIntent(id, payload) {
+  const res = await apiFetch('/share-intents/' + encodeURIComponent(id), {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}))
+    throw new Error(e.error || 'Failed to create artifact from shared content')
+  }
+  const data = await res.json()
+  return data.artifacts || []
 }
 
 export function isLoggedIn() {
