@@ -1,6 +1,6 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
@@ -550,6 +550,8 @@
     selectedArtifactID = null
     if (wasFullScreen) popModalHistory('artifact-fullscreen')
     try { await clearArtifactFocus(session.name) } catch { /* ignore */ }
+    await tick()
+    focusTerminal()
   }
 
   function openViewerPane() {
