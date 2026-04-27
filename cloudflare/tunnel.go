@@ -41,30 +41,9 @@ type OriginRequest struct {
 	HTTPHostHeader string `yaml:"httpHostHeader,omitempty"`
 }
 
-// BuildWebExternalHostname constructs the stable HTTPS hostname used for DevX Web.
-// Browsers require a secure origin for true mobile PWA/WebAPK installs; exposing
-// DevX Web through the existing Cloudflare tunnel gives phones a real HTTPS
-// origin instead of a plain-http LAN shortcut.
-func BuildWebExternalHostname(domain string) string {
-	if domain == "" {
-		return ""
-	}
-	return "devx." + domain
-}
-
 // buildCloudflaredConfig generates the cloudflared config from current sessions.
-func buildCloudflaredConfig(sessions map[string]*caddy.SessionInfo, tunnelID, credentialsFile, domain string, webPort int) CloudflaredConfig {
+func buildCloudflaredConfig(sessions map[string]*caddy.SessionInfo, tunnelID, credentialsFile, domain string) CloudflaredConfig {
 	var rules []IngressRule
-
-	if webHost := BuildWebExternalHostname(domain); webHost != "" && webPort > 0 {
-		rules = append(rules, IngressRule{
-			Hostname: webHost,
-			Service:  fmt.Sprintf("http://localhost:%d", webPort),
-			// DevX Web binds to loopback and expects local-origin traffic. Cloudflared
-			// terminates HTTPS publicly and forwards to this local HTTP origin.
-			OriginRequest: &OriginRequest{HTTPHostHeader: "localhost"},
-		})
-	}
 
 	// Sort session names for deterministic output
 	names := make([]string, 0, len(sessions))
@@ -117,7 +96,7 @@ func buildCloudflaredConfig(sessions map[string]*caddy.SessionInfo, tunnelID, cr
 
 // SyncTunnel generates the cloudflared config file from current sessions.
 // Skips if domain or tunnelID is empty.
-func SyncTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, credentialsFile, domain, cfgPath string, webPort int) error {
+func SyncTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, credentialsFile, domain, cfgPath string) error {
 	if domain == "" || tunnelID == "" {
 		return nil
 	}
@@ -125,7 +104,7 @@ func SyncTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, credentialsFil
 	cfgPath = expandPath(cfgPath)
 	credentialsFile = expandPath(credentialsFile)
 
-	cfg := buildCloudflaredConfig(sessions, tunnelID, credentialsFile, domain, webPort)
+	cfg := buildCloudflaredConfig(sessions, tunnelID, credentialsFile, domain)
 
 	yamlData, err := yaml.Marshal(cfg)
 	if err != nil {

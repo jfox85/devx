@@ -17,7 +17,7 @@ func TestBuildCloudflaredConfig(t *testing.T) {
 		},
 	}
 
-	cfg := buildCloudflaredConfig(sessions, "tunnel-abc", "/home/user/.cloudflared/creds.json", "example.com", 7777)
+	cfg := buildCloudflaredConfig(sessions, "tunnel-abc", "/home/user/.cloudflared/creds.json", "example.com")
 
 	if cfg.Tunnel != "tunnel-abc" {
 		t.Errorf("expected tunnel=tunnel-abc, got %q", cfg.Tunnel)
@@ -35,15 +35,9 @@ func TestBuildCloudflaredConfig(t *testing.T) {
 		t.Errorf("last rule must be catch-all, got %+v", last)
 	}
 
-	// Check service rules contain expected hostnames and services.
-	var foundUI, foundAPI, foundWeb bool
+	// Check service rules contain expected hostnames and services
+	var foundUI, foundAPI bool
 	for _, rule := range cfg.Ingress {
-		if rule.Hostname == "devx.example.com" {
-			foundWeb = true
-			if rule.Service != "http://localhost:7777" {
-				t.Errorf("web service should proxy to devx web port, got %q", rule.Service)
-			}
-		}
 		if rule.Hostname == "my-session-ui.example.com" {
 			foundUI = true
 			if !strings.Contains(rule.Service, "localhost") {
@@ -54,8 +48,8 @@ func TestBuildCloudflaredConfig(t *testing.T) {
 			foundAPI = true
 		}
 	}
-	if !foundUI || !foundAPI || !foundWeb {
-		t.Errorf("missing expected ingress rules: web=%v ui=%v api=%v", foundWeb, foundUI, foundAPI)
+	if !foundUI || !foundAPI {
+		t.Errorf("missing expected ingress rules: ui=%v api=%v", foundUI, foundAPI)
 	}
 }
 
@@ -70,7 +64,7 @@ func TestSyncTunnel(t *testing.T) {
 		},
 	}
 
-	err := SyncTunnel(sessions, "tunnel-xyz", "/tmp/creds.json", "example.com", cfgPath, 7777)
+	err := SyncTunnel(sessions, "tunnel-xyz", "/tmp/creds.json", "example.com", cfgPath)
 	if err != nil {
 		t.Fatalf("SyncTunnel returned error: %v", err)
 	}
@@ -87,9 +81,6 @@ func TestSyncTunnel(t *testing.T) {
 	if !strings.Contains(content, "test-session-ui.example.com") {
 		t.Errorf("config missing expected hostname: %s", content)
 	}
-	if !strings.Contains(content, "devx.example.com") {
-		t.Errorf("config missing DevX Web PWA hostname: %s", content)
-	}
 	if !strings.Contains(content, "http_status:404") {
 		t.Errorf("config missing catch-all rule: %s", content)
 	}
@@ -101,7 +92,7 @@ func TestSyncTunnelSkipsWhenNotConfigured(t *testing.T) {
 	sessions := map[string]*caddy.SessionInfo{}
 
 	// empty domain — should be no-op
-	err := SyncTunnel(sessions, "tid", "/tmp/creds.json", "", cfgPath, 7777)
+	err := SyncTunnel(sessions, "tid", "/tmp/creds.json", "", cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +101,7 @@ func TestSyncTunnelSkipsWhenNotConfigured(t *testing.T) {
 	}
 
 	// empty tunnelID — should be no-op
-	err = SyncTunnel(sessions, "", "/tmp/creds.json", "example.com", cfgPath, 7777)
+	err = SyncTunnel(sessions, "", "/tmp/creds.json", "example.com", cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

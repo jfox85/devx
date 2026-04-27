@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfox85/devx/cloudflare"
 	"github.com/jfox85/devx/web"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -212,8 +211,5 @@ func runWebStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("devx web is running (pid %d, port %d)\n", pid, port)
-	if domain := viper.GetString("external_domain"); domain != "" {
-		fmt.Printf("PWA URL: https://%s\n", cloudflare.BuildWebExternalHostname(domain))
-	}
 	return nil
 }
