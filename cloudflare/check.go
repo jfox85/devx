@@ -25,7 +25,7 @@ type TunnelCheckResult struct {
 }
 
 // CheckTunnel performs a comprehensive health check of the cloudflare tunnel setup.
-func CheckTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, domain, cfgPath string) TunnelCheckResult {
+func CheckTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, domain, cfgPath string, webPort int) TunnelCheckResult {
 	result := TunnelCheckResult{}
 	cfgPath = expandPath(cfgPath)
 
@@ -60,8 +60,8 @@ func CheckTunnel(sessions map[string]*caddy.SessionInfo, tunnelID, domain, cfgPa
 	}
 	result.ConfigValid = true
 
-	// Check ingress rules match current sessions
-	expected := buildCloudflaredConfig(sessions, tunnelID, "", domain)
+	// Check ingress rules match current sessions and the DevX Web PWA hostname.
+	expected := buildCloudflaredConfig(sessions, tunnelID, "", domain, webPort)
 	expectedHosts := make(map[string]bool)
 	for _, rule := range expected.Ingress {
 		if rule.Hostname != "" {

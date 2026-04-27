@@ -40,6 +40,12 @@ func spaHandler(fsys fs.FS) http.Handler {
 		f.Close()
 		if strings.HasSuffix(path, ".webmanifest") {
 			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		if path == "sw.js" || path == "index.html" {
+			// PWA shell files should update immediately, especially through Cloudflare.
+			// Hashed JS/CSS assets can still use the default static-file behaviour.
+			w.Header().Set("Cache-Control", "no-store")
 		}
 		fileServer.ServeHTTP(w, r)
 	})

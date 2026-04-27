@@ -4,7 +4,9 @@ import App from './App.svelte'
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {})
+    // Version the SW URL and bypass the HTTP cache so Cloudflare/Chrome don't
+    // keep an older service worker around when PWA install metadata changes.
+    navigator.serviceWorker.register('/sw.js?v=2', { updateViaCache: 'none' }).catch(() => {})
   })
 }
 

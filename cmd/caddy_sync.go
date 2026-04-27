@@ -76,6 +76,7 @@ func syncAllCloudflareRoutes() error {
 		credentialsFile,
 		domain,
 		cfgPath,
+		viper.GetInt("web_port"),
 	); err != nil {
 		return err
 	}

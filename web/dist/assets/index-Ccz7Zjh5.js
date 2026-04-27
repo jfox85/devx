@@ -160,4 +160,4 @@
       flex flex-col shrink-0
       ${n(r)==="terminal"?"hidden lg:flex lg:w-72 xl:w-80":"flex w-full lg:w-72 xl:w-80"}
       border-r border-[#1e2d4a]
-    `),Vt(pe,1,`flex-1 flex flex-col min-w-0 ${n(r)==="sessions"?"hidden lg:flex":"flex"}`)}),T(C,J)};B(V,C=>{i?C(j,!1):C(F)})}T(e,L),dt()}"serviceWorker"in navigator&&window.addEventListener("load",()=>{navigator.serviceWorker.register("/sw.js").catch(()=>{})});ts(Rc,{target:document.getElementById("app")});
+    `),Vt(pe,1,`flex-1 flex flex-col min-w-0 ${n(r)==="sessions"?"hidden lg:flex":"flex"}`)}),T(C,J)};B(V,C=>{i?C(j,!1):C(F)})}T(e,L),dt()}"serviceWorker"in navigator&&window.addEventListener("load",()=>{navigator.serviceWorker.register("/sw.js?v=2",{updateViaCache:"none"}).catch(()=>{})});ts(Rc,{target:document.getElementById("app")});

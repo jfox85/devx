@@ -104,14 +104,15 @@ func runCloudflareCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	sessionInfos := buildSessionInfoMap(store, registry)
-	result := cloudflare.CheckTunnel(sessionInfos, tunnelID, domain, cfgPath)
+	webPort := viper.GetInt("web_port")
+	result := cloudflare.CheckTunnel(sessionInfos, tunnelID, domain, cfgPath, webPort)
 
 	fmt.Println("=== Cloudflare Tunnel Status ===")
 	printCheckLine("cloudflared binary installed", result.BinaryInstalled, "")
 	printCheckLine("tunnel registered in Cloudflare", result.TunnelExists, result.TunnelExistsError)
 	printCheckLine("config file exists", result.ConfigExists, "")
 	printCheckLine("config file valid", result.ConfigValid, result.ConfigError)
-	printCheckLine("ingress rules match sessions", !result.IngressMismatch, "")
+	printCheckLine("ingress rules match sessions and DevX Web", !result.IngressMismatch, "")
 	if result.IngressMismatch {
 		for _, h := range result.MissingRules {
 			fmt.Printf("  missing: %s\n", h)
@@ -121,6 +122,9 @@ func runCloudflareCheck(cmd *cobra.Command, args []string) error {
 	printCheckLine("DNS wildcard resolves", result.DNSValid, result.DNSError)
 	if !result.DNSValid && domain != "" {
 		fmt.Printf("  Ensure a wildcard CNAME record *.%s -> <tunnel-id>.cfargotunnel.com exists in Cloudflare DNS.\n", domain)
+	}
+	if domain != "" && webPort > 0 {
+		fmt.Printf("DevX Web PWA URL: https://%s\n", cloudflare.BuildWebExternalHostname(domain))
 	}
 
 	return nil

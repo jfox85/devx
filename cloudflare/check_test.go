@@ -17,11 +17,11 @@ func TestCheckTunnelConfig(t *testing.T) {
 	}
 
 	// Write a valid config
-	if err := SyncTunnel(sessions, "tid", "/tmp/c.json", "ex.com", cfgPath); err != nil {
+	if err := SyncTunnel(sessions, "tid", "/tmp/c.json", "ex.com", cfgPath, 7777); err != nil {
 		t.Fatalf("SyncTunnel: %v", err)
 	}
 
-	result := CheckTunnel(sessions, "tid", "ex.com", cfgPath)
+	result := CheckTunnel(sessions, "tid", "ex.com", cfgPath, 7777)
 
 	if !result.ConfigExists {
 		t.Error("expected ConfigExists=true")
@@ -34,7 +34,7 @@ func TestCheckTunnelConfig(t *testing.T) {
 	}
 
 	// Test with missing config file
-	result2 := CheckTunnel(sessions, "tid", "ex.com", "/nonexistent/config.yaml")
+	result2 := CheckTunnel(sessions, "tid", "ex.com", "/nonexistent/config.yaml", 7777)
 	if result2.ConfigExists {
 		t.Error("expected ConfigExists=false for missing file")
 	}
@@ -48,7 +48,7 @@ func TestCheckTunnelConfigMismatch(t *testing.T) {
 	originalSessions := map[string]*caddy.SessionInfo{
 		"sess-a": {Name: "sess-a", Ports: map[string]int{"ui": 3000}},
 	}
-	if err := SyncTunnel(originalSessions, "tid", "/tmp/c.json", "ex.com", cfgPath); err != nil {
+	if err := SyncTunnel(originalSessions, "tid", "/tmp/c.json", "ex.com", cfgPath, 7777); err != nil {
 		t.Fatalf("SyncTunnel: %v", err)
 	}
 
@@ -57,7 +57,7 @@ func TestCheckTunnelConfigMismatch(t *testing.T) {
 		"sess-a": {Name: "sess-a", Ports: map[string]int{"ui": 3000}},
 		"sess-b": {Name: "sess-b", Ports: map[string]int{"api": 4000}},
 	}
-	result := CheckTunnel(newSessions, "tid", "ex.com", cfgPath)
+	result := CheckTunnel(newSessions, "tid", "ex.com", cfgPath, 7777)
 
 	if !result.ConfigExists {
 		t.Error("expected ConfigExists=true")
@@ -83,7 +83,7 @@ func TestCheckTunnelInvalidConfig(t *testing.T) {
 	}
 
 	sessions := map[string]*caddy.SessionInfo{}
-	result := CheckTunnel(sessions, "tid", "ex.com", cfgPath)
+	result := CheckTunnel(sessions, "tid", "ex.com", cfgPath, 7777)
 
 	if !result.ConfigExists {
 		t.Error("expected ConfigExists=true")
