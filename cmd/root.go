@@ -109,6 +109,7 @@ func initConfig() {
 	viper.SetDefault("web_secret_token", "")
 	viper.SetDefault("web_port", 7777)
 	viper.SetDefault("web_autostart", false)
+	viper.SetDefault("artifact_trigger_key", "Ctrl+Space")
 
 	// Read primary config (project-level if found, otherwise global)
 	_ = viper.ReadInConfig()

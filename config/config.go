@@ -19,6 +19,7 @@ type Config struct {
 	WebSecretToken         string   `mapstructure:"web_secret_token"`
 	WebPort                int      `mapstructure:"web_port"`
 	WebAutostart           bool     `mapstructure:"web_autostart"`
+	ArtifactTriggerKey     string   `mapstructure:"artifact_trigger_key"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -66,6 +67,7 @@ func SaveConfig(cfg *Config) error {
 	viper.Set("web_secret_token", cfg.WebSecretToken)
 	viper.Set("web_port", cfg.WebPort)
 	viper.Set("web_autostart", cfg.WebAutostart)
+	viper.Set("artifact_trigger_key", cfg.ArtifactTriggerKey)
 
 	// Write the config file
 	configFile := filepath.Join(configPath, "config.yaml")

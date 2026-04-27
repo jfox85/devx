@@ -33,6 +33,26 @@ func TestGetSessionsReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/settings", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if _, ok := resp["artifact_trigger_key"]; !ok {
+		t.Fatalf("artifact_trigger_key missing from response: %#v", resp)
+	}
+}
+
 func TestGetHealthReturnsOK(t *testing.T) {
 	mux := http.NewServeMux()
 	registerAPIRoutes(mux)
@@ -76,7 +96,7 @@ func TestActivePaneReturnsPaneIndex(t *testing.T) {
 	withStubbedTmux(t,
 		func(args ...string) error { return errors.New("no web session") },
 		func(args ...string) ([]byte, error) {
-			if got, want := strings.Join(args, " "), "display-message -t =jf-add-web -p #{pane_index}"; got != want {
+			if got, want := strings.Join(args, " "), "display-message -t =jf-add-web: -p #{pane_index}"; got != want {
 				t.Fatalf("unexpected tmux args: %q != %q", got, want)
 			}
 			return []byte("2\n"), nil
@@ -118,7 +138,7 @@ func TestPaneContentJSONReturnsCapturedContent(t *testing.T) {
 			return nil
 		},
 		func(args ...string) ([]byte, error) {
-			if got, want := strings.Join(args, " "), "capture-pane -t =jf-add-web-web -p -S -50000"; got != want {
+			if got, want := strings.Join(args, " "), "capture-pane -t =jf-add-web-web: -p -S -50000"; got != want {
 				t.Fatalf("unexpected tmux args: %q != %q", got, want)
 			}
 			return []byte("line 1\nline 2\n"), nil
@@ -139,7 +159,7 @@ func TestPaneContentJSONReturnsCapturedContent(t *testing.T) {
 	if body.Content != "line 1\nline 2" {
 		t.Fatalf("unexpected content %q", body.Content)
 	}
-	if body.Target != "=jf-add-web-web" {
+	if body.Target != "=jf-add-web-web:" {
 		t.Fatalf("unexpected target %q", body.Target)
 	}
 }
@@ -238,7 +258,7 @@ func TestSendLiteralUsesExactTargetForSlashSessionNames(t *testing.T) {
 			switch got {
 			case "has-session -t =feature/foo-web":
 				return errors.New("no web session")
-			case "send-keys -t =feature/foo -l -- hello world":
+			case "send-keys -t =feature/foo: -l -- hello world":
 				return nil
 			default:
 				t.Fatalf("unexpected tmux args: %q", got)
@@ -257,7 +277,7 @@ func TestPaneContentTextReturnsPlainText(t *testing.T) {
 	withStubbedTmux(t,
 		func(args ...string) error { return errors.New("no web session") },
 		func(args ...string) ([]byte, error) {
-			if got, want := strings.Join(args, " "), "capture-pane -t =jf-add-web -p -S -50000"; got != want {
+			if got, want := strings.Join(args, " "), "capture-pane -t =jf-add-web: -p -S -50000"; got != want {
 				t.Fatalf("unexpected tmux args: %q != %q", got, want)
 			}
 			return []byte("plain output\n"), nil

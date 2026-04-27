@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 
+	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
 )
@@ -63,6 +64,18 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 	// Kill tmux session if it exists
 	if err := killTmuxSession(name); err != nil {
 		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+	}
+
+	// Archive retained artifacts before cleanup or worktree deletion. Archive
+	// failures must block normal removal so retention=archive artifacts are not
+	// silently lost. --force is the explicit discard path.
+	if archiveDir, count, err := artifactpkg.ArchiveSessionArtifacts(sess); err != nil {
+		if !forceFlag {
+			return fmt.Errorf("failed to archive retained artifacts; rerun with --force to discard and remove session anyway: %w", err)
+		}
+		fmt.Printf("Warning: failed to archive artifacts; continuing because --force was used: %v\n", err)
+	} else if count > 0 {
+		fmt.Printf("Archived %d artifact(s) to %s\n", count, archiveDir)
 	}
 
 	// Run cleanup command if configured
