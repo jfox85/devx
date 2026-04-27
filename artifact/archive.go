@@ -50,6 +50,13 @@ func ArchiveSessionArtifacts(sess *session.Session) (archiveDir string, count in
 		if err != nil {
 			return err
 		}
+		cleanupDir := archiveDir
+		defer func() {
+			if cleanupDir != "" {
+				_ = os.RemoveAll(cleanupDir)
+				archiveDir = ""
+			}
+		}()
 		for rel := range files {
 			if err := copyArtifactFile(DirForSession(sess), archiveDir, rel); err != nil {
 				return err
@@ -63,6 +70,7 @@ func ArchiveSessionArtifacts(sess *session.Session) (archiveDir string, count in
 		if err := os.WriteFile(filepath.Join(archiveDir, ManifestName), data, 0o644); err != nil {
 			return fmt.Errorf("failed to write archive manifest: %w", err)
 		}
+		cleanupDir = ""
 		count = len(archived)
 		return nil
 	})

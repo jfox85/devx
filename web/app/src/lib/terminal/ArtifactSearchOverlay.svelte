@@ -1,4 +1,6 @@
 <script>
+  import { onMount, onDestroy } from 'svelte'
+
   export let mode = 'insert'
   export let query = ''
   export let items = []
@@ -9,6 +11,16 @@
   export let onChoose = () => {}
   export let onOpen = () => {}
   export let onInsert = () => {}
+
+  function handleWindowKeydown(e) {
+    const active = document.activeElement
+    if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA' || active?.isContentEditable) return
+    if (e.key === 'j') { e.preventDefault(); onMove(1) }
+    if (e.key === 'k') { e.preventDefault(); onMove(-1) }
+  }
+
+  onMount(() => window.addEventListener('keydown', handleWindowKeydown))
+  onDestroy(() => window.removeEventListener('keydown', handleWindowKeydown))
 </script>
 
 <div class="absolute inset-0 z-50 bg-black/70 flex items-start justify-center p-8" on:click={onClose}>
@@ -23,8 +35,8 @@
         on:input={(e) => onQuery(e.target.value)}
         on:keydown={(e) => {
           if (e.key === 'Escape') onClose()
-          if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); onMove(1) }
-          if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); onMove(-1) }
+          if (e.key === 'ArrowDown') { e.preventDefault(); onMove(1) }
+          if (e.key === 'ArrowUp') { e.preventDefault(); onMove(-1) }
           if (e.key === 'Enter' && items[selectedIndex]) onChoose(items[selectedIndex])
         }}
       />

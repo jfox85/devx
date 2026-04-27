@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"text/tabwriter"
-	"time"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/spf13/cobra"
@@ -54,9 +53,9 @@ func runArtifactList(cmd *cobra.Command, args []string) error {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tTYPE\tTITLE\tCREATED\tRETENTION")
 	for _, item := range computed {
-		created := item.Created.Local().Format("2006-01-02 15:04")
-		if item.Created.IsZero() {
-			created = time.Time{}.Format("2006-01-02 15:04")
+		created := "-"
+		if !item.Created.IsZero() {
+			created = item.Created.Local().Format("2006-01-02 15:04")
 		}
 		retention := item.Retention
 		if retention == "" {

@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -44,7 +45,8 @@ func Slugify(s string) string {
 }
 
 func GenerateID(artifactType, title string, t time.Time) string {
-	return artifactType + "-" + Slugify(title) + "-" + t.UTC().Format("20060102150405")
+	utc := t.UTC()
+	return artifactType + "-" + Slugify(title) + "-" + utc.Format("20060102150405") + "-" + fmt.Sprintf("%09d", utc.Nanosecond())
 }
 
 func DefaultDestination(artifactType, sourceName string) string {
@@ -73,10 +75,11 @@ func ParseTags(s string) []string {
 	var tags []string
 	for _, part := range parts {
 		tag := strings.TrimSpace(part)
-		if tag == "" || seen[tag] {
+		key := strings.ToLower(tag)
+		if tag == "" || seen[key] {
 			continue
 		}
-		seen[tag] = true
+		seen[key] = true
 		tags = append(tags, tag)
 	}
 	return tags

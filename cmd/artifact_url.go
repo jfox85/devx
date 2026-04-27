@@ -66,7 +66,8 @@ func absoluteArtifactURL(sessionName, file string) string {
 	path := artifactpkg.WebPath(sessionName, file)
 	external := strings.TrimSpace(viper.GetString("external_domain"))
 	if external != "" {
-		if strings.HasPrefix(external, "http://") || strings.HasPrefix(external, "https://") {
+		lower := strings.ToLower(external)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			return strings.TrimRight(external, "/") + path
 		}
 		return "https://" + strings.TrimRight(external, "/") + path

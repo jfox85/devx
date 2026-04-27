@@ -105,7 +105,14 @@ func handleShareTarget(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "failed to open shared file", http.StatusBadRequest)
 				return
 			}
-			tmp, err := os.CreateTemp(shareTempDir(), "devx-share-*")
+			dir, err := shareTempDir()
+			if err != nil {
+				_ = file.Close()
+				cleanupShareIntent(intent)
+				http.Error(w, "failed to prepare shared file storage", http.StatusInternalServerError)
+				return
+			}
+			tmp, err := os.CreateTemp(dir, "devx-share-*")
 			if err != nil {
 				_ = file.Close()
 				cleanupShareIntent(intent)
@@ -332,20 +339,37 @@ func shareIntentSweeper() {
 	}
 }
 
-func shareTempDir() string {
-	dir := filepath.Join(os.TempDir(), "devx-share-target")
-	if info, err := os.Lstat(dir); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-			_ = os.RemoveAll(dir)
-		}
+func shareTempDir() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil || strings.TrimSpace(base) == "" {
+		base = os.TempDir()
 	}
-	_ = os.MkdirAll(dir, 0o700)
-	_ = os.Chmod(dir, 0o700)
-	return dir
+	dir := filepath.Join(base, "devx", "share-target")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create share temp directory: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect share temp directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("share temp directory must not be a symlink")
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("share temp path is not a directory")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("share temp directory permissions are too open")
+	}
+	return dir, nil
 }
 
 func cleanupStaleShareTempFiles() {
-	entries, err := os.ReadDir(shareTempDir())
+	dir, err := shareTempDir()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -354,7 +378,7 @@ func cleanupStaleShareTempFiles() {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "devx-share-") {
 			continue
 		}
-		path := filepath.Join(shareTempDir(), entry.Name())
+		path := filepath.Join(dir, entry.Name())
 		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
 			_ = os.Remove(path)
 		}

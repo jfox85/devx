@@ -21,7 +21,7 @@ func UpdateMetadata(sess *session.Session, id string, update MetadataUpdate) (ou
 	err = withManifestLock(sess, func() error {
 		manifest, err := LoadManifest(sess)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading manifest: %w", err)
 		}
 		a, _ := Find(manifest, id)
 		if a == nil {
@@ -35,7 +35,7 @@ func UpdateMetadata(sess *session.Session, id string, update MetadataUpdate) (ou
 		}
 		if update.Type != nil {
 			if err := ValidateType(*update.Type); err != nil {
-				return err
+				return fmt.Errorf("validating type %q: %w", *update.Type, err)
 			}
 			a.Type = *update.Type
 		}
@@ -52,7 +52,7 @@ func UpdateMetadata(sess *session.Session, id string, update MetadataUpdate) (ou
 		}
 		if update.Retention != nil {
 			if err := ValidateRetention(*update.Retention); err != nil {
-				return err
+				return fmt.Errorf("validating retention %q: %w", *update.Retention, err)
 			}
 			a.Retention = *update.Retention
 		}

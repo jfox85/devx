@@ -25,6 +25,7 @@
   let paneViewerURL = ''
   let actionsMenuOpen = false
   let modalStack = []
+  let suppressNextPopState = false
   let splitMode = 'vertical' // vertical | horizontal | artifacts | terminal
   let artifactSearchOpen = false
   let artifactQuery = ''
@@ -240,7 +241,12 @@
     const top = modalStack[modalStack.length - 1]
     modalStack = modalStack.filter((_, i) => i !== modalStack.length - 1)
     if (top === type && history.state?.devxModal === type) {
-      try { history.back() } catch { /* ignore */ }
+      try {
+        suppressNextPopState = true
+        history.back()
+      } catch {
+        suppressNextPopState = false
+      }
     }
   }
 
@@ -299,6 +305,10 @@
   }
 
   function handlePopState() {
+    if (suppressNextPopState) {
+      suppressNextPopState = false
+      return
+    }
     const type = modalStack[modalStack.length - 1]
     modalStack = modalStack.filter((_, i) => i !== modalStack.length - 1)
     if (type === 'pane-viewer') {

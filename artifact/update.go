@@ -18,7 +18,7 @@ func Remove(sess *session.Session, id string) (out Artifact, err error) {
 			return fmt.Errorf("artifact %q not found", id)
 		}
 		removed := *a
-		abs, err := SecureExistingPath(DirForSession(sess), removed.File)
+		abs, err := SecureNewPath(DirForSession(sess), removed.File)
 		if err != nil {
 			return err
 		}

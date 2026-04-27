@@ -167,7 +167,11 @@ func TestShareIntentCommitConcurrentSingleUse(t *testing.T) {
 
 func TestExpiredShareIntentIsCleanedUp(t *testing.T) {
 	resetShareStoreForTest(t)
-	tmp, err := os.CreateTemp(shareTempDir(), "devx-share-*")
+	dir, err := shareTempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp, err := os.CreateTemp(dir, "devx-share-*")
 	if err != nil {
 		t.Fatal(err)
 	}

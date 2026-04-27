@@ -2,6 +2,7 @@ devx
 .envrc
 .tmuxp.yaml
 .artifacts/
+# Pi agent scratch artifacts and local proof-of-work reports
 .pi/
 /dist/
 .devx/

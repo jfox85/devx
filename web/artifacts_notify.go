@@ -23,9 +23,13 @@ func (s *Server) handleArtifactNotify(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		id = artifactpkg.FocusedID(sess)
 	}
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing artifact id"})
+		return
+	}
 	manifest, err := artifactpkg.LoadManifest(sess)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load artifact manifest"})
 		return
 	}
 	a, _ := artifactpkg.Find(manifest, id)

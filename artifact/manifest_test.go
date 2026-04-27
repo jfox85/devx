@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -93,8 +94,16 @@ func TestDetectTypeAndGenerateID(t *testing.T) {
 		t.Fatalf("DetectType log = %q", got)
 	}
 	now := time.Date(2026, 4, 25, 10, 30, 0, 0, time.UTC)
-	if got := GenerateID("plan", "Auth implementation plan!", now); got != "plan-auth-implementation-plan-20260425103000" {
+	if got := GenerateID("plan", "Auth implementation plan!", now); got != "plan-auth-implementation-plan-20260425103000-000000000" {
 		t.Fatalf("GenerateID = %q", got)
+	}
+}
+
+func TestParseTagsDedupesCaseInsensitive(t *testing.T) {
+	tags := ParseTags("Design, design, QA, qa")
+	want := []string{"Design", "QA"}
+	if !reflect.DeepEqual(tags, want) {
+		t.Fatalf("ParseTags = %#v want %#v", tags, want)
 	}
 }
 
@@ -109,7 +118,7 @@ func TestAddCreatesManifestFileAndTheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if a.ID != "plan-auth-plan-20260425103000" || a.File != "plan.html" {
+	if a.ID != "plan-auth-plan-20260425103000-000000000" || a.File != "plan.html" {
 		t.Fatalf("unexpected artifact: %#v", a)
 	}
 	if _, err := os.Stat(filepath.Join(DirForSession(sess), "plan.html")); err != nil {
