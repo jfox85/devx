@@ -44,8 +44,18 @@ func runArtifactURL(cmd *cobra.Command, args []string) error {
 	if a == nil {
 		return fmt.Errorf("artifact %q not found", args[0])
 	}
-	if artifactURLFlags.local && artifactURLFlags.embed {
-		return fmt.Errorf("--local and --embed cannot be used together")
+	modeCount := 0
+	if artifactURLFlags.local {
+		modeCount++
+	}
+	if artifactURLFlags.embed {
+		modeCount++
+	}
+	if artifactURLFlags.absolute {
+		modeCount++
+	}
+	if modeCount > 1 {
+		return fmt.Errorf("--local, --embed, and --absolute are mutually exclusive")
 	}
 	var out string
 	switch {

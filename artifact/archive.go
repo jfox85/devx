@@ -59,13 +59,13 @@ func ArchiveSessionArtifacts(sess *session.Session) (archiveDir string, count in
 		}()
 		for rel := range files {
 			if err := copyArtifactFile(DirForSession(sess), archiveDir, rel); err != nil {
-				return err
+				return fmt.Errorf("failed to archive %q: %w", rel, err)
 			}
 		}
 		archiveManifest := &Manifest{Version: ManifestVersion, Session: sess.Name, Artifacts: archived}
 		data, err := marshalManifest(archiveManifest)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to marshal archive manifest: %w", err)
 		}
 		if err := os.WriteFile(filepath.Join(archiveDir, ManifestName), data, 0o644); err != nil {
 			return fmt.Errorf("failed to write archive manifest: %w", err)

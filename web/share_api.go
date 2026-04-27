@@ -267,9 +267,9 @@ func handleCommitShareIntent(w http.ResponseWriter, r *http.Request) {
 }
 
 func allowedShareTargetOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
-		origin = r.Header.Get("Referer")
+		origin = strings.TrimSpace(r.Header.Get("Referer"))
 	}
 	if origin == "" {
 		return true
@@ -279,7 +279,7 @@ func allowedShareTargetOrigin(r *http.Request) bool {
 		return false
 	}
 	if u.Host == "" {
-		return true
+		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
 }

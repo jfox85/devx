@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -33,7 +34,8 @@ func artifactSessionFromRequest(w http.ResponseWriter, r *http.Request) (*sessio
 	}
 	store, err := session.LoadSessions()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("failed to load sessions for artifact request: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load sessions"})
 		return nil, false
 	}
 	sess, ok := store.GetSession(name)
@@ -51,7 +53,8 @@ func handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	manifest, err := artifactpkg.LoadManifest(sess)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("failed to load artifact manifest for session %q: %v", sess.Name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load artifact manifest"})
 		return
 	}
 	items := artifactpkg.Filter(manifest.Artifacts, artifactpkg.FilterOptions{
@@ -75,7 +78,8 @@ func handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	manifest, err := artifactpkg.LoadManifest(sess)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("failed to load artifact manifest for session %q: %v", sess.Name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load artifact manifest"})
 		return
 	}
 	a, _ := artifactpkg.Find(manifest, id)
@@ -97,7 +101,8 @@ func handleRemoveArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := artifactpkg.Remove(sess, id); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		log.Printf("failed to remove artifact %q for session %q: %v", id, sess.Name, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to remove artifact"})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -115,7 +120,8 @@ func handleServeArtifactByID(w http.ResponseWriter, r *http.Request) {
 	}
 	manifest, err := artifactpkg.LoadManifest(sess)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("failed to load artifact manifest for session %q: %v", sess.Name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load artifact manifest"})
 		return
 	}
 	a, _ := artifactpkg.Find(manifest, id)
@@ -153,7 +159,8 @@ func handleServeSessionArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	store, err := session.LoadSessions()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("failed to load sessions for artifact file request: %v", err)
+		http.Error(w, "failed to load sessions", http.StatusInternalServerError)
 		return
 	}
 	sess, ok := store.GetSession(name)
@@ -223,10 +230,18 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 
 	var added []artifactpkg.ListItem
 	var addedIDs []string
-	rollbackAdded := func() {
+	rollbackAdded := func() error {
+		var firstErr error
 		for i := len(addedIDs) - 1; i >= 0; i-- {
-			_, _ = artifactpkg.Remove(sess, addedIDs[i])
+			id := addedIDs[i]
+			if _, err := artifactpkg.Remove(sess, id); err != nil {
+				log.Printf("failed to roll back artifact %q for session %q: %v", id, sess.Name, err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 		}
+		return firstErr
 	}
 	if text := r.FormValue("text"); text != "" {
 		if title == "" {
@@ -240,7 +255,8 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 		dest := artifactpkg.Slugify(title) + "." + format
 		a, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: "-", Reader: strings.NewReader(text), Destination: dest, Type: artifactType, Title: title, Summary: summary, Agent: "human", Retention: retention, Tags: tags})
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			log.Printf("failed to create text artifact for session %q: %v", sess.Name, err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to create artifact"})
 			return
 		}
 		addedIDs = append(addedIDs, a.ID)
@@ -251,7 +267,11 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 	for _, header := range files {
 		file, err := header.Open()
 		if err != nil {
-			rollbackAdded()
+			if rollbackErr := rollbackAdded(); rollbackErr != nil {
+				log.Printf("failed to roll back artifact upload for session %q after open error %v: %v", sess.Name, err, rollbackErr)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to roll back partial artifact upload"})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to open uploaded file"})
 			return
 		}
@@ -270,8 +290,13 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 		a, addErr := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: header.Filename, Reader: file, Destination: dest, Type: itemType, Title: itemTitle, Summary: summary, Agent: "human", Retention: retention, Tags: tags})
 		_ = file.Close()
 		if addErr != nil {
-			rollbackAdded()
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": addErr.Error()})
+			if rollbackErr := rollbackAdded(); rollbackErr != nil {
+				log.Printf("failed to roll back artifact upload for session %q after add error %v: %v", sess.Name, addErr, rollbackErr)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to roll back partial artifact upload"})
+				return
+			}
+			log.Printf("failed to create uploaded artifact for session %q: %v", sess.Name, addErr)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to create artifact"})
 			return
 		}
 		addedIDs = append(addedIDs, a.ID)
@@ -321,7 +346,8 @@ func handleRenameArtifact(w http.ResponseWriter, r *http.Request) {
 	_, req.TagsSet = raw["tags"]
 	updated, err := artifactpkg.UpdateMetadata(sess, id, artifactpkg.MetadataUpdate{Title: req.Title, Type: req.Type, Summary: req.Summary, Tags: req.Tags, TagsSet: req.TagsSet, Retention: req.Retention})
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		log.Printf("failed to update artifact %q for session %q: %v", id, sess.Name, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to update artifact"})
 		return
 	}
 	writeJSON(w, http.StatusOK, artifactpkg.WithComputedFields(sess.Name, []artifactpkg.Artifact{updated})[0])
@@ -339,7 +365,8 @@ func handleArchiveArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := artifactpkg.SetRetention(sess, id, artifactpkg.ArchiveRetention)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		log.Printf("failed to archive artifact %q for session %q: %v", id, sess.Name, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to archive artifact"})
 		return
 	}
 	writeJSON(w, http.StatusOK, artifactpkg.WithComputedFields(sess.Name, []artifactpkg.Artifact{updated})[0])
@@ -351,10 +378,15 @@ func handleClearArtifactFocus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := artifactpkg.ClearFocus(sess); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("failed to clear artifact focus for session %q: %v", sess.Name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear artifact focus"})
 		return
 	}
-	_ = clearArtifactAttentionFlag(sess.Name)
+	if err := clearArtifactAttentionFlag(sess.Name); err != nil {
+		log.Printf("failed to clear artifact attention for session %q: %v", sess.Name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear artifact attention"})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -62,6 +62,25 @@ func TestShareTargetRejectsCrossOriginPost(t *testing.T) {
 	}
 }
 
+func TestShareTargetRejectsOpaqueOrigin(t *testing.T) {
+	resetShareStoreForTest(t)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("text", "hello")
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/share-target", &body)
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "null")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	shareTestMux().ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
 func TestShareTargetUnauthedStagesIntent(t *testing.T) {
 	resetShareStoreForTest(t)
 	var body bytes.Buffer
