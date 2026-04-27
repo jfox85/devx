@@ -80,7 +80,7 @@ func handleShareTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 	id, err := randomShareID()
 	if err != nil {
@@ -330,10 +330,6 @@ func shareIntentSweeper() {
 	for range ticker.C {
 		expireShareIntents(time.Now().UTC())
 	}
-}
-
-func consumeShareIntent(id string) {
-	cleanupShareIntent(takeShareIntent(id))
 }
 
 func shareTempDir() string {

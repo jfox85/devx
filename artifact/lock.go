@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/jfox85/devx/session"
 )
@@ -20,9 +19,9 @@ func withManifestLock(sess *session.Session, fn func() error) error {
 		return fmt.Errorf("failed to open artifact manifest lock: %w", err)
 	}
 	defer lockFile.Close()
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockManifestFile(lockFile); err != nil {
 		return fmt.Errorf("failed to lock artifact manifest: %w", err)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer func() { _ = unlockManifestFile(lockFile) }()
 	return fn()
 }
