@@ -9,18 +9,22 @@ import (
 	"time"
 )
 
-func TestTtydArgsIncludeMobileScrollback(t *testing.T) {
+func TestTtydArgsIncludeClientOptions(t *testing.T) {
 	args := ttydArgs("demo/session", 7681)
-	want := fmt.Sprintf("scrollback=%d", ttydScrollbackLines)
-	found := false
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "-t" && args[i+1] == want {
-			found = true
-			break
+	for _, want := range []string{
+		fmt.Sprintf("scrollback=%d", ttydScrollbackLines),
+		"macOptionClickForcesSelection=true",
+	} {
+		found := false
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-t" && args[i+1] == want {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		t.Fatalf("expected ttyd args to include %q, got %v", want, args)
+		if !found {
+			t.Fatalf("expected ttyd args to include %q, got %v", want, args)
+		}
 	}
 }
 
