@@ -64,7 +64,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Non-API/terminal routes (static assets, login) pass through unauthenticated.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/") || strings.HasPrefix(r.URL.Path, "/uploads/")
+		needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/terminal/") || strings.HasPrefix(r.URL.Path, "/uploads/") || strings.HasPrefix(r.URL.Path, "/sessions/")
 		if !needsAuth || r.URL.Path == "/api/login" {
 			next.ServeHTTP(w, r)
 			return
@@ -92,6 +92,8 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// API routes registered in api.go
 	registerAPIRoutes(mux)
+	registerArtifactRoutes(mux)
+	registerShareRoutes(mux)
 	// Flag routes require access to the SSE hub — registered as Server methods.
 	// Session name passed as query param (?name=...) so names containing
 	// slashes (branch-style names) are handled correctly.
@@ -101,6 +103,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/flag-notify", s.handleFlagNotify)
 	// SSE event stream — auth covered by /api/ prefix in authMiddleware.
 	mux.HandleFunc("GET /api/events", s.hub.handleEvents)
+	mux.HandleFunc("POST /api/artifacts/notify", s.handleArtifactNotify)
 	// Remote show — uploads a file and broadcasts to all SSE clients.
 	mux.HandleFunc("POST /api/show", s.handleShow)
 	// Static SPA served from embedded FS (registered in embed.go)

@@ -1,17 +1,52 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
-  import { onMount, onDestroy } from 'svelte'
-  import { listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage } from '../api.js'
+  import { onMount, onDestroy, tick } from 'svelte'
+  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
+  import ArtifactPane from './artifacts/ArtifactPane.svelte'
+  import MobileActionsMenu from './terminal/MobileActionsMenu.svelte'
+  import PaneViewerModal from './terminal/PaneViewerModal.svelte'
+  import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
 
   export let session
+  export let artifactEvent = null
   export let onBack
 
   let windows = []
   let windowPollTimer
   let iframeEl
   let fileInputEl
+
+  // Artifact pane/reference state
+  let artifactPaneOpen = false
+  let artifactFullScreen = false
+  let paneViewerOpen = false
+  let paneViewerURL = ''
+  let actionsMenuOpen = false
+  let modalStack = []
+  let suppressNextPopState = false
+  let splitMode = 'vertical' // vertical | horizontal | artifacts | terminal
+  let artifactSearchOpen = false
+  let artifactQuery = ''
+  let artifactSearchItems = []
+  let artifactTriggerKey = 'Ctrl+Space'
+  let artifactSearchIndex = 0
+  let selectedArtifactID = null
+  let lastArtifactEventNonce = null
+  let artifactOverlayMode = 'insert' // insert | open
+  let focusedArtifactDismissed = false
+  let pasteArtifactNonce = 0
+  let focusedArtifactTimer
+  $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
+  $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
+  $: terminalPaneCSS = !artifactsIsVisible ? 'flex: 1 1 0;' : splitMode === 'vertical' ? 'width: 50%; flex: 0 0 50%;' : splitMode === 'horizontal' ? 'height: 50%; flex: 0 0 50%;' : 'flex: 1 1 0;'
+  $: artifactPaneCSS = splitMode === 'vertical' ? 'width: 50%; flex: 0 0 50%;' : splitMode === 'horizontal' ? 'height: 50%; flex: 0 0 50%;' : 'flex: 1 1 0;'
+  $: filteredArtifactSearchItems = artifactSearchItems.filter(a => {
+    const q = artifactQuery.trim().toLowerCase()
+    if (!q) return true
+    return [a.title, a.file, a.type, ...(a.tags || [])].join(' ').toLowerCase().includes(q)
+  })
 
   // Drag-and-drop state
   let isDragOver = false
@@ -57,6 +92,40 @@
     currentSession = session.name
     windows = []
     iframeKey = session.name
+    artifactPaneOpen = false
+    artifactFullScreen = false
+    paneViewerOpen = false
+    paneViewerURL = ''
+    actionsMenuOpen = false
+    modalStack = []
+    artifactSearchOpen = false
+    artifactQuery = ''
+    artifactSearchItems = []
+    selectedArtifactID = null
+    focusedArtifactDismissed = false
+    splitMode = 'vertical'
+    if (session.focused_artifact_id) {
+      scheduleFocusedArtifactOpen(session.focused_artifact_id)
+    }
+  }
+  $: if (session?.focused_artifact_id && !artifactPaneOpen && !focusedArtifactDismissed) {
+    scheduleFocusedArtifactOpen(session.focused_artifact_id)
+  }
+  $: if (artifactEvent?.nonce && artifactEvent.nonce !== lastArtifactEventNonce && artifactEvent.session === session.name) {
+    lastArtifactEventNonce = artifactEvent.nonce
+    focusedArtifactDismissed = false
+    selectedArtifactID = artifactEvent.artifact_id
+    artifactPaneOpen = true
+    if (splitMode === 'terminal') splitMode = 'vertical'
+  }
+
+  function scheduleFocusedArtifactOpen(id) {
+    clearTimeout(focusedArtifactTimer)
+    focusedArtifactTimer = setTimeout(() => {
+      if (focusedArtifactDismissed || !session?.focused_artifact_id) return
+      selectedArtifactID = id
+      artifactPaneOpen = true
+    }, 700)
   }
 
   // Trigger ttyd's FitAddon to re-measure the terminal element and send the
@@ -124,6 +193,18 @@
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:newSession'))
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault()
+      e.stopPropagation()
+      toggleArtifacts()
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
+      e.preventDefault()
+      e.stopPropagation()
+      cycleSplitMode()
+    } else if ((artifactTriggerKey === 'Ctrl+Space' && e.ctrlKey && !e.metaKey && !e.altKey && e.key === ' ') || (!e.ctrlKey && !e.metaKey && !e.altKey && artifactTriggerKey.length === 1 && e.key === artifactTriggerKey)) {
+      e.preventDefault()
+      e.stopPropagation()
+      openArtifactSearch('insert')
     }
   }
 
@@ -146,6 +227,119 @@
   const XTERM_POLL_INTERVAL_MS = 100   // polling interval while waiting
   const FITADDON_SETTLE_MS     = 200   // time for FitAddon → ioctl to propagate
 
+  function pushModalHistory(type) {
+    modalStack = [...modalStack, type]
+    try { history.pushState({ devxModal: type }, '', window.location.href) } catch { /* ignore */ }
+  }
+
+  function openArtifactFullScreen() {
+    if (!artifactFullScreen) pushModalHistory('artifact-fullscreen')
+    artifactFullScreen = true
+  }
+
+  function popModalHistory(type) {
+    const top = modalStack[modalStack.length - 1]
+    modalStack = modalStack.filter((_, i) => i !== modalStack.length - 1)
+    if (top === type && history.state?.devxModal === type) {
+      try {
+        suppressNextPopState = true
+        history.back()
+      } catch {
+        suppressNextPopState = false
+      }
+    }
+  }
+
+  function closeArtifactFullScreen(goBack = true) {
+    artifactFullScreen = false
+    if (goBack) popModalHistory('artifact-fullscreen')
+  }
+
+  function closePaneViewer(goBack = true) {
+    paneViewerOpen = false
+    paneViewerURL = ''
+    if (goBack) popModalHistory('pane-viewer')
+  }
+
+  function openPaneViewerFromMenu() {
+    actionsMenuOpen = false
+    openPaneViewer()
+  }
+
+  function openPasteArtifactFromMenu() {
+    actionsMenuOpen = false
+    openPasteArtifact()
+  }
+
+  function openArtifactSearchFromMenu() {
+    actionsMenuOpen = false
+    openArtifactSearch('insert')
+  }
+
+  function toggleArtifactsFromMenu() {
+    actionsMenuOpen = false
+    toggleArtifacts()
+  }
+
+  function cycleSplitModeFromMenu() {
+    actionsMenuOpen = false
+    cycleSplitMode()
+  }
+
+  function openImagePickerFromMenu() {
+    actionsMenuOpen = false
+    fileInputEl?.click()
+  }
+
+  async function openPaneViewer() {
+    const params = new URLSearchParams({ name: session.name })
+    try {
+      const pane = await getActivePane(session.name)
+      if (pane != null && !Number.isNaN(Number(pane))) params.set('pane', String(pane))
+    } catch {
+      // Fall back to tmux's current active pane if the lookup fails.
+    }
+    paneViewerURL = `/api/pane-content/view?${params.toString()}`
+    paneViewerOpen = true
+    pushModalHistory('pane-viewer')
+  }
+
+  function handlePopState() {
+    if (suppressNextPopState) {
+      suppressNextPopState = false
+      return
+    }
+    const type = modalStack[modalStack.length - 1]
+    modalStack = modalStack.filter((_, i) => i !== modalStack.length - 1)
+    if (type === 'pane-viewer') {
+      closePaneViewer(false)
+      return
+    }
+    if (type === 'artifact-fullscreen') {
+      closeArtifactFullScreen(false)
+      return
+    }
+    if (type === 'artifact-search') {
+      closeArtifactSearch(false)
+      return
+    }
+    if (paneViewerOpen) {
+      closePaneViewer(false)
+      return
+    }
+    if (artifactFullScreen) {
+      closeArtifactFullScreen(false)
+      return
+    }
+    if (artifactSearchOpen) {
+      closeArtifactSearch(false)
+      return
+    }
+    if (actionsMenuOpen) {
+      actionsMenuOpen = false
+    }
+  }
+
   // When the iframe finishes loading, wait for xterm.js to fully initialise
   // (indicated by the helper textarea appearing), then:
   //   1. Call term.fit() → FitAddon re-measures the element and sends the
@@ -163,6 +357,24 @@
       link.rel = 'stylesheet'
       link.href = '/nerd-font.css'
       iframeEl.contentDocument.head.appendChild(link)
+
+      const touchStyle = iframeEl.contentDocument.createElement('style')
+      touchStyle.textContent = `
+        html, body {
+          height: 100%;
+          margin: 0;
+          overflow: hidden;
+          overscroll-behavior: none;
+        }
+        .xterm, .xterm-viewport {
+          touch-action: pan-y !important;
+        }
+        .xterm-viewport {
+          -webkit-overflow-scrolling: touch !important;
+          overscroll-behavior-y: contain;
+        }
+      `
+      iframeEl.contentDocument.head.appendChild(touchStyle)
       // Wait for the font to be ready before xterm starts measuring.
       await iframeEl.contentWindow.document.fonts.load('12px HackNerdFontMono')
     } catch { /* ignore cross-origin / not-yet-loaded */ }
@@ -182,8 +394,9 @@
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
     focusTerminal()
-    // Restore the previously-selected window for this session.
-    await restoreStoredWindow()
+    // Restore window tabs after the terminal is interactive; don't block the first
+    // usable paint/focus on tmux bookkeeping.
+    setTimeout(restoreStoredWindow, 0)
     // Register the hotkey after focus so xterm is initialised
     try {
       iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
@@ -339,6 +552,90 @@
     toastError = null
   }
 
+  async function closeArtifacts() {
+    const wasFullScreen = artifactFullScreen
+    focusedArtifactDismissed = true
+    artifactPaneOpen = false
+    artifactFullScreen = false
+    selectedArtifactID = null
+    if (wasFullScreen) popModalHistory('artifact-fullscreen')
+    try { await clearArtifactFocus(session.name) } catch { /* ignore */ }
+    await tick()
+    focusTerminal()
+  }
+
+  function openViewerPane() {
+    focusedArtifactDismissed = false
+    artifactPaneOpen = true
+    if (splitMode === 'terminal') splitMode = 'vertical'
+  }
+
+  function openPasteArtifact() {
+    openViewerPane()
+    pasteArtifactNonce++
+  }
+
+  function toggleArtifacts() {
+    if (artifactPaneOpen && splitMode !== 'terminal') {
+      closeArtifacts()
+      return
+    }
+    openViewerPane()
+  }
+
+  function cycleSplitMode() {
+    focusedArtifactDismissed = false
+    artifactPaneOpen = true
+    const modes = ['vertical', 'horizontal', 'artifacts', 'terminal']
+    const idx = modes.indexOf(splitMode)
+    splitMode = modes[(idx + 1) % modes.length]
+  }
+
+  async function openArtifactSearch(mode = 'insert') {
+    if (!artifactSearchOpen) pushModalHistory('artifact-search')
+    artifactOverlayMode = mode
+    try { artifactSearchItems = await listArtifacts(session.name) } catch { artifactSearchItems = [] }
+    artifactQuery = ''
+    artifactSearchIndex = 0
+    artifactSearchOpen = true
+  }
+
+  function openArtifactInPane(artifact) {
+    if (!artifact) return
+    focusedArtifactDismissed = false
+    selectedArtifactID = artifact.id
+    artifactPaneOpen = true
+    if (splitMode === 'terminal') splitMode = 'vertical'
+    closeArtifactSearch()
+  }
+
+  $: if (artifactSearchIndex >= filteredArtifactSearchItems.length) artifactSearchIndex = Math.max(0, filteredArtifactSearchItems.length - 1)
+
+  function moveArtifactSearch(delta) {
+    artifactSearchIndex = Math.max(0, Math.min(filteredArtifactSearchItems.length - 1, artifactSearchIndex + delta))
+  }
+
+  async function chooseArtifactFromOverlay(artifact) {
+    if (!artifact) return
+    if (artifactOverlayMode === 'open') {
+      openArtifactInPane(artifact)
+      return
+    }
+    await insertArtifactPath(artifact.path)
+  }
+
+  async function insertArtifactPath(path) {
+    closeArtifactSearch()
+    await sendLiteral(session.name, path + ' ')
+    focusTerminal()
+  }
+
+  function closeArtifactSearch(goBack = true) {
+    artifactSearchOpen = false
+    focusTerminal()
+    if (goBack) popModalHistory('artifact-search')
+  }
+
   // Exported so App.svelte can route parent-window paste events here.
   export function handleImagePaste(file) {
     processImageFile(file)
@@ -379,20 +676,33 @@
     if (files.length) processImageFiles(files)
   }
 
+  function handleDocumentClick(e) {
+    if (!actionsMenuOpen) return
+    if (!e.target?.closest?.('[data-actions-menu]')) actionsMenuOpen = false
+  }
+
   onMount(() => {
-    loadWindows()
+    // Defer non-critical chrome/artifact settings so switching sessions prioritizes
+    // the terminal iframe connection first.
+    setTimeout(loadWindows, 250)
+    setTimeout(() => getSettings().then(settings => { artifactTriggerKey = settings.artifact_trigger_key || 'Ctrl+Space' }).catch(() => {}), 500)
     windowPollTimer = setInterval(loadWindows, 3000)
     // visualViewport fires on mobile when the address bar hides/shows or the
     // soft keyboard appears — more reliable than ResizeObserver alone.
     window.visualViewport?.addEventListener('resize', scheduleRefresh)
     document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('popstate', handlePopState)
+    document.addEventListener('click', handleDocumentClick)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
     clearTimeout(resizeTimer)
+    clearTimeout(focusedArtifactTimer)
     resizeObserver?.disconnect()
     window.visualViewport?.removeEventListener('resize', scheduleRefresh)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
+    window.removeEventListener('popstate', handlePopState)
+    document.removeEventListener('click', handleDocumentClick)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
@@ -449,12 +759,56 @@
       >{session.name}</button>
     {/if}
 
-    <!-- Attach image button -->
-    <button
-      on:click={() => fileInputEl?.click()}
-      title="attach image"
-      class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-    >[img]</button>
+    <div class="hidden lg:flex items-stretch shrink-0">
+      <button
+        on:click={openPaneViewer}
+        title="open current terminal output in fullscreen"
+        class="px-3 text-gray-500 hover:text-cyan-300 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center justify-center transition-colors min-w-[58px]"
+      >[view]</button>
+
+      <!-- Artifact actions -->
+      <button
+        on:click={openPasteArtifact}
+        title="create/paste a text artifact"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[new artifact]</button>
+
+      <button
+        on:click={() => openArtifactSearch('insert')}
+        title="insert an artifact path reference into the terminal"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[insert ref]</button>
+      <button
+        on:click={toggleArtifacts}
+        title="open/close artifacts panel (Ctrl+Shift+A)"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >{artifactsIsVisible ? '[hide artifacts]' : '[artifacts]'}</button>
+      <button
+        on:click={cycleSplitMode}
+        title="cycle artifact split layout (Ctrl+Shift+O)"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[split: {splitMode}]</button>
+
+      <!-- Attach image button -->
+      <button
+        on:click={() => fileInputEl?.click()}
+        title="attach image"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[img]</button>
+    </div>
+
+    <MobileActionsMenu
+      open={actionsMenuOpen}
+      {artifactsIsVisible}
+      {splitMode}
+      onToggle={() => actionsMenuOpen = !actionsMenuOpen}
+      onView={openPaneViewerFromMenu}
+      onAttachImage={openImagePickerFromMenu}
+      onNewArtifact={openPasteArtifactFromMenu}
+      onInsertArtifact={openArtifactSearchFromMenu}
+      onToggleArtifacts={toggleArtifactsFromMenu}
+      onCycleSplit={cycleSplitModeFromMenu}
+    />
     <input
       bind:this={fileInputEl}
       type="file"
@@ -465,26 +819,69 @@
     />
   </div>
 
-  <!--
-    Wrap in {#key} so switching sessions destroys the old iframe element rather
-    than navigating it. Navigating triggers ttyd's beforeunload handler and shows
-    the browser's "Leave site?" dialog. Removing an iframe element does not.
-  -->
-  {#key iframeKey}
-    <iframe
-      bind:this={iframeEl}
-      src={iframeURL}
-      title="Terminal — {session.name}"
-      class="flex-1 min-h-0 w-full border-0"
-      allow="clipboard-read; clipboard-write"
-      on:load={handleIframeLoad}
-    ></iframe>
-  {/key}
+  <div class="flex-1 min-h-0 flex {splitMode === 'horizontal' ? 'flex-col' : 'flex-row'}">
+    {#if terminalIsVisible}
+      <div class="min-h-0 min-w-0 flex flex-col" style={terminalPaneCSS}>
+        <!--
+          Wrap in {#key} so switching sessions destroys the old iframe element rather
+          than navigating it. Navigating triggers ttyd's beforeunload handler and shows
+          the browser's "Leave site?" dialog. Removing an iframe element does not.
+        -->
+        {#key iframeKey}
+          <iframe
+            bind:this={iframeEl}
+            src={iframeURL}
+            title="Terminal — {session.name}"
+            class="flex-1 min-h-0 w-full border-0"
+            allow="clipboard-read; clipboard-write"
+            on:load={handleIframeLoad}
+          ></iframe>
+        {/key}
+      </div>
+    {/if}
+
+    {#if artifactsIsVisible && !artifactFullScreen}
+      <div class="min-h-0 min-w-0" style={artifactPaneCSS}>
+        {#key session.name}
+          <ArtifactPane {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={false} onToggleFullScreen={openArtifactFullScreen} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} />
+        {/key}
+      </div>
+    {/if}
+  </div>
+
+  {#if artifactsIsVisible && artifactFullScreen}
+    <div class="fixed inset-0 z-[1000] bg-[#0b1020] border border-[#1e2d4a] shadow-2xl">
+      {#key session.name}
+        <ArtifactPane {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={true} onToggleFullScreen={() => closeArtifactFullScreen()} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} />
+      {/key}
+    </div>
+  {/if}
+
+  {#if paneViewerOpen}
+    <PaneViewerModal {session} url={paneViewerURL} onClose={() => closePaneViewer()} />
+  {/if}
 
   <!-- Soft key toolbar — mobile only -->
-  <div class="lg:hidden">
-    <SoftKeybar onKey={sendKey} />
-  </div>
+  {#if terminalIsVisible}
+    <div class="lg:hidden">
+      <SoftKeybar onKey={sendKey} />
+    </div>
+  {/if}
+
+  {#if artifactSearchOpen}
+    <ArtifactSearchOverlay
+      mode={artifactOverlayMode}
+      query={artifactQuery}
+      items={filteredArtifactSearchItems}
+      selectedIndex={artifactSearchIndex}
+      onQuery={(value) => { artifactQuery = value; artifactSearchIndex = 0 }}
+      onClose={() => closeArtifactSearch()}
+      onMove={moveArtifactSearch}
+      onChoose={chooseArtifactFromOverlay}
+      onOpen={openArtifactInPane}
+      onInsert={insertArtifactPath}
+    />
+  {/if}
 
   <!-- Image upload confirmation / error toast -->
   {#if toastUpload || toastError}

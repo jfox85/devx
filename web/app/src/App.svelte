@@ -8,6 +8,7 @@
   import Terminal from './lib/Terminal.svelte'
   import ImageToast from './lib/ImageToast.svelte'
   import FlagToast from './lib/FlagToast.svelte'
+  import ShareTarget from './lib/ShareTarget.svelte'
 
   // view is only used on mobile to toggle between sessions and terminal.
   // On desktop, both panels are always visible.
@@ -31,6 +32,8 @@
   let sessionRefreshTrigger = 0
   // Set to the session name on flag events to trigger a flash animation.
   let flashSession = null
+  let artifactEvent = null
+  let shareToken = new URLSearchParams(window.location.search).get('share') || ''
 
   let unsubscribeSSE
 
@@ -50,6 +53,14 @@
               onNavigate: (name) => openTerminalByName(name),
               showFallback: (ev) => { flagToastEvent = ev },
             })
+          }
+        },
+        artifact: (event) => {
+          sessionRefreshTrigger++
+          flashSession = event.session
+          setTimeout(() => { flashSession = null }, 3000)
+          if (activeSession?.name === event.session) {
+            artifactEvent = { ...event, nonce: Date.now() }
           }
         },
       })
@@ -94,6 +105,22 @@
     activeSession = null
   }
 
+  function clearShareToken() {
+    shareToken = ''
+    const url = new URL(window.location.href)
+    url.searchParams.delete('share')
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash)
+  }
+
+  function handleShareCreated(event) {
+    clearShareToken()
+    sessionRefreshTrigger++
+    openTerminalByName(event.session)
+    if (event.artifacts?.[0]) {
+      artifactEvent = { session: event.session, artifact_id: event.artifacts[0].id, nonce: Date.now() }
+    }
+  }
+
   // Global paste handler: routes image pastes to the terminal component when
   // focus is in the parent window (e.g. sidebar). The iframe-document paste
   // handler in Terminal.svelte covers paste events when xterm has focus.
@@ -135,7 +162,7 @@
     <!-- Terminal / empty state -->
     <div class="flex-1 flex flex-col min-w-0 {view === 'sessions' ? 'hidden lg:flex' : 'flex'}">
       {#if activeSession}
-        <Terminal bind:this={terminalComponent} session={activeSession} onBack={goHome} />
+        <Terminal bind:this={terminalComponent} session={activeSession} {artifactEvent} onBack={goHome} />
       {:else}
         <!-- Desktop: no session selected yet -->
         <div class="flex-1 flex flex-col items-center justify-center text-gray-700 select-none">
@@ -160,6 +187,10 @@
       onDismiss={() => { flagToastEvent = null }}
       onNavigate={openTerminalByName}
     />
+
+    {#if shareToken}
+      <ShareTarget token={shareToken} onCancel={clearShareToken} onCreated={handleShareCreated} />
+    {/if}
 
   </div>
 {/if}

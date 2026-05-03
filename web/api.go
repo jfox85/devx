@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"mime"
 	"net/http"
@@ -33,8 +35,12 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
+	mux.HandleFunc("GET /api/active-pane", handleActivePane)
 	mux.HandleFunc("GET /api/pane-content", handlePaneContent)
+	mux.HandleFunc("GET /api/pane-content.txt", handlePaneContentText)
+	mux.HandleFunc("GET /api/pane-content/view", handlePaneContentView)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
+	mux.HandleFunc("GET /api/settings", handleSettings)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
@@ -44,6 +50,38 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
 	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
+
+var execTmuxOutput = func(args ...string) ([]byte, error) {
+	return exec.Command("tmux", args...).Output()
+}
+
+var execTmuxRun = func(args ...string) error {
+	return exec.Command("tmux", args...).Run()
+}
+
+var paneContentViewTmpl = template.Must(template.New("pane-content-view").Parse(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>devx pane output</title>
+  <style>
+    body{margin:0;background:#020617;color:#e5eefc;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    header{position:sticky;top:0;background:#0f172a;border-bottom:1px solid #1e293b;padding:12px 14px}
+    h1{margin:0;font-size:18px}
+    p{margin:4px 0 0;color:#94a3b8;font-size:12px}
+    pre{margin:0;padding:14px;font-size:14px;line-height:1.45;white-space:pre;overflow:auto;-webkit-overflow-scrolling:touch}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Full Output</h1>
+    <p>Session: {{.Name}} · Target: {{.Target}}</p>
+  </header>
+  <pre id="pane-output">{{.Content}}</pre>
+  <script>(function(){function scrollToBottom(){window.scrollTo(0, document.documentElement.scrollHeight || document.body.scrollHeight);}if(document.readyState==='complete'){scrollToBottom();}else{window.addEventListener('load', scrollToBottom, {once:true});}requestAnimationFrame(scrollToBottom);setTimeout(scrollToBottom, 50);})();</script>
+</body>
+</html>`))
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -57,6 +95,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 
 type loginRequest struct {
 	Token string `json:"token"`
+}
+
+func handleSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact_trigger_key": viper.GetString("artifact_trigger_key"),
+	})
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -92,15 +136,17 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // sessionResponse is the JSON shape returned for each session.
 type sessionResponse struct {
-	Name           string            `json:"name"`
-	DisplayName    string            `json:"display_name,omitempty"`
-	Color          string            `json:"color"`
-	Branch         string            `json:"branch"`
-	ProjectAlias   string            `json:"project_alias,omitempty"`
-	Ports          map[string]int    `json:"ports"`
-	Routes         map[string]string `json:"routes"`
-	ExternalRoutes map[string]string `json:"external_routes,omitempty"`
-	AttentionFlag  bool              `json:"attention_flag"`
+	Name              string            `json:"name"`
+	DisplayName       string            `json:"display_name,omitempty"`
+	Color             string            `json:"color"`
+	Branch            string            `json:"branch"`
+	ProjectAlias      string            `json:"project_alias,omitempty"`
+	Ports             map[string]int    `json:"ports"`
+	Routes            map[string]string `json:"routes"`
+	ExternalRoutes    map[string]string `json:"external_routes,omitempty"`
+	AttentionFlag     bool              `json:"attention_flag"`
+	ArtifactCount     int               `json:"artifact_count"`
+	FocusedArtifactID string            `json:"focused_artifact_id,omitempty"`
 }
 
 func buildSessionResponse(sess *session.Session) sessionResponse {
@@ -114,16 +160,19 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 			}
 		}
 	}
+	artifactCount, focusedArtifactID := artifactCountAndFocus(sess)
 	return sessionResponse{
-		Name:           sess.Name,
-		DisplayName:    sess.DisplayName,
-		Color:          sess.EffectiveColor(),
-		Branch:         sess.Branch,
-		ProjectAlias:   sess.ProjectAlias,
-		Ports:          sess.Ports,
-		Routes:         sess.Routes,
-		ExternalRoutes: externalRoutes,
-		AttentionFlag:  sess.AttentionFlag,
+		Name:              sess.Name,
+		DisplayName:       sess.DisplayName,
+		Color:             sess.EffectiveColor(),
+		Branch:            sess.Branch,
+		ProjectAlias:      sess.ProjectAlias,
+		Ports:             sess.Ports,
+		Routes:            sess.Routes,
+		ExternalRoutes:    externalRoutes,
+		AttentionFlag:     sess.AttentionFlag,
+		ArtifactCount:     artifactCount,
+		FocusedArtifactID: focusedArtifactID,
 	}
 }
 
@@ -332,10 +381,18 @@ func (s *Server) handleFlagNotify(w http.ResponseWriter, r *http.Request) {
 // the browser viewport, not a terminal client that may be attached to the
 // base session.
 func resolveWebSession(name string) string {
-	if exec.Command("tmux", "has-session", "-t", "="+name+"-web").Run() == nil {
+	if execTmuxRun("has-session", "-t", "="+name+"-web") == nil {
 		return name + "-web"
 	}
 	return name
+}
+
+func exactTmuxSessionTarget(name string) string {
+	return "=" + resolveWebSession(name)
+}
+
+func exactTmuxWindowTarget(name, window string) string {
+	return exactTmuxSessionTarget(name) + ":" + window
 }
 
 // requireValidSession validates that name is a legal devx session name and
@@ -355,11 +412,18 @@ type windowInfo struct {
 	Active bool   `json:"active"`
 }
 
+type activePaneResponse struct {
+	Pane int `json:"pane"`
+}
+
 type paneContentResponse struct {
 	Content string `json:"content"`
 	Target  string `json:"target"`
 }
 
+const paneCaptureLines = session.DefaultTmuxHistoryLimit
+
+var errInvalidPane = errors.New("pane must be a numeric index")
 var ansiEscapePattern = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])`)
 
 func stripANSI(s string) string {
@@ -367,14 +431,31 @@ func stripANSI(s string) string {
 }
 
 func paneCaptureTarget(name, pane string) (string, error) {
-	target := resolveWebSession(name)
+	target := exactTmuxSessionTarget(name)
 	if pane == "" {
-		return target, nil
+		return target + ":", nil
 	}
 	if _, err := strconv.Atoi(pane); err != nil {
-		return "", fmt.Errorf("pane must be a numeric index")
+		return "", errInvalidPane
 	}
 	return target + ":." + pane, nil
+}
+
+func capturePaneContent(name, pane string) (paneContentResponse, error) {
+	target, err := paneCaptureTarget(name, pane)
+	if err != nil {
+		return paneContentResponse{}, err
+	}
+
+	out, err := execTmuxOutput("capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", paneCaptureLines))
+	if err != nil {
+		return paneContentResponse{}, err
+	}
+
+	return paneContentResponse{
+		Content: strings.TrimRight(stripANSI(string(out)), "\n"),
+		Target:  target,
+	}, nil
 }
 
 // handleListWindows returns the tmux windows for the session given by ?name=.
@@ -394,8 +475,8 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use tab as delimiter so window names that contain spaces are preserved.
-	out, err := exec.Command("tmux", "list-windows", "-t", resolveWebSession(name), "-F",
-		"#{window_index}\t#{window_name}\t#{window_active}").Output()
+	out, err := execTmuxOutput("list-windows", "-t", exactTmuxSessionTarget(name), "-F",
+		"#{window_index}\t#{window_name}\t#{window_active}")
 	if err != nil {
 		// tmux session not running — return empty list rather than an error.
 		writeJSON(w, http.StatusOK, map[string]any{"windows": []windowInfo{}})
@@ -424,6 +505,29 @@ func handleListWindows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"windows": windows})
 }
 
+func handleActivePane(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+
+	out, err := execTmuxOutput("display-message", "-t", exactTmuxSessionTarget(name)+":", "-p", "#{pane_index}")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve active pane"})
+		return
+	}
+	pane, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve active pane"})
+		return
+	}
+	writeJSON(w, http.StatusOK, activePaneResponse{Pane: pane})
+}
+
 // handlePaneContent captures recent scrollback from the active pane in the
 // web-facing tmux session. Optional ?pane=<index> selects a specific pane in
 // the active window; otherwise tmux uses the active pane for the target.
@@ -437,22 +541,78 @@ func handlePaneContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, err := paneCaptureTarget(name, r.URL.Query().Get("pane"))
+	resp, status, err := loadPaneContentResponse(name, r.URL.Query().Get("pane"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 
-	out, err := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-5000").Output()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func loadPaneContentResponse(name, pane string) (paneContentResponse, int, error) {
+	resp, err := capturePaneContent(name, pane)
+	if err == nil {
+		return resp, http.StatusOK, nil
+	}
+	if errors.Is(err, errInvalidPane) {
+		return paneContentResponse{}, http.StatusBadRequest, err
+	}
+	return paneContentResponse{}, http.StatusInternalServerError, fmt.Errorf("failed to capture pane content")
+}
+
+func handlePaneContentText(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name query param required", http.StatusBadRequest)
+		return
+	}
+	if !session.IsValidSessionName(name) {
+		http.Error(w, "invalid session name", http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, paneContentResponse{
-		Content: strings.TrimRight(stripANSI(string(out)), "\n"),
-		Target:  target,
-	})
+	resp, status, err := loadPaneContentResponse(name, r.URL.Query().Get("pane"))
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, resp.Content)
+}
+
+func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name query param required", http.StatusBadRequest)
+		return
+	}
+	if !session.IsValidSessionName(name) {
+		http.Error(w, "invalid session name", http.StatusBadRequest)
+		return
+	}
+
+	resp, status, err := loadPaneContentResponse(name, r.URL.Query().Get("pane"))
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := paneContentViewTmpl.Execute(w, struct {
+		Name    string
+		Target  string
+		Content string
+	}{
+		Name:    name,
+		Target:  resp.Target,
+		Content: resp.Content,
+	}); err != nil {
+		http.Error(w, "failed to render pane content", http.StatusInternalServerError)
+	}
 }
 
 // handleListProjects returns the sorted list of project aliases from the registry.
@@ -489,7 +649,7 @@ func handleSwitchWindow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "window must be a numeric index"})
 		return
 	}
-	if err := exec.Command("tmux", "select-window", "-t", resolveWebSession(name)+":"+window).Run(); err != nil {
+	if err := execTmuxRun("select-window", "-t", exactTmuxWindowTarget(name, window)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -513,9 +673,9 @@ func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	webSess := resolveWebSession(name)
-	_ = exec.Command("tmux", "refresh-client", "-t", webSess).Run()
-	resizeWindowToClient(webSess)
+	target := exactTmuxSessionTarget(name)
+	_ = execTmuxRun("refresh-client", "-t", target)
+	resizeWindowToClient(target)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -540,7 +700,7 @@ func handleRefreshTerminal(w http.ResponseWriter, r *http.Request) {
 // session's stale size.
 func resizeWindowToClient(target string) {
 	// client_activity is a Unix timestamp; pick the client with the highest value.
-	out, err := exec.Command("tmux", "list-clients", "-t", target, "-F", "#{client_activity} #{client_width} #{client_height}").Output()
+	out, err := execTmuxOutput("list-clients", "-t", target, "-F", "#{client_activity} #{client_width} #{client_height}")
 	if err != nil || len(out) == 0 {
 		return
 	}
@@ -566,12 +726,12 @@ func resizeWindowToClient(target string) {
 	if latestW <= 0 || latestH <= 0 {
 		return
 	}
-	_ = exec.Command("tmux", "resize-window", "-t", target,
+	_ = execTmuxRun("resize-window", "-t", target,
 		"-x", strconv.Itoa(latestW),
-		"-y", strconv.Itoa(latestH)).Run()
+		"-y", strconv.Itoa(latestH))
 }
 
-// handleSendKeys runs `tmux send-keys -t session key`, delivering the key to the
+// handleSendKeys runs `tmux send-keys -t session: key`, delivering the key to the
 // session's current window/pane regardless of which tmux client is active.
 //
 // mode=literal (query param): send the entire keys string verbatim using
@@ -595,13 +755,16 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := resolveWebSession(name)
+	// send-keys needs a pane-capable target. A bare exact session target like
+	// "=name-web" fails with "can't find pane" on tmux; append ':' to target
+	// the active pane in the active window for the resolved web session.
+	target := exactTmuxSessionTarget(name) + ":"
 	mode := r.URL.Query().Get("mode")
 
 	if mode == "literal" {
 		// Send the text verbatim — used for inserting file paths into the active pane.
 		// -l disables special-key interpretation so spaces are not split by tmux.
-		if err := exec.Command("tmux", "send-keys", "-t", target, "-l", "--", keys).Run(); err != nil {
+		if err := execTmuxRun("send-keys", "-t", target, "-l", "--", keys); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -632,7 +795,7 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	// and a terminal client are on different windows.
 	// Use -- to ensure no key token is misinterpreted as a tmux send-keys flag.
 	args := append([]string{"send-keys", "-t", target, "--"}, keyList...)
-	if err := exec.Command("tmux", args...).Run(); err != nil {
+	if err := execTmuxRun(args...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
