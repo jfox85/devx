@@ -22,7 +22,7 @@ windows:
       - cd {{.Path}}
       - export SESSION_NAME={{.Name}}
     panes:
-      - clauded -n "{{.Name}}"
+      - 'pi -c'
 
   - window_name: repo-root
     layout: tiled
