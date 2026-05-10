@@ -156,7 +156,11 @@ func SaveManifest(sess *session.Session, m *Manifest) error {
 
 func ValidateManifest(m *Manifest) error {
 	seen := map[string]bool{}
-	for _, a := range m.Artifacts {
+	for i := range m.Artifacts {
+		if err := normalizeArtifact(&m.Artifacts[i]); err != nil {
+			return err
+		}
+		a := m.Artifacts[i]
 		if err := ValidateArtifact(a); err != nil {
 			return err
 		}
@@ -165,6 +169,18 @@ func ValidateManifest(m *Manifest) error {
 		}
 		seen[a.ID] = true
 	}
+	return nil
+}
+
+func normalizeArtifact(a *Artifact) error {
+	if strings.TrimSpace(a.Folder) == "" {
+		return nil
+	}
+	folder, err := NormalizeFolderPath(a.Folder)
+	if err != nil {
+		return fmt.Errorf("invalid artifact folder %q: %w", a.Folder, err)
+	}
+	a.Folder = folder
 	return nil
 }
 

@@ -29,8 +29,10 @@ var artifactAddFlags struct {
 var artifactAddCmd = &cobra.Command{
 	Use:   "add [flags] <file|->",
 	Short: "Add a file to the current session's artifacts",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runArtifactAdd,
+	Example: `  devx artifact add --title "QA notes" docs/qa-notes.md
+  printf '# Plan\n' | devx artifact add --folder workflow/run-42 --file 10-plan.md --title "Plan" -`,
+	Args: cobra.ExactArgs(1),
+	RunE: runArtifactAdd,
 }
 
 func init() {

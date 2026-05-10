@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -60,7 +61,11 @@ func TestLoadManifestRejectsMalformedJSON(t *testing.T) {
 }
 
 func TestValidateRelativePathRejectsTraversal(t *testing.T) {
-	bad := []string{"", "../secret", "a/../../secret", "/tmp/file", ".."}
+	absPath := "/tmp/file"
+	if runtime.GOOS == "windows" {
+		absPath = `C:\tmp\file`
+	}
+	bad := []string{"", "../secret", "a/../../secret", absPath, ".."}
 	for _, p := range bad {
 		if err := ValidateRelativePath(p); err == nil {
 			t.Fatalf("expected %q to be rejected", p)
@@ -114,6 +119,33 @@ func TestLoadManifestMissingFolderIsBackwardCompatible(t *testing.T) {
 	}
 	if len(m.Artifacts) != 1 || m.Artifacts[0].Folder != "" || m.Artifacts[0].File != "old.md" {
 		t.Fatalf("unexpected manifest: %#v", m.Artifacts)
+	}
+}
+
+func TestManifestCanonicalizesFolderOnLoadAndSave(t *testing.T) {
+	sess := testSession(t)
+	m := NewManifest(sess.Name)
+	m.Artifacts = append(m.Artifacts, Artifact{
+		ID:        "doc-plan",
+		Type:      "document",
+		Title:     "Plan",
+		File:      "workflow/run-1/plan.md",
+		Folder:    `workflow\run-1`,
+		Created:   time.Date(2026, 4, 25, 10, 30, 0, 0, time.UTC),
+		Retention: DefaultRetention,
+	})
+	if err := SaveManifest(sess, m); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+	if got := m.Artifacts[0].Folder; got != "workflow/run-1" {
+		t.Fatalf("SaveManifest should normalize folder, got %q", got)
+	}
+	loaded, err := LoadManifest(sess)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if len(loaded.Artifacts) != 1 || loaded.Artifacts[0].Folder != "workflow/run-1" {
+		t.Fatalf("LoadManifest should preserve normalized folder: %#v", loaded.Artifacts)
 	}
 }
 
