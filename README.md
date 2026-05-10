@@ -711,6 +711,7 @@ devx includes an optional web interface for managing sessions from any browser �
 - **Session list** — view all sessions grouped by project, with attention flag indicators (◆)
 - **In-browser terminal** — full tmux access via ttyd, with tmux window tabs in the header
 - **Mobile-friendly** — responsive layout, soft key toolbar (Tab, Ctrl, arrows) for touchscreens
+- **Artifacts** — attach plans, reports, screenshots, logs, recordings, and docs to a session; view them next to the terminal and organize them into folders
 - **Image upload** — paste, drag-and-drop, or use the `[img]` button to inject an image path into the terminal
 - **Create & delete sessions** — from the browser, same as the CLI
 - **Service links** — tap "svc" on any session to open its Caddy routes in the browser
@@ -744,6 +745,50 @@ devx web stop             # stop daemon
 **3. Open** `http://localhost:7777` in your browser and enter your `web_secret_token`.
 
 > **Auto-start:** Set `web_autostart: true` to have the web daemon start automatically when you open the TUI.
+
+### Session artifacts
+
+Artifacts are files stored under a session worktree's `.artifacts/` directory and indexed by `.artifacts/manifest.json`. They are useful for agent-generated plans, reviews, screenshots, QA reports, logs, diffs, and proof-of-work reports.
+
+```bash
+# Add a normal flat artifact
+devx artifact add ./report.md \
+  --title "Completion report" \
+  --type report \
+  --agent pi
+
+# Group related workflow outputs under a safe relative folder path
+devx artifact add ./10-plan.md \
+  --title "Implementation plan" \
+  --type plan \
+  --folder workflow/run-123 \
+  --file 10-plan.md
+
+# List all artifacts, filter one folder, or print a grouped tree
+devx artifact list
+devx artifact list --folder workflow/run-123
+devx artifact list --tree
+
+# Print web, local, or same-folder/embed URLs
+devx artifact url <artifact-id>
+devx artifact url <artifact-id> --local
+devx artifact url <artifact-id> --embed
+```
+
+When `--folder` is supplied, DevX writes the file under `.artifacts/<folder>/<file>` and records both the full manifest `file` path and the artifact `folder`. Folder paths must be safe relative paths: no absolute paths, `..`, or empty segments such as `workflow//run`.
+
+Example workflow layout:
+
+```text
+.artifacts/
+  workflow/run-123/00-office-hours.md
+  workflow/run-123/10-plan.md
+  workflow/run-123/20-review.md
+  workflow/run-123/30-qa/results.log
+  workflow/run-123/40-proof-of-work.html
+```
+
+DevX Web shows artifact folders as groups and keeps artifacts without a folder in **Unfiled**. See [docs/artifacts.md](docs/artifacts.md) for more examples.
 
 ### External domain routing (optional)
 

@@ -62,6 +62,7 @@ func handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		Tag:    r.URL.Query().Get("tag"),
 		Agent:  r.URL.Query().Get("agent"),
 		Search: r.URL.Query().Get("search"),
+		Folder: r.URL.Query().Get("folder"),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess.Name, "artifacts": artifactpkg.WithComputedFields(sess.Name, items)})
 }
@@ -227,6 +228,7 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 	retention := r.FormValue("retention")
 	tags := artifactpkg.ParseTags(r.FormValue("tags"))
 	summary := r.FormValue("summary")
+	folder := r.FormValue("folder")
 
 	var added []artifactpkg.ListItem
 	var addedIDs []string
@@ -253,7 +255,7 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 			format = "md"
 		}
 		dest := artifactpkg.Slugify(title) + "." + format
-		a, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: "-", Reader: strings.NewReader(text), Destination: dest, Type: artifactType, Title: title, Summary: summary, Agent: "human", Retention: retention, Tags: tags})
+		a, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: "-", Reader: strings.NewReader(text), Destination: dest, Folder: folder, Type: artifactType, Title: title, Summary: summary, Agent: "human", Retention: retention, Tags: tags})
 		if err != nil {
 			log.Printf("failed to create text artifact for session %q: %v", sess.Name, err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to create artifact"})
@@ -287,7 +289,7 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 			itemType = artifactpkg.DetectType(header.Filename)
 		}
 		dest := artifactpkg.DefaultDestination(itemType, header.Filename)
-		a, addErr := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: header.Filename, Reader: file, Destination: dest, Type: itemType, Title: itemTitle, Summary: summary, Agent: "human", Retention: retention, Tags: tags})
+		a, addErr := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: header.Filename, Reader: file, Destination: dest, Folder: folder, Type: itemType, Title: itemTitle, Summary: summary, Agent: "human", Retention: retention, Tags: tags})
 		_ = file.Close()
 		if addErr != nil {
 			if rollbackErr := rollbackAdded(); rollbackErr != nil {

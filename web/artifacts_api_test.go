@@ -131,6 +131,31 @@ func TestServeArtifactAllowsReferencedAsset(t *testing.T) {
 	}
 }
 
+func TestServeNestedArtifactURL(t *testing.T) {
+	sess := setupArtifactAPITest(t)
+	source := filepath.Join(t.TempDir(), "proof.html")
+	if err := os.WriteFile(source, []byte("<h1>Proof</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: source, Type: "report", Title: "Proof", Folder: "workflow/run-1/40-proof", Destination: "proof.html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := artifactpkg.WithComputedFields(sess.Name, []artifactpkg.Artifact{a})[0]
+	if item.URL != "/sessions/feature%2Fweb-artifacts/artifacts/workflow/run-1/40-proof/proof.html" || item.Path != ".artifacts/workflow/run-1/40-proof/proof.html" {
+		t.Fatalf("unexpected computed paths: %#v", item)
+	}
+	req := httptest.NewRequest("GET", item.URL, nil)
+	w := httptest.NewRecorder()
+	artifactMux().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected nested artifact 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "<h1>Proof</h1>" {
+		t.Fatalf("nested artifact body = %q", got)
+	}
+}
+
 func TestServeArtifactRequiresManifestEntry(t *testing.T) {
 	sess := setupArtifactAPITest(t)
 	if err := os.MkdirAll(artifactpkg.DirForSession(sess), 0o755); err != nil {

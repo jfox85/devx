@@ -15,6 +15,7 @@ type AddOptions struct {
 	Source      string
 	Reader      io.Reader
 	Destination string
+	Folder      string
 	ID          string
 	Type        string
 	Title       string
@@ -72,12 +73,23 @@ func addLocked(sess *session.Session, opts AddOptions) (Artifact, error) {
 	if strings.TrimSpace(id) == "" || strings.ContainsAny(id, `/\`) {
 		return Artifact{}, fmt.Errorf("invalid artifact id %q", id)
 	}
+	folder := ""
+	if strings.TrimSpace(opts.Folder) != "" {
+		var err error
+		folder, err = NormalizeFolderPath(opts.Folder)
+		if err != nil {
+			return Artifact{}, fmt.Errorf("invalid folder: %w", err)
+		}
+	}
 	destRel := opts.Destination
 	if destRel == "" {
 		destRel = DefaultDestination(artifactType, opts.Source)
 	}
 	if err := ValidateRelativePath(destRel); err != nil {
 		return Artifact{}, fmt.Errorf("invalid destination: %w", err)
+	}
+	if folder != "" {
+		destRel = filepath.Join(folder, destRel)
 	}
 	if isReservedArtifactPath(destRel) {
 		return Artifact{}, fmt.Errorf("destination %q is reserved", destRel)
@@ -120,6 +132,7 @@ func addLocked(sess *session.Session, opts AddOptions) (Artifact, error) {
 		Type:      artifactType,
 		Title:     opts.Title,
 		File:      filepath.ToSlash(finalRel),
+		Folder:    folder,
 		Created:   now.UTC(),
 		Agent:     agent,
 		Retention: retention,

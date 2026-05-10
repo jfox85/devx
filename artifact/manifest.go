@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jfox85/devx/session"
 )
@@ -50,6 +51,7 @@ type Artifact struct {
 	Type      string    `json:"type"`
 	Title     string    `json:"title"`
 	File      string    `json:"file"`
+	Folder    string    `json:"folder,omitempty"`
 	Created   time.Time `json:"created"`
 	Agent     string    `json:"agent,omitempty"`
 	Retention string    `json:"retention,omitempty"`
@@ -154,7 +156,11 @@ func SaveManifest(sess *session.Session, m *Manifest) error {
 
 func ValidateManifest(m *Manifest) error {
 	seen := map[string]bool{}
-	for _, a := range m.Artifacts {
+	for i := range m.Artifacts {
+		if err := normalizeArtifact(&m.Artifacts[i]); err != nil {
+			return err
+		}
+		a := m.Artifacts[i]
 		if err := ValidateArtifact(a); err != nil {
 			return err
 		}
@@ -163,6 +169,18 @@ func ValidateManifest(m *Manifest) error {
 		}
 		seen[a.ID] = true
 	}
+	return nil
+}
+
+func normalizeArtifact(a *Artifact) error {
+	if strings.TrimSpace(a.Folder) == "" {
+		return nil
+	}
+	folder, err := NormalizeFolderPath(a.Folder)
+	if err != nil {
+		return fmt.Errorf("invalid artifact folder %q: %w", a.Folder, err)
+	}
+	a.Folder = folder
 	return nil
 }
 
@@ -178,6 +196,16 @@ func ValidateArtifact(a Artifact) error {
 	}
 	if err := ValidateRelativePath(a.File); err != nil {
 		return fmt.Errorf("invalid artifact file %q: %w", a.File, err)
+	}
+	if strings.TrimSpace(a.Folder) != "" {
+		folder, err := NormalizeFolderPath(a.Folder)
+		if err != nil {
+			return fmt.Errorf("invalid artifact folder %q: %w", a.Folder, err)
+		}
+		file := filepath.ToSlash(filepath.Clean(a.File))
+		if file != folder && !strings.HasPrefix(file, folder+"/") {
+			return fmt.Errorf("artifact file %q is not under folder %q", a.File, folder)
+		}
 	}
 	if a.Created.IsZero() {
 		return fmt.Errorf("artifact created time is required")
@@ -223,6 +251,38 @@ func ValidateRelativePath(p string) error {
 		}
 	}
 	return nil
+}
+
+func NormalizeFolderPath(folder string) (string, error) {
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		return "", fmt.Errorf("folder is empty")
+	}
+	if filepath.IsAbs(folder) || hasWindowsVolumeName(folder) {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	slash := strings.ReplaceAll(folder, "\\", "/")
+	if strings.HasPrefix(slash, "/") {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	parts := strings.Split(slash, "/")
+	for _, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("empty path segments are not allowed")
+		}
+		if part == "." || part == ".." {
+			return "", fmt.Errorf("path traversal is not allowed")
+		}
+	}
+	clean := filepath.ToSlash(filepath.Clean(slash))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("path traversal is not allowed")
+	}
+	return clean, nil
+}
+
+func hasWindowsVolumeName(p string) bool {
+	return len(p) >= 2 && p[1] == ':' && unicode.IsLetter(rune(p[0]))
 }
 
 func SafeJoin(base, rel string) (string, error) {
