@@ -23,6 +23,8 @@
   let listCollapsed = false
   let listHeight = 220
   let resizingList = false
+  let artifactSort = 'newest'
+  let relativeNow = Date.now()
   let lastAppliedSelectedArtifactID = null
   let wasFullScreen = false
 
@@ -43,6 +45,8 @@
 
   $: selectedURL = selected?.url || ''
   $: selectedExt = selected?.file?.split('.').pop()?.toLowerCase() || ''
+  $: sortedArtifacts = sortArtifacts(artifacts, artifactSort)
+  $: artifactGroups = groupArtifactsByFolder(sortedArtifacts, artifactSort)
   $: if (fullScreen && !wasFullScreen) {
     listCollapsed = true
     wasFullScreen = true
@@ -76,6 +80,61 @@
     } finally {
       loading = false
     }
+  }
+
+  function artifactTime(a) {
+    const t = Date.parse(a?.created || '')
+    return Number.isFinite(t) ? t : 0
+  }
+
+  function sortArtifacts(items, mode) {
+    return [...(items || [])].sort((a, b) => {
+      if (mode === 'oldest') return artifactTime(a) - artifactTime(b) || (a.title || '').localeCompare(b.title || '')
+      if (mode === 'title') return (a.title || '').localeCompare(b.title || '') || artifactTime(b) - artifactTime(a)
+      return artifactTime(b) - artifactTime(a) || (a.title || '').localeCompare(b.title || '')
+    })
+  }
+
+  function groupArtifactsByFolder(items, mode) {
+    const groups = new Map()
+    for (const a of items || []) {
+      const name = a.folder || 'Unfiled'
+      if (!groups.has(name)) groups.set(name, [])
+      groups.get(name).push(a)
+    }
+    return Array.from(groups.entries())
+      .sort(([aName, aItems], [bName, bItems]) => {
+        if (mode === 'newest') return Math.max(...bItems.map(artifactTime)) - Math.max(...aItems.map(artifactTime)) || aName.localeCompare(bName)
+        if (mode === 'oldest') return Math.min(...aItems.map(artifactTime)) - Math.min(...bItems.map(artifactTime)) || aName.localeCompare(bName)
+        if (aName === 'Unfiled') return -1
+        if (bName === 'Unfiled') return 1
+        return aName.localeCompare(bName)
+      })
+      .map(([name, items]) => ({ name, items }))
+  }
+
+  function relativeTime(created) {
+    const t = Date.parse(created || '')
+    if (!Number.isFinite(t)) return ''
+    const seconds = Math.max(0, Math.floor((relativeNow - t) / 1000))
+    if (seconds < 45) return 'just now'
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    if (days < 14) return `${days}d ago`
+    const weeks = Math.floor(days / 7)
+    if (weeks < 8) return `${weeks}w ago`
+    const months = Math.floor(days / 30)
+    if (months < 12) return `${months}mo ago`
+    return `${Math.floor(days / 365)}y ago`
+  }
+
+  function absoluteTime(created) {
+    const t = Date.parse(created || '')
+    if (!Number.isFinite(t)) return ''
+    return new Date(t).toLocaleString()
   }
 
   function renderKind(a = selected) {
@@ -311,12 +370,24 @@
     window.addEventListener('mouseup', up)
   }
 
-  onMount(load)
+  onMount(() => {
+    load()
+    const timer = window.setInterval(() => { relativeNow = Date.now() }, 60_000)
+    return () => window.clearInterval(timer)
+  })
 </script>
 
 <div class="h-full min-h-0 flex flex-col bg-[#0b1020] text-gray-200 relative outline-none border-l border-[#1e2d4a]" tabindex="0" role="application" aria-label="artifacts panel" on:paste={handlePaste} on:dragenter={(e) => { if (Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')) dragOver = true }} on:dragover={(e) => e.preventDefault()} on:dragleave={() => { dragOver = false }} on:drop={handleDrop}>
   <div class="h-9 shrink-0 flex items-center gap-2 border-b border-[#1e2d4a] px-2 bg-[#0a0e1a]">
     <div class="text-xs font-mono text-cyan-300 flex-1 truncate">artifacts {artifacts.length ? `(${artifacts.length})` : ''}</div>
+    <label class="text-[10px] font-mono text-gray-500 flex items-center gap-1" title="sort artifact list">
+      sort
+      <select class="bg-black/40 border border-[#1e2d4a] rounded px-1 py-0.5 text-[10px] text-gray-300 outline-none focus:border-cyan-500" bind:value={artifactSort}>
+        <option value="newest">newest</option>
+        <option value="oldest">oldest</option>
+        <option value="title">title</option>
+      </select>
+    </label>
     <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="show or hide artifact list" on:click={() => { listCollapsed = !listCollapsed }}>{listCollapsed ? '[show list]' : '[hide list]'}</button>
     <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="use full browser window" on:click={onToggleFullScreen}>{fullScreen ? '[exit full]' : '[full screen]'}</button>
     <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="upload artifact files" on:click={() => fileInput?.click()}>[upload]</button>
@@ -344,11 +415,17 @@
       {:else if artifacts.length === 0}
         <div class="p-3 text-xs font-mono text-gray-500">No artifacts — drop files, paste text, or click [upload]/[new].</div>
       {:else}
-        {#each artifacts as a}
-          <button class="w-full text-left px-3 py-2 border-b border-[#111a2e] hover:bg-cyan-950/30 {selected?.id === a.id ? 'bg-cyan-950/40' : ''}" on:click={() => select(a)}>
-            <div class="text-xs text-gray-100 truncate">{a.title}</div>
-            <div class="text-[10px] font-mono text-gray-500 truncate">{a.type} · {a.file}</div>
-          </button>
+        {#each artifactGroups as group}
+          <div class="sticky top-0 z-10 bg-[#0a0e1a] border-b border-[#1e2d4a] px-3 py-1 text-[10px] uppercase tracking-wide font-mono text-cyan-500 truncate">{group.name} ({group.items.length})</div>
+          {#each group.items as a}
+            <button class="w-full text-left px-3 py-2 border-b border-[#111a2e] hover:bg-cyan-950/30 {selected?.id === a.id ? 'bg-cyan-950/40' : ''}" on:click={() => select(a)}>
+              <div class="flex items-center gap-2">
+                <div class="text-xs text-gray-100 truncate flex-1 min-w-0">{a.title}</div>
+                {#if relativeTime(a.created)}<div class="text-[10px] font-mono text-gray-600 shrink-0" title={absoluteTime(a.created)}>{relativeTime(a.created)}</div>{/if}
+              </div>
+              <div class="text-[10px] font-mono text-gray-500 truncate">{a.type} · {a.file}</div>
+            </button>
+          {/each}
         {/each}
       {/if}
     </div>

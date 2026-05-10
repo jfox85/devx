@@ -71,6 +71,52 @@ func TestValidateRelativePathRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestValidateFolderPathRejectsUnsafeFolders(t *testing.T) {
+	bad := []string{"", "../secret", "a/../secret", "/tmp/file", "..", "workflow//run", "workflow/", "./workflow", "workflow/./run", `C:\tmp\file`}
+	for _, p := range bad {
+		if _, err := NormalizeFolderPath(p); err == nil {
+			t.Fatalf("expected %q to be rejected", p)
+		}
+	}
+	got, err := NormalizeFolderPath(`workflow\run-1\qa`)
+	if err != nil {
+		t.Fatalf("expected safe folder: %v", err)
+	}
+	if got != "workflow/run-1/qa" {
+		t.Fatalf("normalized folder = %q", got)
+	}
+}
+
+func TestLoadManifestMissingFolderIsBackwardCompatible(t *testing.T) {
+	sess := testSession(t)
+	if err := os.MkdirAll(DirForSession(sess), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{
+  "version": 1,
+  "session": "feature/test",
+  "artifacts": [
+    {
+      "id": "doc-old",
+      "type": "document",
+      "title": "Old Doc",
+      "file": "old.md",
+      "created": "2026-04-25T10:30:00Z"
+    }
+  ]
+}`)
+	if err := os.WriteFile(ManifestPath(sess), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadManifest(sess)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if len(m.Artifacts) != 1 || m.Artifacts[0].Folder != "" || m.Artifacts[0].File != "old.md" {
+		t.Fatalf("unexpected manifest: %#v", m.Artifacts)
+	}
+}
+
 func TestSafeJoinStaysInsideBase(t *testing.T) {
 	base := t.TempDir()
 	joined, err := SafeJoin(base, "logs/test.log")
@@ -133,6 +179,50 @@ func TestAddCreatesManifestFileAndTheme(t *testing.T) {
 	}
 	if len(m.Artifacts) != 1 {
 		t.Fatalf("expected one artifact, got %d", len(m.Artifacts))
+	}
+}
+
+func TestAddCreatesArtifactInNestedFolder(t *testing.T) {
+	sess := testSession(t)
+	source := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(source, []byte("# Plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Add(sess, AddOptions{Source: source, Type: "document", Title: "Plan", Folder: "workflow/run-123", Destination: "10-plan.md"})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if a.Folder != "workflow/run-123" || a.File != "workflow/run-123/10-plan.md" {
+		t.Fatalf("unexpected artifact paths: %#v", a)
+	}
+	if _, err := os.Stat(filepath.Join(DirForSession(sess), "workflow", "run-123", "10-plan.md")); err != nil {
+		t.Fatalf("nested artifact file missing: %v", err)
+	}
+	m, err := LoadManifest(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Artifacts) != 1 || m.Artifacts[0].Folder != "workflow/run-123" || m.Artifacts[0].File != "workflow/run-123/10-plan.md" {
+		t.Fatalf("manifest did not persist folder: %#v", m.Artifacts)
+	}
+}
+
+func TestAddNestedFolderAvoidsCollisions(t *testing.T) {
+	sess := testSession(t)
+	source := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(source, []byte("# Plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Add(sess, AddOptions{Source: source, Type: "document", Title: "Plan A", Folder: "workflow/run", Destination: "plan.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Add(sess, AddOptions{Source: source, Type: "document", Title: "Plan B", Folder: "workflow/run", Destination: "plan.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.File != "workflow/run/plan.md" || second.File != "workflow/run/plan-2.md" {
+		t.Fatalf("unexpected collision paths: %q %q", first.File, second.File)
 	}
 }
 
@@ -217,6 +307,21 @@ func TestAddRejectsUnsafeDestination(t *testing.T) {
 	_, err := Add(sess, AddOptions{Source: source, Type: "plan", Title: "Plan", Destination: "../plan.html"})
 	if err == nil {
 		t.Fatal("expected unsafe destination error")
+	}
+}
+
+func TestAddRejectsUnsafeFolder(t *testing.T) {
+	sess := testSession(t)
+	source := filepath.Join(t.TempDir(), "plan.html")
+	if err := os.WriteFile(source, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Add(sess, AddOptions{Source: source, Type: "plan", Title: "Plan", Folder: "workflow/../secret", Destination: "plan.html"})
+	if err == nil {
+		t.Fatal("expected unsafe folder error")
+	}
+	if _, err := os.Lstat(filepath.Join(DirForSession(sess), "secret", "plan.html")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe folder wrote a file or stat failed unexpectedly: %v", err)
 	}
 }
 

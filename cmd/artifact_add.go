@@ -23,6 +23,7 @@ var artifactAddFlags struct {
 	focus        bool
 	id           string
 	file         string
+	folder       string
 }
 
 var artifactAddCmd = &cobra.Command{
@@ -43,7 +44,8 @@ func init() {
 	artifactAddCmd.Flags().StringVar(&artifactAddFlags.tags, "tags", "", "Comma-separated tags")
 	artifactAddCmd.Flags().BoolVar(&artifactAddFlags.focus, "focus", false, "Flag the session for attention and auto-open this artifact")
 	artifactAddCmd.Flags().StringVar(&artifactAddFlags.id, "id", "", "Custom artifact ID")
-	artifactAddCmd.Flags().StringVar(&artifactAddFlags.file, "file", "", "Destination path under .artifacts/ (required when reading from stdin)")
+	artifactAddCmd.Flags().StringVar(&artifactAddFlags.file, "file", "", "Destination path under .artifacts/ (required when reading from stdin; relative to --folder when supplied)")
+	artifactAddCmd.Flags().StringVar(&artifactAddFlags.folder, "folder", "", "Optional artifact folder/group path under .artifacts/")
 }
 
 func runArtifactAdd(cmd *cobra.Command, args []string) error {
@@ -66,6 +68,7 @@ func runArtifactAdd(cmd *cobra.Command, args []string) error {
 	opts := artifactpkg.AddOptions{
 		Source:      source,
 		Destination: artifactAddFlags.file,
+		Folder:      artifactAddFlags.folder,
 		ID:          artifactAddFlags.id,
 		Type:        artifactAddFlags.artifactType,
 		Title:       artifactAddFlags.title,

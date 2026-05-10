@@ -45,7 +45,7 @@
   $: filteredArtifactSearchItems = artifactSearchItems.filter(a => {
     const q = artifactQuery.trim().toLowerCase()
     if (!q) return true
-    return [a.title, a.file, a.type, ...(a.tags || [])].join(' ').toLowerCase().includes(q)
+    return [a.title, a.file, a.folder, a.type, ...(a.tags || [])].join(' ').toLowerCase().includes(q)
   })
 
   // Drag-and-drop state
