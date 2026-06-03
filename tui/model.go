@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,23 +26,29 @@ import (
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/update"
 	"github.com/jfox85/devx/version"
+	"github.com/spf13/viper"
 )
 
 type sessionItem struct {
-	name            string
-	projectAlias    string
-	projectName     string
-	branch          string
-	path            string
-	ports           map[string]int
-	routes          map[string]string
-	attentionFlag   bool
-	attentionReason string
-	attentionTime   time.Time
-	additions       int    // Git diff additions count
-	deletions       int    // Git diff deletions count
-	displayName     string // raw DisplayName from metadata (empty if not set)
-	color           string
+	name              string
+	projectAlias      string
+	projectName       string
+	branch            string
+	path              string
+	ports             map[string]int
+	routes            map[string]string
+	attentionFlag     bool
+	attentionReason   string
+	attentionTime     time.Time
+	additions         int    // Git diff additions count
+	deletions         int    // Git diff deletions count
+	displayName       string // raw DisplayName from metadata (empty if not set)
+	color             string
+	gatepostEnabled   bool
+	gatepostLogsURL   string
+	gatepostBypass    bool
+	gatepostProviders []string
+	gatepostMode      string
 }
 
 type projectItem struct {
@@ -478,20 +485,25 @@ func (m *model) loadSessions() tea.Msg {
 		color := sess.EffectiveColor()
 
 		sessions = append(sessions, sessionItem{
-			name:            name,
-			projectAlias:    sess.ProjectAlias,
-			projectName:     projectName,
-			branch:          sess.Branch,
-			path:            sess.Path,
-			ports:           sess.Ports,
-			routes:          sess.Routes,
-			attentionFlag:   sess.AttentionFlag,
-			attentionReason: sess.AttentionReason,
-			attentionTime:   sess.AttentionTime,
-			additions:       additions,
-			deletions:       deletions,
-			displayName:     sess.DisplayName,
-			color:           color,
+			name:              name,
+			projectAlias:      sess.ProjectAlias,
+			projectName:       projectName,
+			branch:            sess.Branch,
+			path:              sess.Path,
+			ports:             sess.Ports,
+			routes:            sess.Routes,
+			attentionFlag:     sess.AttentionFlag,
+			attentionReason:   sess.AttentionReason,
+			attentionTime:     sess.AttentionTime,
+			additions:         additions,
+			deletions:         deletions,
+			displayName:       sess.DisplayName,
+			color:             color,
+			gatepostEnabled:   sess.Target.Gatepost.Enabled,
+			gatepostLogsURL:   fmt.Sprintf("http://127.0.0.1:%d/api/gatepost/logs?session=%s", viper.GetInt("web_port"), url.QueryEscape(sess.Name)),
+			gatepostBypass:    sess.Target.Gatepost.Bypass,
+			gatepostProviders: sess.Target.Gatepost.RegisteredProviders,
+			gatepostMode:      sess.Target.Gatepost.ProviderMode,
 		})
 	}
 
@@ -1701,6 +1713,20 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 			details += fmt.Sprintf(" %s:%d", service, sess.ports[service])
 		}
 		details += "\n"
+	}
+
+	if sess.gatepostEnabled {
+		state := "enforced"
+		if sess.gatepostBypass {
+			state = "bypass"
+		}
+		details += fmt.Sprintf("    Gatepost: %s\n", state)
+		if sess.gatepostMode != "" || len(sess.gatepostProviders) > 0 {
+			details += fmt.Sprintf("      Providers: %s via %s\n", strings.Join(sess.gatepostProviders, ","), sess.gatepostMode)
+		}
+		if sess.gatepostLogsURL != "" {
+			details += fmt.Sprintf("      Logs: DevX web %s\n", sess.gatepostLogsURL)
+		}
 	}
 
 	// Show Caddy routes (from already loaded session data)

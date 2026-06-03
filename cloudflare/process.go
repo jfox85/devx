@@ -26,13 +26,25 @@ func DefaultPIDPath() string {
 // config file and tunnel ID. Returns the PID of the new process.
 // If cloudflared is already running (valid PID file), returns an error.
 func StartDaemon(cfgPath, tunnelID, pidPath string) (int, error) {
-	// Check if already running
+	// Check if already running via PID file
 	if pid, err := ReadPID(pidPath); err == nil {
 		if IsRunning(pid) {
 			return 0, fmt.Errorf("cloudflared is already running (pid %d)", pid)
 		}
 		// Stale PID file — clean it up
 		_ = os.Remove(pidPath)
+	}
+
+	// Kill any orphaned cloudflared tunnel processes not tracked by the PID file.
+	// This prevents multiple instances from competing for the same tunnel.
+	if out, err := exec.Command("pgrep", "-f", "cloudflared tunnel").Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if pid, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGTERM)
+			}
+		}
+		// Give them a moment to exit
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	binary, err := exec.LookPath("cloudflared")
