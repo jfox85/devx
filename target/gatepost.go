@@ -236,6 +236,14 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 					agentArgs = append(agentArgs, "-v", hostPath+":/root/.pi/agent/"+item+":ro")
 				}
 			}
+			// Mount agents from ~/.pi/agent/agents/ if not found in pi-config dir.
+			if _, err := os.Stat(filepath.Join(cfg, "agents")); os.IsNotExist(err) {
+				homeD, _ := os.UserHomeDir()
+				piAgents := filepath.Join(homeD, ".pi", "agent", "agents")
+				if _, err := os.Stat(piAgents); err == nil {
+					agentArgs = append(agentArgs, "-v", piAgents+":/root/.pi/agent/agents:ro")
+				}
+			}
 		}
 	}
 	sec := opts.Security
