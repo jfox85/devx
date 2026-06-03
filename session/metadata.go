@@ -31,6 +31,59 @@ type Session struct {
 	LastAttached    time.Time         `json:"last_attached,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
+	Target          TargetMeta        `json:"target,omitempty"`
+}
+
+// TargetMeta describes the execution environment for a session.
+// Zero value (empty Type) is treated as "host" everywhere.
+type TargetMeta struct {
+	Type          string       `json:"type,omitempty"`           // "host", "docker", future: "gatepost", "vm"
+	ContainerID   string       `json:"container_id,omitempty"`   // Docker container ID
+	ContainerName string       `json:"container_name,omitempty"` // Docker container name
+	NetworkName   string       `json:"network_name,omitempty"`   // Docker network name
+	Image         string       `json:"image,omitempty"`          // Image used
+	Gatepost      GatepostMeta `json:"gatepost,omitempty"`       // Gatepost runtime metadata when target is gatepost
+}
+
+// GatepostMeta describes the optional Gatepost capability attached to a session.
+// Runtime-specific details stay behind Runtime; DevX consumes this as a stable
+// contract for control, logs, and host-side bypass operations.
+type GatepostMeta struct {
+	Enabled             bool     `json:"enabled,omitempty"`
+	Runtime             string   `json:"runtime,omitempty"`
+	ProxyContainerName  string   `json:"proxy_container_name,omitempty"`
+	InternalNetworkName string   `json:"internal_network_name,omitempty"`
+	EgressNetworkName   string   `json:"egress_network_name,omitempty"`
+	PortsNetworkName    string   `json:"ports_network_name,omitempty"`
+	SessionDir          string   `json:"session_dir,omitempty"`
+	AuditDir            string   `json:"audit_dir,omitempty"`
+	ConfigDir           string   `json:"config_dir,omitempty"`
+	AuditLog            string   `json:"audit_log,omitempty"`
+	CompanionLog        string   `json:"companion_log,omitempty"`
+	ControlURL          string   `json:"control_url,omitempty"`
+	LogsURL             string   `json:"logs_url,omitempty"`
+	LogsTokenPath       string   `json:"logs_token_path,omitempty"`
+	LogsPID             int      `json:"logs_pid,omitempty"`
+	ProviderMode        string   `json:"provider_mode,omitempty"`
+	ProviderCommand     string   `json:"provider_command,omitempty"`
+	RegisteredProviders []string `json:"registered_providers,omitempty"`
+	ProviderWarnings    []string `json:"provider_warnings,omitempty"`
+	ControlToken        string   `json:"-"`
+	EventToken          string   `json:"-"`
+	Bypass              bool     `json:"bypass,omitempty"`
+}
+
+// TargetType returns the effective target type, defaulting to "host".
+func (s *Session) TargetType() string {
+	if s.Target.Type == "" {
+		return "host"
+	}
+	return s.Target.Type
+}
+
+// IsContainerized returns true if the session runs inside a container.
+func (s *Session) IsContainerized() bool {
+	return s.TargetType() != "host"
 }
 
 type SessionStore struct {
@@ -85,7 +138,7 @@ func (s *SessionStore) Save() error {
 		return fmt.Errorf("failed to marshal sessions: %w", err)
 	}
 
-	if err := os.WriteFile(sessionsPath, data, 0644); err != nil {
+	if err := os.WriteFile(sessionsPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write sessions file: %w", err)
 	}
 

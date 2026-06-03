@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	Target                 string   `mapstructure:"target"`
 	BaseDomain             string   `mapstructure:"basedomain"`
 	CaddyAPI               string   `mapstructure:"caddy_api"`
 	TmuxpTemplate          string   `mapstructure:"tmuxp_template"`
@@ -21,6 +22,14 @@ type Config struct {
 	WebPort                int      `mapstructure:"web_port"`
 	WebAutostart           bool     `mapstructure:"web_autostart"`
 	ArtifactTriggerKey     string   `mapstructure:"artifact_trigger_key"`
+	Gatepost               struct {
+		Root                     string `mapstructure:"root"`
+		AgentImage               string `mapstructure:"agent_image"`
+		LogsCommand              string `mapstructure:"logs_command"`
+		ProviderBootstrapCommand string `mapstructure:"provider_bootstrap_command"`
+		AuthHome                 string `mapstructure:"auth_home"`
+		RequiredProviders        string `mapstructure:"required_providers"`
+	} `mapstructure:"gatepost"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -37,6 +46,24 @@ func LoadConfig() (*Config, error) {
 			return nil, err
 		}
 		cfg.TmuxpTemplate = filepath.Join(home, cfg.TmuxpTemplate[1:])
+	}
+
+	// Expand ~ in gatepost.root path
+	if cfg.Gatepost.Root != "" && cfg.Gatepost.Root[0] == '~' {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Gatepost.Root = filepath.Join(home, cfg.Gatepost.Root[1:])
+	}
+
+	// Expand ~ in gatepost.auth_home path
+	if cfg.Gatepost.AuthHome != "" && cfg.Gatepost.AuthHome[0] == '~' {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Gatepost.AuthHome = filepath.Join(home, cfg.Gatepost.AuthHome[1:])
 	}
 
 	// Expand ~ in cloudflare_tunnel_config path
@@ -69,6 +96,12 @@ func SaveConfig(cfg *Config) error {
 	viper.Set("web_port", cfg.WebPort)
 	viper.Set("web_autostart", cfg.WebAutostart)
 	viper.Set("artifact_trigger_key", cfg.ArtifactTriggerKey)
+	viper.Set("gatepost.root", cfg.Gatepost.Root)
+	viper.Set("gatepost.agent_image", cfg.Gatepost.AgentImage)
+	viper.Set("gatepost.logs_command", cfg.Gatepost.LogsCommand)
+	viper.Set("gatepost.provider_bootstrap_command", cfg.Gatepost.ProviderBootstrapCommand)
+	viper.Set("gatepost.auth_home", cfg.Gatepost.AuthHome)
+	viper.Set("gatepost.required_providers", cfg.Gatepost.RequiredProviders)
 
 	// Write the config file
 	configFile := filepath.Join(configPath, "config.yaml")
