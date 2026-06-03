@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,7 +12,9 @@ import (
 	"html/template"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +22,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
@@ -31,6 +36,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login", handleLogin)
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
+	mux.HandleFunc("GET /api/sessions/create-status", handleSessionCreateStatus)
 	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
@@ -47,6 +53,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
+	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
 	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
@@ -135,6 +142,16 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // sessionResponse is the JSON shape returned for each session.
+type gatepostResponse struct {
+	Enabled             bool     `json:"enabled"`
+	Runtime             string   `json:"runtime,omitempty"`
+	LogsURL             string   `json:"logs_url,omitempty"`
+	Bypass              bool     `json:"bypass,omitempty"`
+	ProviderMode        string   `json:"provider_mode,omitempty"`
+	RegisteredProviders []string `json:"registered_providers,omitempty"`
+	ProviderWarnings    []string `json:"provider_warnings,omitempty"`
+}
+
 type sessionResponse struct {
 	Name              string            `json:"name"`
 	DisplayName       string            `json:"display_name,omitempty"`
@@ -147,6 +164,7 @@ type sessionResponse struct {
 	AttentionFlag     bool              `json:"attention_flag"`
 	ArtifactCount     int               `json:"artifact_count"`
 	FocusedArtifactID string            `json:"focused_artifact_id,omitempty"`
+	Gatepost          *gatepostResponse `json:"gatepost,omitempty"`
 }
 
 func buildSessionResponse(sess *session.Session) sessionResponse {
@@ -161,6 +179,14 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		}
 	}
 	artifactCount, focusedArtifactID := artifactCountAndFocus(sess)
+	var gatepost *gatepostResponse
+	if sess.Target.Gatepost.Enabled {
+		logsURL := ""
+		if sess.Target.Gatepost.LogsURL != "" {
+			logsURL = "/api/gatepost/logs?session=" + urlQueryEscape(sess.Name)
+		}
+		gatepost = &gatepostResponse{Enabled: true, Runtime: sess.Target.Gatepost.Runtime, LogsURL: logsURL, Bypass: sess.Target.Gatepost.Bypass, ProviderMode: sess.Target.Gatepost.ProviderMode, RegisteredProviders: sess.Target.Gatepost.RegisteredProviders, ProviderWarnings: sess.Target.Gatepost.ProviderWarnings}
+	}
 	return sessionResponse{
 		Name:              sess.Name,
 		DisplayName:       sess.DisplayName,
@@ -173,7 +199,52 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		AttentionFlag:     sess.AttentionFlag,
 		ArtifactCount:     artifactCount,
 		FocusedArtifactID: focusedArtifactID,
+		Gatepost:          gatepost,
 	}
+}
+
+func urlQueryEscape(s string) string { return url.QueryEscape(s) }
+
+func handleGatepostLogsRedirect(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("session")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session query param required"})
+		return
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	sess, ok := store.GetSession(name)
+	if !ok || !sess.Target.Gatepost.Enabled || sess.Target.Gatepost.LogsURL == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "gatepost logs not found"})
+		return
+	}
+	tokenBytes, err := os.ReadFile(sess.Target.Gatepost.LogsTokenPath)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "gatepost logs token not found"})
+		return
+	}
+	u, err := url.Parse(sess.Target.Gatepost.LogsURL)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invalid gatepost logs url"})
+		return
+	}
+	requestHost := r.Host
+	if h, _, err := net.SplitHostPort(r.Host); err == nil {
+		requestHost = h
+	}
+	if requestHost != "" {
+		u.Host = net.JoinHostPort(requestHost, u.Port())
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	// Include token as query param so it works cross-port (cookie domain
+	// restrictions prevent the HttpOnly cookie reaching a different port).
+	q := u.Query()
+	q.Set("token", token)
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
 func handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +267,18 @@ type createSessionRequest struct {
 	Project string `json:"project"`
 }
 
+// sessionCreateJobs tracks in-progress async session creations.
+var sessionCreateJobs sync.Map // name -> *sessionCreateJob
+
+type sessionCreateJob struct {
+	Name      string
+	Done      chan struct{}
+	Err       error
+	mu        sync.Mutex
+	Messages  []string // progress lines from stdout
+	StartedAt time.Time
+}
+
 func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -211,27 +294,83 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use -- to separate flags from the positional session name, preventing
-	// a name starting with "-" from being misinterpreted as a flag by Cobra.
-	args := []string{"session", "create"}
+	// Start creation asynchronously so long-running targets (e.g. Gatepost
+	// Docker) don't time out the HTTP connection.
+	job := &sessionCreateJob{Name: req.Name, Done: make(chan struct{}), StartedAt: time.Now()}
+	if existing, loaded := sessionCreateJobs.LoadOrStore(req.Name, job); loaded {
+		// Allow retry if the previous job is stale (>6 min, covers 5 min timeout + 60s buffer).
+		old := existing.(*sessionCreateJob)
+		if time.Since(old.StartedAt) < 6*time.Minute {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session creation already in progress"})
+			return
+		}
+		// Stale job — replace it.
+		sessionCreateJobs.Store(req.Name, job)
+	}
+	args := []string{"session", "create", "--no-tmux"}
 	if req.Project != "" {
 		args = append(args, "--project", req.Project)
 	}
 	args = append(args, "--", req.Name)
-	if err := runSelf(args...); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	go func() {
+		defer close(job.Done)
+		job.Err = runSelfWithProgress(args, func(line string) {
+			job.mu.Lock()
+			if len(job.Messages) < 50 { // cap to avoid unbounded growth
+				job.Messages = append(job.Messages, line)
+			}
+			job.mu.Unlock()
+		})
+		// Keep job in map for 60s after completion so the status endpoint can
+		// return the error to the browser even if it polls slightly late.
+		time.AfterFunc(60*time.Second, func() { sessionCreateJobs.Delete(req.Name) })
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"name": req.Name, "status": "creating"})
+}
+
+func handleSessionCreateStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
 		return
 	}
-
+	v, inProgress := sessionCreateJobs.Load(name)
+	if inProgress {
+		job := v.(*sessionCreateJob)
+		select {
+		case <-job.Done:
+			// just finished — fall through to session lookup below
+		default:
+				job.mu.Lock()
+			msgs := append([]string(nil), job.Messages...)
+			job.mu.Unlock()
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{"name": name, "status": "creating", "messages": msgs})
+			return
+		}
+	}
 	store, err := session.LoadSessions()
 	if err != nil || store == nil {
-		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	if sess, ok := store.Sessions[req.Name]; ok {
-		writeJSON(w, http.StatusCreated, buildSessionResponse(sess))
+	if sess, ok := store.Sessions[name]; ok {
+		writeJSON(w, http.StatusOK, buildSessionResponse(sess))
 	} else {
-		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+		// Check if job errored
+		if inProgress {
+			job := v.(*sessionCreateJob)
+			if job.Err != nil {
+				// Strip leading "exit status N: " prefix for cleaner UI messages.
+				msg := job.Err.Error()
+				if i := strings.Index(msg, ": "); i >= 0 && strings.HasPrefix(msg, "exit status") {
+					msg = msg[i+2:]
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg})
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 	}
 }
 
@@ -810,7 +949,9 @@ var allowedImageTypes = map[string]string{
 }
 
 // handleUploadImage accepts a multipart image upload, saves it to
-// ~/.devx/uploads/{hex}.ext, and returns the absolute path as JSON.
+// ~/.devx/uploads/<session>/{hex}.ext, and returns the path as JSON.
+// For Gatepost sessions the returned path uses the container mount point
+// so the agent can access the file directly.
 func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	// Cap the raw request body to 20 MB before parsing to prevent disk exhaustion.
 	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
@@ -825,6 +966,8 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	sessionName := r.FormValue("session")
 
 	// Always sniff magic bytes to determine MIME type — never trust the
 	// client-supplied Content-Type header, which is trivially spoofable.
@@ -855,7 +998,13 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uploadDir := filepath.Join(home, ".devx", "uploads")
+	// Per-session upload directory so each session is isolated and Gatepost
+	// containers only see their own files.
+	uploadSubdir := "uploads"
+	if sessionName != "" {
+		uploadSubdir = filepath.Join("uploads", sessionName)
+	}
+	uploadDir := filepath.Join(home, ".devx", uploadSubdir)
 	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create upload dir"})
 		return
@@ -881,15 +1030,34 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"path": destPath})
+	// For Gatepost sessions, return the container-side path so the agent
+	// can read the file from the mounted uploads directory.
+	resultPath := destPath
+	if sessionName != "" {
+		store, _ := session.LoadSessions()
+		if store != nil {
+			if sess, ok := store.Sessions[sessionName]; ok && sess.Target.Gatepost.Enabled {
+				resultPath = filepath.Join("/root/.devx/uploads", filename)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"path": resultPath})
 }
 
 // handleServeUpload serves files from ~/.devx/uploads/ by filename.
-// Path traversal is prevented by rejecting any filename that contains a slash.
+// Supports both legacy flat paths (/uploads/{file}) and per-session
+// paths (/uploads/{session}/{file}). Path traversal is prevented by
+// rejecting ".." segments.
 func handleServeUpload(w http.ResponseWriter, r *http.Request) {
-	filename := strings.TrimPrefix(r.URL.Path, "/uploads/")
-	// Reject empty names and any path traversal attempts.
-	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\") {
+	subpath := strings.TrimPrefix(r.URL.Path, "/uploads/")
+	if subpath == "" || strings.Contains(subpath, "..") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// Allow at most one slash (session/filename).
+	parts := strings.SplitN(subpath, "/", 3)
+	if len(parts) > 2 {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -899,7 +1067,7 @@ func handleServeUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot find home dir", http.StatusInternalServerError)
 		return
 	}
-	filePath := filepath.Join(home, ".devx", "uploads", filename)
+	filePath := filepath.Join(home, ".devx", "uploads", subpath)
 
 	// Serve the file — http.ServeFile sets Content-Type, ETag, etc.
 	http.ServeFile(w, r, filePath)
@@ -989,6 +1157,14 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 // TMUX and TMUX_PANE are stripped so that commands like "session create"
 // don't detect they're inside tmux and skip launching the session.
 func runSelf(args ...string) error {
+	return runSelfWithProgress(args, nil)
+}
+
+func runSelfWithProgress(args []string, onLine func(string)) error {
+	return runSelfTimeoutProgress(5*time.Minute, args, onLine)
+}
+
+func runSelfTimeoutProgress(timeout time.Duration, args []string, onLine func(string)) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %w", err)
@@ -999,13 +1175,48 @@ func runSelf(args ...string) error {
 			env = append(env, e)
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	var stderr bytes.Buffer
-	cmd := exec.Command(self, args...)
+	cmd := exec.CommandContext(ctx, self, args...)
 	cmd.Env = env
 	cmd.Stderr = &stderr
+	if onLine != nil {
+		pr, pw, err := os.Pipe()
+		if err == nil {
+			cmd.Stdout = pw
+			go func() {
+				defer pr.Close()
+				buf := make([]byte, 4096)
+				var line []byte
+				for {
+					n, err := pr.Read(buf)
+					for _, b := range buf[:n] {
+						if b == '\n' {
+							if s := strings.TrimSpace(string(line)); s != "" {
+								onLine(s)
+							}
+							line = line[:0]
+						} else {
+							line = append(line, b)
+						}
+					}
+					if err != nil {
+						break
+					}
+				}
+			}()
+			defer pw.Close()
+		}
+	}
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("timed out after %s: %w", timeout, ctx.Err())
+		}
 		if stderr.Len() > 0 {
-			return fmt.Errorf("%w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+			// Take only the first line — cobra appends full usage text after the error.
+			firstLine := bytes.TrimSpace(bytes.SplitN(stderr.Bytes(), []byte{'\n'}, 2)[0])
+			return fmt.Errorf("%s", firstLine)
 		}
 		return err
 	}
