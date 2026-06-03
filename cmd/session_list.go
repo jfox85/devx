@@ -26,15 +26,17 @@ func init() {
 }
 
 type SessionStatus struct {
-	Name         string
-	DisplayName  string
-	Color        string
-	Branch       string
-	Ports        map[string]int
-	Routes       map[string]string
-	TmuxStatus   string // "attached", "detached", "none"
-	EditorStatus string // "running", "stopped"
-	Path         string
+	Name           string
+	DisplayName    string
+	Color          string
+	Branch         string
+	Ports          map[string]int
+	Routes         map[string]string
+	TmuxStatus     string // "attached", "detached", "none"
+	EditorStatus   string // "running", "stopped"
+	Path           string
+	GatepostLogs   string
+	GatepostBypass bool
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
@@ -66,6 +68,11 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 			Ports:       sess.Ports,
 			Routes:      sess.Routes,
 			Path:        sess.Path,
+		}
+
+		if sess.Target.Gatepost.Enabled {
+			status.GatepostLogs = sess.Target.Gatepost.LogsURL
+			status.GatepostBypass = sess.Target.Gatepost.Bypass
 		}
 
 		// Check tmux status
@@ -231,6 +238,15 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 			statusParts = append(statusParts, "editor:running")
 		} else {
 			statusParts = append(statusParts, "editor:stopped")
+		}
+
+		// Gatepost status
+		if status.GatepostLogs != "" {
+			if status.GatepostBypass {
+				statusParts = append(statusParts, "gatepost:bypass")
+			} else {
+				statusParts = append(statusParts, "gatepost:on")
+			}
 		}
 
 		// Caddy status

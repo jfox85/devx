@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -22,7 +24,47 @@ var (
 	reuseFlag             bool
 	createColorFlag       string
 	createDisplayNameFlag string
+	targetFlag            string
+	imageFlag             string
 )
+
+func expandUserPath(path string) string {
+	if path == "" || path[0] != '~' {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
+}
+
+func trustedGatepostRuntimeConfig() target.GatepostRuntimeConfig {
+	cfg := target.GatepostRuntimeConfig{}
+	if cfgFile != "" {
+		cfg.Root = expandUserPath(viper.GetString("gatepost.root"))
+		cfg.LogsCommand = viper.GetString("gatepost.logs_command")
+		cfg.ProviderBootstrapCommand = viper.GetString("gatepost.provider_bootstrap_command")
+		cfg.AuthHome = expandUserPath(viper.GetString("gatepost.auth_home"))
+		cfg.RequiredProviders = viper.GetString("gatepost.required_providers")
+		return cfg
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return cfg
+	}
+	global := viper.New()
+	global.SetConfigFile(filepath.Join(home, ".config", "devx", "config.yaml"))
+	if err := global.ReadInConfig(); err != nil {
+		return cfg
+	}
+	cfg.Root = expandUserPath(global.GetString("gatepost.root"))
+	cfg.LogsCommand = global.GetString("gatepost.logs_command")
+	cfg.ProviderBootstrapCommand = global.GetString("gatepost.provider_bootstrap_command")
+	cfg.AuthHome = expandUserPath(global.GetString("gatepost.auth_home"))
+	cfg.RequiredProviders = global.GetString("gatepost.required_providers")
+	return cfg
+}
 
 var sessionCreateCmd = &cobra.Command{
 	Use:   "create <name>",
@@ -42,6 +84,8 @@ func init() {
 	sessionCreateCmd.Flags().StringVarP(&projectFlag, "project", "p", "", "Project alias (defaults to current directory's project)")
 	sessionCreateCmd.Flags().StringVar(&createColorFlag, "color", "", "Session color (auto-assigned if not specified)")
 	sessionCreateCmd.Flags().StringVar(&createDisplayNameFlag, "display-name", "", "Display name for the session")
+	sessionCreateCmd.Flags().StringVar(&targetFlag, "target", "", "Execution target: host, docker, or gatepost (default from config)")
+	sessionCreateCmd.Flags().StringVar(&imageFlag, "image", "", "Docker image for container sessions")
 }
 
 func runSessionCreate(cmd *cobra.Command, args []string) error {
@@ -60,6 +104,27 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	}
 	if createDisplayNameFlag != "" && !session.IsValidDisplayName(createDisplayNameFlag) {
 		return fmt.Errorf("display name too long (max %d characters)", session.MaxDisplayNameLen)
+	}
+
+	// Resolve target type: flag > project config > global config > "host"
+	targetType := targetFlag
+	if targetType == "" {
+		targetType = viper.GetString("target")
+	}
+	if targetType == "" {
+		targetType = "host"
+	}
+
+	// Validate target type early
+	if _, err := target.Resolve(targetType); err != nil {
+		return err
+	}
+
+	// Check Docker availability before any side effects
+	if targetType == "docker" || targetType == "gatepost" {
+		if err := target.CheckAvailable(); err != nil {
+			return err
+		}
 	}
 
 	// Load project registry
@@ -129,21 +194,39 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 
 		if worktreeExists {
-			fmt.Printf("Reusing existing session '%s' at %s\n", name, existingSession.Path)
-			// Skip to tmux launch if not disabled
-			if !noTmuxFlag {
-				if session.IsTmuxRunning() {
-					fmt.Printf("Note: Already inside tmux. Session exists but not launched.\n")
-					fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", existingSession.Path)
-				} else {
-					fmt.Printf("Launching tmux session...\n")
-					if err := session.LaunchTmuxSession(existingSession.Path, name); err != nil {
-						fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-						fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", existingSession.Path)
+			// If the effective target is gatepost but no container is running,
+			// remove stale metadata and fall through to full creation so
+			// Docker/networks/secrets are set up properly. The worktree is kept.
+			needsGatepost := targetType == "gatepost" && existingSession.Target.ContainerName == ""
+			if !needsGatepost && existingSession.Target.Type == "gatepost" && existingSession.Target.ContainerName == "" {
+				needsGatepost = true
+			}
+			if needsGatepost {
+				fmt.Printf("Session '%s' exists but has no container — recreating Gatepost runtime\n", name)
+				if err := store.RemoveSession(name); err != nil {
+					fmt.Printf("Warning: could not remove stale session metadata: %v\n", err)
+				}
+				sessionExists = false
+				// Fall through to full creation.
+			} else {
+				fmt.Printf("Reusing existing session '%s' at %s\n", name, existingSession.Path)
+				// Skip to tmux launch if not disabled
+				if !noTmuxFlag {
+					if existingSession.Target.Gatepost.Enabled && existingSession.Target.ContainerName != "" {
+						if err := session.EnsureTmuxSessionInContainer(name, existingSession.Target.ContainerName); err != nil {
+							fmt.Printf("Warning: Failed to launch tmux session in container: %v\n", err)
+						}
+					} else if session.IsTmuxRunning() {
+						fmt.Printf("Note: Already inside tmux. Session exists but not launched.\n")
+						fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", existingSession.Path)
+					} else {
+						if err := session.LaunchTmuxSession(existingSession.Path, name); err != nil {
+							fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
+						}
 					}
 				}
+				return nil
 			}
-			return nil
 		}
 		// Worktree doesn't exist, continue with creation
 		fmt.Printf("Session metadata exists but worktree is missing, recreating...\n")
@@ -161,6 +244,14 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		cfg, err = config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
+		}
+	}
+
+	// If no explicit --target flag, let project config override the global default.
+	if targetFlag == "" && cfg.Target != "" {
+		targetType = cfg.Target
+		if _, err := target.Resolve(targetType); err != nil {
+			return fmt.Errorf("invalid target in project config: %w", err)
 		}
 	}
 
@@ -281,9 +372,15 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate tmuxp config
+	// For Docker sessions, use /workspace as the path inside the container.
+	// The file is written to the host worktree (mounted at /workspace).
+	tmuxpPath := worktreePath
+	if targetType == "docker" || targetType == "gatepost" {
+		tmuxpPath = "/workspace"
+	}
 	tmuxpData := session.TmuxpData{
 		Name:           name,
-		Path:           worktreePath,
+		Path:           tmuxpPath,
 		Ports:          portAllocation.Ports,
 		Routes:         hostnames,
 		ExternalRoutes: externalHostnames,
@@ -298,6 +395,80 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			s.Routes = hostnames
 		}); err != nil {
 			fmt.Printf("Warning: failed to update session routes: %v\n", err)
+		}
+	}
+
+	// Start the target (container for docker, no-op for host)
+	tgt, _ := target.Resolve(targetType) // already validated above
+	ctx := context.Background()
+
+	// For container targets: ensure the image exists, start the container(s)
+	var targetMeta session.TargetMeta
+	if targetType == "docker" || targetType == "gatepost" {
+		dockerImage := imageFlag
+		if targetType == "gatepost" {
+			if dockerImage == "" {
+				dockerImage = viper.GetString("gatepost.agent_image")
+			}
+			if dockerImage == "" {
+				dockerImage = "gatepost-pi-agent:latest"
+			}
+		} else {
+			if dockerImage == "" {
+				dockerImage = viper.GetString("docker.image")
+			}
+			if dockerImage == "" {
+				dockerImage = "devx-session-base:latest"
+			}
+		}
+		if targetType == "docker" && dockerImage == "devx-session-base:latest" && !target.ImageExists(dockerImage) {
+			return fmt.Errorf("devx-session-base image not found. Build it first:\n  docker build -t devx-session-base:latest docker/")
+		}
+
+		// Build env map for the container
+		containerEnv := make(map[string]string)
+		for svc, port := range portAllocation.Ports {
+			containerEnv[strings.ToUpper(svc)+"_PORT"] = fmt.Sprintf("%d", port)
+		}
+		for svc, hostname := range hostnames {
+			containerEnv[strings.ToUpper(strings.ReplaceAll(svc, "-", "_"))+"_HOST"] = "http://" + hostname
+		}
+		containerEnv["SESSION_NAME"] = name
+
+		gatepostConfig := target.GatepostRuntimeConfig{}
+		if targetType == "gatepost" {
+			gatepostConfig = trustedGatepostRuntimeConfig()
+		}
+
+		result, err := tgt.Start(ctx, target.StartOpts{
+			SessionName:  name,
+			WorktreePath: worktreePath,
+			HostPorts:    portAllocation.Ports,
+			Image:        dockerImage,
+			Env:          containerEnv,
+			Labels: map[string]string{
+				"devx.session": name,
+				"devx.project": projectAlias,
+			},
+			Security:       target.DefaultSecurityOpts(),
+			GatepostConfig: gatepostConfig,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to start docker target: %w", err)
+		}
+
+		targetMeta = result.Meta
+
+		// Save target metadata
+		if err := store.UpdateSession(name, func(s *session.Session) {
+			s.Target = targetMeta
+		}); err != nil {
+			fmt.Printf("Warning: failed to save target metadata: %v\n", err)
+		}
+
+		fmt.Printf("Started container '%s'\n", targetMeta.ContainerName)
+		if targetMeta.Gatepost.Enabled && targetMeta.Gatepost.LogsURL != "" {
+			fmt.Printf("Gatepost Logs: open DevX web and use /api/gatepost/logs?session=%s\n", name)
 		}
 	}
 
@@ -320,14 +491,42 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 
 	// Launch tmux session unless disabled
 	if !noTmuxFlag {
-		if session.IsTmuxRunning() {
-			fmt.Printf("Note: Already inside tmux. Session created but not launched.\n")
-			fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", worktreePath)
+		if targetType == "docker" || targetType == "gatepost" {
+			// For Docker: load tmuxp inside the container
+			fmt.Println("Loading tmux session inside container...")
+			loadCmd := target.ExecInSession(targetMeta, []string{
+				"tmuxp", "load", "-d", "/workspace/.tmuxp.yaml", "-s", name,
+			}, false)
+			if output, err := loadCmd.CombinedOutput(); err != nil {
+				fmt.Printf("Warning: Failed to load tmux inside container: %v\n%s\n", err, output)
+			}
+
+			// Attach if not already inside tmux
+			if !session.IsTmuxRunning() {
+				attachCmd := target.ExecInSession(targetMeta, []string{
+					"tmux", "attach", "-t", name,
+				}, true)
+				attachCmd.Stdin = os.Stdin
+				attachCmd.Stdout = os.Stdout
+				attachCmd.Stderr = os.Stderr
+				if err := attachCmd.Run(); err != nil {
+					fmt.Printf("Note: Could not attach to tmux session in container: %v\n", err)
+				}
+			} else {
+				fmt.Printf("Note: Already inside tmux. Session created but not attached.\n")
+				fmt.Printf("To attach: devx session attach %s\n", name)
+			}
 		} else {
-			fmt.Printf("Launching tmux session...\n")
-			if err := session.LaunchTmuxSession(worktreePath, name); err != nil {
-				fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-				fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", worktreePath)
+			// Host: existing tmux behavior
+			if session.IsTmuxRunning() {
+				fmt.Printf("Note: Already inside tmux. Session created but not launched.\n")
+				fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", worktreePath)
+			} else {
+				fmt.Printf("Launching tmux session...\n")
+				if err := session.LaunchTmuxSession(worktreePath, name); err != nil {
+					fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
+					fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", worktreePath)
+				}
 			}
 		}
 	}

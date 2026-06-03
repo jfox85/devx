@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
 )
 
@@ -60,7 +61,42 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: Failed to assign slot: %v\n", err)
 	}
 
-	// Check if the target tmux session exists
+	if sess.IsContainerized() {
+		return attachContainerSession(name, sess)
+	}
+	return attachHostSession(name, sess)
+}
+
+func attachContainerSession(name string, sess *session.Session) error {
+	// Check container is running
+	if !target.IsDockerRunning(sess.Target) {
+		return fmt.Errorf("container for session '%s' is not running. Remove and recreate the session", name)
+	}
+
+	// Check if tmux is running inside the container; if not, load it
+	checkCmd := target.ExecInSession(sess.Target, []string{"tmux", "has-session", "-t", "=" + name}, false)
+	if checkCmd.Run() != nil {
+		fmt.Println("Tmux session not found in container, loading...")
+		loadCmd := target.ExecInSession(sess.Target, []string{
+			"tmuxp", "load", "-d", "/workspace/.tmuxp.yaml", "-s", name,
+		}, false)
+		if output, err := loadCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to load tmux inside container: %w\n%s", err, output)
+		}
+	}
+
+	// Attach to tmux inside the container
+	attachCmd := target.ExecInSession(sess.Target, []string{"tmux", "attach", "-t", "=" + name}, true)
+	attachCmd.Stdin = os.Stdin
+	attachCmd.Stdout = os.Stdout
+	attachCmd.Stderr = os.Stderr
+	if err := attachCmd.Run(); err != nil {
+		return fmt.Errorf("failed to attach to tmux in container: %w", err)
+	}
+	return nil
+}
+
+func attachHostSession(name string, sess *session.Session) error {
 	if err := session.AttachTmuxSession(name); err != nil {
 		// Session doesn't exist, try to launch it
 		tmuxpPath := filepath.Join(sess.Path, ".tmuxp.yaml")
@@ -76,6 +112,5 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("Attached to existing tmux session '%s'\n", name)
 	}
-
 	return nil
 }

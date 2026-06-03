@@ -69,7 +69,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		return startWebDaemon(port)
 	}
 
-	srv, err := web.NewWithBind(token, port, bind)
+	srv, err := web.NewWithBind(token, port, bind, trustedGatepostRuntimeConfig())
 	if err != nil {
 		return err
 	}

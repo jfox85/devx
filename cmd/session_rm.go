@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -61,9 +65,14 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to terminate editor: %v\n", err)
 	}
 
-	// Kill tmux session if it exists
-	if err := killTmuxSession(name); err != nil {
-		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+	// For Docker sessions, kill tmux inside the container first
+	if sess.IsContainerized() {
+		killCmd := target.ExecInSession(sess.Target, []string{"tmux", "kill-server"}, false)
+		_ = killCmd.Run()
+	} else {
+		if err := killTmuxSession(name); err != nil {
+			fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+		}
 	}
 
 	// Archive retained artifacts before cleanup or worktree deletion. Archive
@@ -78,14 +87,44 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Archived %d artifact(s) to %s\n", count, archiveDir)
 	}
 
-	// Run cleanup command if configured
-	if err := session.RunCleanupCommandForShell(sess); err != nil {
-		fmt.Printf("Warning: cleanup command failed: %v\n", err)
+	// Run cleanup command — inside container for Docker sessions, on host otherwise
+	if sess.IsContainerized() {
+		if cleanupCmd := viper.GetString("cleanup_command"); cleanupCmd != "" {
+			fmt.Printf("Running cleanup command inside container...\n")
+			cleanup := target.ExecInSession(sess.Target, []string{"sh", "-c", cleanupCmd}, false)
+			cleanup.Stdout = os.Stdout
+			cleanup.Stderr = os.Stderr
+			if err := cleanup.Run(); err != nil {
+				fmt.Printf("Warning: cleanup command failed: %v\n", err)
+			}
+		}
+	} else {
+		if err := session.RunCleanupCommandForShell(sess); err != nil {
+			fmt.Printf("Warning: cleanup command failed: %v\n", err)
+		}
+	}
+
+	// Stop the target (container + network for Docker; no-op for host)
+	if sess.IsContainerized() {
+		tgt, err := target.Resolve(sess.TargetType())
+		if err == nil {
+			if err := tgt.Stop(context.Background(), sess.Target); err != nil {
+				fmt.Printf("Warning: failed to stop %s target: %v\n", sess.TargetType(), err)
+			} else {
+				fmt.Printf("Stopped container '%s'\n", sess.Target.ContainerName)
+			}
+		}
 	}
 
 	// Remove git worktree
 	if err := removeGitWorktree(sess.Path); err != nil {
 		fmt.Printf("Warning: failed to remove git worktree: %v\n", err)
+	}
+
+	// Clean up per-session uploads directory.
+	if home, err := os.UserHomeDir(); err == nil {
+		uploadsDir := filepath.Join(home, ".devx", "uploads", name)
+		_ = os.RemoveAll(uploadsDir)
 	}
 
 	// Remove session from metadata and reconcile slots in a single save
