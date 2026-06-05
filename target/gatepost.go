@@ -193,11 +193,23 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 
 	// Start agent on the ports network (normal bridge) so -p port publishing works,
 	// then connect to the internal network for proxy/events access.
-	// Mount the main repo .git dir so git can resolve the worktree pointer
-	// inside the container. The worktree's .git file contains a path like
-	// /Users/jfox/.../.git/worktrees/<name> which only exists on the Mac host.
-	// By mounting the main .git at the same absolute path, git works normally.
+	// Mount the main repo .git dir at the same host path so the container can
+	// resolve worktree references. Then overlay /workspace/.git with a file
+	// that points to a container-local path (/root/.git-worktree) instead of
+	// the host path, so tools like `git rev-parse --git-dir` report container
+	// paths (not /Users/jfox/...). The bootstrap step copies worktree metadata
+	// to /root/.git-worktree and sets commondir to the mounted main .git.
 	mainGitDir := mainRepoGitDir(opts.WorktreePath)
+
+	// Write the container-local .git file to the session dir; it will be
+	// mounted over /workspace/.git so the host's actual .git is untouched.
+	var containerGitFile string
+	if mainGitDir != "" {
+		containerGitFile = filepath.Join(sessionDir, "container-dot-git")
+		if err := os.WriteFile(containerGitFile, []byte("gitdir: /root/.git-worktree\n"), 0o644); err != nil {
+			return nil, fmt.Errorf("write container .git file: %w", err)
+		}
+	}
 
 	agentArgs := []string{"run", "-d", "--name", agentName,
 		"--network", portsNet,
@@ -208,6 +220,8 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	if mainGitDir != "" {
 		// Mount read-write so git commit/add/push work inside the container.
 		agentArgs = append(agentArgs, "-v", mainGitDir+":"+mainGitDir)
+		// Overlay /workspace/.git with the container-local version.
+		agentArgs = append(agentArgs, "-v", containerGitFile+":/workspace/.git")
 	}
 	for _, port := range opts.HostPorts {
 		agentArgs = append(agentArgs, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, port))
@@ -350,6 +364,22 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 			`true`,
 		}, " && ")
 		_ = dockerRun(ctx, "exec", agentName, "bash", "-lc", ghSetup)
+	}
+	// Copy worktree metadata to /root/.git-worktree so git uses container-local
+	// paths. The /workspace/.git file already points here via the overlay mount.
+	if mainGitDir != "" {
+		gitFileData, _ := os.ReadFile(filepath.Join(opts.WorktreePath, ".git"))
+		hostGitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(gitFileData)), "gitdir: "))
+		if hostGitDir != "" {
+			gitRewrite := strings.Join([]string{
+				`mkdir -p /root/.git-worktree`,
+				fmt.Sprintf(`cp -r %q/. /root/.git-worktree/`, hostGitDir),
+				fmt.Sprintf(`echo %q > /root/.git-worktree/commondir`, mainGitDir),
+				`echo /workspace > /root/.git-worktree/gitdir`,
+				`true`,
+			}, " && ")
+			_ = dockerRun(ctx, "exec", agentName, "bash", "-lc", gitRewrite)
+		}
 	}
 
 	containerID, err := dockerOutput(ctx, "inspect", "--format", "{{.Id}}", agentName)
