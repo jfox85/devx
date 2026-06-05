@@ -53,6 +53,9 @@ phases:
       - host: "fonts.googleapis.com"
       - host: "fonts.gstatic.com"
       - host: "objects.githubusercontent.com"
+      - host: "release-assets.githubusercontent.com"
+      - host: "r.jina.ai"
+      - host: "api.search.brave.com"
     unknown_action: smart
 `
 
