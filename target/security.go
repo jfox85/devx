@@ -16,7 +16,7 @@ func DefaultSecurityOpts() SecurityOpts {
 	return SecurityOpts{
 		MemoryLimit: "4g",
 		CPULimit:    "4",
-		PidsLimit:   512,
+		PidsLimit:   2048,
 		CapDrop:     []string{"ALL"},
 		NoNewPrivs:  true,
 	}

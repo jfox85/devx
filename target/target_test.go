@@ -179,8 +179,8 @@ func TestDefaultSecurityOpts(t *testing.T) {
 	if opts.CPULimit != "4" {
 		t.Errorf("CPULimit = %q, want %q", opts.CPULimit, "4")
 	}
-	if opts.PidsLimit != 512 {
-		t.Errorf("PidsLimit = %d, want %d", opts.PidsLimit, 512)
+	if opts.PidsLimit != 2048 {
+		t.Errorf("PidsLimit = %d, want %d", opts.PidsLimit, 2048)
 	}
 	if len(opts.CapDrop) != 1 || opts.CapDrop[0] != "ALL" {
 		t.Errorf("CapDrop = %v, want [ALL]", opts.CapDrop)

@@ -218,7 +218,7 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 	// For Gatepost sessions, tmuxp runs inside the container (which has tmux/tmuxp)
 	// so the container-relative /workspace paths in .tmuxp.yaml resolve correctly.
 	if sess.Target.Gatepost.Enabled && sess.Target.ContainerName != "" {
-		if err := session.EnsureTmuxSessionInContainer(decoded, sess.Target.ContainerName); err != nil {
+		if err := session.EnsureTmuxSessionInContainer(decoded, sess.Target.ContainerName, sess); err != nil {
 			logWebError("EnsureTmuxSessionInContainer(%q): %v", decoded, err)
 			return "", 0, fmt.Errorf("failed to restore tmux session %q: %w", decoded, err)
 		}

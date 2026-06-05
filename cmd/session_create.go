@@ -213,7 +213,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 				// Skip to tmux launch if not disabled
 				if !noTmuxFlag {
 					if existingSession.Target.Gatepost.Enabled && existingSession.Target.ContainerName != "" {
-						if err := session.EnsureTmuxSessionInContainer(name, existingSession.Target.ContainerName); err != nil {
+						if err := session.EnsureTmuxSessionInContainer(name, existingSession.Target.ContainerName, existingSession); err != nil {
 							fmt.Printf("Warning: Failed to launch tmux session in container: %v\n", err)
 						}
 					} else if session.IsTmuxRunning() {
