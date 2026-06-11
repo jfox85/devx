@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listSessions, deleteSession, renameSession, colorSession } from '../api.js'
+  import { listSessions, deleteSession, renameSession, colorSession, prewarmTerminal } from '../api.js'
   import NewSessionModal from './NewSessionModal.svelte'
 
   export let onOpenTerminal
@@ -315,6 +315,7 @@
                     : 'hover:bg-[#0d1117] border-transparent'}
               "
               class:flag-flash={isFlashing}
+              role="listitem"
             >
               <!-- Name row: color dot + name/rename + attention flag -->
               <div
@@ -353,7 +354,8 @@
                 {:else}
                   <span
                     class="flex-1 truncate leading-none cursor-pointer"
-                    on:click={() => onOpenTerminal(session)}
+                    on:pointerdown={() => prewarmTerminal(session.name).catch(() => {})}
+                    on:click={() => selectSession(session)}
                     on:dblclick|stopPropagation={() => startRename(session)}
                     title="click to open, double-click to rename"
                     role="button"

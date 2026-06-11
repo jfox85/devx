@@ -24,6 +24,17 @@ windows:
     panes:
       - 'pi -c'
 
+  - window_name: services
+    layout: tiled
+    shell_command_before:
+      - cd {{.Path}}{{range $name, $port := .Ports}}
+      - export {{$name}}={{$port}}{{end}}{{if .Routes}}{{range $service, $hostname := .Routes}}
+      - export {{toHostVar $service}}=http://{{$hostname}}{{end}}{{end}}
+      - export SESSION_NAME={{.Name}}
+    panes:
+      - {{.Path}}/.devx/start_service.sh web
+      - {{.Path}}/.devx/start_service.sh ui
+
   - window_name: repo-root
     layout: tiled
     shell_command_before:

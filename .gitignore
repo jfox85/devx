@@ -6,6 +6,8 @@ devx
 .pi/
 /dist/
 .devx/
+# Fixed dev token used when dogfooding the devx web UI as a devx service.
+.devx-web-token
 web/app/node_modules/
 web/dist/
 .DS_Store

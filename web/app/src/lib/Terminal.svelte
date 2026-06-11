@@ -8,6 +8,7 @@
   import MobileActionsMenu from './terminal/MobileActionsMenu.svelte'
   import PaneViewerModal from './terminal/PaneViewerModal.svelte'
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
+  import PromptComposer from './composer/PromptComposer.svelte'
 
   export let session
   export let artifactEvent = null
@@ -636,6 +637,15 @@
     if (goBack) popModalHistory('artifact-search')
   }
 
+  function handleComposerSent() {
+    scheduleRefresh()
+    focusTerminal()
+  }
+
+  function handleComposerImagePaste(event) {
+    processImageFiles(event.detail?.files || [])
+  }
+
   // Exported so App.svelte can route parent-window paste events here.
   export function handleImagePaste(file) {
     processImageFile(file)
@@ -859,6 +869,10 @@
 
   {#if paneViewerOpen}
     <PaneViewerModal {session} url={paneViewerURL} onClose={() => closePaneViewer()} />
+  {/if}
+
+  {#if terminalIsVisible}
+    <PromptComposer sessionName={session.name} on:sent={handleComposerSent} on:layoutchange={scheduleRefresh} on:imagepaste={handleComposerImagePaste} />
   {/if}
 
   <!-- Soft key toolbar — mobile only -->
