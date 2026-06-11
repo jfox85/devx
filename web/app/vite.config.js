@@ -8,9 +8,9 @@ const backendOrigin = process.env.DEVX_WEB_ORIGIN ?? 'http://localhost:7777'
 // supplied as a comma-separated DEVX_WEB_ALLOWED_HOSTS env var. The Go server
 // (option B, built dist) does not use this; it only matters when running the
 // vite dev server behind Caddy/CF for hot-reload development.
-const extraAllowedHosts = process.env.DEVX_WEB_ALLOWED_HOSTS?.split(',')
+const extraAllowedHosts = (process.env.DEVX_WEB_ALLOWED_HOSTS?.split(',') ?? [])
   .map((h) => h.trim())
-  .filter(Boolean) ?? []
+  .filter(Boolean)
 
 // https://vite.dev/config/
 export default defineConfig({
