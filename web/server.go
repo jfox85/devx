@@ -18,6 +18,7 @@ import (
 type Server struct {
 	token  string
 	port   int
+	bind   string
 	server *http.Server
 	ttyd   *ttydManager
 	hub    *sseHub
@@ -25,10 +26,21 @@ type Server struct {
 
 // New creates a new Server. token must be non-empty.
 func New(token string, port int) (*Server, error) {
+	return NewWithBind(token, port, "")
+}
+
+// NewWithBind creates a new Server bound to the given address. bind defaults to
+// loopback (127.0.0.1) when empty. Binding to 0.0.0.0 is only intended for
+// running devx web inside a container where Docker port publishing requires it;
+// it must not be used to expose plain HTTP directly on an untrusted network.
+func NewWithBind(token string, port int, bind string) (*Server, error) {
 	if token == "" {
 		return nil, fmt.Errorf("web_secret_token must be set in config to use devx web")
 	}
-	return &Server{token: token, port: port, ttyd: newTtydManager(), hub: newSSEHub()}, nil
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	return &Server{token: token, port: port, bind: bind, ttyd: newTtydManager(), hub: newSSEHub()}, nil
 }
 
 // Start begins listening and serving.
@@ -36,10 +48,12 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
-	// Bind to loopback only — devx web is a local developer tool and must not
-	// be reachable from the network over plain HTTP.
+	// Bind to loopback by default — devx web is a local developer tool and must
+	// not be reachable from the network over plain HTTP. NewWithBind allows
+	// 0.0.0.0 for in-container use where Docker port publishing (and Caddy/CF
+	// fronting) require it.
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", s.port),
+		Addr:    fmt.Sprintf("%s:%d", s.bind, s.port),
 		Handler: authMiddleware(s.token, mux),
 	}
 
@@ -48,7 +62,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to listen on port %d: %w", s.port, err)
 	}
 
-	fmt.Printf("devx web listening on http://localhost:%d\n", s.port)
+	fmt.Printf("devx web listening on http://%s:%d\n", s.bind, s.port)
 	return s.server.Serve(ln)
 }
 
