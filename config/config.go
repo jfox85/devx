@@ -13,6 +13,7 @@ type Config struct {
 	CaddyAPI               string   `mapstructure:"caddy_api"`
 	TmuxpTemplate          string   `mapstructure:"tmuxp_template"`
 	Ports                  []string `mapstructure:"ports"`
+	BootstrapFiles         []string `mapstructure:"bootstrap_files"`
 	ExternalDomain         string   `mapstructure:"external_domain"`
 	CloudflareTunnelID     string   `mapstructure:"cloudflare_tunnel_id"`
 	CloudflareTunnelConfig string   `mapstructure:"cloudflare_tunnel_config"`

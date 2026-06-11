@@ -9,9 +9,15 @@ import (
 	"github.com/spf13/viper"
 )
 
-// CopyBootstrapFiles copies configured bootstrap files from project root to the worktree
-func CopyBootstrapFiles(projectRoot, worktreePath string) error {
-	bootstrapFiles := viper.GetStringSlice("bootstrap_files")
+// CopyBootstrapFiles copies the given bootstrap files from the project root to
+// the worktree. When bootstrapFiles is nil, it falls back to the global viper
+// "bootstrap_files" key for backward compatibility; callers should prefer
+// passing the project's own config so resolution does not depend on the current
+// working directory.
+func CopyBootstrapFiles(projectRoot, worktreePath string, bootstrapFiles []string) error {
+	if bootstrapFiles == nil {
+		bootstrapFiles = viper.GetStringSlice("bootstrap_files")
+	}
 	if len(bootstrapFiles) == 0 {
 		return nil // No bootstrap files configured
 	}

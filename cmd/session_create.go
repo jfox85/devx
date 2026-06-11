@@ -215,7 +215,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := session.CopyBootstrapFiles(projectPath, worktreePath); err != nil {
+	if err := session.CopyBootstrapFiles(projectPath, worktreePath, cfg.BootstrapFiles); err != nil {
 		return fmt.Errorf("failed to copy bootstrap files: %w", err)
 	}
 
