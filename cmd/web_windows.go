@@ -57,8 +57,9 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	token := viper.GetString("web_secret_token")
 	port := viper.GetInt("web_port")
+	bind := viper.GetString("web_bind")
 
-	srv, err := web.New(token, port)
+	srv, err := web.NewWithBind(token, port, bind)
 	if err != nil {
 		return err
 	}

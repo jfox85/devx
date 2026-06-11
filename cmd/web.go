@@ -59,6 +59,7 @@ func webPIDPath() string {
 func runWeb(cmd *cobra.Command, args []string) error {
 	token := viper.GetString("web_secret_token")
 	port := viper.GetInt("web_port")
+	bind := viper.GetString("web_bind")
 
 	if webDaemonFlag {
 		// Validate token before daemonizing so errors are caught in foreground
@@ -68,7 +69,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		return startWebDaemon(port)
 	}
 
-	srv, err := web.New(token, port)
+	srv, err := web.NewWithBind(token, port, bind)
 	if err != nil {
 		return err
 	}
