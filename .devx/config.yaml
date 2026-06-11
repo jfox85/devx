@@ -5,3 +5,15 @@ disable_caddy: false
 editor: cursor
 tmuxp_template: /Users/jfox/.config/devx/session.yaml.tmpl
 web_port: 7777
+
+# Dogfood the devx web UI as a single devx service. WEB is the Go backend, which
+# serves the embedded SPA (web/dist) and the API on one port. devx allocates the
+# port, publishes it from the container (-p 127.0.0.1:WEB:WEB), and fronts it
+# with Caddy (*.localhost) and the CF tunnel, exactly like any other service.
+ports:
+  - WEB
+
+# Copy the gitignored dev token into the worktree so start_service.sh can read
+# it without committing a secret.
+bootstrap_files:
+  - .devx-web-token

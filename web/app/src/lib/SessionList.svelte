@@ -224,7 +224,12 @@
 
   <!-- Header -->
   <div class="flex items-center justify-between px-3 h-10 border-b border-[#1e2d4a] shrink-0">
-    <span class="text-cyan-400 font-mono font-bold text-sm tracking-widest">devx</span>
+    <span class="flex items-center gap-2">
+      <span class="text-cyan-400 font-mono font-bold text-sm tracking-widest">devx</span>
+      <!-- Dogfood marker: confirms this UI is served by the jf-web-services build
+           running as a containerized devx service, not the host daemon. -->
+      <span class="text-[9px] font-mono font-bold uppercase tracking-[0.15em] text-amber-300 bg-amber-950/60 border border-amber-700/60 rounded px-1.5 py-0.5 leading-none">web-svc</span>
+    </span>
     <button
       on:click={() => showNewSession = true}
       class="text-gray-500 hover:text-cyan-400 text-[11px] font-mono px-2 py-0.5 border border-[#1e2d4a] hover:border-cyan-800 transition-colors leading-none"

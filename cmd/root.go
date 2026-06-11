@@ -108,6 +108,7 @@ func initConfig() {
 	viper.SetDefault("cloudflare_tunnel_config", "~/.cloudflared/config.yaml")
 	viper.SetDefault("web_secret_token", "")
 	viper.SetDefault("web_port", 7777)
+	viper.SetDefault("web_bind", "127.0.0.1")
 	viper.SetDefault("web_autostart", false)
 	viper.SetDefault("artifact_trigger_key", "Ctrl+Space")
 
