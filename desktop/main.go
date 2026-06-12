@@ -65,11 +65,24 @@ func main() {
 	host := &Host{server: priv}
 	appMenu := menu.NewMenu()
 	devxMenu := appMenu.AddSubmenu("DevX")
-	devxMenu.AddText("Quick Switch Session", keys.CmdOrCtrl("p"), func(_ *menu.CallbackData) {
-		if host.ctx != nil {
-			runtime.WindowExecJS(host.ctx, `window.dispatchEvent(new CustomEvent('devx:quickSwitcher'))`)
+	emit := func(event string) func(*menu.CallbackData) {
+		return func(_ *menu.CallbackData) {
+			if host.ctx != nil {
+				runtime.WindowExecJS(host.ctx, fmt.Sprintf(`window.dispatchEvent(new CustomEvent(%q))`, event))
+			}
 		}
-	})
+	}
+	devxMenu.AddText("Quick Switch Session", keys.CmdOrCtrl("p"), emit("devx:quickSwitcher"))
+	devxMenu.AddText("Compose Prompt", keys.CmdOrCtrl("k"), emit("devx:toggleComposer"))
+	devxMenu.AddText("Focus Terminal", keys.Combo("t", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:focusTerminal"))
+	devxMenu.AddText("Focus Session List", keys.Combo("s", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:focusSessionList"))
+	devxMenu.AddText("New Session", keys.Combo("c", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newSession"))
+	devxMenu.AddSeparator()
+	devxMenu.AddText("Toggle Artifacts", keys.Combo("a", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:toggleArtifacts"))
+	devxMenu.AddText("Cycle Split", keys.Combo("o", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:cycleSplit"))
+	devxMenu.AddText("View Terminal Output", keys.Combo("v", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:viewTerminalOutput"))
+	devxMenu.AddText("Insert Artifact", keys.Combo("i", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:insertArtifact"))
+	devxMenu.AddText("New Text Artifact", keys.Combo("n", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newArtifact"))
 
 	// Keep the SPA loaded from the Wails asset server (no external-link landing
 	// page), but let terminal iframes go directly to the private loopback origin

@@ -255,6 +255,11 @@
     setTimeout(focusTerminal, 0)
     setTimeout(focusTerminal, 60)
     setTimeout(focusTerminal, 180)
+    setTimeout(focusTerminal, 360)
+  }
+
+  export function focusTerminalSurface() {
+    focusTerminalSoon()
   }
 
   // Ctrl+Shift+S, registered on the iframe's document in capture phase so
@@ -389,6 +394,18 @@
   function openImagePickerFromMenu() {
     actionsMenuOpen = false
     fileInputEl?.click()
+  }
+
+  function handleDesktopCommand(e) {
+    switch (e.detail || e.type.replace('devx:terminal:', '')) {
+      case 'composer': toggleComposer(); break
+      case 'artifacts': toggleArtifacts(); break
+      case 'split': cycleSplitMode(); break
+      case 'view-output': openPaneViewer(); break
+      case 'insert-artifact': openArtifactSearch('insert'); break
+      case 'new-artifact': openPasteArtifact(); break
+      case 'focus': focusTerminalSoon(); break
+    }
   }
 
   async function openPaneViewer() {
@@ -813,6 +830,13 @@
     window.addEventListener('popstate', handlePopState)
     document.addEventListener('click', handleDocumentClick)
     window.addEventListener('keydown', windowHotkey)
+    window.addEventListener('devx:terminal:composer', handleDesktopCommand)
+    window.addEventListener('devx:terminal:artifacts', handleDesktopCommand)
+    window.addEventListener('devx:terminal:split', handleDesktopCommand)
+    window.addEventListener('devx:terminal:view-output', handleDesktopCommand)
+    window.addEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
+    window.addEventListener('devx:terminal:new-artifact', handleDesktopCommand)
+    window.addEventListener('devx:terminal:focus', handleDesktopCommand)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
@@ -824,6 +848,13 @@
     window.removeEventListener('popstate', handlePopState)
     document.removeEventListener('click', handleDocumentClick)
     window.removeEventListener('keydown', windowHotkey)
+    window.removeEventListener('devx:terminal:composer', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:artifacts', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:split', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:view-output', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:new-artifact', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:focus', handleDesktopCommand)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
