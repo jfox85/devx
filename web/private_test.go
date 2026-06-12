@@ -74,46 +74,18 @@ func TestPrivateServerTopology(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(shell), "<html") {
 		t.Fatalf("expected SPA shell, got %d (%d bytes)", resp.StatusCode, len(shell))
 	}
-	// Direct terminal iframes bootstrap auth with a terminal-scoped token. The
-	// response sets the HTTP-only main cookie and redirects to the clean URL so
-	// ttyd's own WebSocket requests authenticate via cookie.
-	noRedirect := &http.Client{
-		Timeout: 2 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	// Direct terminal iframes authenticate with a terminal-scoped token. Do not
+	// rely on cookies here: the iframe is cross-site relative to wails://, so
+	// WebKit may block SameSite cookies before ttyd's websocket opens.
 	req, _ = http.NewRequest("GET", base+"/terminal/demo/?desktop_token="+p.TerminalBootstrapToken(), nil)
-	resp, err = noRedirect.Do(req)
-	if err != nil {
-		t.Fatalf("GET terminal bootstrap: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusTemporaryRedirect || resp.Header.Get("Location") != "/terminal/demo/" {
-		t.Fatalf("expected clean terminal redirect, got %d Location=%q", resp.StatusCode, resp.Header.Get("Location"))
-	}
-	var authCookie *http.Cookie
-	for _, cookie := range resp.Cookies() {
-		if cookie.Name == "devx_token" {
-			authCookie = cookie
-		}
-	}
-	if authCookie == nil || !authCookie.HttpOnly || authCookie.Value == "" {
-		t.Fatalf("expected HTTP-only devx_token cookie from terminal bootstrap, got %#v", authCookie)
-	}
-
-	// Cookie auth works for same-origin desktop requests, including terminal
-	// WebSocket handshakes in the real app.
-	req, _ = http.NewRequest("GET", base+"/api/health", nil)
-	req.AddCookie(authCookie)
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("GET /api/health with cookie: %v", err)
+		t.Fatalf("GET terminal with desktop token: %v", err)
 	}
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 with auth cookie, got %d: %s", resp.StatusCode, body)
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("terminal desktop token should bypass 401: %s", body)
 	}
 
 	// A wrong token is rejected (constant-time compare path).

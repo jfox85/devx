@@ -59,11 +59,12 @@ func (p *PrivateServer) Token() string {
 	return p.token
 }
 
-// TerminalBootstrapToken returns a per-launch token scoped to bootstrapping
-// direct terminal iframes from the Wails shell. It is not the main API token:
-// presenting it to /terminal/<session> sets the HTTP-only devx_token cookie
-// and redirects to the clean terminal URL so ttyd WebSockets can authenticate
-// directly against the private loopback origin.
+// TerminalBootstrapToken returns a per-launch token scoped to direct terminal
+// iframes from the Wails shell. It is not the main API token: presenting it as
+// desktop_token on /terminal/<session> authorizes only terminal traffic. The
+// token stays in the iframe URL rather than using a cookie redirect because
+// the iframe is cross-site relative to wails:// and WebKit blocks SameSite
+// cookies in that third-party context.
 func (p *PrivateServer) TerminalBootstrapToken() string {
 	return p.terminalBootstrapToken
 }
@@ -72,38 +73,29 @@ func (p *PrivateServer) TerminalBootstrapToken() string {
 func (p *PrivateServer) Serve() error {
 	mux := http.NewServeMux()
 	p.registerRoutes(mux)
-	// Keep normal auth on API/static routes, but allow a direct terminal iframe
-	// to bootstrap an HTTP-only auth cookie. This avoids Wails' websocket-hostile
-	// asset-server proxy for ttyd while keeping the SPA itself on wails://.
-	handler := p.bootstrapTerminalAuth(authMiddleware(p.token, mux))
+	// Keep normal auth on API/static routes, but allow direct terminal iframes
+	// to authenticate with the terminal-scoped desktop_token. This avoids Wails'
+	// websocket-hostile asset-server proxy for ttyd while keeping the SPA itself
+	// on wails://.
+	handler := p.authenticateTerminalToken(authMiddleware(p.token, mux))
 	p.server = &http.Server{Handler: handler}
 	return p.server.Serve(p.listener)
 }
 
-func (p *PrivateServer) bootstrapTerminalAuth(next http.Handler) http.Handler {
+func (p *PrivateServer) authenticateTerminalToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/terminal/") {
+		if !strings.HasPrefix(r.URL.Path, "/terminal/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 		provided := r.URL.Query().Get("desktop_token")
-		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(p.terminalBootstrapToken)) != 1 {
-			next.ServeHTTP(w, r)
-			return
+		if provided != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(p.terminalBootstrapToken)) == 1 {
+			// Reuse the existing auth middleware path. This applies to both the
+			// initial ttyd HTML request and any websocket request that preserves
+			// location.search (ttyd does on current builds).
+			r.Header.Set("Authorization", "Bearer "+p.token)
 		}
-
-		http.SetCookie(w, &http.Cookie{
-			Name:     "devx_token",
-			Value:    p.token,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
-		clean := *r.URL
-		q := clean.Query()
-		q.Del("desktop_token")
-		clean.RawQuery = q.Encode()
-		http.Redirect(w, r, clean.String(), http.StatusTemporaryRedirect)
+		next.ServeHTTP(w, r)
 	})
 }
 
