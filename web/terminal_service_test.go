@@ -116,6 +116,27 @@ func TestTerminalPrewarmRejectsCookieAuthWithoutOrigin(t *testing.T) {
 	}
 }
 
+func TestTerminalPrewarmAcceptsForwardedHostOrigin(t *testing.T) {
+	// devx behind Caddy/Cloudflare tunnel: upstream Host is rewritten to
+	// localhost but the browser Origin is the external hostname, carried in
+	// X-Forwarded-Host. The write guard must not reject these as cross-origin.
+	s := newTestWebServer(t)
+	body := bytes.NewBufferString(`{"session":"demo"}`)
+	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+	handler := authMiddleware("test-secret", mux)
+	req := httptest.NewRequest("POST", "http://localhost:7777/api/terminal/prewarm", body)
+	req.AddCookie(&http.Cookie{Name: "devx_token", Value: "test-secret"})
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://devx.example.com")
+	req.Header.Set("X-Forwarded-Host", "devx.example.com")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("expected forwarded-host origin to pass the write guard, got 403: %s", w.Body.String())
+	}
+}
+
 func TestTerminalSendInputUsesNamedBufferAndActivePaneTarget(t *testing.T) {
 	s := newTestWebServer(t)
 	s.terminal.loadStore = func() (*session.SessionStore, error) {

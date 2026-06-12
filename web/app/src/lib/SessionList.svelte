@@ -2,6 +2,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { listSessions, deleteSession, renameSession, colorSession, prewarmTerminal } from '../api.js'
+  import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
 
   export let onOpenTerminal
@@ -22,6 +23,34 @@
   let pendingDelete = null   // session.name awaiting second-click confirmation
   let editingName = null     // session.name being renamed
   let editValue = ''         // current text input value
+
+  // Hover/focus prewarm with a short debounce so list scanning doesn't fire a
+  // request per row. Prewarm is read-only with respect to tmux (it only starts
+  // ttyd for sessions whose tmux already exists) and the backend enforces a
+  // global cap, so over-triggering is bounded and harmless.
+  const PREWARM_DEBOUNCE_MS = 150
+  let prewarmTimer = null
+  let prewarmRequested = new Set()
+
+  function schedulePrewarm(name) {
+    clearTimeout(prewarmTimer)
+    prewarmTimer = setTimeout(() => firePrewarm(name), PREWARM_DEBOUNCE_MS)
+  }
+
+  function cancelPrewarm() {
+    clearTimeout(prewarmTimer)
+    prewarmTimer = null
+  }
+
+  function firePrewarm(name) {
+    if (prewarmRequested.has(name)) return
+    prewarmRequested.add(name)
+    prewarmTerminal(name)
+      .then(status => markPrewarmed(name, !!status?.ready))
+      .catch(() => { prewarmRequested.delete(name) })
+    // Allow re-prewarm after the idle timeout would have reaped the instance.
+    setTimeout(() => prewarmRequested.delete(name), 60_000)
+  }
 
   const colorMap = {
     red: '#ef4444', blue: '#3b82f6', green: '#22c55e', yellow: '#eab308',
@@ -98,6 +127,7 @@
     window.addEventListener('devx:newSession', openNewSession)
     return () => {
       clearInterval(pollTimer)
+      clearTimeout(prewarmTimer)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('devx:focusSessionList', focusSearch)
       window.removeEventListener('devx:newSession', openNewSession)
@@ -150,6 +180,7 @@
   $: showKbCursor = searchFocused || searchQuery.length > 0
 
   function selectSession(sess) {
+    markSwitchStart(sess.name)
     // Clear the filter so the full list reappears after switching
     searchQuery = ''
     selectedIndex = 0
@@ -166,9 +197,11 @@
     if (e.key === 'ArrowDown' && !inOtherInput) {
       e.preventDefault()
       selectedIndex = Math.min(selectedIndex + 1, displayOrdered.length - 1)
+      if (displayOrdered[selectedIndex]) schedulePrewarm(displayOrdered[selectedIndex].name)
     } else if (e.key === 'ArrowUp' && !inOtherInput) {
       e.preventDefault()
       selectedIndex = Math.max(selectedIndex - 1, 0)
+      if (displayOrdered[selectedIndex]) schedulePrewarm(displayOrdered[selectedIndex].name)
     } else if (e.key === 'Enter' && !inOtherInput) {
       if (displayOrdered[selectedIndex]) selectSession(displayOrdered[selectedIndex])
     } else if (e.key === 'Escape') {
@@ -354,7 +387,9 @@
                 {:else}
                   <span
                     class="flex-1 truncate leading-none cursor-pointer"
-                    on:pointerdown={() => prewarmTerminal(session.name).catch(() => {})}
+                    on:pointerenter={() => schedulePrewarm(session.name)}
+                    on:pointerleave={cancelPrewarm}
+                    on:pointerdown={() => firePrewarm(session.name)}
                     on:click={() => selectSession(session)}
                     on:dblclick|stopPropagation={() => startRename(session)}
                     title="click to open, double-click to rename"

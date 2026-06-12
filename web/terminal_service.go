@@ -306,7 +306,10 @@ func sameOriginRequest(r *http.Request) bool {
 		// same-origin provenance via Fetch Metadata or Referer.
 		return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || requestProvenanceMatchesHost(r)
 	}
-	return origin == "http://"+r.Host || origin == "https://"+r.Host
+	// originMatchesHost honors X-Forwarded-Host so requests arriving through the
+	// trusted reverse proxy (Caddy / Cloudflare tunnel) pass when the browser's
+	// Origin is the external hostname rather than the rewritten upstream Host.
+	return originMatchesHost(r)
 }
 
 func handleDecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

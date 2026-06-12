@@ -9,6 +9,7 @@
   import PaneViewerModal from './terminal/PaneViewerModal.svelte'
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
   import PromptComposer from './composer/PromptComposer.svelte'
+  import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
 
   export let session
   export let artifactEvent = null
@@ -39,6 +40,8 @@
   let focusedArtifactDismissed = false
   let pasteArtifactNonce = 0
   let focusedArtifactTimer
+  let composerOpen = false
+  let softKeysOpen = false
   $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
   $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
   $: terminalPaneCSS = !artifactsIsVisible ? 'flex: 1 1 0;' : splitMode === 'vertical' ? 'width: 50%; flex: 0 0 50%;' : splitMode === 'horizontal' ? 'height: 50%; flex: 0 0 50%;' : 'flex: 1 1 0;'
@@ -90,10 +93,11 @@
   // don't receive the old value, so we track it manually.
   let currentSession = session.name
   $: if (session.name !== currentSession) {
+    // Save outgoing session's layout chrome so switching back restores it.
+    setSessionChrome(currentSession, { splitMode, artifactPaneOpen, selectedArtifactID })
     currentSession = session.name
     windows = []
     iframeKey = session.name
-    artifactPaneOpen = false
     artifactFullScreen = false
     paneViewerOpen = false
     paneViewerURL = ''
@@ -102,9 +106,12 @@
     artifactSearchOpen = false
     artifactQuery = ''
     artifactSearchItems = []
-    selectedArtifactID = null
     focusedArtifactDismissed = false
-    splitMode = 'vertical'
+    // Restore incoming session's chrome (or defaults for first visit).
+    const chrome = getSessionChrome(session.name)
+    artifactPaneOpen = chrome?.artifactPaneOpen ?? false
+    splitMode = chrome?.splitMode ?? 'vertical'
+    selectedArtifactID = chrome?.selectedArtifactID ?? null
     if (session.focused_artifact_id) {
       scheduleFocusedArtifactOpen(session.focused_artifact_id)
     }
@@ -185,8 +192,28 @@
   // Ctrl+Shift+S, registered on the iframe's document in capture phase so
   // xterm never sees it. Dispatches to the parent window (lexical `window`
   // is the parent since this function is defined in the parent scope).
+  function toggleComposer() {
+    composerOpen = !composerOpen
+  }
+
+  function closeComposer() {
+    composerOpen = false
+    focusTerminal()
+  }
+
+  function windowHotkey(e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      toggleComposer()
+    }
+  }
+
   function iframeHotkey(e) {
-    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      e.stopPropagation()
+      toggleComposer()
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
@@ -350,6 +377,7 @@
   //      redraw) and resize-window to the current client's dimensions,
   //      working around the tmux grouped-session size-constraint bug.
   async function handleIframeLoad() {
+    markIframeLoad(session.name)
     // Inject Nerd Font into the iframe immediately so the font is available
     // before xterm.js initialises and measures character cell size.
     // The font file is already cached by the parent page's preload hint.
@@ -391,6 +419,7 @@
     // Re-trigger FitAddon so it sends the current browser viewport dimensions
     // to the PTY. Small wait after so ioctl has time to propagate before the
     // subsequent refresh-client call.
+    markTerminalReady(session.name)
     triggerFitAddon()
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
@@ -637,9 +666,14 @@
     if (goBack) popModalHistory('artifact-search')
   }
 
-  function handleComposerSent() {
+  function handleComposerSent(event) {
     scheduleRefresh()
-    focusTerminal()
+    // Sending from the desktop overlay dismisses it; paste-only keeps it open
+    // so the user can continue composing while reviewing the staged text.
+    if (composerOpen && event.detail?.submit) {
+      composerOpen = false
+    }
+    if (!composerOpen) focusTerminal()
   }
 
   function handleComposerImagePaste(event) {
@@ -703,6 +737,7 @@
     document.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('popstate', handlePopState)
     document.addEventListener('click', handleDocumentClick)
+    window.addEventListener('keydown', windowHotkey)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
@@ -713,6 +748,7 @@
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     window.removeEventListener('popstate', handlePopState)
     document.removeEventListener('click', handleDocumentClick)
+    window.removeEventListener('keydown', windowHotkey)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
@@ -799,6 +835,13 @@
         class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
       >[split: {splitMode}]</button>
 
+      <!-- Compose overlay (Cmd/Ctrl+K) -->
+      <button
+        on:click={toggleComposer}
+        title="compose a prompt outside the terminal (⌘/Ctrl+K)"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[compose]</button>
+
       <!-- Attach image button -->
       <button
         on:click={() => fileInputEl?.click()}
@@ -871,14 +914,27 @@
     <PaneViewerModal {session} url={paneViewerURL} onClose={() => closePaneViewer()} />
   {/if}
 
-  {#if terminalIsVisible}
-    <PromptComposer sessionName={session.name} on:sent={handleComposerSent} on:layoutchange={scheduleRefresh} on:imagepaste={handleComposerImagePaste} />
+  <!-- Desktop: transient composer overlay (Cmd/Ctrl+K) -->
+  {#if composerOpen}
+    <PromptComposer variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} />
   {/if}
 
-  <!-- Soft key toolbar — mobile only -->
+  <!-- Mobile: docked composer is THE input; terminal is mostly a display surface.
+       The soft keybar is collapsed behind the ⌨ toggle to save vertical space. -->
   {#if terminalIsVisible}
     <div class="lg:hidden">
-      <SoftKeybar onKey={sendKey} />
+      <PromptComposer
+        variant="docked"
+        sessionName={session.name}
+        keysOpen={softKeysOpen}
+        on:sent={handleComposerSent}
+        on:layoutchange={scheduleRefresh}
+        on:imagepaste={handleComposerImagePaste}
+        on:togglekeys={() => { softKeysOpen = !softKeysOpen; scheduleRefresh() }}
+      />
+      {#if softKeysOpen}
+        <SoftKeybar onKey={sendKey} />
+      {/if}
     </div>
   {/if}
 
