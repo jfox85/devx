@@ -24,16 +24,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	_ "embed"
@@ -61,49 +55,23 @@ func main() {
 
 	host := &Host{server: priv}
 
-	// Reverse-proxy the WebView's asset requests to the private server. This
-	// keeps the WebView on the wails:// app origin while all /api, /terminal,
-	// and SSE traffic flows to the loopback server with the token attached by
-	// the proxy - the frontend never needs the token for same-origin calls.
-	target := &url.URL{Scheme: "http", Host: priv.Addr()}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	baseDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		baseDirector(req)
-		req.Header.Set("Authorization", "Bearer "+priv.Token())
-	}
-	// The SPA shows its login screen based on a localStorage marker, not on
-	// whether requests are authenticated (they all are — the Director injects
-	// the bearer token). Inject the marker into the HTML shell so the fresh
-	// WebView skips the login screen. The marker is non-sensitive by design
-	// (web/App.svelte: the real credential never reaches the page).
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
-			return nil
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return err
-		}
-		body = bytes.Replace(body,
-			[]byte("<head>"),
-			[]byte("<head><script>localStorage.setItem('devx_authed','1')</script>"),
-			1)
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = int64(len(body))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-		return nil
-	}
+	// The Wails asset-server proxy does not reliably carry ttyd WebSocket
+	// upgrades on macOS, so the shell only bootstraps by redirecting the WebView
+	// to the private loopback origin. The private server sets the HTTP-only auth
+	// cookie and non-secret SPA login marker on its HTML shell response.
+	privateURL := "http://" + priv.Addr() + "/"
+	redirectToPrivateServer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, privateURL, http.StatusTemporaryRedirect)
+	})
 
 	err = wails.Run(&options.App{
 		Title:  "DevX",
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
-			// No embedded assets: every request (including /) is served by the
-			// reverse proxy to the private devx server, which embeds the SPA.
-			Handler: proxy,
+			// Redirect out of the wails:// asset server so terminal WebSockets,
+			// EventSource, uploads, and fetches are all normal same-origin HTTP.
+			Handler: redirectToPrivateServer,
 		},
 		OnStartup:  host.startup,
 		OnShutdown: host.shutdown,

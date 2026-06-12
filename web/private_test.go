@@ -63,7 +63,9 @@ func TestPrivateServerTopology(t *testing.T) {
 	}
 
 	// The SPA shell is served (desktop WebView loads this).
-	resp, err = client.Get(base + "/")
+	req, _ = http.NewRequest("GET", base+"/", nil)
+	req.Header.Set("Accept", "text/html")
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -71,6 +73,32 @@ func TestPrivateServerTopology(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(shell), "<html") {
 		t.Fatalf("expected SPA shell, got %d (%d bytes)", resp.StatusCode, len(shell))
+	}
+	if !strings.Contains(string(shell), "devx_authed") {
+		t.Fatal("expected desktop auth marker injected into SPA shell")
+	}
+	var authCookie *http.Cookie
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "devx_token" {
+			authCookie = cookie
+		}
+	}
+	if authCookie == nil || !authCookie.HttpOnly || authCookie.Value == "" {
+		t.Fatalf("expected HTTP-only devx_token cookie on SPA shell, got %#v", authCookie)
+	}
+
+	// Cookie auth works for same-origin desktop requests, including terminal
+	// WebSocket handshakes in the real app.
+	req, _ = http.NewRequest("GET", base+"/api/health", nil)
+	req.AddCookie(authCookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/health with cookie: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with auth cookie, got %d: %s", resp.StatusCode, body)
 	}
 
 	// A wrong token is rejected (constant-time compare path).

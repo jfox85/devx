@@ -1,5 +1,8 @@
-desktop/desktop
-
 # Local desktop spike binaries
-desktop
-devx-desktop
+/desktop
+/devx-desktop
+
+# Generated macOS app bundle/iconset from build-macos-app.sh
+/build/*.app
+/build/*.iconset
+/build/*.icns
