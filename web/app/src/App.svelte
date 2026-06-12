@@ -6,6 +6,8 @@
   import Login from './lib/Login.svelte'
   import SessionList from './lib/SessionList.svelte'
   import Terminal from './lib/Terminal.svelte'
+  import QuickSwitcher from './lib/QuickSwitcher.svelte'
+  import { markSwitchStart } from './lib/stores/sessionUiState.js'
   import ImageToast from './lib/ImageToast.svelte'
   import FlagToast from './lib/FlagToast.svelte'
   import ShareTarget from './lib/ShareTarget.svelte'
@@ -36,10 +38,25 @@
   let shareToken = new URLSearchParams(window.location.search).get('share') || ''
 
   let unsubscribeSSE
+  let switcherOpen = false
+
+  function handleGlobalKeydown(e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+      e.preventDefault()
+      switcherOpen = !switcherOpen
+    }
+  }
+
+  function handleSwitcherSelect(session) {
+    switcherOpen = false
+    markSwitchStart(session.name)
+    openTerminal(session)
+  }
 
   onMount(() => {
     if (loggedIn) {
       requestNotificationPermission()
+      window.addEventListener('devx:quickSwitcher', () => { switcherOpen = !switcherOpen })
       unsubscribeSSE = subscribeToEvents({
         show: (event) => {
           remoteShow = event
@@ -138,7 +155,7 @@
   }
 </script>
 
-<svelte:window on:paste={handleGlobalPaste} />
+<svelte:window on:paste={handleGlobalPaste} on:keydown={handleGlobalKeydown} />
 
 {#if !loggedIn}
   <Login />
@@ -190,6 +207,11 @@
 
     {#if shareToken}
       <ShareTarget token={shareToken} onCancel={clearShareToken} onCreated={handleShareCreated} />
+    {/if}
+
+    <!-- Quick switcher: Cmd/Ctrl+P fuzzy session jump -->
+    {#if switcherOpen}
+      <QuickSwitcher onSelect={handleSwitcherSelect} onClose={() => switcherOpen = false} />
     {/if}
 
   </div>
