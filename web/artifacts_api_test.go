@@ -30,7 +30,7 @@ func setupArtifactAPITest(t *testing.T) *session.Session {
 	}
 	sess := &session.Session{Name: "feature/web-artifacts", Branch: "feature/web-artifacts", Path: worktree, Ports: map[string]int{"ui": 3000}}
 	store := &session.SessionStore{Sessions: map[string]*session.Session{sess.Name: sess}, NumberedSlots: map[int]string{}}
-	if err := store.Save(); err != nil {
+	if err := store.Overwrite(); err != nil {
 		t.Fatalf("Save sessions: %v", err)
 	}
 	return sess

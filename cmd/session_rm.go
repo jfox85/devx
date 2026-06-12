@@ -127,10 +127,13 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		_ = os.RemoveAll(uploadsDir)
 	}
 
-	// Remove session from metadata and reconcile slots in a single save
-	delete(store.Sessions, name)
-	store.ReconcileSlots()
-	if err := store.Save(); err != nil {
+	// Remove session from metadata and reconcile slots in a single lock-guarded
+	// read-modify-write so a concurrent writer is not clobbered.
+	if err := store.Mutate(func(fresh *session.SessionStore) error {
+		delete(fresh.Sessions, name)
+		fresh.ReconcileSlots()
+		return nil
+	}); err != nil {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
