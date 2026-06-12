@@ -56,12 +56,18 @@ func main() {
 	host := &Host{server: priv}
 
 	// The Wails asset-server proxy does not reliably carry ttyd WebSocket
-	// upgrades on macOS, so the shell only bootstraps by redirecting the WebView
-	// to the private loopback origin. The private server sets the HTTP-only auth
-	// cookie and non-secret SPA login marker on its HTML shell response.
+	// upgrades on macOS, so the shell only bootstraps by navigating the WebView
+	// to the private loopback origin. Use a tiny HTML/JS handoff instead of an
+	// HTTP redirect: Wails treats redirects to http:// as external-link intents
+	// and shows a click-through landing page.
 	privateURL := "http://" + priv.Addr() + "/"
-	redirectToPrivateServer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, privateURL, http.StatusTemporaryRedirect)
+	bootstrapToPrivateServer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, `<!doctype html>
+<html><head><meta charset="utf-8"><title>DevX</title>
+<style>body{margin:0;background:#0a0e1a;color:#e5ecff;font:14px -apple-system,BlinkMacSystemFont,sans-serif;display:grid;place-items:center;height:100vh}</style>
+<script>location.replace(%q)</script></head>
+<body>Opening DevX… <a style="color:#4a9eff" href=%q>continue</a></body></html>`, privateURL, privateURL)
 	})
 
 	err = wails.Run(&options.App{
@@ -69,9 +75,9 @@ func main() {
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
-			// Redirect out of the wails:// asset server so terminal WebSockets,
+			// Navigate out of the wails:// asset server so terminal WebSockets,
 			// EventSource, uploads, and fetches are all normal same-origin HTTP.
-			Handler: redirectToPrivateServer,
+			Handler: bootstrapToPrivateServer,
 		},
 		OnStartup:  host.startup,
 		OnShutdown: host.shutdown,
