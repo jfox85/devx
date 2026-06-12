@@ -70,22 +70,34 @@
     return ALLOWED_EXTS.some(ext => name.endsWith(ext))
   }
 
-  // Encode session names so slashes ("/") don't split the URL path.
-  $: slug = encodeURIComponent(session.name)
-  $: iframeURL = `/terminal/${slug}/`
-
-  // iframeKey drives the {#key} block around the iframe. Changing it destroys
-  // and recreates the iframe element, causing xterm.js to reconnect and
-  // re-report the correct terminal dimensions to the server.
+  // --- Iframe keep-alive pool (plan 0C) ---------------------------------------
+  // Recently used session iframes stay mounted (absolutely positioned, hidden
+  // via visibility) so switching back skips iframe teardown, ttyd HTML reload,
+  // and the WebSocket re-handshake entirely. visibility:hidden (not
+  // display:none) keeps the layout box, so xterm's measured dimensions stay
+  // valid and FitAddon has real geometry on re-show. pointer-events:none and
+  // tabindex=-1 on hidden frames prevent focus/click stealing.
   //
-  // We bump it in two situations:
-  //   1. Session changes — same as the old {#key session.name} behaviour.
-  //   2. Tab was hidden for > 30 s — handles the case where another device
-  //      (e.g. phone) resized the PTY while this tab was in the background.
-  //      On return, xterm.js reconnects and immediately sends the correct
-  //      dimensions, so the terminal reflowes to this viewport.
-  let iframeKey = session.name
+  // Pool entries: { name, key } — bumping key recreates that session's iframe
+  // (used for the long-absence reload path). Active session is always pool[0].
+  // Mobile gets no pool (cap 1): keeping multiple xterm WebGL contexts alive
+  // on a phone costs memory and background sockets die with the tab anyway.
+  const IFRAME_POOL_MAX = (typeof window !== 'undefined' && window.innerWidth >= 1024) ? 3 : 1
+  let pool = [{ name: session.name, key: 0 }]
+  let frameEls = {}
+  // Frames whose xterm never initialised (e.g. backend returned an error page)
+  // must not be served from the pool — promote forces a fresh reload instead.
+  let frameHealthy = {}
   let hiddenAt = null
+
+  function frameURL(name) {
+    // Encode session names so slashes ("/") don't split the URL path.
+    return `/terminal/${encodeURIComponent(name)}/`
+  }
+
+  function reloadActiveFrame() {
+    pool = pool.map(p => p.name === session.name ? { ...p, key: Date.now() } : p)
+  }
 
   // Reset windows and iframe key when session changes (component reused with
   // different session). currentSession stores the previous value of session.name
@@ -97,7 +109,7 @@
     setSessionChrome(currentSession, { splitMode, artifactPaneOpen, selectedArtifactID })
     currentSession = session.name
     windows = []
-    iframeKey = session.name
+    promoteInPool(session.name)
     artifactFullScreen = false
     paneViewerOpen = false
     paneViewerURL = ''
@@ -114,6 +126,45 @@
     selectedArtifactID = chrome?.selectedArtifactID ?? null
     if (session.focused_artifact_id) {
       scheduleFocusedArtifactOpen(session.focused_artifact_id)
+    }
+  }
+
+  // Bring a session to the front of the pool. If its iframe is still mounted
+  // (warm hit), reuse it: re-fit, refresh, focus — no reload, no re-handshake.
+  function promoteInPool(name) {
+    const existing = pool.find(p => p.name === name)
+    if (existing && frameHealthy[name] === false) {
+      // Pooled frame holds an error page — recreate it instead of reusing.
+      delete frameHealthy[name]
+      pool = [{ ...existing, key: Date.now() }, ...pool.filter(p => p !== existing)]
+      return
+    }
+    if (existing) {
+      pool = [existing, ...pool.filter(p => p !== existing)]
+      tick().then(async () => {
+        iframeEl = frameEls[name]
+        // Pooled switch: terminal is already connected. Record near-zero
+        // switch timings (warm path) and resync size/focus.
+        markIframeLoad(name)
+        markTerminalReady(name)
+        triggerFitAddon()
+        await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
+        try { await refreshTerminal(name) } catch { /* ignore */ }
+        focusTerminal()
+        setTimeout(restoreStoredWindow, 0)
+        resizeObserver?.disconnect()
+        if (iframeEl) {
+          resizeObserver = new ResizeObserver(scheduleRefresh)
+          resizeObserver.observe(iframeEl)
+        }
+      })
+    } else {
+      pool = [{ name, key: 0 }, ...pool].slice(0, IFRAME_POOL_MAX)
+      // Drop element refs for evicted sessions so they can be GC'd.
+      const live = new Set(pool.map(p => p.name))
+      for (const k of Object.keys(frameEls)) {
+        if (!live.has(k)) delete frameEls[k]
+      }
     }
   }
   $: if (session?.focused_artifact_id && !artifactPaneOpen && !focusedArtifactDismissed) {
@@ -157,7 +208,7 @@
       hiddenAt = null
       if (absent > 180_000) {
         // Long absence: reload iframe entirely so xterm.js reconnects fresh.
-        iframeKey = session.name + '::' + Date.now()
+        reloadActiveFrame()
       } else {
         // Short absence: another device may have changed the PTY size while
         // this tab was backgrounded. Re-trigger FitAddon so xterm.js sends
@@ -410,12 +461,15 @@
 
     // Poll until xterm's helper textarea appears (signals full init).
     const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
+    let xtermReady = false
     while (Date.now() < deadline) {
       try {
-        if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) break
+        if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) { xtermReady = true; break }
       } catch { /* cross-origin / not-yet-loaded */ }
       await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
     }
+    // Record health so the keep-alive pool never serves a cached error page.
+    frameHealthy[session.name] = xtermReady
     // Re-trigger FitAddon so it sends the current browser viewport dimensions
     // to the PTY. Small wait after so ioctl has time to propagate before the
     // subsequent refresh-client call.
@@ -874,22 +928,30 @@
 
   <div class="flex-1 min-h-0 flex {splitMode === 'horizontal' ? 'flex-col' : 'flex-row'}">
     {#if terminalIsVisible}
-      <div class="min-h-0 min-w-0 flex flex-col" style={terminalPaneCSS}>
+      <div class="min-h-0 min-w-0 flex flex-col relative" style={terminalPaneCSS}>
         <!--
-          Wrap in {#key} so switching sessions destroys the old iframe element rather
-          than navigating it. Navigating triggers ttyd's beforeunload handler and shows
-          the browser's "Leave site?" dialog. Removing an iframe element does not.
+          Keep-alive pool: every pooled session's iframe stays mounted in this
+          container; only the active one is visible. Hidden frames keep their
+          WebSocket + xterm state alive, making switch-back instant. Keyed per
+          (name, key) so evicting/reloading destroys the element rather than
+          navigating it (navigation would trigger ttyd's beforeunload dialog).
+          Hidden frames use visibility:hidden so they keep real layout geometry
+          for xterm, plus pointer-events:none and tabindex=-1 so they can't
+          steal clicks or keyboard focus.
         -->
-        {#key iframeKey}
+        {#each pool as frame (frame.name + '::' + frame.key)}
+          {@const isActiveFrame = frame.name === session.name}
           <iframe
-            bind:this={iframeEl}
-            src={iframeURL}
-            title="Terminal — {session.name}"
-            class="flex-1 min-h-0 w-full border-0"
+            bind:this={frameEls[frame.name]}
+            src={frameURL(frame.name)}
+            title="Terminal — {frame.name}"
+            class="absolute inset-0 w-full h-full border-0"
+            style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0};"
+            tabindex={isActiveFrame ? 0 : -1}
             allow="clipboard-read; clipboard-write"
-            on:load={handleIframeLoad}
+            on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() } }}
           ></iframe>
-        {/key}
+        {/each}
       </div>
     {/if}
 
