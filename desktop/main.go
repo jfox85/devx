@@ -24,7 +24,6 @@ package main
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -37,9 +36,6 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
-
-//go:embed all:frontend
-var frontendAssets embed.FS
 
 func main() {
 	priv, err := web.NewPrivateServer()
@@ -71,8 +67,9 @@ func main() {
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
-			Assets:  frontendAssets,
-			Handler: proxy, // non-embedded paths (/, /api, /terminal, ...) hit the private server
+			// No embedded assets: every request (including /) is served by the
+			// reverse proxy to the private devx server, which embeds the SPA.
+			Handler: proxy,
 		},
 		OnStartup:  host.startup,
 		OnShutdown: host.shutdown,
