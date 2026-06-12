@@ -39,6 +39,8 @@
   let focusedArtifactDismissed = false
   let pasteArtifactNonce = 0
   let focusedArtifactTimer
+  let composerOpen = false
+  let softKeysOpen = false
   $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
   $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
   $: terminalPaneCSS = !artifactsIsVisible ? 'flex: 1 1 0;' : splitMode === 'vertical' ? 'width: 50%; flex: 0 0 50%;' : splitMode === 'horizontal' ? 'height: 50%; flex: 0 0 50%;' : 'flex: 1 1 0;'
@@ -185,8 +187,28 @@
   // Ctrl+Shift+S, registered on the iframe's document in capture phase so
   // xterm never sees it. Dispatches to the parent window (lexical `window`
   // is the parent since this function is defined in the parent scope).
+  function toggleComposer() {
+    composerOpen = !composerOpen
+  }
+
+  function closeComposer() {
+    composerOpen = false
+    focusTerminal()
+  }
+
+  function windowHotkey(e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      toggleComposer()
+    }
+  }
+
   function iframeHotkey(e) {
-    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      e.stopPropagation()
+      toggleComposer()
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
@@ -637,9 +659,14 @@
     if (goBack) popModalHistory('artifact-search')
   }
 
-  function handleComposerSent() {
+  function handleComposerSent(event) {
     scheduleRefresh()
-    focusTerminal()
+    // Sending from the desktop overlay dismisses it; paste-only keeps it open
+    // so the user can continue composing while reviewing the staged text.
+    if (composerOpen && event.detail?.submit) {
+      composerOpen = false
+    }
+    if (!composerOpen) focusTerminal()
   }
 
   function handleComposerImagePaste(event) {
@@ -703,6 +730,7 @@
     document.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('popstate', handlePopState)
     document.addEventListener('click', handleDocumentClick)
+    window.addEventListener('keydown', windowHotkey)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
@@ -713,6 +741,7 @@
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     window.removeEventListener('popstate', handlePopState)
     document.removeEventListener('click', handleDocumentClick)
+    window.removeEventListener('keydown', windowHotkey)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
@@ -799,6 +828,13 @@
         class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
       >[split: {splitMode}]</button>
 
+      <!-- Compose overlay (Cmd/Ctrl+K) -->
+      <button
+        on:click={toggleComposer}
+        title="compose a prompt outside the terminal (⌘/Ctrl+K)"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[compose]</button>
+
       <!-- Attach image button -->
       <button
         on:click={() => fileInputEl?.click()}
@@ -871,14 +907,27 @@
     <PaneViewerModal {session} url={paneViewerURL} onClose={() => closePaneViewer()} />
   {/if}
 
-  {#if terminalIsVisible}
-    <PromptComposer sessionName={session.name} on:sent={handleComposerSent} on:layoutchange={scheduleRefresh} on:imagepaste={handleComposerImagePaste} />
+  <!-- Desktop: transient composer overlay (Cmd/Ctrl+K) -->
+  {#if composerOpen}
+    <PromptComposer variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} />
   {/if}
 
-  <!-- Soft key toolbar — mobile only -->
+  <!-- Mobile: docked composer is THE input; terminal is mostly a display surface.
+       The soft keybar is collapsed behind the ⌨ toggle to save vertical space. -->
   {#if terminalIsVisible}
     <div class="lg:hidden">
-      <SoftKeybar onKey={sendKey} />
+      <PromptComposer
+        variant="docked"
+        sessionName={session.name}
+        keysOpen={softKeysOpen}
+        on:sent={handleComposerSent}
+        on:layoutchange={scheduleRefresh}
+        on:imagepaste={handleComposerImagePaste}
+        on:togglekeys={() => { softKeysOpen = !softKeysOpen; scheduleRefresh() }}
+      />
+      {#if softKeysOpen}
+        <SoftKeybar onKey={sendKey} />
+      {/if}
     </div>
   {/if}
 

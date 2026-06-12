@@ -66,6 +66,23 @@ func TestAuthMiddlewareRejectsCookieTerminalGetWithoutSameOriginProvenance(t *te
 	}
 }
 
+func TestAuthMiddlewareAcceptsCookieTerminalWebSocketUpgradeWithoutFetchMetadata(t *testing.T) {
+	token := "test-secret"
+	handler := authMiddleware(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "http://localhost:7777/terminal/demo/ws", nil)
+	req.AddCookie(&http.Cookie{Name: "devx_token", Value: token})
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for authenticated terminal websocket upgrade before upgrader origin enforcement, got %d", w.Code)
+	}
+}
+
 func TestAuthMiddlewareAcceptsCookieTerminalGetWithSameOriginReferer(t *testing.T) {
 	token := "test-secret"
 	handler := authMiddleware(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

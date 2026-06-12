@@ -99,7 +99,7 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 					writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden origin"})
 					return
 				}
-				if strings.HasPrefix(r.URL.Path, "/terminal/") && !requestProvenanceMatchesHost(r) {
+				if strings.HasPrefix(r.URL.Path, "/terminal/") && !isWebSocketUpgrade(r) && !requestProvenanceMatchesHost(r) {
 					writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden origin"})
 					return
 				}
@@ -112,6 +112,10 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	})
 }
 
+func isWebSocketUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+}
+
 func isUnsafeMethod(method string) bool {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
@@ -121,12 +125,39 @@ func isUnsafeMethod(method string) bool {
 	}
 }
 
+// effectiveHosts returns the host values that count as "same origin" for this
+// request. It always includes r.Host, and additionally includes
+// X-Forwarded-Host when present. devx sits behind a trusted reverse proxy
+// (Caddy, and Cloudflare's tunnel) that rewrites the upstream Host header to
+// "localhost" so dev servers accept the request, while forwarding the original
+// external hostname in X-Forwarded-Host. Without honoring it, the browser's
+// Origin/Referer (the real external host) never matches r.Host ("localhost"),
+// which broke same-origin checks for terminal/WebSocket requests reached via
+// Caddy or the Cloudflare tunnel.
+func effectiveHosts(r *http.Request) []string {
+	hosts := []string{r.Host}
+	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+		// X-Forwarded-Host may be a comma-separated list; the first value is the
+		// original client-facing host.
+		if first, _, found := strings.Cut(xfh, ","); found {
+			xfh = first
+		}
+		hosts = append(hosts, strings.TrimSpace(xfh))
+	}
+	return hosts
+}
+
 func originMatchesHost(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return false
 	}
-	return origin == "http://"+r.Host || origin == "https://"+r.Host
+	for _, h := range effectiveHosts(r) {
+		if origin == "http://"+h || origin == "https://"+h {
+			return true
+		}
+	}
+	return false
 }
 
 func requestProvenanceMatchesHost(r *http.Request) bool {
@@ -137,8 +168,12 @@ func requestProvenanceMatchesHost(r *http.Request) bool {
 		return true
 	}
 	if ref := r.Header.Get("Referer"); ref != "" {
-		if u, err := url.Parse(ref); err == nil && u.Host == r.Host && (u.Scheme == "http" || u.Scheme == "https") {
-			return true
+		if u, err := url.Parse(ref); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			for _, h := range effectiveHosts(r) {
+				if u.Host == h {
+					return true
+				}
+			}
 		}
 	}
 	return false

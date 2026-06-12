@@ -16,14 +16,23 @@ var upgrader = websocket.Upgrader{
 	// Only allow requests whose Origin matches the server's own host.
 	// This prevents cross-site WebSocket hijacking: a malicious page opened
 	// in the same browser cannot connect to ws://localhost:<port>/terminal/*
-	// because its Origin won't match r.Host.
+	// because its Origin won't match the request host.
+	//
+	// effectiveHosts honors X-Forwarded-Host so the check still passes when the
+	// request is reached via the trusted Caddy reverse proxy / Cloudflare tunnel,
+	// which rewrite the upstream Host header to "localhost".
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			// No Origin header = same-origin browser request; allow it.
 			return true
 		}
-		return origin == "http://"+r.Host || origin == "https://"+r.Host
+		for _, h := range effectiveHosts(r) {
+			if origin == "http://"+h || origin == "https://"+h {
+				return true
+			}
+		}
+		return false
 	},
 	Subprotocols: []string{"tty"},
 }
