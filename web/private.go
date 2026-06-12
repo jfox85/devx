@@ -1,13 +1,12 @@
 package web
 
 import (
-	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 )
 
@@ -19,8 +18,9 @@ import (
 // storage.
 type PrivateServer struct {
 	*Server
-	listener net.Listener
-	token    string
+	listener               net.Listener
+	token                  string
+	terminalBootstrapToken string
 }
 
 // NewPrivateServer creates a private server on a random loopback port with a
@@ -40,7 +40,12 @@ func NewPrivateServer() (*PrivateServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to bind private server: %w", err)
 	}
-	return &PrivateServer{Server: srv, listener: ln, token: token}, nil
+	terminalBootstrapToken, err := generateEphemeralToken()
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return &PrivateServer{Server: srv, listener: ln, token: token, terminalBootstrapToken: terminalBootstrapToken}, nil
 }
 
 // Addr returns the bound loopback address, e.g. "127.0.0.1:49213".
@@ -54,23 +59,35 @@ func (p *PrivateServer) Token() string {
 	return p.token
 }
 
+// TerminalBootstrapToken returns a per-launch token scoped to bootstrapping
+// direct terminal iframes from the Wails shell. It is not the main API token:
+// presenting it to /terminal/<session> sets the HTTP-only devx_token cookie
+// and redirects to the clean terminal URL so ttyd WebSockets can authenticate
+// directly against the private loopback origin.
+func (p *PrivateServer) TerminalBootstrapToken() string {
+	return p.terminalBootstrapToken
+}
+
 // Serve blocks serving HTTP on the pre-bound listener.
 func (p *PrivateServer) Serve() error {
 	mux := http.NewServeMux()
 	p.registerRoutes(mux)
-	// Desktop WebViews load the private loopback origin directly so ttyd
-	// WebSockets are not forced through Wails' asset-server proxy. Bootstrap the
-	// non-secret SPA auth marker and an HTTP-only token cookie on HTML shell
-	// responses; API/terminal requests then authenticate as ordinary same-origin
-	// cookie requests.
-	handler := p.bootstrapDesktopAuth(authMiddleware(p.token, mux))
+	// Keep normal auth on API/static routes, but allow a direct terminal iframe
+	// to bootstrap an HTTP-only auth cookie. This avoids Wails' websocket-hostile
+	// asset-server proxy for ttyd while keeping the SPA itself on wails://.
+	handler := p.bootstrapTerminalAuth(authMiddleware(p.token, mux))
 	p.server = &http.Server{Handler: handler}
 	return p.server.Serve(p.listener)
 }
 
-func (p *PrivateServer) bootstrapDesktopAuth(next http.Handler) http.Handler {
+func (p *PrivateServer) bootstrapTerminalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !acceptsHTML(r) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/terminal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := r.URL.Query().Get("desktop_token")
+		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(p.terminalBootstrapToken)) != 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -82,58 +99,12 @@ func (p *PrivateServer) bootstrapDesktopAuth(next http.Handler) http.Handler {
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 		})
-
-		rw := newBufferingResponseWriter(w)
-		next.ServeHTTP(rw, r)
-		body := bytes.Replace(rw.body.Bytes(),
-			[]byte("<head>"),
-			[]byte("<head><script>localStorage.setItem('devx_authed','1')</script>"),
-			1)
-		if rw.header.Get("Content-Length") != "" {
-			rw.header.Set("Content-Length", strconv.Itoa(len(body)))
-		}
-		copyHeaders(w.Header(), rw.header)
-		status := rw.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		w.WriteHeader(status)
-		_, _ = w.Write(body)
+		clean := *r.URL
+		q := clean.Query()
+		q.Del("desktop_token")
+		clean.RawQuery = q.Encode()
+		http.Redirect(w, r, clean.String(), http.StatusTemporaryRedirect)
 	})
-}
-
-type bufferingResponseWriter struct {
-	header http.Header
-	body   bytes.Buffer
-	status int
-}
-
-func newBufferingResponseWriter(w http.ResponseWriter) *bufferingResponseWriter {
-	return &bufferingResponseWriter{header: w.Header().Clone()}
-}
-
-func (b *bufferingResponseWriter) Header() http.Header    { return b.header }
-func (b *bufferingResponseWriter) WriteHeader(status int) { b.status = status }
-func (b *bufferingResponseWriter) Write(p []byte) (int, error) {
-	if b.status == 0 {
-		b.status = http.StatusOK
-	}
-	return b.body.Write(p)
-}
-
-func copyHeaders(dst, src http.Header) {
-	for k := range dst {
-		delete(dst, k)
-	}
-	for k, values := range src {
-		for _, value := range values {
-			dst.Add(k, value)
-		}
-	}
-}
-
-func acceptsHTML(r *http.Request) bool {
-	return r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func generateEphemeralToken() (string, error) {

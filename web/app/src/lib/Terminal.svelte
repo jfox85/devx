@@ -92,7 +92,12 @@
 
   function frameURL(name) {
     // Encode session names so slashes ("/") don't split the URL path.
-    return `/terminal/${encodeURIComponent(name)}/`
+    const path = `/terminal/${encodeURIComponent(name)}/`
+    const desktop = typeof window !== 'undefined' && window.__DEVX_DESKTOP
+    if (!desktop?.terminalBase || !desktop?.terminalToken) return path
+    const url = new URL(path, desktop.terminalBase)
+    url.searchParams.set('desktop_token', desktop.terminalToken)
+    return url.toString()
   }
 
   function reloadActiveFrame() {

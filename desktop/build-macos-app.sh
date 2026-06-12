@@ -38,8 +38,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>devx-desktop</string>
-  <key>CFBundleIconFile</key><string>appicon</string>
-  <key>CFBundleIdentifier</key><string>works.earendil.devx.desktop</string>
+  <key>CFBundleIconFile</key><string>appicon.icns</string>
+  <key>CFBundleIconName</key><string>appicon</string>
+  <key>CFBundleIdentifier</key><string>works.earendil.devx.desktop.spike</string>
   <key>CFBundleName</key><string>DevX</string>
   <key>CFBundleDisplayName</key><string>DevX</string>
   <key>CFBundlePackageType</key><string>APPL</string>

@@ -74,8 +74,23 @@ func TestPrivateServerTopology(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(shell), "<html") {
 		t.Fatalf("expected SPA shell, got %d (%d bytes)", resp.StatusCode, len(shell))
 	}
-	if !strings.Contains(string(shell), "devx_authed") {
-		t.Fatal("expected desktop auth marker injected into SPA shell")
+	// Direct terminal iframes bootstrap auth with a terminal-scoped token. The
+	// response sets the HTTP-only main cookie and redirects to the clean URL so
+	// ttyd's own WebSocket requests authenticate via cookie.
+	noRedirect := &http.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, _ = http.NewRequest("GET", base+"/terminal/demo/?desktop_token="+p.TerminalBootstrapToken(), nil)
+	resp, err = noRedirect.Do(req)
+	if err != nil {
+		t.Fatalf("GET terminal bootstrap: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect || resp.Header.Get("Location") != "/terminal/demo/" {
+		t.Fatalf("expected clean terminal redirect, got %d Location=%q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	var authCookie *http.Cookie
 	for _, cookie := range resp.Cookies() {
@@ -84,7 +99,7 @@ func TestPrivateServerTopology(t *testing.T) {
 		}
 	}
 	if authCookie == nil || !authCookie.HttpOnly || authCookie.Value == "" {
-		t.Fatalf("expected HTTP-only devx_token cookie on SPA shell, got %#v", authCookie)
+		t.Fatalf("expected HTTP-only devx_token cookie from terminal bootstrap, got %#v", authCookie)
 	}
 
 	// Cookie auth works for same-origin desktop requests, including terminal

@@ -24,10 +24,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "embed"
@@ -55,29 +61,45 @@ func main() {
 
 	host := &Host{server: priv}
 
-	// The Wails asset-server proxy does not reliably carry ttyd WebSocket
-	// upgrades on macOS, so the shell only bootstraps by navigating the WebView
-	// to the private loopback origin. Use a tiny HTML/JS handoff instead of an
-	// HTTP redirect: Wails treats redirects to http:// as external-link intents
-	// and shows a click-through landing page.
-	privateURL := "http://" + priv.Addr() + "/"
-	bootstrapToPrivateServer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, `<!doctype html>
-<html><head><meta charset="utf-8"><title>DevX</title>
-<style>body{margin:0;background:#0a0e1a;color:#e5ecff;font:14px -apple-system,BlinkMacSystemFont,sans-serif;display:grid;place-items:center;height:100vh}</style>
-<script>location.replace(%q)</script></head>
-<body>Opening DevX… <a style="color:#4a9eff" href=%q>continue</a></body></html>`, privateURL, privateURL)
-	})
+	// Keep the SPA loaded from the Wails asset server (no external-link landing
+	// page), but let terminal iframes go directly to the private loopback origin
+	// so ttyd WebSockets do not traverse Wails' asset-server proxy.
+	privateURL := "http://" + priv.Addr()
+	target := &url.URL{Scheme: "http", Host: priv.Addr()}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	baseDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		req.Header.Set("Authorization", "Bearer "+priv.Token())
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			return nil
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		injection := fmt.Sprintf(`<script>
+localStorage.setItem('devx_authed','1');
+window.__DEVX_DESKTOP = { terminalBase: %q, terminalToken: %q };
+</script>`, privateURL, priv.TerminalBootstrapToken())
+		body = bytes.Replace(body, []byte("<head>"), []byte("<head>"+injection), 1)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
+	}
 
 	err = wails.Run(&options.App{
 		Title:  "DevX",
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
-			// Navigate out of the wails:// asset server so terminal WebSockets,
-			// EventSource, uploads, and fetches are all normal same-origin HTTP.
-			Handler: bootstrapToPrivateServer,
+			// API/SSE/static assets are proxied with bearer auth. Terminal iframes
+			// use window.__DEVX_DESKTOP to connect directly to privateURL.
+			Handler: proxy,
 		},
 		OnStartup:  host.startup,
 		OnShutdown: host.shutdown,
