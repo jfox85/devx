@@ -155,7 +155,7 @@
         triggerFitAddon()
         await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
         try { await refreshTerminal(name) } catch { /* ignore */ }
-        focusTerminal()
+        focusTerminalSoon()
         setTimeout(restoreStoredWindow, 0)
         resizeObserver?.disconnect()
         if (iframeEl) {
@@ -241,8 +241,20 @@
         return
       }
     } catch { /* ignore any cross-origin / not-yet-loaded errors */ }
-    // Fallback: at minimum route events to the iframe window
+    // Fallback: at minimum route events to the iframe window. Desktop Wails
+    // terminal frames are intentionally cross-origin (wails:// parent,
+    // 127.0.0.1 iframe) so this is the primary focus path there.
     iframeEl?.focus()
+  }
+
+  function focusTerminalSoon() {
+    focusTerminal()
+    // WebKit often ignores the first focus while swapping iframe visibility or
+    // immediately after navigation. Retry across a few frames so session
+    // switches land keyboard focus in the active terminal without a click.
+    setTimeout(focusTerminal, 0)
+    setTimeout(focusTerminal, 60)
+    setTimeout(focusTerminal, 180)
   }
 
   // Ctrl+Shift+S, registered on the iframe's document in capture phase so
@@ -486,7 +498,7 @@
     triggerFitAddon()
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
-    focusTerminal()
+    focusTerminalSoon()
     // Restore window tabs after the terminal is interactive; don't block the first
     // usable paint/focus on tmux bookkeeping.
     setTimeout(restoreStoredWindow, 0)

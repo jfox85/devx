@@ -230,6 +230,13 @@
     return result
   }
 
+  function openExternal(e, url) {
+    const host = typeof window !== 'undefined' && window.go?.main?.Host
+    if (!host?.OpenExternal) return
+    e.preventDefault()
+    host.OpenExternal(url).catch(err => { error = err?.message || String(err) })
+  }
+
   async function handleDelete(session) {
     // Two-click confirmation: first click arms the delete, second click fires it.
     // Click outside (blur/hover-leave) resets via the pendingDelete timeout below.
@@ -455,6 +462,7 @@
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
+                    on:click={(e) => openExternal(e, url)}
                     class="flex items-center gap-2 text-[11px] font-mono hover:text-cyan-400 transition-colors"
                   >
                     <span class="text-gray-700">↗</span>

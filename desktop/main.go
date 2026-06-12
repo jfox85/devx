@@ -43,6 +43,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed build/appicon.png
@@ -143,6 +144,19 @@ func (h *Host) SessionInfo() map[string]string {
 		"addr": h.server.Addr(),
 		"mode": "private",
 	}
+}
+
+// OpenExternal opens service/artifact URLs in the user's default browser. Wails
+// WebViews do not behave like normal browser tabs for target=_blank links.
+func (h *Host) OpenExternal(url string) error {
+	if h.ctx == nil {
+		return fmt.Errorf("host not started")
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("unsupported external URL")
+	}
+	runtime.BrowserOpenURL(h.ctx, url)
+	return nil
 }
 
 // Notify shows a native notification with redacted content (plan invariant 7:
