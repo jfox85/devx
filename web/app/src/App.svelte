@@ -53,10 +53,16 @@
     openTerminal(session)
   }
 
+  // Named so it can be removed on destroy; dispatched by Terminal's
+  // iframeHotkey bridge when Cmd/Ctrl+P is pressed inside the terminal iframe.
+  function toggleSwitcher() {
+    switcherOpen = !switcherOpen
+  }
+
   onMount(() => {
     if (loggedIn) {
       requestNotificationPermission()
-      window.addEventListener('devx:quickSwitcher', () => { switcherOpen = !switcherOpen })
+      window.addEventListener('devx:quickSwitcher', toggleSwitcher)
       unsubscribeSSE = subscribeToEvents({
         show: (event) => {
           remoteShow = event
@@ -86,6 +92,7 @@
 
   onDestroy(() => {
     unsubscribeSSE?.()
+    window.removeEventListener('devx:quickSwitcher', toggleSwitcher)
   })
 
   function dismissRemoteShow() {

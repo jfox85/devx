@@ -125,18 +125,55 @@ func isUnsafeMethod(method string) bool {
 	}
 }
 
+// trustedProxyRequest reports whether the request's direct peer is a trusted
+// reverse proxy, i.e. whether forwarded headers (X-Forwarded-Host,
+// X-Forwarded-Proto) may be honored. devx's proxies (Caddy, cloudflared) run
+// on the same machine or, in the containerized dogfooding topology, reach the
+// backend through Docker port publishing — so the peer is loopback or a
+// private-range address. Connections from public addresses never get
+// forwarded-header trust: they fall back to r.Host only.
+func trustedProxyRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// requestIsHTTPS reports whether the client-facing connection used HTTPS:
+// either the backend terminated TLS itself, or a trusted proxy forwarded the
+// original scheme in X-Forwarded-Proto.
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if !trustedProxyRequest(r) {
+		return false
+	}
+	xfp := r.Header.Get("X-Forwarded-Proto")
+	if first, _, found := strings.Cut(xfp, ","); found {
+		xfp = first
+	}
+	return strings.TrimSpace(xfp) == "https"
+}
+
 // effectiveHosts returns the host values that count as "same origin" for this
 // request. It always includes r.Host, and additionally includes
-// X-Forwarded-Host when present. devx sits behind a trusted reverse proxy
-// (Caddy, and Cloudflare's tunnel) that rewrites the upstream Host header to
-// "localhost" so dev servers accept the request, while forwarding the original
-// external hostname in X-Forwarded-Host. Without honoring it, the browser's
-// Origin/Referer (the real external host) never matches r.Host ("localhost"),
-// which broke same-origin checks for terminal/WebSocket requests reached via
-// Caddy or the Cloudflare tunnel.
+// X-Forwarded-Host when the request arrives from a trusted proxy. devx sits
+// behind a trusted reverse proxy (Caddy, and Cloudflare's tunnel) that
+// rewrites the upstream Host header to "localhost" so dev servers accept the
+// request, while forwarding the original external hostname in
+// X-Forwarded-Host. Without honoring it, the browser's Origin/Referer (the
+// real external host) never matches r.Host ("localhost"), which broke
+// same-origin checks for terminal/WebSocket requests reached via Caddy or the
+// Cloudflare tunnel.
 func effectiveHosts(r *http.Request) []string {
 	hosts := []string{r.Host}
-	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" && trustedProxyRequest(r) {
 		// X-Forwarded-Host may be a comma-separated list; the first value is the
 		// original client-facing host.
 		if first, _, found := strings.Cut(xfh, ","); found {

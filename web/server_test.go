@@ -164,6 +164,7 @@ func TestEffectiveHostsIncludesForwardedHost(t *testing.T) {
 	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
 	req.Host = "localhost"
 	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.RemoteAddr = "127.0.0.1:54321"
 
 	hosts := effectiveHosts(req)
 	if len(hosts) != 2 || hosts[0] != "localhost" || hosts[1] != "devx-demo-web.example.com" {
@@ -175,6 +176,7 @@ func TestEffectiveHostsTakesFirstForwardedHostValue(t *testing.T) {
 	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
 	req.Host = "localhost"
 	req.Header.Set("X-Forwarded-Host", " devx-demo-web.example.com , internal")
+	req.RemoteAddr = "127.0.0.1:54321"
 
 	hosts := effectiveHosts(req)
 	if len(hosts) != 2 || hosts[1] != "devx-demo-web.example.com" {
@@ -188,6 +190,7 @@ func TestOriginMatchesHostHonorsForwardedHost(t *testing.T) {
 	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
 	req.Host = "localhost"
 	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("Origin", "https://devx-demo-web.example.com")
 
 	if !originMatchesHost(req) {
@@ -195,10 +198,31 @@ func TestOriginMatchesHostHonorsForwardedHost(t *testing.T) {
 	}
 }
 
+func TestEffectiveHostsIgnoresForwardedHostFromUntrustedPeer(t *testing.T) {
+	// Forwarded headers are only honored when the direct peer is a trusted
+	// proxy (loopback/private). A request from a public address — e.g. the
+	// backend bound to 0.0.0.0 and reached directly — must not be able to
+	// spoof X-Forwarded-Host to widen the same-origin check.
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.RemoteAddr = "203.0.113.7:44321" // public (TEST-NET-3)
+	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
+	req.Header.Set("Origin", "https://attacker.example.com")
+
+	hosts := effectiveHosts(req)
+	if len(hosts) != 1 || hosts[0] != "localhost" {
+		t.Fatalf("untrusted peer must not extend effectiveHosts, got %#v", hosts)
+	}
+	if originMatchesHost(req) {
+		t.Fatal("spoofed forwarded-host Origin must not match from an untrusted peer")
+	}
+}
+
 func TestOriginMatchesHostRejectsForeignOrigin(t *testing.T) {
 	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
 	req.Host = "localhost"
 	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("Origin", "https://evil.example.com")
 
 	if originMatchesHost(req) {
@@ -217,6 +241,7 @@ func TestAuthMiddlewareAcceptsCookieTerminalGetViaForwardedHostOrigin(t *testing
 	req := httptest.NewRequest("GET", "/terminal/demo/", nil)
 	req.Host = "localhost"
 	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("Origin", "https://devx-demo-web.example.com")
 	req.AddCookie(&http.Cookie{Name: "devx_token", Value: token})
 	w := httptest.NewRecorder()
@@ -230,6 +255,7 @@ func TestUpgraderCheckOriginHonorsForwardedHost(t *testing.T) {
 	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
 	req.Host = "localhost"
 	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("Origin", "https://devx-demo-web.example.com")
 
 	if !upgrader.CheckOrigin(req) {

@@ -16,6 +16,8 @@
   let listEl
 
   const PREWARM_DEBOUNCE_MS = 150
+  const PREWARM_DEDUPE_MS = 60_000
+  const MAX_RESULTS = 50
   let prewarmTimer = null
   let prewarmRequested = new Set()
 
@@ -64,10 +66,14 @@
         .map(x => x.s)
     : sessions
 
+  // Keyboard nav and rendering must share the same truncated list — otherwise
+  // Enter could open a selection that scrolled past the render cap.
+  $: visible = filtered.slice(0, MAX_RESULTS)
+
   // Clamp selection when the result set changes, then prewarm the highlight.
   $: {
-    if (selectedIndex >= filtered.length) selectedIndex = Math.max(0, filtered.length - 1)
-    schedulePrewarm(filtered[selectedIndex]?.name)
+    if (selectedIndex >= visible.length) selectedIndex = Math.max(0, visible.length - 1)
+    schedulePrewarm(visible[selectedIndex]?.name)
   }
 
   function schedulePrewarm(name) {
@@ -78,6 +84,9 @@
       prewarmTerminal(name)
         .then(status => markPrewarmed(name, !!status?.ready))
         .catch(() => prewarmRequested.delete(name))
+      // Allow re-prewarm after the backend idle timeout could have reaped the
+      // instance (matches SessionList's dedupe window).
+      setTimeout(() => prewarmRequested.delete(name), PREWARM_DEDUPE_MS)
     }, PREWARM_DEBOUNCE_MS)
   }
 
@@ -92,7 +101,7 @@
     if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
       e.preventDefault()
       e.stopPropagation()
-      selectedIndex = Math.min(selectedIndex + 1, filtered.length - 1)
+      selectedIndex = Math.min(selectedIndex + 1, visible.length - 1)
       scrollSelectedIntoView()
     } else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) {
       e.preventDefault()
@@ -102,7 +111,7 @@
     } else if (e.key === 'Enter') {
       e.preventDefault()
       e.stopPropagation()
-      if (filtered[selectedIndex]) onSelect(filtered[selectedIndex])
+      if (visible[selectedIndex]) onSelect(visible[selectedIndex])
     } else if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
@@ -129,7 +138,7 @@
       <span class="text-[10px] font-mono text-gray-700 shrink-0">↵ open · esc close</span>
     </div>
     <div bind:this={listEl} class="max-h-[50vh] overflow-y-auto">
-      {#each filtered.slice(0, 50) as s, i (s.name)}
+      {#each visible as s, i (s.name)}
         <button
           type="button"
           class="

@@ -126,9 +126,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		// Secure is intentionally omitted: devx web runs on localhost over plain
-		// HTTP. Browsers permit httpOnly cookies on localhost without Secure.
-		// If you expose devx web through a TLS proxy, add Secure: true here.
+		// Secure when the login arrived over HTTPS (direct TLS, or via a trusted
+		// proxy that set X-Forwarded-Proto). Plain-HTTP localhost logins still
+		// work: browsers permit httpOnly cookies on localhost without Secure.
+		Secure: requestIsHTTPS(r),
 		MaxAge: 30 * 24 * 60 * 60, // 30 days — survive browser restarts
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

@@ -130,6 +130,7 @@ func TestTerminalPrewarmAcceptsForwardedHostOrigin(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "https://devx.example.com")
 	req.Header.Set("X-Forwarded-Host", "devx.example.com")
+	req.RemoteAddr = "127.0.0.1:54321"
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code == http.StatusForbidden {
