@@ -12,7 +12,6 @@ import (
 	"html/template"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,6 +53,10 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
 	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
+	// Reverse-proxy the per-session Gatepost Logs UI so it is reachable wherever
+	// the devx web UI is (Caddy / Cloudflare tunnel), with the token injected
+	// server-side. Catch-all so branch-style session names (with slashes) work.
+	mux.HandleFunc(gatepostLogsPathPrefix, handleGatepostLogsProxy)
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
 	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
@@ -183,7 +186,9 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 	if sess.Target.Gatepost.Enabled {
 		logsURL := ""
 		if sess.Target.Gatepost.LogsURL != "" {
-			logsURL = "/api/gatepost/logs?session=" + urlQueryEscape(sess.Name)
+			// Point at the same-origin reverse proxy so the Logs UI works through
+			// Caddy / the Cloudflare tunnel and on other devices.
+			logsURL = gatepostLogsProxyURL(sess.Name)
 		}
 		gatepost = &gatepostResponse{Enabled: true, Runtime: sess.Target.Gatepost.Runtime, LogsURL: logsURL, Bypass: sess.Target.Gatepost.Bypass, ProviderMode: sess.Target.Gatepost.ProviderMode, RegisteredProviders: sess.Target.Gatepost.RegisteredProviders, ProviderWarnings: sess.Target.Gatepost.ProviderWarnings}
 	}
@@ -221,30 +226,11 @@ func handleGatepostLogsRedirect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "gatepost logs not found"})
 		return
 	}
-	tokenBytes, err := os.ReadFile(sess.Target.Gatepost.LogsTokenPath)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "gatepost logs token not found"})
-		return
-	}
-	u, err := url.Parse(sess.Target.Gatepost.LogsURL)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invalid gatepost logs url"})
-		return
-	}
-	requestHost := r.Host
-	if h, _, err := net.SplitHostPort(r.Host); err == nil {
-		requestHost = h
-	}
-	if requestHost != "" {
-		u.Host = net.JoinHostPort(requestHost, u.Port())
-	}
-	token := strings.TrimSpace(string(tokenBytes))
-	// Include token as query param so it works cross-port (cookie domain
-	// restrictions prevent the HttpOnly cookie reaching a different port).
-	q := u.Query()
-	q.Set("token", token)
-	u.RawQuery = q.Encode()
-	http.Redirect(w, r, u.String(), http.StatusFound)
+	// Redirect to the same-origin reverse proxy. This keeps the Logs UI
+	// reachable through Caddy / the Cloudflare tunnel (and on other devices)
+	// without publishing the per-session logs port or leaking the access token
+	// into the browser URL — the proxy injects the token server-side.
+	http.Redirect(w, r, gatepostLogsProxyURL(sess.Name), http.StatusFound)
 }
 
 func handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +328,7 @@ func handleSessionCreateStatus(w http.ResponseWriter, r *http.Request) {
 		case <-job.Done:
 			// just finished — fall through to session lookup below
 		default:
-				job.mu.Lock()
+			job.mu.Lock()
 			msgs := append([]string(nil), job.Messages...)
 			job.mu.Unlock()
 			writeJSON(w, http.StatusAccepted, map[string]interface{}{"name": name, "status": "creating", "messages": msgs})
