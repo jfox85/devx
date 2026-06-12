@@ -24,9 +24,10 @@ export function notifyFlag(event, { onNavigate, showFallback }) {
   const body = reason ? String(reason) : 'Session needs attention'
   const host = typeof window !== 'undefined' && window.go?.main?.Host
 
-  if (!windowFocused && host?.Notify) {
-    // Desktop shell: use native OS notifications. Keep the session name in the
-    // title and the caller-supplied reason in the body so the alert is actionable.
+  if (host?.Notify) {
+    // Desktop shell: always use native OS notifications for flags, even when
+    // the window is focused. A session flag is explicitly an attention signal,
+    // and foreground focus reporting is unreliable when ttyd owns focus.
     host.Notify(title, body).catch(() => showFallback(event))
     return
   }

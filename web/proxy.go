@@ -1,10 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -115,5 +119,55 @@ func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 		Scheme: "http",
 		Host:   fmt.Sprintf("localhost:%d", backendPort),
 	}
-	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = injectTerminalCopyOnSelect
+	proxy.ServeHTTP(w, r)
 }
+
+func injectTerminalCopyOnSelect(resp *http.Response) error {
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return err
+	}
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.Header.Del("Content-Encoding")
+	return nil
+}
+
+const terminalCopyOnSelectScript = `<script>
+(function () {
+  if (window.__devxCopyOnSelect) return;
+  window.__devxCopyOnSelect = true;
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) {}
+  }
+  function copySelection() {
+    var selection = window.getSelection && String(window.getSelection());
+    if (!selection || !selection.trim()) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(selection).catch(function () { fallbackCopy(selection); });
+    } else {
+      fallbackCopy(selection);
+    }
+  }
+  document.addEventListener('mouseup', function () { setTimeout(copySelection, 0); }, true);
+  document.addEventListener('touchend', function () { setTimeout(copySelection, 0); }, true);
+})();
+</script>`
