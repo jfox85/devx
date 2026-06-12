@@ -240,6 +240,13 @@
     host.OpenExternal(url).catch(err => { error = err?.message || String(err) })
   }
 
+  async function handleCreated(event) {
+    const created = event.detail || {}
+    await load({ background: true })
+    const sess = sessions.find(s => s.name === created.name) || created
+    if (sess?.name) selectSession(sess)
+  }
+
   async function handleDelete(session) {
     // Two-click confirmation: first click arms the delete, second click fires it.
     // Click outside (blur/hover-leave) resets via the pendingDelete timeout below.
@@ -497,7 +504,7 @@
 </div>
 
 {#if showNewSession}
-  <NewSessionModal on:close={() => showNewSession = false} on:created={load} />
+  <NewSessionModal on:close={() => showNewSession = false} on:created={handleCreated} />
 {/if}
 
 <style>

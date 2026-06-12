@@ -13,10 +13,14 @@
   let error = ''
   let loading = false
   let nameInputEl
+  let modalEl
 
   onMount(async () => {
-    // Explicitly focus the name field — autofocus alone fails when an iframe held focus
-    nameInputEl?.focus()
+    // Explicitly focus the name field — autofocus alone fails when an iframe held focus.
+    // Retry after layout because desktop Wails/ttyd can reclaim focus briefly.
+    focusName()
+    setTimeout(focusName, 0)
+    setTimeout(focusName, 80)
     try {
       projects = await listProjects()
       // If the remembered project is no longer in the list, clear it
@@ -31,9 +35,9 @@
     loading = true
     error = ''
     try {
-      await createSession(name.trim(), project || undefined)
+      const created = await createSession(name.trim(), project || undefined)
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
-      dispatch('created')
+      dispatch('created', created)
       dispatch('close')
     } catch (e) {
       error = e.message
@@ -41,14 +45,49 @@
       loading = false
     }
   }
+
+  function focusName() {
+    nameInputEl?.focus()
+    nameInputEl?.select()
+  }
+
+  function focusableControls() {
+    return Array.from(modalEl?.querySelectorAll('input, select, button') || [])
+      .filter(el => !el.disabled && el.offsetParent !== null)
+  }
+
+  function handleModalKeydown(e) {
+    if (e.key === 'Escape') {
+      dispatch('close')
+      return
+    }
+    if (e.key === 'Enter' && e.target?.tagName !== 'SELECT' && e.target?.tagName !== 'TEXTAREA') {
+      e.preventDefault()
+      if (!loading) handleSubmit()
+      return
+    }
+    if (e.key !== 'Tab') return
+    const controls = focusableControls()
+    if (controls.length === 0) return
+    const first = controls[0]
+    const last = controls[controls.length - 1]
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
 <div
+  bind:this={modalEl}
   class="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4"
   role="dialog" aria-modal="true" tabindex="-1"
   on:click|self={() => dispatch('close')}
-  on:keydown={(e) => e.key === 'Escape' && dispatch('close')}
+  on:keydown={handleModalKeydown}
 >
   <div class="w-full max-w-sm bg-[#0d1117] border border-[#1e2d4a]">
     <!-- Modal title bar -->

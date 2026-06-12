@@ -1003,6 +1003,7 @@ func runSelf(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
+	self = runSelfExecutable(self)
 	env := make([]string, 0, len(os.Environ()))
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "TMUX=") && !strings.HasPrefix(e, "TMUX_PANE=") {
@@ -1020,4 +1021,19 @@ func runSelf(args ...string) error {
 		return err
 	}
 	return nil
+}
+
+func runSelfExecutable(current string) string {
+	if override := os.Getenv("DEVX_CLI_BINARY"); override != "" {
+		return override
+	}
+	if strings.Contains(filepath.Base(current), "devx-desktop") {
+		// The desktop shell runs the same web package, but re-executing itself for
+		// CLI subcommands would open a second desktop window instead of creating a
+		// session. Prefer the real devx CLI from PATH when embedded in desktop.
+		if cli, err := exec.LookPath("devx"); err == nil {
+			return cli
+		}
+	}
+	return current
 }
