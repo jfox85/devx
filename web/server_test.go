@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 func TestAuthMiddlewareRejectsUnauthorized(t *testing.T) {
@@ -261,6 +263,37 @@ func TestConfigureTrustedProxiesExtendsTrust(t *testing.T) {
 	req.RemoteAddr = "192.168.1.50:44321"
 	if hosts := effectiveHosts(req); len(hosts) != 1 {
 		t.Fatalf("unconfigured private peer must stay untrusted, got %#v", hosts)
+	}
+}
+
+func TestNewWithBindResetsTrustedProxiesWhenConfigCleared(t *testing.T) {
+	old := trustedProxyNets
+	t.Cleanup(func() {
+		trustedProxyNets = old
+		viper.Set("web_trusted_proxies", "")
+	})
+
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.RemoteAddr = "172.17.0.1:44321"
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+
+	// First server widens trust via config.
+	viper.Set("web_trusted_proxies", "172.16.0.0/12")
+	if _, err := NewWithBind("tok", 0, ""); err != nil {
+		t.Fatalf("NewWithBind with trusted proxies: %v", err)
+	}
+	if hosts := effectiveHosts(req); len(hosts) != 2 {
+		t.Fatalf("expected widened trust to apply, got %#v", hosts)
+	}
+
+	// Second server with empty config must NOT inherit the widened trust.
+	viper.Set("web_trusted_proxies", "")
+	if _, err := NewWithBind("tok", 0, ""); err != nil {
+		t.Fatalf("NewWithBind with empty trusted proxies: %v", err)
+	}
+	if hosts := effectiveHosts(req); len(hosts) != 1 {
+		t.Fatalf("empty config must reset to loopback-only trust, got %#v", hosts)
 	}
 }
 

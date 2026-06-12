@@ -41,10 +41,11 @@ func NewWithBind(token string, port int, bind string) (*Server, error) {
 	if bind == "" {
 		bind = "127.0.0.1"
 	}
-	if raw := viper.GetString("web_trusted_proxies"); raw != "" {
-		if err := configureTrustedProxies(strings.Split(raw, ",")); err != nil {
-			return nil, err
-		}
+	// Always (re)configure: an empty config must reset to the loopback-only
+	// default rather than inherit trust widened by a previous server instance
+	// (trustedProxyNets is package state shared with the websocket upgrader).
+	if err := configureTrustedProxies(strings.Split(viper.GetString("web_trusted_proxies"), ",")); err != nil {
+		return nil, err
 	}
 	ttyd := newTtydManager()
 	return &Server{token: token, port: port, bind: bind, ttyd: ttyd, terminal: newTerminalService(ttyd), hub: newSSEHub()}, nil

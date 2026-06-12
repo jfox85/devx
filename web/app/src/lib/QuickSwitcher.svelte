@@ -81,8 +81,12 @@
   function schedulePrewarm(name) {
     clearTimeout(prewarmTimer)
     if (!name) return
-    const last = prewarmRequestedAt.get(name)
-    if (last && Date.now() - last < PREWARM_DEDUPE_MS) return
+    const now = Date.now()
+    // Prune expired entries so the map stays bounded by recently-touched names.
+    for (const [k, at] of prewarmRequestedAt) {
+      if (now - at >= PREWARM_DEDUPE_MS) prewarmRequestedAt.delete(k)
+    }
+    if (prewarmRequestedAt.has(name)) return
     prewarmTimer = setTimeout(() => {
       prewarmRequestedAt.set(name, Date.now())
       prewarmTerminal(name)

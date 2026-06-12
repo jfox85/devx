@@ -361,8 +361,9 @@ func authedRequest(t *testing.T, method, path string, body io.Reader) *httptest.
 }
 
 func TestLoginCookieSecureFlag(t *testing.T) {
+	prev := viper.GetString("web_secret_token")
 	viper.Set("web_secret_token", "test-secret")
-	t.Cleanup(func() { viper.Set("web_secret_token", "") })
+	t.Cleanup(func() { viper.Set("web_secret_token", prev) })
 
 	cases := []struct {
 		name       string
