@@ -20,11 +20,21 @@ export function requestNotificationPermission() {
 export function notifyFlag(event, { onNavigate, showFallback }) {
   const { session, reason } = event
   const windowFocused = document.hasFocus()
+  const title = `DevX: ${session}`
+  const body = reason ? String(reason) : 'Session needs attention'
+  const host = typeof window !== 'undefined' && window.go?.main?.Host
+
+  if (!windowFocused && host?.Notify) {
+    // Desktop shell: use native OS notifications. Keep the session name in the
+    // title and the caller-supplied reason in the body so the alert is actionable.
+    host.Notify(title, body).catch(() => showFallback(event))
+    return
+  }
 
   if (!windowFocused && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    // Background tab: use native OS notification so it gets through
-    const n = new Notification('devx ◆', {
-      body: `${session} — ${reason}`,
+    // Background browser/PWA tab: use browser notification so it gets through.
+    const n = new Notification(title, {
+      body,
       tag: `devx-flag-${session}`, // replaces any earlier notification for the same session
     })
     n.onclick = () => {
@@ -33,7 +43,7 @@ export function notifyFlag(event, { onNavigate, showFallback }) {
       n.close()
     }
   } else {
-    // Foreground tab (or no permission): show in-app toast
+    // Foreground tab/window (or no permission): show in-app toast.
     showFallback(event)
   }
 }

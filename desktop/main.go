@@ -32,6 +32,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os/exec"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +47,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed build/appicon.png
@@ -68,7 +70,7 @@ func main() {
 	emit := func(event string) func(*menu.CallbackData) {
 		return func(_ *menu.CallbackData) {
 			if host.ctx != nil {
-				runtime.WindowExecJS(host.ctx, fmt.Sprintf(`window.dispatchEvent(new CustomEvent(%q))`, event))
+				wailsruntime.WindowExecJS(host.ctx, fmt.Sprintf(`window.dispatchEvent(new CustomEvent(%q))`, event))
 			}
 		}
 	}
@@ -178,19 +180,32 @@ func (h *Host) OpenExternal(url string) error {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return fmt.Errorf("unsupported external URL")
 	}
-	runtime.BrowserOpenURL(h.ctx, url)
+	wailsruntime.BrowserOpenURL(h.ctx, url)
 	return nil
 }
 
-// Notify shows a native notification with redacted content (plan invariant 7:
-// generic title, no prompt bodies, no paths).
+// Notify shows a native notification. Flag notifications intentionally include
+// the session name and caller-supplied reason because otherwise desktop
+// attention is too vague to act on.
 func (h *Host) Notify(title string, body string) error {
 	if h.ctx == nil {
 		return fmt.Errorf("host not started")
 	}
-	// Wails v2 has no cross-platform notification API; v3 will. For the spike,
-	// log only. Production options: platform notifiers (osascript / notify-send
-	// / toast) behind a build-tagged helper, or Wails v3 when stable.
-	log.Printf("notify: %s — %s", title, body)
-	return nil
+	title = strings.TrimSpace(title)
+	body = strings.TrimSpace(body)
+	if title == "" {
+		title = "DevX"
+	}
+	if len(body) > 240 {
+		body = body[:240] + "…"
+	}
+	switch goruntime.GOOS {
+	case "darwin":
+		return exec.Command("osascript", "-e", fmt.Sprintf("display notification %s with title %s", strconv.Quote(body), strconv.Quote(title))).Run()
+	case "linux":
+		return exec.Command("notify-send", title, body).Run()
+	default:
+		log.Printf("notify: %s — %s", title, body)
+		return nil
+	}
 }
