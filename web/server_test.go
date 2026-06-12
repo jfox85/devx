@@ -159,3 +159,85 @@ func TestNewDefaultsToLoopbackBind(t *testing.T) {
 		t.Fatalf("New should default to loopback bind, got %q", srv.bind)
 	}
 }
+
+func TestEffectiveHostsIncludesForwardedHost(t *testing.T) {
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+
+	hosts := effectiveHosts(req)
+	if len(hosts) != 2 || hosts[0] != "localhost" || hosts[1] != "devx-demo-web.example.com" {
+		t.Fatalf("unexpected effectiveHosts: %#v", hosts)
+	}
+}
+
+func TestEffectiveHostsTakesFirstForwardedHostValue(t *testing.T) {
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Forwarded-Host", " devx-demo-web.example.com , internal")
+
+	hosts := effectiveHosts(req)
+	if len(hosts) != 2 || hosts[1] != "devx-demo-web.example.com" {
+		t.Fatalf("expected first forwarded host trimmed, got %#v", hosts)
+	}
+}
+
+func TestOriginMatchesHostHonorsForwardedHost(t *testing.T) {
+	// Behind Caddy/CF the upstream Host is rewritten to localhost while the
+	// browser's Origin carries the real external host (forwarded as XFH).
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.Header.Set("Origin", "https://devx-demo-web.example.com")
+
+	if !originMatchesHost(req) {
+		t.Fatal("expected forwarded-host Origin to match")
+	}
+}
+
+func TestOriginMatchesHostRejectsForeignOrigin(t *testing.T) {
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.Header.Set("Origin", "https://evil.example.com")
+
+	if originMatchesHost(req) {
+		t.Fatal("foreign Origin must not match even with a forwarded host present")
+	}
+}
+
+func TestAuthMiddlewareAcceptsCookieTerminalGetViaForwardedHostOrigin(t *testing.T) {
+	token := "test-secret"
+	handler := authMiddleware(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Simulate a terminal asset GET arriving through Caddy/CF: Host rewritten to
+	// localhost, real host in X-Forwarded-Host, browser Origin = real host.
+	req := httptest.NewRequest("GET", "/terminal/demo/", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.Header.Set("Origin", "https://devx-demo-web.example.com")
+	req.AddCookie(&http.Cookie{Name: "devx_token", Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for forwarded-host same-origin terminal GET, got %d", w.Code)
+	}
+}
+
+func TestUpgraderCheckOriginHonorsForwardedHost(t *testing.T) {
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+	req.Header.Set("Origin", "https://devx-demo-web.example.com")
+
+	if !upgrader.CheckOrigin(req) {
+		t.Fatal("WebSocket CheckOrigin should accept forwarded-host Origin")
+	}
+
+	req.Header.Set("Origin", "https://evil.example.com")
+	if upgrader.CheckOrigin(req) {
+		t.Fatal("WebSocket CheckOrigin must reject a foreign Origin")
+	}
+}
