@@ -39,8 +39,13 @@ start_service() {
             local token
             token="$(read_token)"
             echo "Starting devx web backend on 0.0.0.0:$WEB"
+            # Trusted proxies: in-container, requests from the host's Caddy/
+            # cloudflared arrive via Docker port publishing, so the peer is the
+            # bridge gateway (private range), not loopback. Trust private
+            # ranges explicitly here; the production default is loopback-only.
             DEVX_WEB_PORT="$WEB" \
             DEVX_WEB_BIND="0.0.0.0" \
+            DEVX_WEB_TRUSTED_PROXIES="10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" \
             DEVX_WEB_SECRET_TOKEN="$token" \
                 go run . web > "$LOG_DIR/$SERVICE_NAME.log" 2>&1 &
             echo $! > "$PID_DIR/$SERVICE_NAME.pid"

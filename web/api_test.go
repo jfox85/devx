@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jfox85/devx/session"
+	"github.com/spf13/viper"
 )
 
 func TestGetSessionsReturnsJSON(t *testing.T) {
@@ -356,4 +358,51 @@ func authedRequest(t *testing.T, method, path string, body io.Reader) *httptest.
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
+}
+
+func TestLoginCookieSecureFlag(t *testing.T) {
+	viper.Set("web_secret_token", "test-secret")
+	t.Cleanup(func() { viper.Set("web_secret_token", "") })
+
+	cases := []struct {
+		name       string
+		remoteAddr string
+		tls        bool
+		xfp        string
+		wantSecure bool
+	}{
+		{"direct plain HTTP localhost", "127.0.0.1:1234", false, "", false},
+		{"direct TLS", "127.0.0.1:1234", true, "", true},
+		{"trusted proxy forwarded HTTPS", "127.0.0.1:1234", false, "https", true},
+		{"untrusted peer spoofing XFP", "203.0.113.7:1234", false, "https", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"token":"test-secret"}`))
+			req.RemoteAddr = tc.remoteAddr
+			if tc.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			if tc.xfp != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.xfp)
+			}
+			w := httptest.NewRecorder()
+			handleLogin(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("login failed: %d %s", w.Code, w.Body.String())
+			}
+			var cookie *http.Cookie
+			for _, c := range w.Result().Cookies() {
+				if c.Name == "devx_token" {
+					cookie = c
+				}
+			}
+			if cookie == nil {
+				t.Fatal("devx_token cookie not set")
+			}
+			if cookie.Secure != tc.wantSecure {
+				t.Errorf("cookie Secure = %v, want %v", cookie.Secure, tc.wantSecure)
+			}
+		})
+	}
 }

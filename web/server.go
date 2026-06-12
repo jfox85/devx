@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
 // Server is the devx web HTTP server
@@ -38,6 +40,11 @@ func NewWithBind(token string, port int, bind string) (*Server, error) {
 	}
 	if bind == "" {
 		bind = "127.0.0.1"
+	}
+	if raw := viper.GetString("web_trusted_proxies"); raw != "" {
+		if err := configureTrustedProxies(strings.Split(raw, ",")); err != nil {
+			return nil, err
+		}
 	}
 	ttyd := newTtydManager()
 	return &Server{token: token, port: port, bind: bind, ttyd: ttyd, terminal: newTerminalService(ttyd), hub: newSSEHub()}, nil
@@ -125,13 +132,49 @@ func isUnsafeMethod(method string) bool {
 	}
 }
 
+// trustedProxyNets holds the peer networks whose forwarded headers
+// (X-Forwarded-Host, X-Forwarded-Proto) are honored. Default: loopback only —
+// devx's proxies (Caddy, cloudflared) normally run on the same machine.
+// Topologies where the proxy peer is not loopback (e.g. the containerized
+// dogfooding setup, where Docker port publishing makes the peer the bridge
+// gateway) must opt in explicitly via the web_trusted_proxies config
+// (comma-separated CIDRs). Connections from peers outside these networks
+// never get forwarded-header trust: they fall back to r.Host only.
+var trustedProxyNets = defaultTrustedProxyNets()
+
+func defaultTrustedProxyNets() []*net.IPNet {
+	var nets []*net.IPNet
+	for _, cidr := range []string{"127.0.0.0/8", "::1/128"} {
+		_, n, err := net.ParseCIDR(cidr)
+		if err == nil {
+			nets = append(nets, n)
+		}
+	}
+	return nets
+}
+
+// configureTrustedProxies extends the default loopback trust with the given
+// CIDRs. Invalid entries are rejected so a typo fails loudly at startup
+// rather than silently widening or narrowing trust.
+func configureTrustedProxies(cidrs []string) error {
+	nets := defaultTrustedProxyNets()
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return fmt.Errorf("invalid web_trusted_proxies entry %q: %w", c, err)
+		}
+		nets = append(nets, n)
+	}
+	trustedProxyNets = nets
+	return nil
+}
+
 // trustedProxyRequest reports whether the request's direct peer is a trusted
-// reverse proxy, i.e. whether forwarded headers (X-Forwarded-Host,
-// X-Forwarded-Proto) may be honored. devx's proxies (Caddy, cloudflared) run
-// on the same machine or, in the containerized dogfooding topology, reach the
-// backend through Docker port publishing — so the peer is loopback or a
-// private-range address. Connections from public addresses never get
-// forwarded-header trust: they fall back to r.Host only.
+// reverse proxy, i.e. whether forwarded headers may be honored.
 func trustedProxyRequest(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -141,7 +184,12 @@ func trustedProxyRequest(r *http.Request) bool {
 	if ip == nil {
 		return false
 	}
-	return ip.IsLoopback() || ip.IsPrivate()
+	for _, n := range trustedProxyNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // requestIsHTTPS reports whether the client-facing connection used HTTPS:

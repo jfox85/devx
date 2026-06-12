@@ -19,7 +19,9 @@
   const PREWARM_DEDUPE_MS = 60_000
   const MAX_RESULTS = 50
   let prewarmTimer = null
-  let prewarmRequested = new Set()
+  // name -> timestamp of last prewarm request. Checked at schedule time, so
+  // no expiry timers to clean up on unmount.
+  let prewarmRequestedAt = new Map()
 
   onMount(() => {
     inputEl?.focus()
@@ -78,15 +80,14 @@
 
   function schedulePrewarm(name) {
     clearTimeout(prewarmTimer)
-    if (!name || prewarmRequested.has(name)) return
+    if (!name) return
+    const last = prewarmRequestedAt.get(name)
+    if (last && Date.now() - last < PREWARM_DEDUPE_MS) return
     prewarmTimer = setTimeout(() => {
-      prewarmRequested.add(name)
+      prewarmRequestedAt.set(name, Date.now())
       prewarmTerminal(name)
         .then(status => markPrewarmed(name, !!status?.ready))
-        .catch(() => prewarmRequested.delete(name))
-      // Allow re-prewarm after the backend idle timeout could have reaped the
-      // instance (matches SessionList's dedupe window).
-      setTimeout(() => prewarmRequested.delete(name), PREWARM_DEDUPE_MS)
+        .catch(() => prewarmRequestedAt.delete(name))
     }, PREWARM_DEBOUNCE_MS)
   }
 

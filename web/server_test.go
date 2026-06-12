@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -215,6 +216,93 @@ func TestEffectiveHostsIgnoresForwardedHostFromUntrustedPeer(t *testing.T) {
 	}
 	if originMatchesHost(req) {
 		t.Fatal("spoofed forwarded-host Origin must not match from an untrusted peer")
+	}
+}
+
+func TestEffectiveHostsIgnoresForwardedHostFromPrivateUntrustedPeer(t *testing.T) {
+	// Default trust is loopback-only: a private-range peer (LAN host, VPN,
+	// container bridge) is NOT trusted unless web_trusted_proxies opts in.
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.RemoteAddr = "192.168.1.50:44321"
+	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
+
+	hosts := effectiveHosts(req)
+	if len(hosts) != 1 || hosts[0] != "localhost" {
+		t.Fatalf("private untrusted peer must not extend effectiveHosts, got %#v", hosts)
+	}
+}
+
+func TestConfigureTrustedProxiesExtendsTrust(t *testing.T) {
+	old := trustedProxyNets
+	t.Cleanup(func() { trustedProxyNets = old })
+
+	if err := configureTrustedProxies([]string{"172.16.0.0/12"}); err != nil {
+		t.Fatalf("configureTrustedProxies: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/terminal/demo/ws", nil)
+	req.Host = "localhost"
+	req.RemoteAddr = "172.17.0.1:44321" // docker bridge gateway, inside 172.16/12
+	req.Header.Set("X-Forwarded-Host", "devx-demo-web.example.com")
+
+	hosts := effectiveHosts(req)
+	if len(hosts) != 2 || hosts[1] != "devx-demo-web.example.com" {
+		t.Fatalf("configured proxy CIDR should be trusted, got %#v", hosts)
+	}
+
+	// Loopback must still be trusted alongside the configured CIDR.
+	req.RemoteAddr = "127.0.0.1:44321"
+	if hosts := effectiveHosts(req); len(hosts) != 2 {
+		t.Fatalf("loopback should remain trusted after configuration, got %#v", hosts)
+	}
+
+	// A peer outside loopback + configured CIDRs stays untrusted.
+	req.RemoteAddr = "192.168.1.50:44321"
+	if hosts := effectiveHosts(req); len(hosts) != 1 {
+		t.Fatalf("unconfigured private peer must stay untrusted, got %#v", hosts)
+	}
+}
+
+func TestConfigureTrustedProxiesRejectsInvalidCIDR(t *testing.T) {
+	old := trustedProxyNets
+	t.Cleanup(func() { trustedProxyNets = old })
+
+	if err := configureTrustedProxies([]string{"not-a-cidr"}); err == nil {
+		t.Fatal("expected error for invalid CIDR")
+	}
+}
+
+func TestRequestIsHTTPS(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		tls        bool
+		xfp        string
+		want       bool
+	}{
+		{"direct plain HTTP", "127.0.0.1:1234", false, "", false},
+		{"direct TLS", "127.0.0.1:1234", true, "", true},
+		{"trusted proxy XFP https", "127.0.0.1:1234", false, "https", true},
+		{"trusted proxy XFP https list", "127.0.0.1:1234", false, "https, http", true},
+		{"trusted proxy XFP http", "127.0.0.1:1234", false, "http", false},
+		{"untrusted peer XFP https spoof", "203.0.113.7:1234", false, "https", false},
+		{"private untrusted peer XFP https spoof", "192.168.1.50:1234", false, "https", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/login", nil)
+			req.RemoteAddr = tc.remoteAddr
+			if tc.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			if tc.xfp != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.xfp)
+			}
+			if got := requestIsHTTPS(req); got != tc.want {
+				t.Errorf("requestIsHTTPS = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
