@@ -5,8 +5,9 @@
 //   - Each launch starts a private DevX web server on a random loopback port
 //     with an ephemeral in-memory token (web.PrivateServer).
 //   - The privileged WebView loads only that private origin.
-//   - The host injects the token via a Wails binding (Host.SessionInfo); it is
-//     never placed in URLs, CLI args, logs, or persisted storage.
+//   - The shell injects the token server-side in its internal reverse proxy;
+//     it is never exposed to the WebView, URLs, CLI args, logs, or persisted
+//     storage.
 //   - Attaching to an existing long-lived daemon is explicitly out of scope
 //     until a challenge/response attach protocol exists.
 //
@@ -23,19 +24,29 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
+
+	_ "embed"
 
 	"github.com/jfox85/devx/web"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
+
+//go:embed build/appicon.png
+var appIcon []byte
 
 func main() {
 	priv, err := web.NewPrivateServer()
@@ -61,6 +72,29 @@ func main() {
 		baseDirector(req)
 		req.Header.Set("Authorization", "Bearer "+priv.Token())
 	}
+	// The SPA shows its login screen based on a localStorage marker, not on
+	// whether requests are authenticated (they all are — the Director injects
+	// the bearer token). Inject the marker into the HTML shell so the fresh
+	// WebView skips the login screen. The marker is non-sensitive by design
+	// (web/App.svelte: the real credential never reaches the page).
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			return nil
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		body = bytes.Replace(body,
+			[]byte("<head>"),
+			[]byte("<head><script>localStorage.setItem('devx_authed','1')</script>"),
+			1)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
+	}
 
 	err = wails.Run(&options.App{
 		Title:  "DevX",
@@ -74,6 +108,13 @@ func main() {
 		OnStartup:  host.startup,
 		OnShutdown: host.shutdown,
 		Bind:       []interface{}{host},
+		Mac: &mac.Options{
+			About: &mac.AboutInfo{
+				Title:   "DevX",
+				Message: "Local development control deck",
+				Icon:    appIcon,
+			},
+		},
 	})
 	if err != nil {
 		log.Fatalf("wails run: %v", err)
