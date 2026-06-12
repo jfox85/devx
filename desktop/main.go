@@ -40,6 +40,8 @@ import (
 
 	"github.com/jfox85/devx/web"
 	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
@@ -61,6 +63,13 @@ func main() {
 	}()
 
 	host := &Host{server: priv}
+	appMenu := menu.NewMenu()
+	devxMenu := appMenu.AddSubmenu("DevX")
+	devxMenu.AddText("Quick Switch Session", keys.CmdOrCtrl("p"), func(_ *menu.CallbackData) {
+		if host.ctx != nil {
+			runtime.WindowExecJS(host.ctx, `window.dispatchEvent(new CustomEvent('devx:quickSwitcher'))`)
+		}
+	})
 
 	// Keep the SPA loaded from the Wails asset server (no external-link landing
 	// page), but let terminal iframes go directly to the private loopback origin
@@ -97,6 +106,7 @@ window.__DEVX_DESKTOP = { terminalBase: %q, terminalToken: %q };
 		Title:  "DevX",
 		Width:  1280,
 		Height: 800,
+		Menu:   appMenu,
 		AssetServer: &assetserver.Options{
 			// API/SSE/static assets are proxied with bearer auth. Terminal iframes
 			// use window.__DEVX_DESKTOP to connect directly to privateURL.

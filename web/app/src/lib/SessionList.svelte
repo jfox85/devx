@@ -221,11 +221,14 @@
 
   function allRoutes(session) {
     const result = {}
-    for (const [svc, url] of Object.entries(session.routes || {})) {
-      result[svc] = url.startsWith('http') ? url : 'https://' + url
-    }
+    // Prefer externally reachable tunnel routes. Local Caddy routes are only a
+    // fallback for services without a Cloudflare/external URL.
     for (const [svc, host] of Object.entries(session.external_routes || {})) {
-      result[svc] = 'https://' + host
+      result[svc] = host.startsWith('http') ? host : 'https://' + host
+    }
+    for (const [svc, url] of Object.entries(session.routes || {})) {
+      if (result[svc]) continue
+      result[svc] = url.startsWith('http') ? url : 'https://' + url
     }
     return result
   }

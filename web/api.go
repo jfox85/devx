@@ -154,6 +154,15 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 	externalDomain := viper.GetString("external_domain")
 	externalRoutes := make(map[string]string)
 	if externalDomain != "" {
+		// Prefer tunnel URLs for every service the UI can display. Some older
+		// sessions have stored Caddy routes whose service labels are not present
+		// in Ports (or vice versa), so derive external hostnames from both sets.
+		for svc := range sess.Routes {
+			h := caddy.BuildExternalHostname(sess.Name, svc, sess.ProjectAlias, externalDomain)
+			if h != "" {
+				externalRoutes[svc] = h
+			}
+		}
 		for svc := range sess.Ports {
 			h := caddy.BuildExternalHostname(sess.Name, svc, sess.ProjectAlias, externalDomain)
 			if h != "" {
