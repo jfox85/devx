@@ -15,12 +15,26 @@ import (
 	"time"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
+	"github.com/jfox85/devx/session"
 )
 
 func shareTestMux() *http.ServeMux {
 	mux := artifactMux()
 	registerShareRoutes(mux)
 	return mux
+}
+
+func setupEmptySessionStoreForTest(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "devx"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := &session.SessionStore{Sessions: map[string]*session.Session{}, NumberedSlots: map[int]string{}}
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save empty sessions: %v", err)
+	}
 }
 
 func resetShareStoreForTest(t *testing.T) {
@@ -105,6 +119,7 @@ func TestShareTargetUnauthedStagesIntent(t *testing.T) {
 
 func TestShareIntentValidationErrorsPreserveIntent(t *testing.T) {
 	resetShareStoreForTest(t)
+	setupEmptySessionStoreForTest(t)
 	if err := insertShareIntent(&shareIntent{ID: "retry", Title: "Shared", Text: "hello", Created: time.Now(), Expires: time.Now().Add(time.Minute), Bytes: 5}); err != nil {
 		t.Fatal(err)
 	}

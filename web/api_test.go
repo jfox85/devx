@@ -15,6 +15,7 @@ import (
 )
 
 func TestGetSessionsReturnsJSON(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
 	mux := http.NewServeMux()
 	registerAPIRoutes(mux)
 
