@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -120,6 +121,14 @@ func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 		Host:   fmt.Sprintf("localhost:%d", backendPort),
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	baseDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		// We rewrite ttyd HTML to inject desktop helpers; ask the backend for
+		// identity encoding so the browser never receives rewritten compressed
+		// bytes as plain text.
+		req.Header.Del("Accept-Encoding")
+	}
 	proxy.ModifyResponse = injectTerminalCopyOnSelect
 	proxy.ServeHTTP(w, r)
 }
@@ -128,7 +137,22 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
 	}
-	body, err := io.ReadAll(resp.Body)
+	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	var reader io.Reader = resp.Body
+	if encoding == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+		defer gz.Close()
+		reader = gz
+	} else if encoding != "" && encoding != "identity" {
+		// Unknown compression (e.g. br): leave response untouched rather than
+		// corrupting it by removing Content-Encoding after a partial rewrite.
+		return nil
+	}
+	body, err := io.ReadAll(reader)
 	resp.Body.Close()
 	if err != nil {
 		return err
