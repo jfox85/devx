@@ -17,9 +17,10 @@ import (
 // The approach:
 // 1. Read the project's .tmuxp.yaml to discover window/pane structure and commands
 // 2. Create the tmux session directly (no tmuxp) with guard scripts that:
-//    - Verify the container is running before each exec
-//    - Auto-reconnect when docker exec exits (Ctrl-C, crash, etc.)
-//    - Never drop to a host shell — show error + wait instead
+//   - Verify the container is running before each exec
+//   - Auto-reconnect when docker exec exits (Ctrl-C, crash, etc.)
+//   - Never drop to a host shell — show error + wait instead
+//
 // 3. Verify post-launch that panes are actually inside the container
 //
 // The project's .tmuxp.yaml is never modified — we read it as a declarative
@@ -256,7 +257,7 @@ func extractDockerExecInner(cmd string) (string, bool) {
 }
 
 // unescapeBashSingleQuote extracts content from a single-quoted bash string,
-// handling the ''"'"'' escape pattern for embedded single quotes.
+// handling the '\"'\"' escape pattern for embedded single quotes.
 func unescapeBashSingleQuote(s string) string {
 	var result strings.Builder
 	i := 0

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/jfox85/devx/target"
 )
 
 func TestAuthMiddlewareRejectsUnauthorized(t *testing.T) {
@@ -52,7 +54,7 @@ func TestAuthMiddlewarePassesNonAPIRoutes(t *testing.T) {
 }
 
 func TestNewWithBindDefaultsToLoopback(t *testing.T) {
-	srv, err := NewWithBind("test-secret", 0, "")
+	srv, err := NewWithBind("test-secret", 0, "", target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("NewWithBind returned error: %v", err)
 	}
@@ -62,7 +64,7 @@ func TestNewWithBindDefaultsToLoopback(t *testing.T) {
 }
 
 func TestNewWithBindHonorsExplicitAddress(t *testing.T) {
-	srv, err := NewWithBind("test-secret", 0, "0.0.0.0")
+	srv, err := NewWithBind("test-secret", 0, "0.0.0.0", target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("NewWithBind returned error: %v", err)
 	}
@@ -72,7 +74,7 @@ func TestNewWithBindHonorsExplicitAddress(t *testing.T) {
 }
 
 func TestNewDefaultsToLoopbackBind(t *testing.T) {
-	srv, err := New("test-secret", 0)
+	srv, err := New("test-secret", 0, target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
