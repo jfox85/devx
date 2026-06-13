@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -12,18 +13,49 @@ import (
 
 const wsWriteDeadline = 60 * time.Second
 
+// effectiveHosts returns the host values that count as "same origin" for this
+// request. It always includes r.Host, and additionally includes
+// X-Forwarded-Host when present. devx sits behind a trusted reverse proxy
+// (Caddy, and Cloudflare's tunnel) that rewrites the upstream Host header to
+// "localhost" so dev servers accept the request, while forwarding the original
+// external hostname in X-Forwarded-Host. Without honoring it, the browser's
+// Origin (the real external host) never matches r.Host ("localhost"), which
+// rejected terminal WebSocket upgrades reached via Caddy or the Cloudflare
+// tunnel.
+func effectiveHosts(r *http.Request) []string {
+	hosts := []string{r.Host}
+	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+		// X-Forwarded-Host may be a comma-separated list; the first value is the
+		// original client-facing host.
+		if first, _, found := strings.Cut(xfh, ","); found {
+			xfh = first
+		}
+		hosts = append(hosts, strings.TrimSpace(xfh))
+	}
+	return hosts
+}
+
 var upgrader = websocket.Upgrader{
 	// Only allow requests whose Origin matches the server's own host.
 	// This prevents cross-site WebSocket hijacking: a malicious page opened
 	// in the same browser cannot connect to ws://localhost:<port>/terminal/*
-	// because its Origin won't match r.Host.
+	// because its Origin won't match the request host.
+	//
+	// effectiveHosts honors X-Forwarded-Host so the check still passes when the
+	// request is reached via the trusted Caddy reverse proxy / Cloudflare tunnel,
+	// which rewrite the upstream Host header to "localhost".
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			// No Origin header = same-origin browser request; allow it.
 			return true
 		}
-		return origin == "http://"+r.Host || origin == "https://"+r.Host
+		for _, h := range effectiveHosts(r) {
+			if origin == "http://"+h || origin == "https://"+h {
+				return true
+			}
+		}
+		return false
 	},
 	Subprotocols: []string{"tty"},
 }

@@ -368,6 +368,9 @@
                 {#if session.artifact_count > 0}
                   <span class="text-cyan-500 text-[10px] shrink-0" title={`${session.artifact_count} artifact${session.artifact_count === 1 ? '' : 's'}`}>◆ {session.artifact_count}</span>
                 {/if}
+                {#if session.gatepost?.enabled}
+                  <span class="text-emerald-500 text-[10px] shrink-0" title={session.gatepost.bypass ? 'Gatepost bypass enabled' : 'Gatepost enforced'}>gp{session.gatepost.bypass ? ':bypass' : ''}</span>
+                {/if}
                 {#if session.attention_flag}
                   <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
                 {/if}
@@ -380,6 +383,20 @@
                 flex items-center gap-px pr-1
                 lg:opacity-0 lg:group-hover:opacity-100 lg:transition-opacity
               ">
+                {#if session.gatepost?.logs_url}
+                  <a
+                    href={session.gatepost.logs_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="
+                      font-mono text-emerald-600 hover:text-emerald-300 active:text-emerald-200
+                      text-sm lg:text-[10px]
+                      px-3 lg:px-1.5 py-4 lg:py-1.5
+                      transition-colors
+                    "
+                    title="Gatepost logs"
+                  >gp</a>
+                {/if}
                 {#if hasRoutes}
                   <button
                     on:click={() => expandedRoutes = expandedRoutes === session.name ? null : session.name}

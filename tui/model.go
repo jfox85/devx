@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,23 +26,29 @@ import (
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/update"
 	"github.com/jfox85/devx/version"
+	"github.com/spf13/viper"
 )
 
 type sessionItem struct {
-	name            string
-	projectAlias    string
-	projectName     string
-	branch          string
-	path            string
-	ports           map[string]int
-	routes          map[string]string
-	attentionFlag   bool
-	attentionReason string
-	attentionTime   time.Time
-	additions       int    // Git diff additions count
-	deletions       int    // Git diff deletions count
-	displayName     string // raw DisplayName from metadata (empty if not set)
-	color           string
+	name              string
+	projectAlias      string
+	projectName       string
+	branch            string
+	path              string
+	ports             map[string]int
+	routes            map[string]string
+	attentionFlag     bool
+	attentionReason   string
+	attentionTime     time.Time
+	additions         int    // Git diff additions count
+	deletions         int    // Git diff deletions count
+	displayName       string // raw DisplayName from metadata (empty if not set)
+	color             string
+	gatepostEnabled   bool
+	gatepostLogsURL   string
+	gatepostBypass    bool
+	gatepostProviders []string
+	gatepostMode      string
 }
 
 type projectItem struct {
@@ -478,20 +485,25 @@ func (m *model) loadSessions() tea.Msg {
 		color := sess.EffectiveColor()
 
 		sessions = append(sessions, sessionItem{
-			name:            name,
-			projectAlias:    sess.ProjectAlias,
-			projectName:     projectName,
-			branch:          sess.Branch,
-			path:            sess.Path,
-			ports:           sess.Ports,
-			routes:          sess.Routes,
-			attentionFlag:   sess.AttentionFlag,
-			attentionReason: sess.AttentionReason,
-			attentionTime:   sess.AttentionTime,
-			additions:       additions,
-			deletions:       deletions,
-			displayName:     sess.DisplayName,
-			color:           color,
+			name:              name,
+			projectAlias:      sess.ProjectAlias,
+			projectName:       projectName,
+			branch:            sess.Branch,
+			path:              sess.Path,
+			ports:             sess.Ports,
+			routes:            sess.Routes,
+			attentionFlag:     sess.AttentionFlag,
+			attentionReason:   sess.AttentionReason,
+			attentionTime:     sess.AttentionTime,
+			additions:         additions,
+			deletions:         deletions,
+			displayName:       sess.DisplayName,
+			color:             color,
+			gatepostEnabled:   sess.Target.Gatepost.Enabled,
+			gatepostLogsURL:   fmt.Sprintf("http://127.0.0.1:%d/api/gatepost/logs?session=%s", viper.GetInt("web_port"), url.QueryEscape(sess.Name)),
+			gatepostBypass:    sess.Target.Gatepost.Bypass,
+			gatepostProviders: sess.Target.Gatepost.RegisteredProviders,
+			gatepostMode:      sess.Target.Gatepost.ProviderMode,
 		})
 	}
 
@@ -1104,30 +1116,37 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Bootstrap: fill any free slots (1-9) with unslotted sessions,
 			// but only on the first load to avoid repeated work every 2s.
 			if !m.slotsBootstrapped {
-				changed := false
-				// Sort session names for deterministic slot assignment
-				names := make([]string, 0, len(slotStore.Sessions))
-				for name := range slotStore.Sessions {
-					names = append(names, name)
-				}
-				sort.Strings(names)
-				for i := 1; i <= 9; i++ {
-					if _, taken := slotStore.NumberedSlots[i]; taken {
-						continue
+				// Apply slot reconciliation + bootstrap against the LATEST
+				// on-disk store under the sessions lock, so this 2s tick never
+				// clobbers another process's concurrent session writes (e.g. a
+				// gatepost create persisting Target).
+				err := slotStore.Mutate(func(fresh *session.SessionStore) error {
+					fresh.ReconcileSlots()
+					names := make([]string, 0, len(fresh.Sessions))
+					for name := range fresh.Sessions {
+						names = append(names, name)
 					}
-					// Find an unslotted session to fill this free slot
-					for _, name := range names {
-						if slotStore.GetSlotForSession(name) == 0 {
-							slotStore.NumberedSlots[i] = name
-							changed = true
-							break
+					sort.Strings(names)
+					for i := 1; i <= 9; i++ {
+						if _, taken := fresh.NumberedSlots[i]; taken {
+							continue
+						}
+						// Find an unslotted session to fill this free slot
+						for _, name := range names {
+							if fresh.GetSlotForSession(name) == 0 {
+								fresh.NumberedSlots[i] = name
+								break
+							}
 						}
 					}
+					return nil
+				})
+				// Only mark bootstrap complete on success so a transient lock/IO
+				// failure retries on the next refresh tick instead of skipping
+				// slot bootstrap permanently.
+				if err == nil {
+					m.slotsBootstrapped = true
 				}
-				if changed {
-					_ = slotStore.Save()
-				}
-				m.slotsBootstrapped = true
 			}
 			m.numberedSlots = slotStore.NumberedSlots
 		} else {
@@ -1701,6 +1720,20 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 			details += fmt.Sprintf(" %s:%d", service, sess.ports[service])
 		}
 		details += "\n"
+	}
+
+	if sess.gatepostEnabled {
+		state := "enforced"
+		if sess.gatepostBypass {
+			state = "bypass"
+		}
+		details += fmt.Sprintf("    Gatepost: %s\n", state)
+		if sess.gatepostMode != "" || len(sess.gatepostProviders) > 0 {
+			details += fmt.Sprintf("      Providers: %s via %s\n", strings.Join(sess.gatepostProviders, ","), sess.gatepostMode)
+		}
+		if sess.gatepostLogsURL != "" {
+			details += fmt.Sprintf("      Logs: DevX web %s\n", sess.gatepostLogsURL)
+		}
 	}
 
 	// Show Caddy routes (from already loaded session data)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
@@ -25,6 +26,9 @@ func resolveArtifactSession(name string) (*session.Session, error) {
 		return nil, fmt.Errorf("failed to load sessions: %w", err)
 	}
 	if name == "" {
+		name = os.Getenv("SESSION_NAME")
+	}
+	if name == "" {
 		name = session.GetCurrentSessionName()
 	}
 	if name == "" {
@@ -33,6 +37,17 @@ func resolveArtifactSession(name string) (*session.Session, error) {
 	sess, ok := store.GetSession(name)
 	if !ok {
 		return nil, fmt.Errorf("session %q not found", name)
+	}
+	// Allow overriding the session path (e.g. /workspace inside a container
+	// where the host worktree path doesn't exist).
+	if override := os.Getenv("DEVX_SESSION_PATH"); override != "" {
+		sess.Path = override
+	} else if _, err := os.Stat(sess.Path); os.IsNotExist(err) {
+		// Auto-detect container context: if sess.Path doesn't exist but
+		// /workspace does, we're likely inside a Gatepost container.
+		if info, wsErr := os.Stat("/workspace"); wsErr == nil && info.IsDir() {
+			sess.Path = "/workspace"
+		}
 	}
 	return sess, nil
 }

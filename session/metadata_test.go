@@ -362,8 +362,13 @@ func TestNumberedSlots_StaleSlotReuse(t *testing.T) {
 		_, _ = store.AssignSlot(name)
 	}
 
-	// Remove sess-3 from sessions but leave its slot (simulates stale slot)
-	delete(store.Sessions, "sess-3")
+	// Remove sess-3 from sessions but leave its slot (simulates stale slot).
+	// Use RemoveSession so the change is persisted; AssignSlot re-reads the
+	// store from disk under the lock, so an in-memory-only delete would not be
+	// observed. RemoveSession does not reconcile slots, so slot 3 stays stale.
+	if err := store.RemoveSession("sess-3"); err != nil {
+		t.Fatalf("failed to remove sess-3: %v", err)
+	}
 
 	// Add a new session
 	_ = store.AddSession("sess-new", "main", "/new", map[string]int{})

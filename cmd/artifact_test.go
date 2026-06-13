@@ -26,7 +26,7 @@ func setupArtifactCommandTest(t *testing.T) (*session.Session, string) {
 	}
 	sess := &session.Session{Name: "feature-artifacts", Branch: "feature-artifacts", Path: worktree, Ports: map[string]int{"ui": 3000}}
 	store := &session.SessionStore{Sessions: map[string]*session.Session{sess.Name: sess}, NumberedSlots: map[int]string{}}
-	if err := store.Save(); err != nil {
+	if err := store.Overwrite(); err != nil {
 		t.Fatalf("Save sessions: %v", err)
 	}
 	return sess, home

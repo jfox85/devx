@@ -12,35 +12,37 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 )
 
 // Server is the devx web HTTP server
 type Server struct {
-	token  string
-	port   int
-	bind   string
-	server *http.Server
-	ttyd   *ttydManager
-	hub    *sseHub
+	token       string
+	port        int
+	bind        string
+	server      *http.Server
+	ttyd        *ttydManager
+	hub         *sseHub
+	gatepostCfg target.GatepostRuntimeConfig
 }
 
 // New creates a new Server. token must be non-empty.
-func New(token string, port int) (*Server, error) {
-	return NewWithBind(token, port, "")
+func New(token string, port int, gatepostCfg target.GatepostRuntimeConfig) (*Server, error) {
+	return NewWithBind(token, port, "", gatepostCfg)
 }
 
 // NewWithBind creates a new Server bound to the given address. bind defaults to
 // loopback (127.0.0.1) when empty. Binding to 0.0.0.0 is only intended for
 // running devx web inside a container where Docker port publishing requires it;
 // it must not be used to expose plain HTTP directly on an untrusted network.
-func NewWithBind(token string, port int, bind string) (*Server, error) {
+func NewWithBind(token string, port int, bind string, gatepostCfg target.GatepostRuntimeConfig) (*Server, error) {
 	if token == "" {
 		return nil, fmt.Errorf("web_secret_token must be set in config to use devx web")
 	}
 	if bind == "" {
 		bind = "127.0.0.1"
 	}
-	return &Server{token: token, port: port, bind: bind, ttyd: newTtydManager(), hub: newSSEHub()}, nil
+	return &Server{token: token, port: port, bind: bind, ttyd: newTtydManager(), hub: newSSEHub(), gatepostCfg: gatepostCfg}, nil
 }
 
 // Start begins listening and serving.
@@ -180,6 +182,11 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 	//    Check this BEFORE starting, to avoid a 5-second waitForPort timeout on every asset.
 	decodedPath := strings.TrimPrefix(r.URL.Path, "/terminal/")
 	if name, p, ok := s.ttyd.findSessionByPathPrefix(decodedPath); ok {
+		// Even with ttyd already running, re-provision secrets in case the
+		// proxy restarted since the last open.
+		if sess, err := s.loadGatepostSession(name); err == nil && sess != nil {
+			go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
+		}
 		return name, p, nil
 	}
 
@@ -204,19 +211,37 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 	if !ok {
 		return "", 0, nil // not a devx-managed session → 404
 	}
-	// Before starting ttyd, ensure the tmux session is alive. If the machine
-	// was rebooted the session will be in metadata but not in tmux; this
-	// re-runs tmuxp so the full pane layout and startup commands are restored.
-	if err := session.EnsureTmuxSession(decoded, sess.Path); err != nil {
+	// Before starting ttyd, ensure the target-owned tmux session is alive. If the
+	// machine was rebooted the session will be in metadata but not in tmux; this
+	// restores the target-appropriate tmux layout.
+	if err := target.EnsureTmuxSession(decoded, sess); err != nil {
 		// Log to a file since the TUI captures stderr.
 		logWebError("EnsureTmuxSession(%q, %q): %v", decoded, sess.Path, err)
 		return "", 0, fmt.Errorf("failed to restore tmux session %q: %w", decoded, err)
+	}
+	if sess.Target.Gatepost.Enabled {
+		// Re-provision secrets if proxy was restarted and lost them.
+		go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
 	}
 	p, startErr := s.ttyd.startForSession(decoded)
 	if startErr != nil {
 		return "", 0, fmt.Errorf("failed to start terminal: %s", startErr)
 	}
 	return decoded, p, nil
+}
+
+// loadGatepostSession loads a session by name and returns it only if it's a
+// Gatepost session with control metadata.
+func (s *Server) loadGatepostSession(name string) (*session.Session, error) {
+	store, err := session.LoadSessions()
+	if err != nil {
+		return nil, err
+	}
+	sess, ok := store.Sessions[name]
+	if !ok || !sess.Target.Gatepost.Enabled {
+		return nil, nil
+	}
+	return sess, nil
 }
 
 // logWebError writes a timestamped error to ~/.devx/web.log for debugging

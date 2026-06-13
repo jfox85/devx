@@ -75,7 +75,7 @@ func TestCreateSession(t *testing.T) {
 	})
 
 	// Run devx session create with --no-tmux to avoid launching tmux
-	rootCmd.SetArgs([]string{"session", "create", "feat-foo", "--no-tmux"})
+	rootCmd.SetArgs([]string{"session", "create", "feat-foo", "--no-tmux", "--target", "host"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("failed to execute command: %v", err)
 	}
@@ -122,13 +122,13 @@ func TestCreateSessionTwice(t *testing.T) {
 	})
 
 	// Create session first time with --no-tmux
-	rootCmd.SetArgs([]string{"session", "create", "feat-bar", "--no-tmux"})
+	rootCmd.SetArgs([]string{"session", "create", "feat-bar", "--no-tmux", "--target", "host"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("failed to execute command: %v", err)
 	}
 
 	// Try to create same session again
-	rootCmd.SetArgs([]string{"session", "create", "feat-bar", "--no-tmux"})
+	rootCmd.SetArgs([]string{"session", "create", "feat-bar", "--no-tmux", "--target", "host"})
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Fatal("expected error when creating duplicate session")
@@ -160,7 +160,7 @@ func TestTmuxpConfigGeneration(t *testing.T) {
 	})
 
 	// Run devx session create with --no-tmux to avoid tmux launching
-	rootCmd.SetArgs([]string{"session", "create", "feat-tmuxp", "--no-tmux"})
+	rootCmd.SetArgs([]string{"session", "create", "feat-tmuxp", "--no-tmux", "--target", "host"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("failed to execute command: %v", err)
 	}
