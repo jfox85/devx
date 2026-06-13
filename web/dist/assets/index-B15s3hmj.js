@@ -164,4 +164,4 @@
       flex flex-col shrink-0
       ${t(r)==="terminal"?"hidden lg:flex lg:w-72 xl:w-80":"flex w-full lg:w-72 xl:w-80"}
       border-r border-[#1e2d4a]
-    `),Kt(Fe,1,`flex-1 flex flex-col min-w-0 ${t(r)==="sessions"?"hidden lg:flex":"flex"}`)}),T(D,ne)};B(le,D=>{s?D(pe,!1):D(xe)})}T(e,he),ht()}"serviceWorker"in navigator&&window.addEventListener("load",()=>{navigator.serviceWorker.register("/sw.js?v=2",{updateViaCache:"none"}).catch(()=>{})});Us(Df,{target:document.getElementById("app")});
+    `),Kt(Fe,1,`flex-1 flex flex-col min-w-0 ${t(r)==="sessions"?"hidden lg:flex":"flex"}`)}),T(D,ne)};B(le,D=>{s?D(pe,!1):D(xe)})}T(e,he),ht()}"serviceWorker"in navigator&&window.addEventListener("load",()=>{if(window.__DEVX_DESKTOP){navigator.serviceWorker.getRegistrations().then(e=>e.forEach(n=>n.unregister())).catch(()=>{});return}navigator.serviceWorker.register("/sw.js?v=2",{updateViaCache:"none"}).catch(()=>{})});Us(Df,{target:document.getElementById("app")});
