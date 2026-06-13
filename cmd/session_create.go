@@ -197,8 +197,8 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			// If the effective target is gatepost but no container is running,
 			// remove stale metadata and fall through to full creation so
 			// Docker/networks/secrets are set up properly. The worktree is kept.
-			needsGatepost := targetType == "gatepost" && existingSession.Target.ContainerName == ""
-			if !needsGatepost && existingSession.Target.Type == "gatepost" && existingSession.Target.ContainerName == "" {
+			needsGatepost := targetType == "gatepost" && !target.IsRunning(existingSession.Target)
+			if !needsGatepost && existingSession.Target.Type == "gatepost" && !target.IsRunning(existingSession.Target) {
 				needsGatepost = true
 			}
 			if needsGatepost {
@@ -210,20 +210,8 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 				// Fall through to full creation.
 			} else {
 				fmt.Printf("Reusing existing session '%s' at %s\n", name, existingSession.Path)
-				// Skip to tmux launch if not disabled
 				if !noTmuxFlag {
-					if existingSession.Target.Gatepost.Enabled && existingSession.Target.ContainerName != "" {
-						if err := session.EnsureTmuxSessionInContainer(name, existingSession.Target.ContainerName, existingSession); err != nil {
-							fmt.Printf("Warning: Failed to launch tmux session in container: %v\n", err)
-						}
-					} else if session.IsTmuxRunning() {
-						fmt.Printf("Note: Already inside tmux. Session exists but not launched.\n")
-						fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", existingSession.Path)
-					} else {
-						if err := session.LaunchTmuxSession(existingSession.Path, name); err != nil {
-							fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-						}
-					}
+					launchExistingSessionTmux(name, existingSession)
 				}
 				return nil
 			}
@@ -466,7 +454,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Warning: failed to save target metadata: %v\n", err)
 		}
 
-		fmt.Printf("Started container '%s'\n", targetMeta.ContainerName)
+		fmt.Printf("Started target runtime '%s'\n", target.RuntimeName(targetMeta))
 		if targetMeta.Gatepost.Enabled && targetMeta.Gatepost.LogsURL != "" {
 			fmt.Printf("Gatepost Logs: open DevX web and use /api/gatepost/logs?session=%s\n", name)
 		}
@@ -489,49 +477,60 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\n")
 	}
 
-	// Launch tmux session unless disabled
 	if !noTmuxFlag {
-		if targetType == "docker" || targetType == "gatepost" {
-			// For Docker: load tmuxp inside the container
-			fmt.Println("Loading tmux session inside container...")
-			loadCmd := target.ExecInSession(targetMeta, []string{
-				"tmuxp", "load", "-d", "/workspace/.tmuxp.yaml", "-s", name,
-			}, false)
-			if output, err := loadCmd.CombinedOutput(); err != nil {
-				fmt.Printf("Warning: Failed to load tmux inside container: %v\n%s\n", err, output)
-			}
-
-			// Attach if not already inside tmux
-			if !session.IsTmuxRunning() {
-				attachCmd := target.ExecInSession(targetMeta, []string{
-					"tmux", "attach", "-t", name,
-				}, true)
-				attachCmd.Stdin = os.Stdin
-				attachCmd.Stdout = os.Stdout
-				attachCmd.Stderr = os.Stderr
-				if err := attachCmd.Run(); err != nil {
-					fmt.Printf("Note: Could not attach to tmux session in container: %v\n", err)
-				}
-			} else {
-				fmt.Printf("Note: Already inside tmux. Session created but not attached.\n")
-				fmt.Printf("To attach: devx session attach %s\n", name)
-			}
-		} else {
-			// Host: existing tmux behavior
-			if session.IsTmuxRunning() {
-				fmt.Printf("Note: Already inside tmux. Session created but not launched.\n")
-				fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", worktreePath)
-			} else {
-				fmt.Printf("Launching tmux session...\n")
-				if err := session.LaunchTmuxSession(worktreePath, name); err != nil {
-					fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-					fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", worktreePath)
-				}
-			}
+		createdSession, exists := store.GetSession(name)
+		if !exists {
+			createdSession = &session.Session{Name: name, Path: worktreePath, Target: targetMeta}
 		}
+		launchCreatedSessionTmux(name, createdSession)
 	}
 
 	return nil
+}
+
+func launchExistingSessionTmux(name string, sess *session.Session) {
+	if sess.IsContainerized() {
+		if err := target.EnsureTmuxSession(name, sess); err != nil {
+			fmt.Printf("Warning: Failed to launch target tmux session: %v\n", err)
+		}
+		return
+	}
+	if session.IsTmuxRunning() {
+		fmt.Printf("Note: Already inside tmux. Session exists but not launched.\n")
+		fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", sess.Path)
+		return
+	}
+	if err := session.LaunchTmuxSession(sess.Path, name); err != nil {
+		fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
+	}
+}
+
+func launchCreatedSessionTmux(name string, sess *session.Session) {
+	if sess.IsContainerized() {
+		fmt.Println("Loading target tmux session...")
+		if err := target.EnsureTmuxSession(name, sess); err != nil {
+			fmt.Printf("Warning: Failed to load target tmux session: %v\n", err)
+		}
+		if !session.IsTmuxRunning() {
+			if err := target.AttachTmuxSession(name, sess); err != nil {
+				fmt.Printf("Note: Could not attach to target tmux session: %v\n", err)
+			}
+		} else {
+			fmt.Printf("Note: Already inside tmux. Session created but not attached.\n")
+			fmt.Printf("To attach: devx session attach %s\n", name)
+		}
+		return
+	}
+	if session.IsTmuxRunning() {
+		fmt.Printf("Note: Already inside tmux. Session created but not launched.\n")
+		fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", sess.Path)
+		return
+	}
+	fmt.Printf("Launching tmux session...\n")
+	if err := session.LaunchTmuxSession(sess.Path, name); err != nil {
+		fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
+		fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", sess.Path)
+	}
 }
 
 func isGitRepo(path string) bool {

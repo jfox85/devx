@@ -53,9 +53,8 @@ func runSessionExec(cmd *cobra.Command, args []string) error {
 	}
 
 	if sess.IsContainerized() {
-		// Docker: check the container is running
-		if !target.IsDockerRunning(sess.Target) {
-			return fmt.Errorf("container for session '%s' is not running", sessionName)
+		if !target.IsRunning(sess.Target) {
+			return fmt.Errorf("target runtime for session '%s' is not running", sessionName)
 		}
 
 		execCmd := target.ExecInSession(sess.Target, execArgs, shellFlag)
@@ -73,12 +72,4 @@ func runSessionExec(cmd *cobra.Command, args []string) error {
 	hostCmd.Stdout = os.Stdout
 	hostCmd.Stderr = os.Stderr
 	return hostCmd.Run()
-}
-
-func isTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
 }

@@ -211,23 +211,17 @@ func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, po
 	if !ok {
 		return "", 0, nil // not a devx-managed session → 404
 	}
-	// Before starting ttyd, ensure the tmux session is alive. If the machine
-	// was rebooted the session will be in metadata but not in tmux; this
-	// re-runs tmuxp so the full pane layout and startup commands are restored.
-	//
-	// For Gatepost sessions, tmuxp runs inside the container (which has tmux/tmuxp)
-	// so the container-relative /workspace paths in .tmuxp.yaml resolve correctly.
-	if sess.Target.Gatepost.Enabled && sess.Target.ContainerName != "" {
-		if err := session.EnsureTmuxSessionInContainer(decoded, sess.Target.ContainerName, sess); err != nil {
-			logWebError("EnsureTmuxSessionInContainer(%q): %v", decoded, err)
-			return "", 0, fmt.Errorf("failed to restore tmux session %q: %w", decoded, err)
-		}
-		// Re-provision secrets if proxy was restarted and lost them.
-		go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
-	} else if err := session.EnsureTmuxSession(decoded, sess.Path); err != nil {
+	// Before starting ttyd, ensure the target-owned tmux session is alive. If the
+	// machine was rebooted the session will be in metadata but not in tmux; this
+	// restores the target-appropriate tmux layout.
+	if err := target.EnsureTmuxSession(decoded, sess); err != nil {
 		// Log to a file since the TUI captures stderr.
 		logWebError("EnsureTmuxSession(%q, %q): %v", decoded, sess.Path, err)
 		return "", 0, fmt.Errorf("failed to restore tmux session %q: %w", decoded, err)
+	}
+	if sess.Target.Gatepost.Enabled {
+		// Re-provision secrets if proxy was restarted and lost them.
+		go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
 	}
 	p, startErr := s.ttyd.startForSession(decoded)
 	if startErr != nil {

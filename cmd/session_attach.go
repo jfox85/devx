@@ -68,32 +68,10 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 }
 
 func attachContainerSession(name string, sess *session.Session) error {
-	// Check container is running
-	if !target.IsDockerRunning(sess.Target) {
-		return fmt.Errorf("container for session '%s' is not running. Remove and recreate the session", name)
+	if !target.IsRunning(sess.Target) {
+		return fmt.Errorf("runtime for session '%s' is not running. Remove and recreate the session", name)
 	}
-
-	// Check if tmux is running inside the container; if not, load it
-	checkCmd := target.ExecInSession(sess.Target, []string{"tmux", "has-session", "-t", "=" + name}, false)
-	if checkCmd.Run() != nil {
-		fmt.Println("Tmux session not found in container, loading...")
-		loadCmd := target.ExecInSession(sess.Target, []string{
-			"tmuxp", "load", "-d", "/workspace/.tmuxp.yaml", "-s", name,
-		}, false)
-		if output, err := loadCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to load tmux inside container: %w\n%s", err, output)
-		}
-	}
-
-	// Attach to tmux inside the container
-	attachCmd := target.ExecInSession(sess.Target, []string{"tmux", "attach", "-t", "=" + name}, true)
-	attachCmd.Stdin = os.Stdin
-	attachCmd.Stdout = os.Stdout
-	attachCmd.Stderr = os.Stderr
-	if err := attachCmd.Run(); err != nil {
-		return fmt.Errorf("failed to attach to tmux in container: %w", err)
-	}
-	return nil
+	return target.AttachTmuxSession(name, sess)
 }
 
 func attachHostSession(name string, sess *session.Session) error {

@@ -65,14 +65,16 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to terminate editor: %v\n", err)
 	}
 
-	// For Docker sessions, kill tmux inside the container first
-	if sess.IsContainerized() {
-		killCmd := target.ExecInSession(sess.Target, []string{"tmux", "kill-server"}, false)
+	// For target sessions, stop any target-owned tmux server before tearing down
+	// host-side tmux sessions used by the web terminal.
+	if killCmd := target.KillTmuxServerCommand(sess.Target); killCmd != nil {
 		_ = killCmd.Run()
-	} else {
-		if err := killTmuxSession(name); err != nil {
-			fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
-		}
+	}
+	if err := killTmuxSession(name); err != nil {
+		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+	}
+	if err := killTmuxSession(name + "-web"); err != nil {
+		fmt.Printf("Warning: failed to kill web tmux session: %v\n", err)
 	}
 
 	// Archive retained artifacts before cleanup or worktree deletion. Archive
@@ -111,7 +113,7 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 			if err := tgt.Stop(context.Background(), sess.Target); err != nil {
 				fmt.Printf("Warning: failed to stop %s target: %v\n", sess.TargetType(), err)
 			} else {
-				fmt.Printf("Stopped container '%s'\n", sess.Target.ContainerName)
+				fmt.Printf("Stopped target runtime '%s'\n", target.RuntimeName(sess.Target))
 			}
 		}
 	}

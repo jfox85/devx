@@ -9,9 +9,9 @@ import (
 	"text/tabwriter"
 
 	"github.com/jfox85/devx/caddy"
+	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var sessionListCmd = &cobra.Command{
@@ -32,6 +32,7 @@ type SessionStatus struct {
 	Branch         string
 	Ports          map[string]int
 	Routes         map[string]string
+	ProjectAlias   string
 	TmuxStatus     string // "attached", "detached", "none"
 	EditorStatus   string // "running", "stopped"
 	Path           string
@@ -55,19 +56,21 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	tmuxSessions := getTmuxSessions()
 
 	// Get Caddy route status (if available)
-	caddyRoutes := getCaddyRoutes()
+	caddyRoutes := getCaddyRouteIDs()
+	registry, _ := config.LoadProjectRegistry()
 
 	// Collect session statuses
 	var statuses []SessionStatus
 	for name, sess := range store.Sessions {
 		status := SessionStatus{
-			Name:        name,
-			DisplayName: sess.DisplayName,
-			Color:       sess.EffectiveColor(),
-			Branch:      sess.Branch,
-			Ports:       sess.Ports,
-			Routes:      sess.Routes,
-			Path:        sess.Path,
+			Name:         name,
+			DisplayName:  sess.DisplayName,
+			Color:        sess.EffectiveColor(),
+			Branch:       sess.Branch,
+			Ports:        sess.Ports,
+			Routes:       sess.Routes,
+			ProjectAlias: projectAliasForSession(sess, registry),
+			Path:         sess.Path,
 		}
 
 		if sess.Target.Gatepost.Enabled {
@@ -151,11 +154,26 @@ func getTmuxSessions() map[string]TmuxSessionInfo {
 	return sessions
 }
 
-func getCaddyRoutes() map[string]bool {
+func projectAliasForSession(sess *session.Session, registry *config.ProjectRegistry) string {
+	if sess.ProjectAlias != "" {
+		return sess.ProjectAlias
+	}
+	if registry == nil {
+		return ""
+	}
+	for alias, project := range registry.Projects {
+		if sess.ProjectPath == project.Path {
+			return alias
+		}
+	}
+	return ""
+}
+
+func getCaddyRouteIDs() map[string]bool {
 	routes := make(map[string]bool)
 
 	// Skip if Caddy is disabled
-	if viper.GetBool("disable_caddy") {
+	if config.GetConfigValue("disable_caddy") == true {
 		return routes
 	}
 
@@ -171,15 +189,9 @@ func getCaddyRoutes() map[string]bool {
 		return routes
 	}
 
-	// Extract session names from route IDs
 	for _, route := range caddyRoutes {
-		if strings.HasPrefix(route.ID, "sess-") {
-			// Extract session name from route ID format: sess-<session>-<service>
-			parts := strings.Split(route.ID, "-")
-			if len(parts) >= 3 {
-				sessionName := parts[1]
-				routes[sessionName] = true
-			}
+		if route.ID != "" {
+			routes[route.ID] = true
 		}
 	}
 
@@ -209,9 +221,7 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 
 		// Format hosts
 		var hostsList []string
-		baseDomain := viper.GetString("basedomain")
-		for service := range status.Routes {
-			host := fmt.Sprintf("%s-%s.%s", status.Name, service, baseDomain)
+		for _, host := range status.Routes {
 			hostsList = append(hostsList, host)
 		}
 		sort.Strings(hostsList)
@@ -250,7 +260,15 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 		}
 
 		// Caddy status
-		if _, hasRoutes := caddyRoutes[status.Name]; hasRoutes {
+		hasRoutes := false
+		for service := range status.Routes {
+			routeID := caddy.BuildRouteID(status.Name, service, status.ProjectAlias)
+			if routeID != "" && caddyRoutes[routeID] {
+				hasRoutes = true
+				break
+			}
+		}
+		if hasRoutes {
 			statusParts = append(statusParts, "caddy:active")
 		} else if len(status.Routes) > 0 {
 			statusParts = append(statusParts, "caddy:stale")
