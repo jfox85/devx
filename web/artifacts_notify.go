@@ -37,6 +37,7 @@ func (s *Server) handleArtifactNotify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "artifact not found"})
 		return
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(artifactNotifyEvent{Session: sess.Name, ArtifactID: a.ID, Title: a.Title, Focus: a.Focus})
 	s.hub.broadcastEvent("artifact", string(payload))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

@@ -22,6 +22,7 @@ func registerArtifactRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/artifacts/upload", handleUploadArtifact)
 	mux.HandleFunc("POST /api/artifacts/rename", handleRenameArtifact)
 	mux.HandleFunc("POST /api/artifacts/archive", handleArchiveArtifact)
+	mux.HandleFunc("POST /api/artifacts/seen", handleMarkArtifactsSeen)
 	mux.HandleFunc("DELETE /api/artifacts/focus", handleClearArtifactFocus)
 	mux.HandleFunc("/sessions/", handleServeSessionArtifact)
 }
@@ -92,6 +93,7 @@ func handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRemoveArtifact(w http.ResponseWriter, r *http.Request) {
+	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -211,6 +213,7 @@ func serveManifestArtifactFile(w http.ResponseWriter, r *http.Request, sess *ses
 }
 
 func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
+	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -321,6 +324,7 @@ type renameArtifactRequest struct {
 }
 
 func handleRenameArtifact(w http.ResponseWriter, r *http.Request) {
+	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -356,6 +360,7 @@ func handleRenameArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleArchiveArtifact(w http.ResponseWriter, r *http.Request) {
+	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -375,6 +380,7 @@ func handleArchiveArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleClearArtifactFocus(w http.ResponseWriter, r *http.Request) {
+	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -407,17 +413,89 @@ func clearArtifactAttentionFlag(name string) error {
 	})
 }
 
-func artifactCountAndFocus(sess *session.Session) (int, string) {
+func handleMarkArtifactsSeen(w http.ResponseWriter, r *http.Request) {
+	sess, ok := artifactSessionFromRequest(w, r)
+	if !ok {
+		return
+	}
 	manifest, err := artifactpkg.LoadManifest(sess)
 	if err != nil {
-		return 0, ""
+		log.Printf("failed to load artifact manifest for session %q: %v", sess.Name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load artifact manifest"})
+		return
 	}
-	focused := ""
+	if err := markArtifactsSeen(sess.Name, manifest); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to mark artifacts seen"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func markArtifactsSeen(sessionName string, manifest *artifactpkg.Manifest) error {
+	latest := latestArtifactCreatedAt(manifest)
+	if latest.IsZero() {
+		return nil
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		return err
+	}
+	current, ok := store.Sessions[sessionName]
+	if !ok {
+		return nil
+	}
+	if !latest.After(current.LastArtifactSeenAt) && current.AttentionSource != "artifact" {
+		return nil
+	}
+	if err := store.Mutate(func(fresh *session.SessionStore) error {
+		s, ok := fresh.Sessions[sessionName]
+		if !ok {
+			return nil
+		}
+		if latest.After(s.LastArtifactSeenAt) {
+			s.LastArtifactSeenAt = latest
+		}
+		if s.AttentionSource == "artifact" {
+			s.AttentionFlag = false
+			s.AttentionReason = ""
+			s.AttentionSource = ""
+			s.AttentionTime = time.Time{}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	invalidateSessionListCache()
+	return nil
+}
+
+func latestArtifactCreatedAt(manifest *artifactpkg.Manifest) time.Time {
+	var latest time.Time
+	if manifest == nil {
+		return latest
+	}
 	for _, a := range manifest.Artifacts {
-		if a.Focus {
-			focused = a.ID
-			break
+		if a.Created.After(latest) {
+			latest = a.Created
 		}
 	}
-	return len(manifest.Artifacts), focused
+	return latest
+}
+
+func artifactCountAndFocus(sess *session.Session) (int, string, int) {
+	manifest, err := artifactpkg.LoadManifest(sess)
+	if err != nil {
+		return 0, "", 0
+	}
+	focused := ""
+	unseen := 0
+	for _, a := range manifest.Artifacts {
+		if a.Focus && focused == "" {
+			focused = a.ID
+		}
+		if a.Created.After(sess.LastArtifactSeenAt) {
+			unseen++
+		}
+	}
+	return len(manifest.Artifacts), focused, unseen
 }
