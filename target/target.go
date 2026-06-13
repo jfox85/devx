@@ -18,6 +18,14 @@ type Target interface {
 	Start(ctx context.Context, opts StartOpts) (*StartResult, error)
 	// Stop tears down the execution environment. Must be idempotent.
 	Stop(ctx context.Context, meta session.TargetMeta) error
+	// IsRunning reports whether the runtime needed for session commands is available.
+	IsRunning(meta session.TargetMeta) bool
+	// EnsureTmuxSession ensures the session's tmux environment exists for this target.
+	EnsureTmuxSession(name string, sess *session.Session) error
+	// AttachTmuxSession attaches the current terminal to this target's tmux session.
+	AttachTmuxSession(name string, sess *session.Session) error
+	// KillTmuxServer stops any target-owned tmux server; no-op when not applicable.
+	KillTmuxServer(meta session.TargetMeta) error
 }
 
 // StartOpts contains everything a target needs to create a session environment.

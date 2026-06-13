@@ -57,19 +57,6 @@ func newGatepostRuntime(sessionName string) (gatepostRuntime, error) {
 	}, nil
 }
 
-func (r gatepostRuntime) cleanupMeta() session.TargetMeta {
-	return session.TargetMeta{
-		ContainerName: r.agentName,
-		NetworkName:   r.internalNet,
-		Gatepost: session.GatepostMeta{
-			ProxyContainerName:  r.proxyName,
-			EgressNetworkName:   r.egressNet,
-			PortsNetworkName:    r.portsNet,
-			InternalNetworkName: r.internalNet,
-		},
-	}
-}
-
 func prepareGatepostStateDirs(r gatepostRuntime, policyPath string) error {
 	if err := os.MkdirAll(r.auditDir, 0o700); err != nil {
 		return err
@@ -167,10 +154,6 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	agentImage := opts.Image
 	if agentImage == "" {
 		agentImage = getenvDefault("DEVX_GATEPOST_AGENT_IMAGE", getenvDefault("DEVX_DOCKER_IMAGE", "gatepost-pi-agent:latest"))
-	}
-	smartKey := os.Getenv("GATEPOST_LLM_API_KEY")
-	if smartKey == "" {
-		smartKey = os.Getenv("OPENAI_API_KEY")
 	}
 	proxyArgs := []string{"run", "-d", "--name", runtime.proxyName,
 		"--network", runtime.egressNet, "--network-alias", "gatepost-control",
@@ -456,6 +439,24 @@ func (g *GatepostTarget) Stop(ctx context.Context, meta session.TargetMeta) erro
 	stopGatepostLogs(meta.Gatepost.LogsPID)
 	return g.cleanup(ctx, meta)
 }
+
+func (g *GatepostTarget) IsRunning(meta session.TargetMeta) bool { return IsDockerRunning(meta) }
+
+func (g *GatepostTarget) EnsureTmuxSession(name string, sess *session.Session) error {
+	if sess.Target.ContainerName == "" {
+		return fmt.Errorf("gatepost session %q has no runtime container", name)
+	}
+	return session.EnsureTmuxSessionInContainer(name, sess.Target.ContainerName, sess)
+}
+
+func (g *GatepostTarget) AttachTmuxSession(name string, sess *session.Session) error {
+	if err := g.EnsureTmuxSession(name, sess); err != nil {
+		return err
+	}
+	return session.AttachTmuxSession(name)
+}
+
+func (g *GatepostTarget) KillTmuxServer(_ session.TargetMeta) error { return nil }
 
 func (g *GatepostTarget) cleanup(ctx context.Context, meta session.TargetMeta) error {
 	if meta.ContainerName != "" {

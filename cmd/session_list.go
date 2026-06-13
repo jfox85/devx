@@ -173,7 +173,7 @@ func getCaddyRouteIDs() map[string]bool {
 	routes := make(map[string]bool)
 
 	// Skip if Caddy is disabled
-	if config.GetConfigValue("disable_caddy") == true {
+	if disabled, _ := config.GetConfigValue("disable_caddy").(bool); disabled {
 		return routes
 	}
 
@@ -196,6 +196,16 @@ func getCaddyRouteIDs() map[string]bool {
 	}
 
 	return routes
+}
+
+func hasActiveCaddyRoute(status SessionStatus, caddyRoutes map[string]bool) bool {
+	for service := range status.Routes {
+		routeID := caddy.BuildRouteID(status.Name, service, status.ProjectAlias)
+		if routeID != "" && caddyRoutes[routeID] {
+			return true
+		}
+	}
+	return false
 }
 
 func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
@@ -260,15 +270,7 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 		}
 
 		// Caddy status
-		hasRoutes := false
-		for service := range status.Routes {
-			routeID := caddy.BuildRouteID(status.Name, service, status.ProjectAlias)
-			if routeID != "" && caddyRoutes[routeID] {
-				hasRoutes = true
-				break
-			}
-		}
-		if hasRoutes {
+		if hasActiveCaddyRoute(status, caddyRoutes) {
 			statusParts = append(statusParts, "caddy:active")
 		} else if len(status.Routes) > 0 {
 			statusParts = append(statusParts, "caddy:stale")

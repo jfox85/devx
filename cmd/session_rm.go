@@ -65,11 +65,9 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to terminate editor: %v\n", err)
 	}
 
-	// For target sessions, stop any target-owned tmux server before tearing down
-	// host-side tmux sessions used by the web terminal.
-	if killCmd := target.KillTmuxServerCommand(sess.Target); killCmd != nil {
-		_ = killCmd.Run()
-	}
+	// For targets with their own tmux server, stop it before tearing down host-side
+	// tmux sessions used by the web terminal.
+	_ = target.KillTmuxServer(sess.Target)
 	if err := killTmuxSession(name); err != nil {
 		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
 	}

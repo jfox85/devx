@@ -19,3 +19,18 @@ func (h *HostTarget) Start(_ context.Context, _ StartOpts) (*StartResult, error)
 func (h *HostTarget) Stop(_ context.Context, _ session.TargetMeta) error {
 	return nil
 }
+
+func (h *HostTarget) IsRunning(_ session.TargetMeta) bool { return true }
+
+func (h *HostTarget) EnsureTmuxSession(name string, sess *session.Session) error {
+	return session.EnsureTmuxSession(name, sess.Path)
+}
+
+func (h *HostTarget) AttachTmuxSession(name string, sess *session.Session) error {
+	if err := h.EnsureTmuxSession(name, sess); err != nil {
+		return err
+	}
+	return session.AttachTmuxSession(name)
+}
+
+func (h *HostTarget) KillTmuxServer(_ session.TargetMeta) error { return nil }

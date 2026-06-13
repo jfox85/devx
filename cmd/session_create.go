@@ -194,13 +194,11 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 
 		if worktreeExists {
-			// If the effective target is gatepost but no container is running,
-			// remove stale metadata and fall through to full creation so
+			// If the effective or persisted target is gatepost but no runtime is
+			// running, remove stale metadata and fall through to full creation so
 			// Docker/networks/secrets are set up properly. The worktree is kept.
-			needsGatepost := targetType == "gatepost" && !target.IsRunning(existingSession.Target)
-			if !needsGatepost && existingSession.Target.Type == "gatepost" && !target.IsRunning(existingSession.Target) {
-				needsGatepost = true
-			}
+			expectsGatepost := targetType == "gatepost" || existingSession.Target.Type == "gatepost"
+			needsGatepost := expectsGatepost && !target.IsRunning(existingSession.Target)
 			if needsGatepost {
 				fmt.Printf("Session '%s' exists but has no container — recreating Gatepost runtime\n", name)
 				if err := store.RemoveSession(name); err != nil {
