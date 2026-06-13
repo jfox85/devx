@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jfox85/devx/target"
 	"github.com/spf13/viper"
 )
 
@@ -134,7 +135,7 @@ func TestAuthMiddlewarePassesNonAPIRoutes(t *testing.T) {
 }
 
 func TestNewWithBindDefaultsToLoopback(t *testing.T) {
-	srv, err := NewWithBind("test-secret", 0, "")
+	srv, err := NewWithBind("test-secret", 0, "", target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("NewWithBind returned error: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestNewWithBindDefaultsToLoopback(t *testing.T) {
 }
 
 func TestNewWithBindHonorsExplicitAddress(t *testing.T) {
-	srv, err := NewWithBind("test-secret", 0, "0.0.0.0")
+	srv, err := NewWithBind("test-secret", 0, "0.0.0.0", target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("NewWithBind returned error: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestNewWithBindHonorsExplicitAddress(t *testing.T) {
 }
 
 func TestNewDefaultsToLoopbackBind(t *testing.T) {
-	srv, err := New("test-secret", 0)
+	srv, err := New("test-secret", 0, target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
@@ -280,7 +281,7 @@ func TestNewWithBindResetsTrustedProxiesWhenConfigCleared(t *testing.T) {
 
 	// First server widens trust via config.
 	viper.Set("web_trusted_proxies", "172.16.0.0/12")
-	if _, err := NewWithBind("tok", 0, ""); err != nil {
+	if _, err := NewWithBind("tok", 0, "", target.GatepostRuntimeConfig{}); err != nil {
 		t.Fatalf("NewWithBind with trusted proxies: %v", err)
 	}
 	if hosts := effectiveHosts(req); len(hosts) != 2 {
@@ -289,7 +290,7 @@ func TestNewWithBindResetsTrustedProxiesWhenConfigCleared(t *testing.T) {
 
 	// Second server with empty config must NOT inherit the widened trust.
 	viper.Set("web_trusted_proxies", "")
-	if _, err := NewWithBind("tok", 0, ""); err != nil {
+	if _, err := NewWithBind("tok", 0, "", target.GatepostRuntimeConfig{}); err != nil {
 		t.Fatalf("NewWithBind with empty trusted proxies: %v", err)
 	}
 	if hosts := effectiveHosts(req); len(hosts) != 1 {

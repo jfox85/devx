@@ -31,6 +31,59 @@ type Session struct {
 	LastAttached    time.Time         `json:"last_attached,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
+	Target          TargetMeta        `json:"target,omitempty"`
+}
+
+// TargetMeta describes the execution environment for a session.
+// Zero value (empty Type) is treated as "host" everywhere.
+type TargetMeta struct {
+	Type          string       `json:"type,omitempty"`           // "host", "docker", future: "gatepost", "vm"
+	ContainerID   string       `json:"container_id,omitempty"`   // Docker container ID
+	ContainerName string       `json:"container_name,omitempty"` // Docker container name
+	NetworkName   string       `json:"network_name,omitempty"`   // Docker network name
+	Image         string       `json:"image,omitempty"`          // Image used
+	Gatepost      GatepostMeta `json:"gatepost,omitempty"`       // Gatepost runtime metadata when target is gatepost
+}
+
+// GatepostMeta describes the optional Gatepost capability attached to a session.
+// Runtime-specific details stay behind Runtime; DevX consumes this as a stable
+// contract for control, logs, and host-side bypass operations.
+type GatepostMeta struct {
+	Enabled             bool     `json:"enabled,omitempty"`
+	Runtime             string   `json:"runtime,omitempty"`
+	ProxyContainerName  string   `json:"proxy_container_name,omitempty"`
+	InternalNetworkName string   `json:"internal_network_name,omitempty"`
+	EgressNetworkName   string   `json:"egress_network_name,omitempty"`
+	PortsNetworkName    string   `json:"ports_network_name,omitempty"`
+	SessionDir          string   `json:"session_dir,omitempty"`
+	AuditDir            string   `json:"audit_dir,omitempty"`
+	ConfigDir           string   `json:"config_dir,omitempty"`
+	AuditLog            string   `json:"audit_log,omitempty"`
+	CompanionLog        string   `json:"companion_log,omitempty"`
+	ControlURL          string   `json:"control_url,omitempty"`
+	LogsURL             string   `json:"logs_url,omitempty"`
+	LogsTokenPath       string   `json:"logs_token_path,omitempty"`
+	LogsPID             int      `json:"logs_pid,omitempty"`
+	ProviderMode        string   `json:"provider_mode,omitempty"`
+	ProviderCommand     string   `json:"provider_command,omitempty"`
+	RegisteredProviders []string `json:"registered_providers,omitempty"`
+	ProviderWarnings    []string `json:"provider_warnings,omitempty"`
+	ControlToken        string   `json:"-"`
+	EventToken          string   `json:"-"`
+	Bypass              bool     `json:"bypass,omitempty"`
+}
+
+// TargetType returns the effective target type, defaulting to "host".
+func (s *Session) TargetType() string {
+	if s.Target.Type == "" {
+		return "host"
+	}
+	return s.Target.Type
+}
+
+// IsContainerized returns true if the session runs inside a container.
+func (s *Session) IsContainerized() bool {
+	return s.TargetType() != "host"
 }
 
 type SessionStore struct {
@@ -40,6 +93,13 @@ type SessionStore struct {
 
 // LoadSessions loads the sessions from the metadata file
 func LoadSessions() (*SessionStore, error) {
+	return loadSessionsUnlocked()
+}
+
+// loadSessionsUnlocked reads and parses the sessions metadata without acquiring
+// the sessions lock. Callers that mutate must hold the lock (see withSessionsLock);
+// the public LoadSessions is a plain read and intentionally lock-free.
+func loadSessionsUnlocked() (*SessionStore, error) {
 	sessionsPath := getSessionsPath()
 
 	// Create config directory if it doesn't exist
@@ -76,8 +136,45 @@ func LoadSessions() (*SessionStore, error) {
 	return &store, nil
 }
 
-// SaveSessions saves the sessions to the metadata file
-func (s *SessionStore) Save() error {
+// getSessionsLockPath returns the sidecar advisory lock file path used to
+// serialize read-modify-write cycles on the sessions metadata across processes.
+func getSessionsLockPath() string {
+	return getSessionsPath() + ".lock"
+}
+
+// withSessionsLock runs fn while holding an exclusive advisory lock on the
+// sessions metadata file. All read-modify-write cycles must go through this so
+// that concurrent devx processes (CLI, TUI, web daemon) cannot clobber each
+// other's updates via a stale full-store overwrite.
+//
+// The lock is NOT reentrant: fn (and the callbacks passed to UpdateSession /
+// Mutate, which run under this lock) must not call Save, UpdateSession, or
+// Mutate, or they will deadlock trying to reacquire the lock.
+func withSessionsLock(fn func() error) error {
+	lockPath := getSessionsLockPath()
+	if dir := filepath.Dir(lockPath); dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create config directory: %w", err)
+		}
+	}
+	lock, err := acquireSessionsLock(lockPath)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	return fn()
+}
+
+// writeStoreAtomic marshals and writes the store to disk via a temp file and
+// rename. On Unix (devx's supported runtime) the same-directory rename is
+// atomic, so a concurrent lock-free reader never observes a partial file; the
+// temp file is fsynced before rename so its contents are durable before it is
+// published. Crash durability is best-effort: the parent directory entry is not
+// fsynced, which is acceptable because sessions.json is reconstructible from
+// running containers/worktrees, not a system of record. On Windows os.Rename is
+// not guaranteed atomic (see lock_windows.go); that platform is best-effort.
+// Callers must already hold the sessions lock.
+func (s *SessionStore) writeStoreAtomic() error {
 	sessionsPath := getSessionsPath()
 
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -85,56 +182,107 @@ func (s *SessionStore) Save() error {
 		return fmt.Errorf("failed to marshal sessions: %w", err)
 	}
 
-	if err := os.WriteFile(sessionsPath, data, 0644); err != nil {
+	dir := filepath.Dir(sessionsPath)
+	tmp, err := os.CreateTemp(dir, ".sessions-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp sessions file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write temp sessions file: %w", err)
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to chmod temp sessions file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to sync temp sessions file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp sessions file: %w", err)
+	}
+	if err := os.Rename(tmpName, sessionsPath); err != nil {
 		return fmt.Errorf("failed to write sessions file: %w", err)
 	}
-
 	return nil
+}
+
+// save overwrites the entire on-disk store with this in-memory snapshot under
+// the sessions lock, writing atomically.
+//
+// It is deliberately UNEXPORTED: overwriting from an in-memory snapshot is the
+// exact lost-update footgun this package was hardened against. A stale snapshot
+// (loaded before another process wrote the file) silently clobbers the other
+// writer's changes even though the write itself is atomic. Targeted mutations
+// must go through the lock-guarded mutators (UpdateSession, RemoveSession,
+// AssignSlot, Mutate), which re-read the latest store under the lock before
+// mutating. The only safe callers of save are those that own a freshly
+// constructed store with no concurrent writers to lose (see Overwrite).
+func (s *SessionStore) save() error {
+	return withSessionsLock(s.writeStoreAtomic)
+}
+
+// Overwrite replaces the entire on-disk store with this in-memory store under
+// the sessions lock, writing atomically.
+//
+// Use this ONLY for a freshly constructed or fully-owned store (e.g. clearing
+// the registry, or seeding a known state) where there are no concurrent writers
+// whose updates could be lost. For targeted changes to an existing store, use
+// UpdateSession / RemoveSession / AssignSlot / Mutate instead, which re-read
+// under the lock and cannot drop concurrent updates.
+func (s *SessionStore) Overwrite() error {
+	return s.save()
 }
 
 // AddSession adds a new session to the store
 func (s *SessionStore) AddSession(name, branch, path string, ports map[string]int) error {
-	if _, exists := s.Sessions[name]; exists {
-		return fmt.Errorf("session %s already exists", name)
-	}
+	return s.Mutate(func(fresh *SessionStore) error {
+		if _, exists := fresh.Sessions[name]; exists {
+			return fmt.Errorf("session %s already exists", name)
+		}
 
-	now := time.Now()
-	s.Sessions[name] = &Session{
-		Name:      name,
-		Branch:    branch,
-		Path:      path,
-		Ports:     ports,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	return s.Save()
+		now := time.Now()
+		fresh.Sessions[name] = &Session{
+			Name:      name,
+			Branch:    branch,
+			Path:      path,
+			Ports:     ports,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		return nil
+	})
 }
 
 // AddSessionWithProject adds a new session to the store with project information
 func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports map[string]int, projectAlias, projectPath string) error {
-	if _, exists := s.Sessions[name]; exists {
-		return fmt.Errorf("session %s already exists", name)
-	}
+	return s.Mutate(func(fresh *SessionStore) error {
+		if _, exists := fresh.Sessions[name]; exists {
+			return fmt.Errorf("session %s already exists", name)
+		}
 
-	// Auto-assign color if not already set by caller
-	color := AutoColor(name)
+		// Auto-assign color if not already set by caller
+		color := AutoColor(name)
 
-	now := time.Now()
-	s.Sessions[name] = &Session{
-		Name:         name,
-		ProjectAlias: projectAlias,
-		ProjectPath:  projectPath,
-		Branch:       branch,
-		Path:         path,
-		Ports:        ports,
-		Routes:       make(map[string]string),
-		Color:        color,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-
-	return s.Save()
+		now := time.Now()
+		fresh.Sessions[name] = &Session{
+			Name:         name,
+			ProjectAlias: projectAlias,
+			ProjectPath:  projectPath,
+			Branch:       branch,
+			Path:         path,
+			Ports:        ports,
+			Routes:       make(map[string]string),
+			Color:        color,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		return nil
+	})
 }
 
 // GetSession retrieves a session by name
@@ -143,17 +291,61 @@ func (s *SessionStore) GetSession(name string) (*Session, bool) {
 	return session, exists
 }
 
-// UpdateSession updates an existing session
+// UpdateSession updates an existing session.
+//
+// The mutation is applied under the sessions file lock against the LATEST
+// on-disk store, not this (possibly stale) in-memory snapshot. This prevents
+// lost updates when another devx process (TUI, web daemon, concurrent CLI) has
+// written the file since this store was loaded. The in-memory receiver is
+// refreshed to match what was persisted.
 func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error {
-	session, exists := s.Sessions[name]
-	if !exists {
-		return fmt.Errorf("session %s not found", name)
-	}
+	return withSessionsLock(func() error {
+		fresh, err := loadSessionsUnlocked()
+		if err != nil {
+			return err
+		}
+		session, exists := fresh.Sessions[name]
+		if !exists {
+			return fmt.Errorf("session %s not found", name)
+		}
 
-	updateFn(session)
-	session.UpdatedAt = time.Now()
+		updateFn(session)
+		session.UpdatedAt = time.Now()
 
-	return s.Save()
+		if err := fresh.writeStoreAtomic(); err != nil {
+			return err
+		}
+		s.adoptFrom(fresh)
+		return nil
+	})
+}
+
+// Mutate applies fn to the LATEST on-disk store under the sessions file lock and
+// persists the result atomically, then refreshes this in-memory store to match.
+// Use this for create/remove/reconcile flows that change more than one session
+// or the slot map, so concurrent writers are never clobbered.
+func (s *SessionStore) Mutate(fn func(*SessionStore) error) error {
+	return withSessionsLock(func() error {
+		fresh, err := loadSessionsUnlocked()
+		if err != nil {
+			return err
+		}
+		if err := fn(fresh); err != nil {
+			return err
+		}
+		if err := fresh.writeStoreAtomic(); err != nil {
+			return err
+		}
+		s.adoptFrom(fresh)
+		return nil
+	})
+}
+
+// adoptFrom replaces this store's contents with another's, so callers holding a
+// reference observe the freshly-persisted state.
+func (s *SessionStore) adoptFrom(other *SessionStore) {
+	s.Sessions = other.Sessions
+	s.NumberedSlots = other.NumberedSlots
 }
 
 // RecordAttach updates the LastAttached timestamp for a session
@@ -163,14 +355,16 @@ func (s *SessionStore) RecordAttach(name string) error {
 	})
 }
 
-// RemoveSession removes a session from the store
+// RemoveSession removes a session from the store, re-reading the latest on-disk
+// store under the lock so concurrent writers are not clobbered.
 func (s *SessionStore) RemoveSession(name string) error {
-	if _, exists := s.Sessions[name]; !exists {
-		return fmt.Errorf("session %s not found", name)
-	}
-
-	delete(s.Sessions, name)
-	return s.Save()
+	return s.Mutate(func(fresh *SessionStore) error {
+		if _, exists := fresh.Sessions[name]; !exists {
+			return fmt.Errorf("session %s not found", name)
+		}
+		delete(fresh.Sessions, name)
+		return nil
+	})
 }
 
 // LoadRegistry is an alias for LoadSessions for compatibility
@@ -184,7 +378,8 @@ func ClearRegistry() error {
 		Sessions:      make(map[string]*Session),
 		NumberedSlots: make(map[int]string),
 	}
-	return store.Save()
+	// Freshly constructed empty store with no updates to lose -> Overwrite is safe.
+	return store.Overwrite()
 }
 
 // RemoveSession removes a single session completely (helper for commands)
@@ -345,49 +540,60 @@ func GetCurrentSessionName() string {
 // If a free slot exists, assigns the lowest available.
 // If all 9 are full, evicts the session with the oldest LastAttached.
 func (s *SessionStore) AssignSlot(name string) (int, error) {
-	if _, exists := s.Sessions[name]; !exists {
-		return 0, fmt.Errorf("session '%s' not found", name)
-	}
-
-	// Check if session already has a slot
-	if slot := s.GetSlotForSession(name); slot != 0 {
-		return slot, nil
-	}
-
-	// Find lowest available slot (1-9)
-	for i := 1; i <= 9; i++ {
-		if _, taken := s.NumberedSlots[i]; !taken {
-			s.NumberedSlots[i] = name
-			return i, s.Save()
+	var assigned int
+	err := s.Mutate(func(fresh *SessionStore) error {
+		if _, exists := fresh.Sessions[name]; !exists {
+			return fmt.Errorf("session '%s' not found", name)
 		}
-	}
 
-	// All slots full — evict the session with the oldest LastAttached.
-	// Iterate slots in ascending order for deterministic tie-breaking.
-	slots := make([]int, 0, len(s.NumberedSlots))
-	for slot := range s.NumberedSlots {
-		slots = append(slots, slot)
-	}
-	sort.Ints(slots)
-
-	oldestSlot := 0
-	var oldestTime time.Time
-	for _, slot := range slots {
-		sessName := s.NumberedSlots[slot]
-		sess, exists := s.Sessions[sessName]
-		if !exists {
-			// Stale slot, use it immediately
-			s.NumberedSlots[slot] = name
-			return slot, s.Save()
+		// Check if session already has a slot
+		if slot := fresh.GetSlotForSession(name); slot != 0 {
+			assigned = slot
+			return nil
 		}
-		if oldestSlot == 0 || sess.LastAttached.Before(oldestTime) {
-			oldestSlot = slot
-			oldestTime = sess.LastAttached
-		}
-	}
 
-	s.NumberedSlots[oldestSlot] = name
-	return oldestSlot, s.Save()
+		// Find lowest available slot (1-9)
+		for i := 1; i <= 9; i++ {
+			if _, taken := fresh.NumberedSlots[i]; !taken {
+				fresh.NumberedSlots[i] = name
+				assigned = i
+				return nil
+			}
+		}
+
+		// All slots full — evict the session with the oldest LastAttached.
+		// Iterate slots in ascending order for deterministic tie-breaking.
+		slots := make([]int, 0, len(fresh.NumberedSlots))
+		for slot := range fresh.NumberedSlots {
+			slots = append(slots, slot)
+		}
+		sort.Ints(slots)
+
+		oldestSlot := 0
+		var oldestTime time.Time
+		for _, slot := range slots {
+			sessName := fresh.NumberedSlots[slot]
+			sess, exists := fresh.Sessions[sessName]
+			if !exists {
+				// Stale slot, use it immediately
+				fresh.NumberedSlots[slot] = name
+				assigned = slot
+				return nil
+			}
+			if oldestSlot == 0 || sess.LastAttached.Before(oldestTime) {
+				oldestSlot = slot
+				oldestTime = sess.LastAttached
+			}
+		}
+
+		fresh.NumberedSlots[oldestSlot] = name
+		assigned = oldestSlot
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return assigned, nil
 }
 
 // GetSlotForSession returns the slot number for a session, or 0 if unassigned.

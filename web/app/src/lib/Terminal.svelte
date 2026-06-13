@@ -642,7 +642,7 @@
     const objectURLs = valid.map(f => URL.createObjectURL(f))
 
     try {
-      const results = await Promise.all(valid.map(f => uploadImage(f)))
+      const results = await Promise.all(valid.map(f => uploadImage(f, session.name)))
       const paths = results.map(r => r.path)
       // Inject all paths into active tmux pane (no Enter — user confirms).
       // Use sendLiteral so spaces in paths are preserved verbatim.

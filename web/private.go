@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/jfox85/devx/target"
 )
 
 // PrivateServer is the desktop-shell topology from the control deck plan
@@ -30,7 +32,7 @@ func NewPrivateServer() (*PrivateServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv, err := NewWithBind(token, 0, "127.0.0.1")
+	srv, err := NewWithBind(token, 0, "127.0.0.1", target.GatepostRuntimeConfig{})
 	if err != nil {
 		return nil, err
 	}

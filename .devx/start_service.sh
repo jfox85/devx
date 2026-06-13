@@ -1,12 +1,14 @@
 #!/bin/bash
-# .devx/start_service.sh - Start a devx web dev service (dogfooding the new UI).
+# .devx/start_service.sh - Run the devx web UI as a containerized devx service.
 #
-# Services:
-#   web  - the Go backend (devx web), foreground so it does NOT touch the global
-#          ~/.config/devx/web.pid daemon file. Bound to 0.0.0.0 via DEVX_WEB_BIND
-#          so Docker port publishing reaches it when the session runs in a
-#          container. Port comes from the devx-assigned $WEB env var.
-#   ui   - the vite dev server, proxying /api and /terminal to the backend.
+# This runs INSIDE the session container. The single "web" service builds the
+# Svelte SPA into web/dist (which the Go server embeds via //go:embed) and then
+# runs `devx web` bound to 0.0.0.0:$WEB so Docker port publishing + Caddy + the
+# CF tunnel can reach it like any normal service.
+#
+# To see UI changes: edit web/app, then restart this service (it rebuilds dist
+# and re-runs the Go server, which re-embeds the fresh dist). There is no vite
+# hot reload in this mode by design (option B: single built service).
 
 set -e
 
@@ -14,53 +16,56 @@ SERVICE_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="$PROJECT_DIR/.devx/logs"
-PID_DIR="$PROJECT_DIR/.devx/pids"
 
-mkdir -p "$LOG_DIR" "$PID_DIR"
+mkdir -p "$LOG_DIR"
 
-# Read the dev token. Prefer the bootstrapped copy in the worktree, fall back to
-# the main checkout. The file is gitignored and never committed.
+# Read the fixed dev token from the worktree. devx bootstraps it here from the
+# project root via bootstrap_files. Gitignored; never committed.
 read_token() {
-    local f
-    for f in "$PROJECT_DIR/.devx-web-token" "$HOME/projects/devx/.devx-web-token"; do
-        if [[ -f "$f" ]]; then
-            tr -d '[:space:]' < "$f"
-            return 0
-        fi
-    done
-    echo "ERROR: dev token not found. Create ~/projects/devx/.devx-web-token with a fixed token." >&2
+    local f="$PROJECT_DIR/.devx-web-token"
+    if [[ -f "$f" ]]; then
+        tr -d '[:space:]' < "$f"
+        return 0
+    fi
+    echo "ERROR: dev token not found at $f. Create .devx-web-token in the devx project root." >&2
     return 1
 }
 
 start_service() {
     case "$SERVICE_NAME" in
         web)
-            cd "$PROJECT_DIR"
+            if [[ -z "${WEB:-}" ]]; then
+                echo "ERROR: WEB port not set by devx" >&2
+                exit 1
+            fi
             local token
             token="$(read_token)"
-            echo "Starting devx web backend on 0.0.0.0:$WEB"
-            # Trusted proxies: in-container, requests from the host's Caddy/
-            # cloudflared arrive via Docker port publishing, so the peer is the
-            # container bridge gateway, not loopback. Trust only this
-            # container's attached subnets (derived from its interfaces) rather
-            # than all RFC1918 space; the production default is loopback-only.
-            DEVX_WEB_PORT="$WEB" \
-            DEVX_WEB_BIND="0.0.0.0" \
-            DEVX_WEB_TRUSTED_PROXIES="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)" \
-            DEVX_WEB_SECRET_TOKEN="$token" \
-                go run . web > "$LOG_DIR/$SERVICE_NAME.log" 2>&1 &
-            echo $! > "$PID_DIR/$SERVICE_NAME.pid"
-            ;;
-        ui)
+
+            # Build the SPA so the Go server embeds the current frontend.
+            # Install deps when missing or when package-lock has changed since
+            # the last install (so a dep bump doesn't build against stale deps).
             cd "$PROJECT_DIR/web/app"
-            if [[ ! -d node_modules ]]; then
+            if [[ ! -d node_modules ]] || [[ package-lock.json -nt node_modules ]]; then
                 echo "Installing web/app dependencies..."
-                npm install
+                npm ci
             fi
-            echo "Starting vite dev server on 0.0.0.0:$UI (backend http://localhost:$WEB)"
-            DEVX_WEB_ORIGIN="http://localhost:$WEB" \
-                npm run dev -- --host 0.0.0.0 --port "$UI" > "$LOG_DIR/$SERVICE_NAME.log" 2>&1 &
-            echo $! > "$PID_DIR/$SERVICE_NAME.pid"
+            echo "Building web UI (web/dist)..."
+            npm run build
+
+            # exec the Go server bound to 0.0.0.0 so the published port + Caddy
+            # can reach it. exec replaces this script as the pane's foreground
+            # process: signals and the real exit code propagate, and tmux/devx
+            # reflect the true service state. Logs are tee'd so they appear in
+            # the pane and in the log file. This is a foreground server, so it
+            # does NOT touch the global web.pid daemon used by the host devx web.
+            cd "$PROJECT_DIR"
+            echo "Starting devx web backend on 0.0.0.0:$WEB (logs: $LOG_DIR/$SERVICE_NAME.log)"
+            exec env \
+                DEVX_WEB_PORT="$WEB" \
+                DEVX_WEB_BIND="0.0.0.0" \
+                DEVX_WEB_TRUSTED_PROXIES="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)" \
+                DEVX_WEB_SECRET_TOKEN="$token" \
+                go run . web > >(tee "$LOG_DIR/$SERVICE_NAME.log") 2>&1
             ;;
         *)
             echo "Unknown service: $SERVICE_NAME" >&2
@@ -71,9 +76,3 @@ start_service() {
 
 echo "Starting $SERVICE_NAME service..."
 start_service
-SERVICE_PID="$(cat "$PID_DIR/$SERVICE_NAME.pid")"
-echo "$SERVICE_NAME started (PID: $SERVICE_PID)"
-echo "Logs: $LOG_DIR/$SERVICE_NAME.log"
-
-# Keep the script in the foreground so tmux/devx sees the service as running.
-wait "$SERVICE_PID"

@@ -33,7 +33,7 @@ export async function listSessions() {
   return data.sessions || []
 }
 
-export async function createSession(name, project) {
+export async function createSession(name, project, options = {}) {
   const res = await apiFetch('/sessions', {
     method: 'POST',
     body: JSON.stringify({ name, project }),
@@ -42,7 +42,30 @@ export async function createSession(name, project) {
     const err = await res.json()
     throw new Error(err.error || 'Failed to create session')
   }
+  // 202 Accepted = async creation in progress; poll until done.
+  if (res.status === 202) {
+    return pollSessionCreate(name, options?.onProgress)
+  }
   return res.json()
+}
+
+async function pollSessionCreate(name, onProgress, timeoutMs = 300000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000))
+    const res = await apiFetch('/sessions/create-status?name=' + encodeURIComponent(name))
+    if (res.status === 202) {
+      const data = await res.json()
+      if (onProgress && data.messages?.length) onProgress(data.messages)
+      continue
+    }
+    if (res.status === 500) {
+      const err = await res.json()
+      throw new Error(err.error || 'Session creation failed')
+    }
+    if (res.ok) return res.json()
+  }
+  throw new Error('Timed out waiting for session to be created')
 }
 
 export async function deleteSession(name) {
@@ -178,9 +201,10 @@ export async function sendLiteral(sessionName, text) {
   await requireOK(res, 'Failed to send text')
 }
 
-export async function uploadImage(file) {
+export async function uploadImage(file, sessionName) {
   const form = new FormData()
   form.append('image', file)
+  if (sessionName) form.append('session', sessionName)
   const res = await fetch(base + '/upload-image', {
     method: 'POST',
     credentials: 'same-origin',

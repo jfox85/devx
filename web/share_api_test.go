@@ -32,7 +32,7 @@ func setupEmptySessionStoreForTest(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &session.SessionStore{Sessions: map[string]*session.Session{}, NumberedSlots: map[int]string{}}
-	if err := store.Save(); err != nil {
+	if err := store.Overwrite(); err != nil {
 		t.Fatalf("Save empty sessions: %v", err)
 	}
 }

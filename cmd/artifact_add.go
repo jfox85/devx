@@ -95,7 +95,8 @@ func runArtifactAdd(cmd *cobra.Command, args []string) error {
 	}
 	if artifactAddFlags.focus {
 		if err := session.SetAttentionFlagWithSource(sess.Name, "New artifact: "+artifactAddFlags.title, "artifact"); err != nil {
-			return fmt.Errorf("artifact added, but failed to set attention flag: %w", err)
+			// Non-fatal: sessions.json may be read-only inside a container.
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not set attention flag: %v\n", err)
 		}
 		notifyWebServer(sess.Name, true, "New artifact: "+artifactAddFlags.title)
 		notifyArtifactWebServer(sess.Name, added.ID)

@@ -12,6 +12,7 @@
   let projects = []
   let error = ''
   let loading = false
+  let progress = []
   let nameInputEl
   let modalEl
 
@@ -34,8 +35,11 @@
     if (!name.trim()) { error = 'session name is required'; return }
     loading = true
     error = ''
+    progress = []
     try {
-      const created = await createSession(name.trim(), project || undefined)
+      const created = await createSession(name.trim(), project || undefined, {
+        onProgress: (msgs) => { progress = msgs }
+      })
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
       dispatch('created', created)
       dispatch('close')
@@ -43,6 +47,7 @@
       error = e.message
     } finally {
       loading = false
+      progress = []
     }
   }
 
@@ -142,6 +147,14 @@
             </select>
             <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
           </div>
+        </div>
+      {/if}
+
+      {#if progress.length > 0}
+        <div class="border border-[#1e2d4a] bg-[#080c14] p-2 max-h-24 overflow-y-auto">
+          {#each progress as msg}
+            <p class="text-gray-500 text-[10px] font-mono leading-relaxed">{msg}</p>
+          {/each}
         </div>
       {/if}
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
 )
 
@@ -60,7 +61,20 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: Failed to assign slot: %v\n", err)
 	}
 
-	// Check if the target tmux session exists
+	if sess.IsContainerized() {
+		return attachContainerSession(name, sess)
+	}
+	return attachHostSession(name, sess)
+}
+
+func attachContainerSession(name string, sess *session.Session) error {
+	if !target.IsRunning(sess.Target) {
+		return fmt.Errorf("runtime for session '%s' is not running. Remove and recreate the session", name)
+	}
+	return target.AttachTmuxSession(name, sess)
+}
+
+func attachHostSession(name string, sess *session.Session) error {
 	if err := session.AttachTmuxSession(name); err != nil {
 		// Session doesn't exist, try to launch it
 		tmuxpPath := filepath.Join(sess.Path, ".tmuxp.yaml")
@@ -76,6 +90,5 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("Attached to existing tmux session '%s'\n", name)
 	}
-
 	return nil
 }

@@ -6,7 +6,7 @@ devx
 .pi/
 /dist/
 .devx/
-# Fixed dev token used when dogfooding the devx web UI as a devx service.
+# Fixed dev token used when running the devx web UI as a containerized service.
 .devx-web-token
 web/app/node_modules/
 # web/dist is gitignored but its build outputs are force-added (git add -f)

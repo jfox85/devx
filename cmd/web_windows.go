@@ -59,7 +59,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	port := viper.GetInt("web_port")
 	bind := viper.GetString("web_bind")
 
-	srv, err := web.NewWithBind(token, port, bind)
+	srv, err := web.NewWithBind(token, port, bind, trustedGatepostRuntimeConfig())
 	if err != nil {
 		return err
 	}

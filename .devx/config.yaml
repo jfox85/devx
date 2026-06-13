@@ -6,12 +6,12 @@ editor: cursor
 tmuxp_template: /Users/jfox/.config/devx/session.yaml.tmpl
 web_port: 7777
 
-# Dogfood the devx web UI as a devx service. WEB is the Go backend, UI is the
-# vite dev server. Both bind 0.0.0.0 so they work when the session runs inside a
-# container (gatepost target) with Docker port publishing.
+# Dogfood the devx web UI as a single devx service. WEB is the Go backend, which
+# serves the embedded SPA (web/dist) and the API on one port. devx allocates the
+# port, publishes it from the container (-p 127.0.0.1:WEB:WEB), and fronts it
+# with Caddy (*.localhost) and the CF tunnel, exactly like any other service.
 ports:
   - WEB
-  - UI
 
 # Copy the gitignored dev token into the worktree so start_service.sh can read
 # it without committing a secret.

@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 )
 
 func newTestWebServer(t *testing.T) *Server {
 	t.Helper()
-	s, err := New("test-secret", 0)
+	s, err := New("test-secret", 0, target.GatepostRuntimeConfig{})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
