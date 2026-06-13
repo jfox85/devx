@@ -67,7 +67,9 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 
 	// For targets with their own tmux server, stop it before tearing down host-side
 	// tmux sessions used by the web terminal.
-	_ = target.KillTmuxServer(sess.Target)
+	if err := target.KillTmuxServer(sess.Target); err != nil {
+		fmt.Printf("Warning: failed to kill target tmux server: %v\n", err)
+	}
 	if err := killTmuxSession(name); err != nil {
 		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
 	}

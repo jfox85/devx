@@ -12,6 +12,7 @@ import (
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var sessionListCmd = &cobra.Command{
@@ -173,7 +174,7 @@ func getCaddyRouteIDs() map[string]bool {
 	routes := make(map[string]bool)
 
 	// Skip if Caddy is disabled
-	if disabled, _ := config.GetConfigValue("disable_caddy").(bool); disabled {
+	if viper.GetBool("disable_caddy") {
 		return routes
 	}
 

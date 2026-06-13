@@ -14,6 +14,17 @@ func TestHasActiveCaddyRouteWithProjectPrefixedRouteID(t *testing.T) {
 	}
 }
 
+func TestHasActiveCaddyRouteWithNonPrefixedRouteID(t *testing.T) {
+	status := SessionStatus{
+		Name:   "jf-docker",
+		Routes: map[string]string{"WEB": "jf-docker-web.localhost"},
+	}
+	routes := map[string]bool{"sess-jf-docker-web": true}
+	if !hasActiveCaddyRoute(status, routes) {
+		t.Fatal("expected non-project route ID to be active")
+	}
+}
+
 func TestHasActiveCaddyRouteRejectsWrongProjectPrefix(t *testing.T) {
 	status := SessionStatus{
 		Name:         "jf-redesign",

@@ -440,24 +440,6 @@ func (g *GatepostTarget) Stop(ctx context.Context, meta session.TargetMeta) erro
 	return g.cleanup(ctx, meta)
 }
 
-func (g *GatepostTarget) IsRunning(meta session.TargetMeta) bool { return IsDockerRunning(meta) }
-
-func (g *GatepostTarget) EnsureTmuxSession(name string, sess *session.Session) error {
-	if sess.Target.ContainerName == "" {
-		return fmt.Errorf("gatepost session %q has no runtime container", name)
-	}
-	return session.EnsureTmuxSessionInContainer(name, sess.Target.ContainerName, sess)
-}
-
-func (g *GatepostTarget) AttachTmuxSession(name string, sess *session.Session) error {
-	if err := g.EnsureTmuxSession(name, sess); err != nil {
-		return err
-	}
-	return session.AttachTmuxSession(name)
-}
-
-func (g *GatepostTarget) KillTmuxServer(_ session.TargetMeta) error { return nil }
-
 func (g *GatepostTarget) cleanup(ctx context.Context, meta session.TargetMeta) error {
 	if meta.ContainerName != "" {
 		_ = dockerRunIgnore(ctx, "rm", "-f", meta.ContainerName)

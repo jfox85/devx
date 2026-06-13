@@ -131,29 +131,6 @@ func (d *DockerTarget) Stop(ctx context.Context, meta session.TargetMeta) error 
 	return nil
 }
 
-func (d *DockerTarget) IsRunning(meta session.TargetMeta) bool { return IsDockerRunning(meta) }
-
-func (d *DockerTarget) EnsureTmuxSession(name string, sess *session.Session) error {
-	if sess.Target.ContainerName == "" {
-		return fmt.Errorf("docker session %q has no runtime container", name)
-	}
-	return session.EnsureTmuxSessionInContainer(name, sess.Target.ContainerName, sess)
-}
-
-func (d *DockerTarget) AttachTmuxSession(name string, sess *session.Session) error {
-	if err := d.EnsureTmuxSession(name, sess); err != nil {
-		return err
-	}
-	return session.AttachTmuxSession(name)
-}
-
-func (d *DockerTarget) KillTmuxServer(meta session.TargetMeta) error {
-	if meta.ContainerName == "" {
-		return nil
-	}
-	return ExecInSession(meta, []string{"tmux", "kill-server"}, false).Run()
-}
-
 // isDockerNotFound checks if a docker error is a "not found" error.
 func isDockerNotFound(err error) bool {
 	if err == nil {
