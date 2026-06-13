@@ -770,6 +770,11 @@ The web server has three layers:
 web_secret_token: "your-secret-token"  # required to start devx web
 web_port: 7777                          # default port
 web_autostart: false                    # set true to auto-start with TUI
+web_bind: "127.0.0.1"                   # loopback only; 0.0.0.0 is for containers
+web_trusted_proxies: ""                 # extra CIDRs whose X-Forwarded-* headers are
+                                        # trusted (loopback always is). Only needed when
+                                        # your reverse proxy reaches devx web over a
+                                        # non-loopback path, e.g. Docker port publishing.
 ```
 
 **2. Start the web server:**

@@ -10,6 +10,7 @@ import (
 func TestRegisterGatepostSecretsFromHostEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	t.Setenv("CLIPROXYAPI_API_KEY", "clip-test")
+	t.Setenv("GEMINI_API_KEY", "")
 	var got []gatepostSecret
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("authorization") != "Bearer token" {

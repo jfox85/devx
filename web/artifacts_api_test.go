@@ -15,6 +15,7 @@ import (
 
 	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/session"
+	"github.com/spf13/viper"
 )
 
 func setupArtifactAPITest(t *testing.T) *session.Session {
@@ -308,6 +309,23 @@ func TestClearArtifactFocus(t *testing.T) {
 	}
 	if focused := artifactpkg.FocusedID(sess); focused != "" {
 		t.Fatalf("focus was not cleared: %q", focused)
+	}
+}
+
+func TestSessionResponseBuildsExternalRoutesFromStoredRoutes(t *testing.T) {
+	prev := viper.GetString("external_domain")
+	viper.Set("external_domain", "jon-fox.com")
+	t.Cleanup(func() { viper.Set("external_domain", prev) })
+
+	sess := &session.Session{
+		Name:         "jf-redesign",
+		ProjectAlias: "croutoncreations",
+		Ports:        map[string]int{"ui": 3000},
+		Routes:       map[string]string{"frontend": "croutoncreations-jf-redesign-frontend.localhost"},
+	}
+	resp := buildSessionResponse(sess)
+	if got, want := resp.ExternalRoutes["frontend"], "croutoncreations-jf-redesign-frontend.jon-fox.com"; got != want {
+		t.Fatalf("frontend external route = %q, want %q", got, want)
 	}
 }
 

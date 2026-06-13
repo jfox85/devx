@@ -154,6 +154,29 @@ export async function refreshTerminal(sessionName) {
   await apiFetch('/refresh?name=' + encodeURIComponent(sessionName), { method: 'POST' })
 }
 
+export async function prewarmTerminal(sessionName) {
+  const res = await apiFetch('/terminal/prewarm', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName }),
+  })
+  await requireOK(res, 'Failed to prewarm terminal')
+  return res.json()
+}
+
+export async function getTerminalStatus(sessionName) {
+  const res = await apiFetch('/terminal/status?session=' + encodeURIComponent(sessionName))
+  await requireOK(res, 'Failed to get terminal status')
+  return res.json()
+}
+
+export async function sendInput(sessionName, text, { submit = false, mode = 'paste-buffer' } = {}) {
+  const res = await apiFetch('/terminal/send-input', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName, text, submit, mode }),
+  })
+  await requireOK(res, 'Failed to send input')
+}
+
 async function requireOK(res, fallbackMessage) {
   if (res.ok) return
   const e = await res.json().catch(() => ({}))

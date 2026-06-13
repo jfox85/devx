@@ -63,6 +63,7 @@ start_service() {
             exec env \
                 DEVX_WEB_PORT="$WEB" \
                 DEVX_WEB_BIND="0.0.0.0" \
+                DEVX_WEB_TRUSTED_PROXIES="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)" \
                 DEVX_WEB_SECRET_TOKEN="$token" \
                 go run . web > >(tee "$LOG_DIR/$SERVICE_NAME.log") 2>&1
             ;;

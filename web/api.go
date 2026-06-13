@@ -135,9 +135,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		// Secure is intentionally omitted: devx web runs on localhost over plain
-		// HTTP. Browsers permit httpOnly cookies on localhost without Secure.
-		// If you expose devx web through a TLS proxy, add Secure: true here.
+		// Secure when the login arrived over HTTPS (direct TLS, or via a trusted
+		// proxy that set X-Forwarded-Proto). Plain-HTTP localhost logins still
+		// work: browsers permit httpOnly cookies on localhost without Secure.
+		Secure: requestIsHTTPS(r),
 		MaxAge: 30 * 24 * 60 * 60, // 30 days — survive browser restarts
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -173,6 +174,15 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 	externalDomain := viper.GetString("external_domain")
 	externalRoutes := make(map[string]string)
 	if externalDomain != "" {
+		// Prefer tunnel URLs for every service the UI can display. Some older
+		// sessions have stored Caddy routes whose service labels are not present
+		// in Ports (or vice versa), so derive external hostnames from both sets.
+		for svc := range sess.Routes {
+			h := caddy.BuildExternalHostname(sess.Name, svc, sess.ProjectAlias, externalDomain)
+			if h != "" {
+				externalRoutes[svc] = h
+			}
+		}
 		for svc := range sess.Ports {
 			h := caddy.BuildExternalHostname(sess.Name, svc, sess.ProjectAlias, externalDomain)
 			if h != "" {
@@ -1152,6 +1162,7 @@ func runSelfTimeoutProgress(timeout time.Duration, args []string, onLine func(st
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
+	self = runSelfExecutable(self)
 	env := make([]string, 0, len(os.Environ()))
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "TMUX=") && !strings.HasPrefix(e, "TMUX_PANE=") {
@@ -1204,4 +1215,19 @@ func runSelfTimeoutProgress(timeout time.Duration, args []string, onLine func(st
 		return err
 	}
 	return nil
+}
+
+func runSelfExecutable(current string) string {
+	if override := os.Getenv("DEVX_CLI_BINARY"); override != "" {
+		return override
+	}
+	if strings.Contains(filepath.Base(current), "devx-desktop") {
+		// The desktop shell runs the same web package, but re-executing itself for
+		// CLI subcommands would open a second desktop window instead of creating a
+		// session. Prefer the real devx CLI from PATH when embedded in desktop.
+		if cli, err := exec.LookPath("devx"); err == nil {
+			return cli
+		}
+	}
+	return current
 }
