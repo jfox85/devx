@@ -34,7 +34,11 @@ func TestPrivateServerTopology(t *testing.T) {
 	p2.listener.Close()
 
 	go p.Serve() //nolint:errcheck
-	defer p.Shutdown(context.Background())
+	defer func() {
+		if err := p.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	}()
 
 	base := "http://" + p.Addr()
 	client := &http.Client{Timeout: 2 * time.Second}
