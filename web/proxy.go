@@ -133,6 +133,7 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 	if err != nil {
 		return err
 	}
+	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
 	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
@@ -140,6 +141,23 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 	resp.Header.Del("Content-Encoding")
 	return nil
 }
+
+const terminalHeadAddons = `<link rel="stylesheet" href="/nerd-font.css">
+<style>
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+.xterm, .xterm-viewport {
+  touch-action: pan-y !important;
+}
+.xterm-viewport {
+  -webkit-overflow-scrolling: touch !important;
+  overscroll-behavior-y: contain;
+}
+</style>`
 
 const terminalCopyOnSelectScript = `<script>
 (function () {

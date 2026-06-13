@@ -10,7 +10,7 @@ import (
 func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	resp := &http.Response{
 		Header: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-		Body:   io.NopCloser(strings.NewReader("<html><body>tty</body></html>")),
+		Body:   io.NopCloser(strings.NewReader("<html><head></head><body>tty</body></html>")),
 	}
 	if err := injectTerminalCopyOnSelect(resp); err != nil {
 		t.Fatalf("injectTerminalCopyOnSelect: %v", err)
@@ -19,6 +19,9 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	got := string(body)
 	if !strings.Contains(got, "__devxCopyOnSelect") || !strings.Contains(got, "navigator.clipboard.writeText") {
 		t.Fatalf("copy-on-select script missing from response: %s", got)
+	}
+	if !strings.Contains(got, `/nerd-font.css`) || !strings.Contains(got, "overscroll-behavior") {
+		t.Fatalf("terminal head addons missing from response: %s", got)
 	}
 	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
 		t.Fatal("content encoding should be cleared after body rewrite")
