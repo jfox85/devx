@@ -1,6 +1,7 @@
 package target
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"testing"
@@ -40,14 +41,14 @@ func TestResolve(t *testing.T) {
 
 func TestHostTargetStartStop(t *testing.T) {
 	h := &HostTarget{}
-	result, err := h.Start(nil, StartOpts{SessionName: "test"})
+	result, err := h.Start(context.TODO(), StartOpts{SessionName: "test"})
 	if err != nil {
 		t.Fatalf("HostTarget.Start: %v", err)
 	}
 	if result.Meta.Type != "host" {
 		t.Errorf("Meta.Type = %q, want %q", result.Meta.Type, "host")
 	}
-	if err := h.Stop(nil, result.Meta); err != nil {
+	if err := h.Stop(context.TODO(), result.Meta); err != nil {
 		t.Errorf("HostTarget.Stop: %v", err)
 	}
 }

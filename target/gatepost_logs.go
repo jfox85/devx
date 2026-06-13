@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -29,7 +28,7 @@ func startGatepostLogs(ctx context.Context, cfg GatepostRuntimeConfig, gatepostR
 	// the parent process group so signals don't cascade.
 	cmd := exec.Command(cmdName, args...)
 	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	detachGatepostLogsProcess(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return gatepostLogsProcess{}, err

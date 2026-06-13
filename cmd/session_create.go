@@ -204,7 +204,6 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 				if err := store.RemoveSession(name); err != nil {
 					fmt.Printf("Warning: could not remove stale session metadata: %v\n", err)
 				}
-				sessionExists = false
 				// Fall through to full creation.
 			} else {
 				fmt.Printf("Reusing existing session '%s' at %s\n", name, existingSession.Path)

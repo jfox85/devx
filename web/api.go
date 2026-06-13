@@ -13,7 +13,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,8 +206,6 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		Gatepost:          gatepost,
 	}
 }
-
-func urlQueryEscape(s string) string { return url.QueryEscape(s) }
 
 func handleGatepostLogsRedirect(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("session")

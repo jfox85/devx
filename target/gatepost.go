@@ -187,11 +187,11 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	proxyArgs = append(proxyArgs, "--label", "devx.role=gatepost-proxy", proxyImage)
 	fmt.Println("Starting Gatepost proxy...")
 	if err := dockerRun(ctx, proxyArgs...); err != nil {
-		g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
 		return nil, fmt.Errorf("create gatepost proxy: %w", err)
 	}
 	if err := dockerRun(ctx, "network", "connect", "--alias", "proxy", "--alias", "gatepost-events", runtime.internalNet, runtime.proxyName); err != nil {
-		g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
 		return nil, fmt.Errorf("connect proxy to internal network: %w", err)
 	}
 	controlURL := fmt.Sprintf("http://127.0.0.1:%d", controlPort)
@@ -211,7 +211,7 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		if r, ok := <-logsCh; ok && r.proc.PID > 0 {
 			stopGatepostLogs(r.proc.PID)
 		}
-		g.cleanup(ctx, meta)
+		_ = g.cleanup(ctx, meta)
 	}
 	if err := waitHTTP(ctx, controlURL+"/healthz", 30*time.Second); err != nil {
 		cleanupWithLogs(session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
@@ -423,13 +423,13 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	logsCancel() // no longer need cancellation — we're collecting the result
 	logsRes := <-logsCh
 	if logsRes.err != nil {
-		g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
 		return nil, logsRes.err
 	}
 	logs := logsRes.proc
 	logsTokenPath := filepath.Join(runtime.sessionDir, "logs.token")
 	if err := os.WriteFile(logsTokenPath, []byte(logs.Token), 0o600); err != nil {
-		g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet, LogsPID: logs.PID}})
+		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet, LogsPID: logs.PID}})
 		return nil, err
 	}
 	return &StartResult{Meta: session.TargetMeta{Type: "gatepost", ContainerID: containerID, ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Image: agentImage, Gatepost: session.GatepostMeta{Enabled: true, Runtime: "docker-mitmproxy", ProxyContainerName: runtime.proxyName, InternalNetworkName: runtime.internalNet, EgressNetworkName: runtime.egressNet, PortsNetworkName: runtime.portsNet, SessionDir: runtime.sessionDir, AuditDir: runtime.auditDir, ConfigDir: runtime.configDir, AuditLog: filepath.Join(runtime.auditDir, "audit.jsonl"), CompanionLog: filepath.Join(runtime.auditDir, "companion.jsonl"), ControlURL: controlURL, LogsURL: logs.PublicURL, LogsTokenPath: logsTokenPath, LogsPID: logs.PID, ProviderMode: providerBootstrap.Mode, ProviderCommand: providerBootstrap.Command, RegisteredProviders: providerBootstrap.Registered, ProviderWarnings: providerBootstrap.Warnings}}}, nil
