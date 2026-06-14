@@ -59,6 +59,8 @@ var execTmuxRun = func(args ...string) error {
 	return exec.Command("tmux", args...).Run()
 }
 
+var runSelfCommand = runSelf
+
 var paneContentViewTmpl = template.Must(template.New("pane-content-view").Parse(`<!doctype html>
 <html>
 <head>
@@ -194,6 +196,16 @@ func handleListSessions(w http.ResponseWriter, r *http.Request) {
 type createSessionRequest struct {
 	Name    string `json:"name"`
 	Project string `json:"project"`
+	Target  string `json:"target"`
+}
+
+func isValidSessionTarget(target string) bool {
+	switch target {
+	case "", "host", "docker", "gatepost":
+		return true
+	default:
+		return false
+	}
 }
 
 func handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -210,15 +222,26 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session name"})
 		return
 	}
+	if !isValidSessionTarget(req.Target) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session target"})
+		return
+	}
 
 	// Use -- to separate flags from the positional session name, preventing
 	// a name starting with "-" from being misinterpreted as a flag by Cobra.
-	args := []string{"session", "create"}
+	// Web requests should return once the session has been created. The CLI's
+	// default create flow launches and attaches to tmux, which can keep the HTTP
+	// request open until that tmux client exits. The web UI lazily starts/restores
+	// the tmux session when the user opens the session, so skip tmux during create.
+	args := []string{"session", "create", "--no-tmux"}
 	if req.Project != "" {
 		args = append(args, "--project", req.Project)
 	}
+	if req.Target != "" {
+		args = append(args, "--target", req.Target)
+	}
 	args = append(args, "--", req.Name)
-	if err := runSelf(args...); err != nil {
+	if err := runSelfCommand(args...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -247,7 +270,7 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	// Pass --force to skip the interactive y/N prompt. runSelf has no stdin
 	// connected, so Scanln blocks forever without it.
 	// Use -- to separate flags from the positional name argument.
-	if err := runSelf("session", "rm", "--force", "--", name); err != nil {
+	if err := runSelfCommand("session", "rm", "--force", "--", name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -274,7 +297,7 @@ func handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	} else {
 		args = append(args, "--", name, displayName)
 	}
-	if err := runSelf(args...); err != nil {
+	if err := runSelfCommand(args...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -295,7 +318,7 @@ func handleColorSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid color"})
 		return
 	}
-	if err := runSelf("session", "color", "--", name, color); err != nil {
+	if err := runSelfCommand("session", "color", "--", name, color); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

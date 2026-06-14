@@ -9,6 +9,7 @@
 
   let name = ''
   let project = localStorage.getItem(LAST_PROJECT_KEY) || ''
+  let target = ''
   let projects = []
   let error = ''
   let loading = false
@@ -31,7 +32,7 @@
     loading = true
     error = ''
     try {
-      await createSession(name.trim(), project || undefined)
+      await createSession(name.trim(), project || undefined, target || undefined)
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
       dispatch('created')
       dispatch('close')
@@ -105,6 +106,30 @@
           </div>
         </div>
       {/if}
+
+      <div>
+        <label for="session-target" class="block text-gray-600 text-[11px] font-mono mb-1">
+          session type
+        </label>
+        <div class="relative">
+          <select
+            id="session-target"
+            bind:value={target}
+            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
+            class="
+              w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
+              text-gray-300 text-xs font-mono px-3 py-2 pr-7
+              outline-none transition-colors appearance-none
+            "
+          >
+            <option value="">default</option>
+            <option value="host">host</option>
+            <option value="docker">docker</option>
+            <option value="gatepost">gatepost</option>
+          </select>
+          <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
+        </div>
+      </div>
 
       {#if error}
         <p class="text-red-500 text-xs font-mono">{error}</p>

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,6 +65,80 @@ func TestGetHealthReturnsOK(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
+}
+
+func TestCreateSessionSkipsTmuxAttachForWebRequests(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	gotArgs := stubRunSelf(t)
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"jf-new","project":"scout"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	want := []string{"session", "create", "--no-tmux", "--project", "scout", "--", "jf-new"}
+	if !slices.Equal(*gotArgs, want) {
+		t.Fatalf("runSelf args = %#v, want %#v", *gotArgs, want)
+	}
+}
+
+func TestCreateSessionPassesExplicitTarget(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	gotArgs := stubRunSelf(t)
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"jf-new","project":"scout","target":"gatepost"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	want := []string{"session", "create", "--no-tmux", "--project", "scout", "--target", "gatepost", "--", "jf-new"}
+	if !slices.Equal(*gotArgs, want) {
+		t.Fatalf("runSelf args = %#v, want %#v", *gotArgs, want)
+	}
+}
+
+func TestCreateSessionRejectsInvalidTarget(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	gotArgs := stubRunSelf(t)
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"jf-new","target":"bad"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if *gotArgs != nil {
+		t.Fatalf("runSelf should not be called, got %#v", *gotArgs)
+	}
+}
+
+func stubRunSelf(t *testing.T) *[]string {
+	t.Helper()
+	origRunSelf := runSelfCommand
+	var gotArgs []string
+	runSelfCommand = func(args ...string) error {
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+	t.Cleanup(func() { runSelfCommand = origRunSelf })
+	return &gotArgs
 }
 
 func TestPaneCaptureTargetUsesExactMatchForSlashSessionNames(t *testing.T) {

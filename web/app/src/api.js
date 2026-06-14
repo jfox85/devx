@@ -33,10 +33,12 @@ export async function listSessions() {
   return data.sessions || []
 }
 
-export async function createSession(name, project) {
+export async function createSession(name, project, target) {
+  const body = { name, project }
+  if (target) body.target = target
   const res = await apiFetch('/sessions', {
     method: 'POST',
-    body: JSON.stringify({ name, project }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const err = await res.json()
