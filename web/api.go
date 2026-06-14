@@ -405,16 +405,12 @@ func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	if _, err := session.RefreshSessionReviewStale(name, sess); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if sess.Review == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "review not found"})
 		return
 	}
-	if review, err := session.LoadSessionReviewDetails(name); err == nil {
-		review.Stale = session.ReviewIsStale(sess)
-		writeJSON(w, http.StatusOK, review)
-		return
-	} else if !errors.Is(err, os.ErrNotExist) {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load review details: " + err.Error()})
+	if _, err := session.RefreshSessionReviewStale(name, sess); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	store, err = session.LoadSessions()
@@ -422,11 +418,15 @@ func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if sess, ok := store.GetSession(name); ok && sess.Review != nil {
-		writeJSON(w, http.StatusOK, sess.Review)
+	sess, _ = store.GetSession(name)
+	if review, err := session.LoadSessionReviewDetails(name); err == nil {
+		writeJSON(w, http.StatusOK, session.MergeReviewDetails(sess.Review, review))
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load review details: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusNotFound, map[string]string{"error": "review not found"})
+	writeJSON(w, http.StatusOK, sess.Review)
 }
 
 func handleReviewSession(w http.ResponseWriter, r *http.Request) {

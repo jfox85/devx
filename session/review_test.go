@@ -98,6 +98,30 @@ func TestRemoveSessionReviewDetails(t *testing.T) {
 	}
 }
 
+func TestMergeReviewDetailsKeepsMetadataStaleAndCounts(t *testing.T) {
+	summary := &SessionReview{
+		Classification:    ReviewClassificationDirtyOnly,
+		Summary:           "metadata summary",
+		Stale:             true,
+		UniqueCommitCount: 2,
+		DirtyFileCount:    1,
+	}
+	details := &SessionReview{
+		Classification: ReviewClassificationClean,
+		Summary:        "old detail summary",
+		Stale:          false,
+		Details:        "agent details",
+		UniqueCommits:  []string{"a", "b"},
+	}
+	merged := MergeReviewDetails(summary, details)
+	if !merged.Stale || merged.Classification != ReviewClassificationDirtyOnly || merged.UniqueCommitCount != 2 {
+		t.Fatalf("metadata fields were not preserved: %#v", merged)
+	}
+	if merged.Details != "agent details" || len(merged.UniqueCommits) != 2 {
+		t.Fatalf("detail fields were not merged: %#v", merged)
+	}
+}
+
 func TestCompactSessionReviewRemovesDetailsButKeepsCounts(t *testing.T) {
 	review := &SessionReview{
 		Classification: ReviewClassificationDirtyOnly,

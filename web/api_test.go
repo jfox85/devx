@@ -170,6 +170,26 @@ func TestReviewEndpointPersistsAndFetchesDetails(t *testing.T) {
 	}
 }
 
+func TestReviewDetailsEndpointDoesNotServeOrphanedDetails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Sessions["jf-review"] = &session.Session{Name: "jf-review", Branch: "jf-review", Path: "/missing"}
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveSessionReviewDetails("jf-review", &session.SessionReview{Classification: session.ReviewClassificationDirtyOnly, Details: "old details"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := authedRequest(t, "GET", "/api/sessions/review?name=jf-review", nil)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestReviewEndpointRejectsInvalidJSON(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store, err := session.LoadSessions()

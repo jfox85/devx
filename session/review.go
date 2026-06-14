@@ -191,7 +191,9 @@ func ClearSessionReview(name string) error {
 	if err != nil {
 		return err
 	}
-	_ = RemoveSessionReviewDetails(name)
+	if err := RemoveSessionReviewDetails(name); err != nil {
+		return err
+	}
 	return store.UpdateSession(name, func(sess *Session) { sess.Review = nil })
 }
 
@@ -221,6 +223,22 @@ func RefreshSessionReviewStale(name string, sess *Session) (*SessionReview, erro
 		return &updated, err
 	}
 	return &updated, nil
+}
+
+func MergeReviewDetails(summary, details *SessionReview) *SessionReview {
+	if summary == nil {
+		return nil
+	}
+	merged := *summary
+	if details != nil {
+		merged.Details = details.Details
+		merged.UniqueCommits = details.UniqueCommits
+		merged.ChangedFiles = details.ChangedFiles
+		merged.DirtyFiles = details.DirtyFiles
+		merged.UntrackedFiles = details.UntrackedFiles
+		merged.Truncated = details.Truncated
+	}
+	return &merged
 }
 
 func CompactSessionReview(review *SessionReview) *SessionReview {

@@ -179,9 +179,11 @@ func (s *SessionStore) RemoveSession(name string) error {
 		return fmt.Errorf("session %s not found", name)
 	}
 
-	_ = RemoveSessionReviewDetails(name)
 	delete(s.Sessions, name)
-	return s.Save()
+	if err := s.Save(); err != nil {
+		return err
+	}
+	return RemoveSessionReviewDetails(name)
 }
 
 // LoadRegistry is an alias for LoadSessions for compatibility
@@ -191,14 +193,17 @@ func LoadRegistry() (*SessionStore, error) {
 
 // ClearRegistry removes all sessions and clears the sessions file
 func ClearRegistry() error {
-	if err := os.RemoveAll(reviewDetailsDir()); err != nil {
-		return fmt.Errorf("failed to clear review details: %w", err)
-	}
 	store := &SessionStore{
 		Sessions:      make(map[string]*Session),
 		NumberedSlots: make(map[int]string),
 	}
-	return store.Save()
+	if err := store.Save(); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(reviewDetailsDir()); err != nil {
+		return fmt.Errorf("failed to clear review details: %w", err)
+	}
+	return nil
 }
 
 // RemoveSession removes a single session completely (helper for commands)

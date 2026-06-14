@@ -479,7 +479,7 @@ func (m *model) loadSessions() tea.Msg {
 		color := sess.EffectiveColor()
 		review := sess.Review
 		if fullReview, err := session.LoadSessionReviewDetails(name); err == nil {
-			review = fullReview
+			review = session.MergeReviewDetails(sess.Review, fullReview)
 		}
 		reviewStale := review != nil && review.Stale
 
