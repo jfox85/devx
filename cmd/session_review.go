@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jfox85/devx/session"
@@ -36,7 +37,7 @@ func init() {
 	sessionReviewCmd.Flags().BoolVar(&reviewJSONFlag, "json", false, "Print review as JSON")
 	sessionReviewCmd.Flags().BoolVar(&reviewNoPersistFlag, "no-persist", false, "Do not save the review result to session metadata")
 	sessionReviewCmd.Flags().StringVar(&reviewHarnessFlag, "harness", "", "Name of agent harness used for review output")
-	sessionReviewCmd.Flags().StringVar(&reviewHarnessCommandFlag, "harness-command", "", "Command to run for agent review; placeholders: {prompt_file}, {prompt}, {session}, {path}, {base}")
+	sessionReviewCmd.Flags().StringVar(&reviewHarnessCommandFlag, "harness-command", "", "Shell command to run for agent review; use {prompt_file} for the generated prompt path")
 	sessionReviewCmd.Flags().DurationVar(&reviewTimeoutFlag, "timeout", 5*time.Minute, "Agent harness timeout")
 	sessionReviewCmd.Flags().BoolVar(&reviewClearFlag, "clear", false, "Clear stored review for this session")
 }
@@ -64,6 +65,11 @@ func runSessionReview(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	for _, unsafePlaceholder := range []string{"{prompt}", "{session}", "{path}", "{base}"} {
+		if strings.Contains(reviewHarnessCommandFlag, unsafePlaceholder) {
+			return fmt.Errorf("%s placeholder is not supported in --harness-command; use {prompt_file} to avoid shell injection", unsafePlaceholder)
+		}
+	}
 	if reviewHarnessCommandFlag != "" {
 		harness := reviewHarnessFlag
 		if harness == "" {
@@ -84,7 +90,7 @@ func runSessionReview(cmd *cobra.Command, args []string) error {
 	}
 
 	if !reviewNoPersistFlag {
-		if err := store.UpdateSession(name, func(s *session.Session) { s.Review = review }); err != nil {
+		if err := session.PersistSessionReview(name, review); err != nil {
 			return err
 		}
 	}

@@ -48,7 +48,12 @@ type SessionReview struct {
 	ChangedFiles   []string `json:"changed_files,omitempty"`
 	DirtyFiles     []string `json:"dirty_files,omitempty"`
 	UntrackedFiles []string `json:"untracked_files,omitempty"`
-	Truncated      bool     `json:"truncated,omitempty"`
+
+	UniqueCommitCount  int  `json:"unique_commit_count,omitempty"`
+	ChangedFileCount   int  `json:"changed_file_count,omitempty"`
+	DirtyFileCount     int  `json:"dirty_file_count,omitempty"`
+	UntrackedFileCount int  `json:"untracked_file_count,omitempty"`
+	Truncated          bool `json:"truncated,omitempty"`
 }
 
 type ReviewOptions struct {
@@ -101,12 +106,21 @@ func ReviewSession(sess *Session, opts ReviewOptions) (*SessionReview, error) {
 	review.UntrackedFiles = untracked.files
 	review.Truncated = dirty.truncated || untracked.truncated
 
-	if commits, err := gitOutput(sess.Path, "log", "--oneline", base+"..HEAD"); err == nil {
-		review.UniqueCommits = capLines(commits, maxFiles, &review.Truncated)
+	commits, err := gitOutput(sess.Path, "log", "--oneline", base+"..HEAD")
+	if err != nil {
+		review.Error = err.Error()
+		review.Summary = "Unable to compare commits against base branch."
+		return review, nil
 	}
-	if files, err := gitOutput(sess.Path, "diff", "--name-status", base+"...HEAD"); err == nil {
-		review.ChangedFiles = capLines(files, maxFiles, &review.Truncated)
+	review.UniqueCommits = capLines(commits, maxFiles, &review.Truncated)
+	files, err := gitOutput(sess.Path, "diff", "--name-status", base+"...HEAD")
+	if err != nil {
+		review.Error = err.Error()
+		review.Summary = "Unable to compare changed files against base branch."
+		return review, nil
 	}
+	review.ChangedFiles = capLines(files, maxFiles, &review.Truncated)
+	review.setCounts()
 
 	hasDirty := len(review.DirtyFiles) > 0 || len(review.UntrackedFiles) > 0
 	hasCommits := len(review.UniqueCommits) > 0
@@ -158,11 +172,17 @@ func ReviewIsStale(sess *Session) bool {
 }
 
 func PersistSessionReview(name string, review *SessionReview) error {
+	if review != nil {
+		review.setCounts()
+		if err := SaveSessionReviewDetails(name, review); err != nil {
+			return err
+		}
+	}
 	store, err := LoadSessions()
 	if err != nil {
 		return err
 	}
-	return store.UpdateSession(name, func(sess *Session) { sess.Review = review })
+	return store.UpdateSession(name, func(sess *Session) { sess.Review = CompactSessionReview(review) })
 }
 
 func ClearSessionReview(name string) error {
@@ -170,11 +190,85 @@ func ClearSessionReview(name string) error {
 	if err != nil {
 		return err
 	}
+	_ = os.Remove(reviewDetailsPath(name))
 	return store.UpdateSession(name, func(sess *Session) { sess.Review = nil })
+}
+
+func CompactSessionReview(review *SessionReview) *SessionReview {
+	if review == nil {
+		return nil
+	}
+	copy := *review
+	copy.setCounts()
+	copy.Details = ""
+	copy.UniqueCommits = nil
+	copy.ChangedFiles = nil
+	copy.DirtyFiles = nil
+	copy.UntrackedFiles = nil
+	return &copy
+}
+
+func (r *SessionReview) setCounts() {
+	if r == nil {
+		return
+	}
+	if len(r.UniqueCommits) > 0 {
+		r.UniqueCommitCount = len(r.UniqueCommits)
+	}
+	if len(r.ChangedFiles) > 0 {
+		r.ChangedFileCount = len(r.ChangedFiles)
+	}
+	if len(r.DirtyFiles) > 0 {
+		r.DirtyFileCount = len(r.DirtyFiles)
+	}
+	if len(r.UntrackedFiles) > 0 {
+		r.UntrackedFileCount = len(r.UntrackedFiles)
+	}
+}
+
+func SaveSessionReviewDetails(name string, review *SessionReview) error {
+	path := reviewDetailsPath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(review, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func LoadSessionReviewDetails(name string) (*SessionReview, error) {
+	data, err := os.ReadFile(reviewDetailsPath(name))
+	if err != nil {
+		return nil, err
+	}
+	var review SessionReview
+	if err := json.Unmarshal(data, &review); err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+func reviewDetailsPath(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return filepath.Join(reviewDetailsDir(), hex.EncodeToString(sum[:])+".json")
+}
+
+func reviewDetailsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "devx", "reviews")
+	}
+	return filepath.Join(home, ".config", "devx", "reviews")
 }
 
 func BuildReviewPrompt(sess *Session, review *SessionReview) string {
 	b, _ := json.MarshalIndent(review, "", "  ")
+	review.setCounts()
 	return fmt.Sprintf(`Review this devx session/worktree for cleanup.
 
 Goal: decide whether there is valuable work worth preserving before the user deletes the session. Do not delete or modify anything.
@@ -211,10 +305,6 @@ func RunReviewHarness(ctx context.Context, sess *Session, review *SessionReview,
 	args := make([]string, len(command))
 	for i, a := range command {
 		a = strings.ReplaceAll(a, "{prompt_file}", promptFile)
-		a = strings.ReplaceAll(a, "{prompt}", prompt)
-		a = strings.ReplaceAll(a, "{session}", sess.Name)
-		a = strings.ReplaceAll(a, "{path}", sess.Path)
-		a = strings.ReplaceAll(a, "{base}", review.BaseBranch)
 		args[i] = a
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
@@ -237,6 +327,9 @@ func RunReviewHarness(ctx context.Context, sess *Session, review *SessionReview,
 
 func classifyAgentText(text, fallback string) string {
 	lower := strings.ToLower(text)
+	if strings.Contains(lower, "probably safe to delete") {
+		return ReviewClassificationProbablySafe
+	}
 	for _, c := range []string{ReviewClassificationPreserve, ReviewClassificationNeedsReview, ReviewClassificationProbablySafe, ReviewClassificationSafe} {
 		if strings.Contains(lower, c) {
 			return c

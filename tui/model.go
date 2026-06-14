@@ -478,7 +478,7 @@ func (m *model) loadSessions() tea.Msg {
 
 		color := sess.EffectiveColor()
 		review := sess.Review
-		reviewStale := session.ReviewIsStale(sess)
+		reviewStale := review != nil && review.Stale
 
 		sessions = append(sessions, sessionItem{
 			name:            name,

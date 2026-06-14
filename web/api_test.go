@@ -141,6 +141,52 @@ func stubRunSelf(t *testing.T) *[]string {
 	return &gotArgs
 }
 
+func TestReviewEndpointPersistsAndFetchesDetails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Sessions["jf-review"] = &session.Session{Name: "jf-review", Branch: "jf-review", Path: "/missing"}
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := authedRequest(t, "POST", "/api/sessions/review?name=jf-review", strings.NewReader(`{}`))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var review session.SessionReview
+	if err := json.Unmarshal(resp.Body.Bytes(), &review); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if review.Classification != session.ReviewClassificationMissingWorktree {
+		t.Fatalf("classification = %q", review.Classification)
+	}
+
+	resp = authedRequest(t, "GET", "/api/sessions/review?name=jf-review", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200 from details fetch, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestReviewEndpointRejectsInvalidJSON(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Sessions["jf-review"] = &session.Session{Name: "jf-review", Branch: "jf-review", Path: "/missing"}
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := authedRequest(t, "POST", "/api/sessions/review?name=jf-review", strings.NewReader(`{bad`))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestPaneCaptureTargetUsesExactMatchForSlashSessionNames(t *testing.T) {
 	origRun := execTmuxRun
 	execTmuxRun = func(args ...string) error { return nil }

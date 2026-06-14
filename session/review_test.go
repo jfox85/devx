@@ -47,6 +47,30 @@ func TestReviewSessionClassifiesCleanDirtyAndUniqueCommits(t *testing.T) {
 	}
 }
 
+func TestCompactSessionReviewRemovesDetailsButKeepsCounts(t *testing.T) {
+	review := &SessionReview{
+		Classification: ReviewClassificationDirtyOnly,
+		Details:        "agent output",
+		UniqueCommits:  []string{"abc commit"},
+		DirtyFiles:     []string{"M file.txt"},
+		UntrackedFiles: []string{"scratch.txt"},
+	}
+	compact := CompactSessionReview(review)
+	if compact.Details != "" || len(compact.UniqueCommits) != 0 || len(compact.DirtyFiles) != 0 {
+		t.Fatalf("compact review retained rich details: %#v", compact)
+	}
+	if compact.UniqueCommitCount != 1 || compact.DirtyFileCount != 1 || compact.UntrackedFileCount != 1 {
+		t.Fatalf("compact counts not preserved: %#v", compact)
+	}
+}
+
+func TestClassifyAgentTextProbablySafeBeforeSafe(t *testing.T) {
+	got := classifyAgentText("This is probably safe to delete after checking logs.", ReviewClassificationNeedsReview)
+	if got != ReviewClassificationProbablySafe {
+		t.Fatalf("classification = %q", got)
+	}
+}
+
 func TestReviewSessionMissingWorktree(t *testing.T) {
 	review, err := ReviewSession(&Session{Name: "missing", Path: filepath.Join(t.TempDir(), "missing")}, ReviewOptions{})
 	if err != nil {

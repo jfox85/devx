@@ -48,6 +48,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
+	mux.HandleFunc("GET /api/sessions/review", handleGetSessionReview)
 	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
 	mux.HandleFunc("DELETE /api/sessions/review", handleClearSessionReview)
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
@@ -208,7 +209,7 @@ func reviewWithStaleness(sess *session.Session) *sessionReviewSummary {
 		Harness:            review.Harness,
 		Classification:     review.Classification,
 		Summary:            review.Summary,
-		Stale:              session.ReviewIsStale(sess),
+		Stale:              review.Stale,
 		Error:              review.Error,
 		UniqueCommitCount:  len(review.UniqueCommits),
 		ChangedFileCount:   len(review.ChangedFiles),
@@ -369,6 +370,31 @@ type reviewSessionRequest struct {
 	Harness string `json:"harness"`
 }
 
+func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	if review, err := session.LoadSessionReviewDetails(name); err == nil {
+		writeJSON(w, http.StatusOK, review)
+		return
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if sess, ok := store.GetSession(name); ok && sess.Review != nil {
+		writeJSON(w, http.StatusOK, sess.Review)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "review not found"})
+}
+
 func handleReviewSession(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
@@ -404,7 +430,7 @@ func handleReviewSession(w http.ResponseWriter, r *http.Request) {
 		review.Harness = req.Harness
 		review.Details = "Agent harness execution from web is not configured in this build; deterministic review was saved. Run `devx session review " + name + " --harness-command ...` for an agent pass."
 	}
-	if err := store.UpdateSession(name, func(s *session.Session) { s.Review = review }); err != nil {
+	if err := session.PersistSessionReview(name, review); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

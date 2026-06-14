@@ -12,6 +12,7 @@
   let target = ''
   let projects = []
   let error = ''
+  let projectLoadError = ''
   let loading = false
   let nameInputEl
 
@@ -24,7 +25,9 @@
       if (project && !projects.includes(project)) project = ''
       // If nothing remembered but there's only one project, pre-select it
       if (!project && projects.length === 1) project = projects[0]
-    } catch { /* if we can't load projects just hide the dropdown */ }
+    } catch (e) {
+      projectLoadError = e.message || 'could not load projects'
+    }
   })
 
   async function handleSubmit() {
@@ -51,7 +54,7 @@
   on:click|self={() => dispatch('close')}
   on:keydown={(e) => e.key === 'Escape' && dispatch('close')}
 >
-  <div class="w-full max-w-sm bg-[#0d1117] border border-[#1e2d4a]">
+  <div class="w-full max-w-sm max-h-[90dvh] overflow-y-auto bg-[#0d1117] border border-[#1e2d4a]">
     <!-- Modal title bar -->
     <div class="flex items-center justify-between px-4 py-2 border-b border-[#1e2d4a]">
       <span class="text-cyan-400 text-xs font-mono font-bold tracking-widest">new session</span>
@@ -105,6 +108,10 @@
             <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
           </div>
         </div>
+      {:else if projectLoadError}
+        <p class="text-yellow-600 text-[11px] font-mono leading-relaxed">
+          Could not load projects: {projectLoadError}. Creating without a project may fail unless the web server was started from a git repo.
+        </p>
       {/if}
 
       <div>

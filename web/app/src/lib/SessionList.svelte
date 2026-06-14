@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listSessions, deleteSession, renameSession, colorSession, reviewSession } from '../api.js'
+  import { listSessions, deleteSession, renameSession, colorSession, getSessionReview, reviewSession } from '../api.js'
   import NewSessionModal from './NewSessionModal.svelte'
 
   export let onOpenTerminal
@@ -68,6 +68,23 @@
     if (['needs-human-review', 'dirty-only', 'stale'].includes(c)) return 'text-yellow-500 border-yellow-900/60'
     if (['missing-worktree', 'error'].includes(c)) return 'text-red-500 border-red-900/60'
     return 'text-gray-500 border-gray-700'
+  }
+
+  async function toggleReview(session) {
+    if (expandedReview === session.name) {
+      expandedReview = null
+      return
+    }
+    expandedReview = session.name
+    expandedRoutes = null
+    if (session.review) {
+      try {
+        session.review = await getSessionReview(session.name)
+        sessions = [...sessions]
+      } catch {
+        // Keep the summary from the list response if details are unavailable.
+      }
+    }
   }
 
   async function runReview(session, harness = '') {
@@ -403,7 +420,7 @@
                   <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
                 {/if}
                 <button
-                  on:click|stopPropagation={() => { expandedReview = expandedReview === session.name ? null : session.name; if (expandedReview) expandedRoutes = null }}
+                  on:click|stopPropagation={() => toggleReview(session)}
                   class="border {reviewTone(session.review)} text-[9px] px-1 py-0.5 shrink-0 hover:border-cyan-700 cursor-pointer"
                   title={session.review?.summary || 'No cleanup review yet'}
                 >{reviewLabel(session.review)}</button>

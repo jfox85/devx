@@ -69,7 +69,7 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 			Routes:      sess.Routes,
 			Path:        sess.Path,
 			Review:      sess.Review,
-			ReviewStale: session.ReviewIsStale(sess),
+			ReviewStale: sess.Review != nil && sess.Review.Stale,
 		}
 
 		// Check tmux status

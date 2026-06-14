@@ -45,7 +45,10 @@ func LoadSessions() (*SessionStore, error) {
 
 	// Create config directory if it doesn't exist
 	dir := filepath.Dir(sessionsPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -86,8 +89,14 @@ func (s *SessionStore) Save() error {
 		return fmt.Errorf("failed to marshal sessions: %w", err)
 	}
 
-	if err := os.WriteFile(sessionsPath, data, 0644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sessionsPath), 0o700); err != nil {
+		return fmt.Errorf("failed to create sessions directory: %w", err)
+	}
+	if err := os.WriteFile(sessionsPath, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write sessions file: %w", err)
+	}
+	if err := os.Chmod(sessionsPath, 0o600); err != nil {
+		return fmt.Errorf("failed to set sessions file permissions: %w", err)
 	}
 
 	return nil

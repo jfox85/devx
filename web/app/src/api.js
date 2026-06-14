@@ -83,6 +83,15 @@ export async function colorSession(name, color) {
   }
 }
 
+export async function getSessionReview(name) {
+  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name))
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Fetch review failed')
+  }
+  return res.json()
+}
+
 export async function reviewSession(name, { base = '', harness = '' } = {}) {
   const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), {
     method: 'POST',
