@@ -263,7 +263,7 @@
   }
 
   async function handleDelete(session) {
-    if (deletingSessions[session.name]) return
+    if (deletingSessions[session.name]) return false
     // Two-click confirmation: first click arms the delete, second click fires it.
     // Click outside (blur/hover-leave) resets via the pendingDelete timeout below.
     if (pendingDelete !== session.name) {
@@ -276,7 +276,7 @@
           cleanupMessage = ''
         }
       }, 3000)
-      return
+      return false
     }
     pendingDelete = null
     error = ''
@@ -288,9 +288,11 @@
       if (session.name === activeSessionName) onDeleteSession?.()
       await load()
       cleanupMessage = ''
+      return true
     } catch (e) {
       error = e.message || 'Delete failed'
       cleanupMessage = ''
+      return false
     } finally {
       const next = { ...deletingSessions }
       delete next[session.name]
@@ -364,8 +366,8 @@
 
   async function handleDeleteStaleStatus(status) {
     const session = sessionByName[status.session_name] || { name: status.session_name }
-    await handleDelete(session)
-    await loadStaleReview()
+    const deleted = await handleDelete(session)
+    if (deleted) await loadStaleReview()
   }
 
   function handleRepairStaleStatus(status) {

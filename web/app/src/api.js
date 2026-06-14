@@ -34,6 +34,7 @@ export async function listSessions() {
 
 export async function listSessionsWithSummary() {
   const res = await apiFetch('/sessions')
+  await requireOK(res, 'Failed to list sessions')
   return res.json()
 }
 

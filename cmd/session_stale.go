@@ -14,6 +14,7 @@ import (
 
 var (
 	staleDaysFlag int
+	pruneDaysFlag int
 	staleJSONFlag bool
 	pruneDryRun   bool
 )
@@ -39,7 +40,7 @@ func init() {
 	sessionStaleCmd.Flags().IntVar(&staleDaysFlag, "days", 14, "Mark sessions stale after this many inactive days")
 	sessionStaleCmd.Flags().BoolVar(&staleJSONFlag, "json", false, "Output stale session data as JSON")
 
-	sessionPruneCmd.Flags().IntVar(&staleDaysFlag, "days", 14, "Remove stale-clean sessions inactive for this many days")
+	sessionPruneCmd.Flags().IntVar(&pruneDaysFlag, "days", 14, "Remove stale-clean sessions inactive for this many days")
 	sessionPruneCmd.Flags().BoolVar(&pruneDryRun, "dry-run", false, "Show what would be removed without deleting anything")
 	sessionPruneCmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Force removal without confirmation")
 }
@@ -64,7 +65,7 @@ func runSessionStale(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionPrune(cmd *cobra.Command, args []string) (retErr error) {
-	threshold, err := daysToDuration(staleDaysFlag)
+	threshold, err := daysToDuration(pruneDaysFlag)
 	if err != nil {
 		return err
 	}

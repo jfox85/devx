@@ -231,6 +231,9 @@ func AnalyzeStaleSessionWithOptions(sess *Session, opts StaleAnalysisOptions) St
 }
 
 func probeStaleSession(sess *Session, opts StaleAnalysisOptions) StaleStatus {
+	if sess == nil {
+		return StaleStatus{Category: StaleCategoryBroken, LastActiveAt: time.Now(), AgeSeconds: 0, Reasons: []string{"session metadata missing"}}
+	}
 	now := time.Now()
 	lastActive := sessionLastActiveAt(sess)
 	tmux := "none"
@@ -276,6 +279,10 @@ func probeStaleSession(sess *Session, opts StaleAnalysisOptions) StaleStatus {
 }
 
 func classifyStaleStatus(status StaleStatus, sess *Session, opts StaleAnalysisOptions, threshold time.Duration) StaleStatus {
+	if sess == nil {
+		status.Category = StaleCategoryBroken
+		return status
+	}
 	if status.Category == StaleCategoryBroken {
 		return status
 	}
@@ -325,6 +332,9 @@ func classifyStaleStatus(status StaleStatus, sess *Session, opts StaleAnalysisOp
 }
 
 func DeriveSessionStatus(sess *Session, stale StaleStatus, artifactCount, unseenArtifacts int) SessionStatusSummary {
+	if sess == nil {
+		sess = &Session{}
+	}
 	status := SessionStatusSummary{
 		Primary:          SessionStatusIdle,
 		Color:            "gray",
@@ -368,6 +378,11 @@ func DeriveSessionStatus(sess *Session, stale StaleStatus, artifactCount, unseen
 	if stale.Category == StaleCategoryActive || stale.TmuxStatus != "none" || stale.EditorStatus == "running" {
 		status.Primary, status.Color, status.Label, status.Priority = SessionStatusActive, "green", "active", 50
 		status.Badges = append(status.Badges, "▶")
+		return status
+	}
+	if stale.Category == StaleCategoryNeedsReview {
+		status.Primary, status.Color, status.Label, status.Priority = SessionStatusBrokenOrStale, "orange", "needs review", 55
+		status.Badges = append(status.Badges, "?")
 		return status
 	}
 	if stale.CleanupCandidate {

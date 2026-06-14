@@ -93,7 +93,6 @@ func handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRemoveArtifact(w http.ResponseWriter, r *http.Request) {
-	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -108,6 +107,7 @@ func handleRemoveArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to remove artifact"})
 		return
 	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -213,7 +213,6 @@ func serveManifestArtifactFile(w http.ResponseWriter, r *http.Request, sess *ses
 }
 
 func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
-	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -311,6 +310,7 @@ func handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file or text is required"})
 		return
 	}
+	invalidateSessionListCache()
 	writeJSON(w, http.StatusCreated, map[string]any{"artifacts": added})
 }
 
@@ -324,7 +324,6 @@ type renameArtifactRequest struct {
 }
 
 func handleRenameArtifact(w http.ResponseWriter, r *http.Request) {
-	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -356,11 +355,11 @@ func handleRenameArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to update artifact"})
 		return
 	}
+	invalidateSessionListCache()
 	writeJSON(w, http.StatusOK, artifactpkg.WithComputedFields(sess.Name, []artifactpkg.Artifact{updated})[0])
 }
 
 func handleArchiveArtifact(w http.ResponseWriter, r *http.Request) {
-	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -376,11 +375,11 @@ func handleArchiveArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to archive artifact"})
 		return
 	}
+	invalidateSessionListCache()
 	writeJSON(w, http.StatusOK, artifactpkg.WithComputedFields(sess.Name, []artifactpkg.Artifact{updated})[0])
 }
 
 func handleClearArtifactFocus(w http.ResponseWriter, r *http.Request) {
-	defer invalidateSessionListCache()
 	sess, ok := artifactSessionFromRequest(w, r)
 	if !ok {
 		return
@@ -395,6 +394,7 @@ func handleClearArtifactFocus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear artifact attention"})
 		return
 	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -433,9 +433,6 @@ func handleMarkArtifactsSeen(w http.ResponseWriter, r *http.Request) {
 
 func markArtifactsSeen(sessionName string, manifest *artifactpkg.Manifest) error {
 	latest := latestArtifactCreatedAt(manifest)
-	if latest.IsZero() {
-		return nil
-	}
 	store, err := session.LoadSessions()
 	if err != nil {
 		return err
@@ -444,7 +441,7 @@ func markArtifactsSeen(sessionName string, manifest *artifactpkg.Manifest) error
 	if !ok {
 		return nil
 	}
-	if !latest.After(current.LastArtifactSeenAt) && current.AttentionSource != "artifact" {
+	if (latest.IsZero() || !latest.After(current.LastArtifactSeenAt)) && current.AttentionSource != "artifact" {
 		return nil
 	}
 	if err := store.Mutate(func(fresh *session.SessionStore) error {

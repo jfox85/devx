@@ -9,13 +9,16 @@ import (
 	"time"
 )
 
-// setupTempHome points HOME at a fresh temp dir so sessions.json is isolated.
+// setupTempHome points OS-specific config roots at a fresh temp dir so
+// sessions.json is isolated on Unix, macOS, and Windows.
 func setupTempHome(t *testing.T) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	t.Setenv("APPDATA", filepath.Join(tmpDir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "AppData", "Local"))
 }
 
 // TestUpdateSessionNoLostUpdate reproduces the sessions.json lost-update race:
