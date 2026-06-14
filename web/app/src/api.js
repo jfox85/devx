@@ -154,7 +154,7 @@ export async function listProjects() {
 
 export async function getSettings() {
   const res = await apiFetch('/settings')
-  if (!res.ok) return { artifact_trigger_key: 'Ctrl+Space' }
+  if (!res.ok) return { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host' }
   return res.json()
 }
 

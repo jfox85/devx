@@ -104,8 +104,19 @@ type loginRequest struct {
 }
 
 func handleSettings(w http.ResponseWriter, r *http.Request) {
+	defaultTarget := viper.GetString("session_target")
+	if defaultTarget == "" {
+		defaultTarget = viper.GetString("target")
+	}
+	if defaultTarget == "" {
+		defaultTarget = viper.GetString("execution_target")
+	}
+	if defaultTarget == "" {
+		defaultTarget = "host"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"artifact_trigger_key": viper.GetString("artifact_trigger_key"),
+		"artifact_trigger_key":   viper.GetString("artifact_trigger_key"),
+		"default_session_target": defaultTarget,
 	})
 }
 

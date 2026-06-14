@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/NewSessionModal.svelte -->
 <script>
   import { onMount, createEventDispatcher } from 'svelte'
-  import { createSession, listProjects } from '../api.js'
+  import { createSession, getSettings, listProjects } from '../api.js'
 
   const dispatch = createEventDispatcher()
 
@@ -9,7 +9,8 @@
 
   let name = ''
   let project = localStorage.getItem(LAST_PROJECT_KEY) || ''
-  let target = ''
+  let target = 'default'
+  let defaultTarget = 'host'
   let projects = []
   let error = ''
   let projectLoadError = ''
@@ -20,6 +21,10 @@
   onMount(async () => {
     // Explicitly focus the name field — autofocus alone fails when an iframe held focus
     nameInputEl?.focus()
+    try {
+      const settings = await getSettings()
+      defaultTarget = settings.default_session_target || 'host'
+    } catch { /* settings are optional; keep fallback */ }
     try {
       projects = await listProjects()
       // If the remembered project is no longer in the list, clear it
@@ -38,7 +43,7 @@
     loading = true
     error = ''
     try {
-      await createSession(name.trim(), project || undefined, target || undefined)
+      await createSession(name.trim(), project || undefined, target === 'default' ? undefined : target)
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
       dispatch('created')
       dispatch('close')
@@ -86,26 +91,28 @@
       </div>
 
       <div>
-        <label for="session-target" class="block text-gray-600 text-[11px] font-mono mb-1">
-          session type
-        </label>
-        <div class="relative">
-          <select
-            id="session-target"
-            bind:value={target}
-            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
-            class="
-              w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
-              text-gray-300 text-xs font-mono px-3 py-2 pr-7
-              outline-none transition-colors appearance-none
-            "
-          >
-            <option value="">default</option>
-            <option value="host">host</option>
-            <option value="docker">docker</option>
-            <option value="gatepost">gatepost</option>
-          </select>
-          <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
+        <div class="flex items-center justify-between mb-1">
+          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
+          <span class="text-gray-700 text-[10px] font-mono">default: {defaultTarget}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="session type">
+          {#each [
+            ['default', `default (${defaultTarget})`],
+            ['host', 'host'],
+            ['gatepost', 'gatepost'],
+            ['docker', 'docker'],
+          ] as [value, label]}
+            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
+              <input
+                type="radio"
+                name="session-target"
+                value={value}
+                bind:group={target}
+                class="accent-cyan-600"
+              />
+              <span>{label}</span>
+            </label>
+          {/each}
         </div>
       </div>
 
