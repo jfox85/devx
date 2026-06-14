@@ -83,6 +83,26 @@ export async function colorSession(name, color) {
   }
 }
 
+export async function reviewSession(name, { base = '', harness = '' } = {}) {
+  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), {
+    method: 'POST',
+    body: JSON.stringify({ base, harness }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Session review failed')
+  }
+  return res.json()
+}
+
+export async function clearSessionReview(name) {
+  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), { method: 'DELETE' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Clear review failed')
+  }
+}
+
 export async function login(token) {
   const res = await fetch(base + '/login', {
     method: 'POST',

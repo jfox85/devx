@@ -42,8 +42,9 @@ type sessionItem struct {
 	deletions       int    // Git diff deletions count
 	displayName     string // raw DisplayName from metadata (empty if not set)
 	color           string
+	review          *session.SessionReview
+	reviewStale     bool
 }
-
 type projectItem struct {
 	alias       string
 	name        string
@@ -476,6 +477,8 @@ func (m *model) loadSessions() tea.Msg {
 		additions, deletions := 0, 0
 
 		color := sess.EffectiveColor()
+		review := sess.Review
+		reviewStale := session.ReviewIsStale(sess)
 
 		sessions = append(sessions, sessionItem{
 			name:            name,
@@ -492,6 +495,8 @@ func (m *model) loadSessions() tea.Msg {
 			deletions:       deletions,
 			displayName:     sess.DisplayName,
 			color:           color,
+			review:          review,
+			reviewStale:     reviewStale,
 		})
 	}
 
@@ -1689,6 +1694,18 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 		details += fmt.Sprintf("    Changes: %s\n", strings.Join(diffParts, " "))
 	}
 
+	if sess.review != nil {
+		label := sess.review.Classification
+		if sess.reviewStale {
+			label += " (stale)"
+		}
+		details += fmt.Sprintf("    Review: %s", label)
+		if sess.review.Summary != "" {
+			details += fmt.Sprintf(" — %s", sess.review.Summary)
+		}
+		details += "\n"
+	}
+
 	if len(sess.ports) > 0 {
 		details += "    Ports:"
 		// Sort ports alphabetically
@@ -1736,6 +1753,21 @@ func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 			diffParts = append(diffParts, deletionsStyle.Render(fmt.Sprintf("-%d", sess.deletions)))
 		}
 		preview.WriteString(fmt.Sprintf("Changes: %s\n", strings.Join(diffParts, " ")))
+	}
+
+	if sess.review != nil {
+		label := sess.review.Classification
+		if sess.reviewStale {
+			label += " (stale)"
+		}
+		preview.WriteString(fmt.Sprintf("Review: %s", label))
+		if sess.review.Summary != "" {
+			preview.WriteString(fmt.Sprintf(" — %s", sess.review.Summary))
+		}
+		preview.WriteString("\n")
+		if sess.review.Details != "" {
+			preview.WriteString(dimStyle.Render(firstLines(sess.review.Details, 6)) + "\n")
+		}
 	}
 
 	// Show attention reason at the top if flagged
@@ -1807,6 +1839,14 @@ func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 	}
 
 	return preview.String()
+}
+
+func firstLines(s string, max int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) <= max {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:max], "\n") + "\n…"
 }
 
 func (m *model) getTmuxSessionContent(sessionName string, maxWidth int) string {

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
@@ -47,6 +48,8 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
+	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
+	mux.HandleFunc("DELETE /api/sessions/review", handleClearSessionReview)
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
 	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
@@ -138,17 +141,32 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // sessionResponse is the JSON shape returned for each session.
 type sessionResponse struct {
-	Name              string            `json:"name"`
-	DisplayName       string            `json:"display_name,omitempty"`
-	Color             string            `json:"color"`
-	Branch            string            `json:"branch"`
-	ProjectAlias      string            `json:"project_alias,omitempty"`
-	Ports             map[string]int    `json:"ports"`
-	Routes            map[string]string `json:"routes"`
-	ExternalRoutes    map[string]string `json:"external_routes,omitempty"`
-	AttentionFlag     bool              `json:"attention_flag"`
-	ArtifactCount     int               `json:"artifact_count"`
-	FocusedArtifactID string            `json:"focused_artifact_id,omitempty"`
+	Name              string                `json:"name"`
+	DisplayName       string                `json:"display_name,omitempty"`
+	Color             string                `json:"color"`
+	Branch            string                `json:"branch"`
+	ProjectAlias      string                `json:"project_alias,omitempty"`
+	Ports             map[string]int        `json:"ports"`
+	Routes            map[string]string     `json:"routes"`
+	ExternalRoutes    map[string]string     `json:"external_routes,omitempty"`
+	AttentionFlag     bool                  `json:"attention_flag"`
+	ArtifactCount     int                   `json:"artifact_count"`
+	FocusedArtifactID string                `json:"focused_artifact_id,omitempty"`
+	Review            *sessionReviewSummary `json:"review,omitempty"`
+}
+
+type sessionReviewSummary struct {
+	BaseBranch         string    `json:"base_branch,omitempty"`
+	ReviewedAt         time.Time `json:"reviewed_at,omitempty"`
+	Harness            string    `json:"harness,omitempty"`
+	Classification     string    `json:"classification"`
+	Summary            string    `json:"summary,omitempty"`
+	Stale              bool      `json:"stale,omitempty"`
+	Error              string    `json:"error,omitempty"`
+	UniqueCommitCount  int       `json:"unique_commit_count"`
+	ChangedFileCount   int       `json:"changed_file_count"`
+	DirtyFileCount     int       `json:"dirty_file_count"`
+	UntrackedFileCount int       `json:"untracked_file_count"`
 }
 
 func buildSessionResponse(sess *session.Session) sessionResponse {
@@ -175,6 +193,27 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		AttentionFlag:     sess.AttentionFlag,
 		ArtifactCount:     artifactCount,
 		FocusedArtifactID: focusedArtifactID,
+		Review:            reviewWithStaleness(sess),
+	}
+}
+
+func reviewWithStaleness(sess *session.Session) *sessionReviewSummary {
+	if sess == nil || sess.Review == nil {
+		return nil
+	}
+	review := sess.Review
+	return &sessionReviewSummary{
+		BaseBranch:         review.BaseBranch,
+		ReviewedAt:         review.ReviewedAt,
+		Harness:            review.Harness,
+		Classification:     review.Classification,
+		Summary:            review.Summary,
+		Stale:              session.ReviewIsStale(sess),
+		Error:              review.Error,
+		UniqueCommitCount:  len(review.UniqueCommits),
+		ChangedFileCount:   len(review.ChangedFiles),
+		DirtyFileCount:     len(review.DirtyFiles),
+		UntrackedFileCount: len(review.UntrackedFiles),
 	}
 }
 
@@ -319,6 +358,69 @@ func handleColorSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := runSelfCommand("session", "color", "--", name, color); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type reviewSessionRequest struct {
+	Base    string `json:"base"`
+	Harness string `json:"harness"`
+}
+
+func handleReviewSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	var req reviewSessionRequest
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	sess, ok := store.GetSession(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	review, err := session.ReviewSession(sess, session.ReviewOptions{BaseBranch: req.Base})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Harness != "" && req.Harness != "deterministic" {
+		review.Harness = req.Harness
+		review.Details = "Agent harness execution from web is not configured in this build; deterministic review was saved. Run `devx session review " + name + " --harness-command ...` for an agent pass."
+	}
+	if err := store.UpdateSession(name, func(s *session.Session) { s.Review = review }); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
+}
+
+func handleClearSessionReview(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	if err := session.ClearSessionReview(name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

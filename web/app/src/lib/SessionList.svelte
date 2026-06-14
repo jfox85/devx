@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { listSessions, deleteSession, renameSession, colorSession } from '../api.js'
+  import { listSessions, deleteSession, renameSession, colorSession, reviewSession } from '../api.js'
   import NewSessionModal from './NewSessionModal.svelte'
 
   export let onOpenTerminal
@@ -19,6 +19,8 @@
   let searchFocused = false   // true while the filter input has focus
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
+  let expandedReview = null  // session.name whose review summary is shown
+  let reviewing = null       // session.name currently being reviewed
   let pendingDelete = null   // session.name awaiting second-click confirmation
   let editingName = null     // session.name being renamed
   let editValue = ''         // current text input value
@@ -51,6 +53,35 @@
 
   function cancelRename() {
     editingName = null
+  }
+
+  function reviewLabel(review) {
+    if (!review) return 'review:none'
+    if (review.stale) return 'review:stale'
+    return 'review:' + (review.classification || 'unknown')
+  }
+
+  function reviewTone(review) {
+    const c = review?.stale ? 'stale' : review?.classification
+    if (['safe-to-delete', 'probably-safe-to-delete', 'clean'].includes(c)) return 'text-green-500 border-green-900/60'
+    if (['preserve-before-delete', 'unique-commits'].includes(c)) return 'text-purple-400 border-purple-900/60'
+    if (['needs-human-review', 'dirty-only', 'stale'].includes(c)) return 'text-yellow-500 border-yellow-900/60'
+    if (['missing-worktree', 'error'].includes(c)) return 'text-red-500 border-red-900/60'
+    return 'text-gray-500 border-gray-700'
+  }
+
+  async function runReview(session, harness = '') {
+    reviewing = session.name
+    error = ''
+    try {
+      session.review = await reviewSession(session.name, { harness })
+      expandedReview = session.name
+      sessions = [...sessions]
+    } catch (e) {
+      error = e.message
+    } finally {
+      reviewing = null
+    }
   }
 
   async function cycleColor(session) {
@@ -371,6 +402,11 @@
                 {#if session.attention_flag}
                   <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
                 {/if}
+                <button
+                  on:click|stopPropagation={() => { expandedReview = expandedReview === session.name ? null : session.name; if (expandedReview) expandedRoutes = null }}
+                  class="border {reviewTone(session.review)} text-[9px] px-1 py-0.5 shrink-0 hover:border-cyan-700 cursor-pointer"
+                  title={session.review?.summary || 'No cleanup review yet'}
+                >{reviewLabel(session.review)}</button>
               </div>
 
               <!-- Action buttons:
@@ -380,9 +416,18 @@
                 flex items-center gap-px pr-1
                 lg:opacity-0 lg:group-hover:opacity-100 lg:transition-opacity
               ">
+                <button
+                  on:click={() => runReview(session)}
+                  disabled={reviewing === session.name}
+                  class="
+                    font-mono text-purple-600 hover:text-purple-300 disabled:opacity-40
+                    text-sm lg:text-[10px] px-3 lg:px-1.5 py-4 lg:py-1.5 transition-colors
+                  "
+                  title="run cleanup review"
+                >{reviewing === session.name ? '…' : 'rvw'}</button>
                 {#if hasRoutes}
                   <button
-                    on:click={() => expandedRoutes = expandedRoutes === session.name ? null : session.name}
+                    on:click={() => { expandedRoutes = expandedRoutes === session.name ? null : session.name; if (expandedRoutes) expandedReview = null }}
                     class="
                       font-mono
                       text-blue-600 hover:text-blue-300 active:text-blue-200
@@ -409,6 +454,33 @@
                 >{pendingDelete === session.name ? '!×' : '×'}</button>
               </div>
             </div>
+
+            <!-- Review inline expansion -->
+            {#if expandedReview === session.name}
+              <div class="bg-[#0d1117] border-b border-[#1e2d4a] pl-6 pr-3 py-2 space-y-2 font-mono text-[11px]">
+                {#if session.review}
+                  <div class="flex items-center gap-2">
+                    <span class="border {reviewTone(session.review)} px-1 py-0.5">{reviewLabel(session.review)}</span>
+                    {#if session.review.harness}<span class="text-gray-600">{session.review.harness}</span>{/if}
+                    {#if session.review.base_branch}<span class="text-gray-600">base {session.review.base_branch}</span>{/if}
+                  </div>
+                  {#if session.review.summary}<p class="text-gray-400 leading-relaxed">{session.review.summary}</p>{/if}
+                  <div class="grid grid-cols-3 gap-2 text-gray-600">
+                    <span>{session.review.unique_commit_count ?? session.review.unique_commits?.length ?? 0} commits</span>
+                    <span>{session.review.dirty_file_count ?? session.review.dirty_files?.length ?? 0} dirty</span>
+                    <span>{session.review.untracked_file_count ?? session.review.untracked_files?.length ?? 0} untracked</span>
+                  </div>
+                  {#if session.review.details}<pre class="max-h-32 overflow-auto whitespace-pre-wrap text-gray-500 border border-[#1e2d4a] p-2">{session.review.details}</pre>{/if}
+                  {#if session.review.error}<p class="text-red-500">{session.review.error}</p>{/if}
+                {:else}
+                  <p class="text-gray-600">No review yet. Run a cleanup review to summarize whether this session has work worth preserving.</p>
+                {/if}
+                <div class="flex gap-2">
+                  <button on:click={() => runReview(session)} disabled={reviewing === session.name} class="text-purple-500 hover:text-purple-300 disabled:opacity-40">run deterministic review</button>
+                  <button on:click={() => expandedReview = null} class="text-gray-700 hover:text-gray-500">close ×</button>
+                </div>
+              </div>
+            {/if}
 
             <!-- Routes inline expansion -->
             {#if expandedRoutes === session.name}

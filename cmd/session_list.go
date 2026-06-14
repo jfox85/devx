@@ -35,6 +35,8 @@ type SessionStatus struct {
 	TmuxStatus   string // "attached", "detached", "none"
 	EditorStatus string // "running", "stopped"
 	Path         string
+	Review       *session.SessionReview
+	ReviewStale  bool
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
@@ -66,6 +68,8 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 			Ports:       sess.Ports,
 			Routes:      sess.Routes,
 			Path:        sess.Path,
+			Review:      sess.Review,
+			ReviewStale: session.ReviewIsStale(sess),
 		}
 
 		// Check tmux status
@@ -238,6 +242,16 @@ func displaySessionList(statuses []SessionStatus, caddyRoutes map[string]bool) {
 			statusParts = append(statusParts, "caddy:active")
 		} else if len(status.Routes) > 0 {
 			statusParts = append(statusParts, "caddy:stale")
+		}
+
+		if status.Review != nil {
+			label := status.Review.Classification
+			if status.ReviewStale {
+				label = "stale"
+			}
+			statusParts = append(statusParts, "review:"+label)
+		} else {
+			statusParts = append(statusParts, "review:none")
 		}
 
 		statusStr := strings.Join(statusParts, ",")
