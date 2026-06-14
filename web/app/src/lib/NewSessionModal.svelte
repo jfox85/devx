@@ -9,7 +9,7 @@
 
   let name = ''
   let project = localStorage.getItem(LAST_PROJECT_KEY) || ''
-  let target = 'default'
+  let target = 'host'
   let defaultTarget = 'host'
   let projects = []
   let error = ''
@@ -24,6 +24,7 @@
     try {
       const settings = await getSettings()
       defaultTarget = settings.default_session_target || 'host'
+      if (['host', 'gatepost', 'docker'].includes(defaultTarget)) target = defaultTarget
     } catch { /* settings are optional; keep fallback */ }
     try {
       projects = await listProjects()
@@ -43,7 +44,7 @@
     loading = true
     error = ''
     try {
-      await createSession(name.trim(), project || undefined, target === 'default' ? undefined : target)
+      await createSession(name.trim(), project || undefined, target || undefined)
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
       dispatch('created')
       dispatch('close')
@@ -97,7 +98,6 @@
         </div>
         <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="session type">
           {#each [
-            ['default', `default (${defaultTarget})`],
             ['host', 'host'],
             ['gatepost', 'gatepost'],
             ['docker', 'docker'],
