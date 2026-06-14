@@ -13,6 +13,7 @@
   let projects = []
   let error = ''
   let projectLoadError = ''
+  let projectsLoading = true
   let loading = false
   let nameInputEl
 
@@ -27,6 +28,8 @@
       if (!project && projects.length === 1) project = projects[0]
     } catch (e) {
       projectLoadError = e.message || 'could not load projects'
+    } finally {
+      projectsLoading = false
     }
   })
 
@@ -82,38 +85,6 @@
         />
       </div>
 
-      {#if projects.length > 0}
-        <div>
-          <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
-            project
-          </label>
-          <!-- Wrap in relative div to overlay a custom dropdown arrow, since
-               appearance-none removes the native one but gives us full style control. -->
-          <div class="relative">
-            <select
-              id="session-project"
-              bind:value={project}
-              on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
-              class="
-                w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
-                text-gray-300 text-xs font-mono px-3 py-2 pr-7
-                outline-none transition-colors appearance-none
-              "
-            >
-              <option value="">— none —</option>
-              {#each projects as p}
-                <option value={p}>{p}</option>
-              {/each}
-            </select>
-            <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
-          </div>
-        </div>
-      {:else if projectLoadError}
-        <p class="text-yellow-600 text-[11px] font-mono leading-relaxed">
-          Could not load projects: {projectLoadError}. Creating without a project may fail unless the web server was started from a git repo.
-        </p>
-      {/if}
-
       <div>
         <label for="session-target" class="block text-gray-600 text-[11px] font-mono mb-1">
           session type
@@ -136,6 +107,42 @@
           </select>
           <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
         </div>
+      </div>
+
+      <div>
+        <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
+          project
+        </label>
+        <div class="relative">
+          <select
+            id="session-project"
+            bind:value={project}
+            disabled={projectsLoading || projects.length === 0}
+            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
+            class="
+              w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
+              text-gray-300 text-xs font-mono px-3 py-2 pr-7
+              outline-none transition-colors appearance-none disabled:opacity-50
+            "
+          >
+            {#if projectsLoading}
+              <option value="">loading projects…</option>
+            {:else if projects.length === 0}
+              <option value="">no registered projects found</option>
+            {:else}
+              <option value="">default / current directory</option>
+              {#each projects as p}
+                <option value={p}>{p}</option>
+              {/each}
+            {/if}
+          </select>
+          <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
+        </div>
+        {#if projectLoadError}
+          <p class="mt-1 text-yellow-600 text-[10px] font-mono leading-relaxed">
+            Could not load projects: {projectLoadError}
+          </p>
+        {/if}
       </div>
 
       {#if error}
