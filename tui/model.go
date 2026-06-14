@@ -478,6 +478,9 @@ func (m *model) loadSessions() tea.Msg {
 
 		color := sess.EffectiveColor()
 		review := sess.Review
+		if fullReview, err := session.LoadSessionReviewDetails(name); err == nil {
+			review = fullReview
+		}
 		reviewStale := review != nil && review.Stale
 
 		sessions = append(sessions, sessionItem{

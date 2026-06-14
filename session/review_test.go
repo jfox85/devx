@@ -47,6 +47,57 @@ func TestReviewSessionClassifiesCleanDirtyAndUniqueCommits(t *testing.T) {
 	}
 }
 
+func TestRefreshSessionReviewStaleDetectsStatusChange(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := initReviewRepo(t)
+	store, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Sessions["test"] = &Session{Name: "test", Branch: "feature", Path: repo}
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	review, err := ReviewSession(store.Sessions["test"], ReviewOptions{BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PersistSessionReview("test", review); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scratch.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err = LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := RefreshSessionReviewStale("test", store.Sessions["test"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil || !updated.Stale {
+		t.Fatalf("expected stale review, got %#v", updated)
+	}
+}
+
+func TestRemoveSessionReviewDetails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	review := &SessionReview{Classification: ReviewClassificationDirtyOnly, Details: "secret-ish details"}
+	if err := SaveSessionReviewDetails("test", review); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSessionReviewDetails("test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveSessionReviewDetails("test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSessionReviewDetails("test"); !os.IsNotExist(err) {
+		t.Fatalf("expected details to be removed, got %v", err)
+	}
+}
+
 func TestCompactSessionReviewRemovesDetailsButKeepsCounts(t *testing.T) {
 	review := &SessionReview{
 		Classification: ReviewClassificationDirtyOnly,

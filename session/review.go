@@ -174,6 +174,7 @@ func ReviewIsStale(sess *Session) bool {
 func PersistSessionReview(name string, review *SessionReview) error {
 	if review != nil {
 		review.setCounts()
+		review.Stale = false
 		if err := SaveSessionReviewDetails(name, review); err != nil {
 			return err
 		}
@@ -190,8 +191,36 @@ func ClearSessionReview(name string) error {
 	if err != nil {
 		return err
 	}
-	_ = os.Remove(reviewDetailsPath(name))
+	_ = RemoveSessionReviewDetails(name)
 	return store.UpdateSession(name, func(sess *Session) { sess.Review = nil })
+}
+
+func RemoveSessionReviewDetails(name string) error {
+	err := os.Remove(reviewDetailsPath(name))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func RefreshSessionReviewStale(name string, sess *Session) (*SessionReview, error) {
+	if sess == nil || sess.Review == nil {
+		return nil, nil
+	}
+	stale := ReviewIsStale(sess)
+	if sess.Review.Stale == stale {
+		return sess.Review, nil
+	}
+	updated := *sess.Review
+	updated.Stale = stale
+	store, err := LoadSessions()
+	if err != nil {
+		return &updated, err
+	}
+	if err := store.UpdateSession(name, func(s *Session) { s.Review = &updated }); err != nil {
+		return &updated, err
+	}
+	return &updated, nil
 }
 
 func CompactSessionReview(review *SessionReview) *SessionReview {
@@ -267,8 +296,8 @@ func reviewDetailsDir() string {
 }
 
 func BuildReviewPrompt(sess *Session, review *SessionReview) string {
-	b, _ := json.MarshalIndent(review, "", "  ")
 	review.setCounts()
+	b, _ := json.MarshalIndent(review, "", "  ")
 	return fmt.Sprintf(`Review this devx session/worktree for cleanup.
 
 Goal: decide whether there is valuable work worth preserving before the user deletes the session. Do not delete or modify anything.

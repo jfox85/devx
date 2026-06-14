@@ -203,6 +203,22 @@ func reviewWithStaleness(sess *session.Session) *sessionReviewSummary {
 		return nil
 	}
 	review := sess.Review
+	uniqueCommitCount := review.UniqueCommitCount
+	if uniqueCommitCount == 0 {
+		uniqueCommitCount = len(review.UniqueCommits)
+	}
+	changedFileCount := review.ChangedFileCount
+	if changedFileCount == 0 {
+		changedFileCount = len(review.ChangedFiles)
+	}
+	dirtyFileCount := review.DirtyFileCount
+	if dirtyFileCount == 0 {
+		dirtyFileCount = len(review.DirtyFiles)
+	}
+	untrackedFileCount := review.UntrackedFileCount
+	if untrackedFileCount == 0 {
+		untrackedFileCount = len(review.UntrackedFiles)
+	}
 	return &sessionReviewSummary{
 		BaseBranch:         review.BaseBranch,
 		ReviewedAt:         review.ReviewedAt,
@@ -211,10 +227,10 @@ func reviewWithStaleness(sess *session.Session) *sessionReviewSummary {
 		Summary:            review.Summary,
 		Stale:              review.Stale,
 		Error:              review.Error,
-		UniqueCommitCount:  len(review.UniqueCommits),
-		ChangedFileCount:   len(review.ChangedFiles),
-		DirtyFileCount:     len(review.DirtyFiles),
-		UntrackedFileCount: len(review.UntrackedFiles),
+		UniqueCommitCount:  uniqueCommitCount,
+		ChangedFileCount:   changedFileCount,
+		DirtyFileCount:     dirtyFileCount,
+		UntrackedFileCount: untrackedFileCount,
 	}
 }
 
@@ -379,11 +395,29 @@ func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	if review, err := session.LoadSessionReviewDetails(name); err == nil {
-		writeJSON(w, http.StatusOK, review)
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	store, err := session.LoadSessions()
+	sess, ok := store.GetSession(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if _, err := session.RefreshSessionReviewStale(name, sess); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if review, err := session.LoadSessionReviewDetails(name); err == nil {
+		review.Stale = session.ReviewIsStale(sess)
+		writeJSON(w, http.StatusOK, review)
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load review details: " + err.Error()})
+		return
+	}
+	store, err = session.LoadSessions()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

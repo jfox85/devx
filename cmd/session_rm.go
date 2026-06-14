@@ -88,6 +88,11 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to remove git worktree: %v\n", err)
 	}
 
+	// Remove session review details before metadata deletion to avoid stale data on name reuse.
+	if err := session.RemoveSessionReviewDetails(name); err != nil {
+		fmt.Printf("Warning: failed to remove review details: %v\n", err)
+	}
+
 	// Remove session from metadata and reconcile slots in a single save
 	delete(store.Sessions, name)
 	store.ReconcileSlots()
