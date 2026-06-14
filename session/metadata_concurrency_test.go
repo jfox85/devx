@@ -6,15 +6,19 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
-// setupTempHome points HOME at a fresh temp dir so sessions.json is isolated.
+// setupTempHome points OS-specific config roots at a fresh temp dir so
+// sessions.json is isolated on Unix, macOS, and Windows.
 func setupTempHome(t *testing.T) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	t.Setenv("APPDATA", filepath.Join(tmpDir, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(tmpDir, "AppData", "Local"))
 }
 
 // TestUpdateSessionNoLostUpdate reproduces the sessions.json lost-update race:
@@ -174,5 +178,47 @@ func TestSaveIsAtomic(t *testing.T) {
 		if len(name) >= 10 && name[:10] == ".sessions-" {
 			t.Errorf("leftover temp file after atomic save: %s", name)
 		}
+	}
+}
+
+func TestConcurrentUpdatesCompleteWithinTimeout(t *testing.T) {
+	setupTempHome(t)
+
+	seed, err := LoadSessions()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := seed.AddSession("s1", "branch", "/path", nil); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		const n = 10
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				st, err := LoadSessions()
+				if err != nil {
+					t.Errorf("load %d: %v", i, err)
+					return
+				}
+				if err := st.UpdateSession("s1", func(s *Session) {
+					s.AttentionReason = fmt.Sprintf("reason-%d", i)
+				}); err != nil {
+					t.Errorf("update %d: %v", i, err)
+				}
+			}(i)
+		}
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent session updates timed out; possible in-process lock deadlock")
 	}
 }

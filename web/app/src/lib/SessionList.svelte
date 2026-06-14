@@ -1,9 +1,10 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
-  import { onMount, onDestroy } from 'svelte'
-  import { listSessions, deleteSession, renameSession, colorSession, prewarmTerminal } from '../api.js'
+  import { onMount } from 'svelte'
+  import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, colorSession } from '../api.js'
   import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
+  import StaleReviewPanel from './StaleReviewPanel.svelte'
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
@@ -12,6 +13,8 @@
   export let flashSession = null       // session name to momentarily highlight
 
   let sessions = []
+  let staleSummary = null
+  let staleReviewSummary = null
   let loading = true
   let showNewSession = false
   let error = ''
@@ -21,8 +24,15 @@
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
   let pendingDelete = null   // session.name awaiting second-click confirmation
+  let deletingSessions = {}  // session.name -> true while backend deletion is running
+  let cleanupMessage = ''
   let editingName = null     // session.name being renamed
   let editValue = ''         // current text input value
+  let showStaleReview = false
+  let staleReviewLoading = false
+  let pruningStale = false
+  let pendingPruneStale = false
+  let showStatusHelp = false
 
   // Hover/focus prewarm with a short debounce so list scanning doesn't fire a
   // request per row. Prewarm is read-only with respect to tmux (it only starts
@@ -54,10 +64,22 @@
 
   const colorMap = {
     red: '#ef4444', blue: '#3b82f6', green: '#22c55e', yellow: '#eab308',
-    purple: '#a855f7', orange: '#f97316', pink: '#ec4899', cyan: '#06b6d4',
+    purple: '#a855f7', orange: '#f97316', pink: '#ec4899', cyan: '#06b6d4', gray: '#64748b',
   }
-  const colorOrder = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']
+  const sessionColorPalette = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']
 
+  async function cycleSessionColor(e, session) {
+    e.stopPropagation()
+    const current = session.color || 'blue'
+    const index = sessionColorPalette.indexOf(current)
+    const next = sessionColorPalette[(index + 1) % sessionColorPalette.length]
+    try {
+      await colorSession(session.name, next)
+      await load({ background: true })
+    } catch (err) {
+      error = err.message || 'Color change failed'
+    }
+  }
   function startRename(session) {
     editingName = session.name
     editValue = session.display_name || session.name
@@ -82,23 +104,15 @@
     editingName = null
   }
 
-  async function cycleColor(session) {
-    const currentIdx = colorOrder.indexOf(session.color || 'blue')
-    const nextColor = colorOrder[(currentIdx + 1) % colorOrder.length]
-    try {
-      await colorSession(session.name, nextColor)
-      // Optimistic update
-      session.color = nextColor
-      sessions = [...sessions]
-    } catch (e) {
-      error = e.message
-    }
-  }
-
   async function load({ background = false } = {}) {
     if (!background) loading = true
     error = ''
-    try { sessions = await listSessions() }
+    try {
+      const data = await listSessionsWithSummary()
+      sessions = data.sessions || []
+      staleSummary = data.stale_summary || null
+      if (!showStaleReview) staleReviewSummary = null
+    }
     catch (e) { error = e.message }
     finally { if (!background) loading = false }
   }
@@ -155,6 +169,7 @@
       const key = s.project_alias || ''
       if (!map[key]) map[key] = []
       map[key].push(s)
+      map[key].sort((a, b) => (a.status?.priority || 99) - (b.status?.priority || 99) || a.name.localeCompare(b.name))
     }
     return Object.entries(map).sort(([a], [b]) => {
       if (a === '') return 1
@@ -248,22 +263,139 @@
   }
 
   async function handleDelete(session) {
+    if (deletingSessions[session.name]) return false
     // Two-click confirmation: first click arms the delete, second click fires it.
     // Click outside (blur/hover-leave) resets via the pendingDelete timeout below.
     if (pendingDelete !== session.name) {
       pendingDelete = session.name
+      cleanupMessage = `Click again to delete ${session.display_name || session.name}`
       // Auto-reset after 3 s so the UI doesn't stay in armed state indefinitely.
-      setTimeout(() => { if (pendingDelete === session.name) pendingDelete = null }, 3000)
-      return
+      setTimeout(() => {
+        if (pendingDelete === session.name) {
+          pendingDelete = null
+          cleanupMessage = ''
+        }
+      }, 3000)
+      return false
     }
     pendingDelete = null
     error = ''
+    cleanupMessage = `Removing ${session.display_name || session.name}…`
+    deletingSessions = { ...deletingSessions, [session.name]: true }
     try {
       await deleteSession(session.name)
+      cleanupMessage = `Removed ${session.display_name || session.name}; refreshing…`
       if (session.name === activeSessionName) onDeleteSession?.()
       await load()
+      cleanupMessage = ''
+      return true
     } catch (e) {
       error = e.message || 'Delete failed'
+      cleanupMessage = ''
+      return false
+    } finally {
+      const next = { ...deletingSessions }
+      delete next[session.name]
+      deletingSessions = next
+    }
+  }
+
+  $: sessionByName = Object.fromEntries(sessions.map(s => [s.name, s]))
+  $: reviewStatuses = staleReviewSummary?.statuses || []
+  $: staleCleanStatuses = reviewStatuses.filter(s => s.category === 'stale-clean')
+  $: staleNeedsReviewStatuses = reviewStatuses.filter(s => s.category === 'stale-needs-review' || s.category === 'broken')
+  $: staleReviewCounts = staleReviewSummary || staleSummary || { clean: 0, needs_review: 0, broken: 0 }
+  $: staleDisplayStatuses = [...staleCleanStatuses, ...staleNeedsReviewStatuses]
+  $: hasStaleSessions = (staleReviewCounts.clean || 0) > 0 || (staleReviewCounts.needs_review || 0) > 0 || (staleReviewCounts.broken || 0) > 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function statusTitle(session) {
+    const reasons = session.status?.reasons || session.stale?.reasons || []
+    return [session.status?.label, ...reasons].filter(Boolean).join(': ')
+  }
+
+  function targetLabel(session) {
+    if (session.gatepost?.enabled) return session.gatepost.bypass ? 'gatepost bypass' : 'gatepost'
+    if (session.target_type === 'docker') return 'docker'
+    if (session.target_type === 'gatepost') return 'gatepost'
+    return 'host'
+  }
+
+  async function loadStaleReview() {
+    staleReviewLoading = true
+    error = ''
+    try {
+      const data = await getStaleSummary(staleSummary?.threshold_days)
+      staleReviewSummary = data.stale_summary || null
+      pendingPruneStale = false
+    } catch (e) {
+      error = e.message || 'Failed to load stale review'
+    } finally {
+      staleReviewLoading = false
+    }
+  }
+
+  async function toggleStaleReview() {
+    showStaleReview = !showStaleReview
+    if (showStaleReview && !staleReviewSummary) await loadStaleReview()
+  }
+
+  async function handleMarkReviewed(status) {
+    error = ''
+    try {
+      await markSessionReviewed(status.session_name)
+      await load({ background: true })
+      await loadStaleReview()
+    } catch (e) {
+      error = e.message || 'Failed to mark reviewed'
+    }
+  }
+
+  async function handleDeleteStaleStatus(status) {
+    const session = sessionByName[status.session_name] || { name: status.session_name }
+    const deleted = await handleDelete(session)
+    if (deleted) await loadStaleReview()
+  }
+
+  function handleRepairStaleStatus(status) {
+    const session = sessionByName[status.session_name] || { name: status.session_name }
+    onOpenTerminal(session)
+  }
+
+  async function handlePruneStaleClean() {
+    if (staleCleanStatuses.length === 0 || pruningStale) return
+    if (!pendingPruneStale) {
+      pendingPruneStale = true
+      setTimeout(() => { if (pendingPruneStale) pendingPruneStale = false }, 6000)
+      return
+    }
+    pruningStale = true
+    pendingPruneStale = false
+    error = ''
+    try {
+      await pruneStaleCleanSessions(staleReviewSummary?.threshold_days || staleSummary?.threshold_days)
+      if (staleCleanStatuses.some(s => s.session_name === activeSessionName)) onDeleteSession?.()
+      await load()
+      await loadStaleReview()
+      pendingPruneStale = false
+      showStaleReview = staleNeedsReviewStatuses.length > 0
+    } catch (e) {
+      error = e.message || 'Stale cleanup failed'
+    } finally {
+      pruningStale = false
     }
   }
 </script>
@@ -308,6 +440,52 @@
     <div class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between shrink-0">
       <span>{error}</span>
       <button on:click={() => error = ''} class="text-red-600 hover:text-red-400 ml-2">×</button>
+    </div>
+  {/if}
+
+  {#if cleanupMessage}
+    <div class="px-3 py-1.5 bg-cyan-950/20 border-b border-cyan-900/40 text-cyan-400 text-[11px] font-mono shrink-0">
+      <span class="inline-block animate-pulse mr-1">●</span>{cleanupMessage}
+    </div>
+  {/if}
+
+  <!-- Stale session summary -->
+  {#if hasStaleSessions}
+    <div class="border-b border-[#1e2d4a] bg-amber-950/15 shrink-0">
+      <button
+        on:click={toggleStaleReview}
+        class="w-full px-3 py-2 text-left text-[11px] font-mono text-amber-300 hover:bg-amber-950/25 flex items-center gap-2"
+      >
+        <span>🧹</span>
+        <span class="flex-1">
+          {#if staleReviewSummary}
+            {staleReviewCounts.clean || 0} cleanup candidates · {(staleReviewCounts.needs_review || 0) + (staleReviewCounts.broken || 0)} need review
+          {:else}
+            {(staleSummary?.clean || 0) + (staleSummary?.needs_review || 0) + (staleSummary?.broken || 0)} stale/idle sessions · expand to scan
+          {/if}
+        </span>
+        {#if staleReviewSummary && (staleReviewCounts.clean || 0) > 0}
+          <span class="text-amber-500">clean up available</span>
+        {/if}
+        <span class="text-amber-600">{showStaleReview ? '−' : '+'}</span>
+      </button>
+      {#if showStaleReview}
+        <StaleReviewPanel
+          {staleReviewLoading}
+          {staleCleanStatuses}
+          {staleNeedsReviewStatuses}
+          {staleDisplayStatuses}
+          {sessionByName}
+          {pendingPruneStale}
+          {pruningStale}
+          {pendingDelete}
+          {deletingSessions}
+          onPrune={handlePruneStaleClean}
+          onOpen={handleRepairStaleStatus}
+          onReviewed={handleMarkReviewed}
+          onDelete={handleDeleteStaleStatus}
+        />
+      {/if}
     </div>
   {/if}
 
@@ -377,15 +555,19 @@
                   {isActive ? 'text-cyan-300' : kbHighlight ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
-                <!-- Color dot -->
+                <!-- Status dot -->
                 <span
-                  on:click|stopPropagation={() => cycleColor(session)}
-                  class="shrink-0 text-[10px] hover:scale-125 transition-transform cursor-pointer"
-                  style="color: {colorMap[session.color] || colorMap.blue}"
-                  title="click to change color"
-                  role="button"
-                  tabindex="-1"
+                  class="shrink-0 text-[10px]"
+                  style="color: {colorMap[session.status?.color] || colorMap.gray}"
+                  title={statusTitle(session)}
                 >●</span>
+                <button
+                  on:click={(e) => cycleSessionColor(e, session)}
+                  class="shrink-0 w-2.5 h-2.5 rounded-sm border border-black/40"
+                  style="background-color: {colorMap[session.color] || colorMap.blue}"
+                  title={`Session color: ${session.color || 'blue'} (click to change)`}
+                  aria-label={`change color for ${session.name}`}
+                ></button>
 
                 {#if editingName === session.name}
                   <input
@@ -419,15 +601,16 @@
                     {/if}
                   </span>
                 {/if}
+                <span
+                  class="text-[9px] shrink-0 uppercase tracking-wide px-1 py-px border border-gray-800 text-gray-600 rounded-sm"
+                  title={`Target: ${targetLabel(session)}`}
+                >{targetLabel(session)}</span>
                 {#if session.artifact_count > 0}
                   <span class="text-cyan-500 text-[10px] shrink-0" title={`${session.artifact_count} artifact${session.artifact_count === 1 ? '' : 's'}`}>◆ {session.artifact_count}</span>
                 {/if}
-                {#if session.gatepost?.enabled}
-                  <span class="text-emerald-500 text-[10px] shrink-0" title={session.gatepost.bypass ? 'Gatepost bypass enabled' : 'Gatepost enforced'}>gp{session.gatepost.bypass ? ':bypass' : ''}</span>
-                {/if}
-                {#if session.attention_flag}
-                  <span class="text-yellow-500 text-[10px] shrink-0">◆</span>
-                {/if}
+                {#each session.status?.badges || [] as badge}
+                  <span class="text-[10px] shrink-0" style="color: {colorMap[session.status?.color] || colorMap.gray}" title={statusTitle(session)}>{badge}</span>
+                {/each}
               </div>
 
               <!-- Action buttons:
@@ -448,8 +631,8 @@
                       px-3 lg:px-1.5 py-4 lg:py-1.5
                       transition-colors
                     "
-                    title="Gatepost logs"
-                  >gp</a>
+                    title="Open Gatepost log viewer"
+                  >logs</a>
                 {/if}
                 {#if hasRoutes}
                   <button
@@ -466,18 +649,21 @@
                 {/if}
                 <button
                   on:click={() => handleDelete(session)}
+                  disabled={!!deletingSessions[session.name]}
                   class="
                     font-mono
-                    {pendingDelete === session.name
-                      ? 'text-red-400'
-                      : 'text-red-700 hover:text-red-400 active:text-red-300'}
+                    {deletingSessions[session.name]
+                      ? 'text-cyan-400 cursor-wait'
+                      : pendingDelete === session.name
+                        ? 'text-red-400'
+                        : 'text-red-700 hover:text-red-400 active:text-red-300'}
                     text-lg lg:text-[10px]
                     px-3 lg:px-1.5 py-4 lg:py-1.5
                     transition-colors
                   "
-                  title={pendingDelete === session.name ? 'click again to confirm' : 'delete'}
-                  aria-label={pendingDelete === session.name ? `confirm delete ${session.name}` : `delete ${session.name}`}
-                >{pendingDelete === session.name ? '!×' : '×'}</button>
+                  title={deletingSessions[session.name] ? 'removing session…' : pendingDelete === session.name ? 'click again to confirm' : 'delete'}
+                  aria-label={deletingSessions[session.name] ? `removing ${session.name}` : pendingDelete === session.name ? `confirm delete ${session.name}` : `delete ${session.name}`}
+                >{deletingSessions[session.name] ? '…' : pendingDelete === session.name ? '!×' : '×'}</button>
               </div>
             </div>
 
@@ -509,8 +695,31 @@
     {/if}
   </div>
 
+  <!-- Status legend -->
+  {#if showStatusHelp}
+    <div class="border-t border-[#1e2d4a] bg-[#080c16] px-3 py-3 text-[10px] font-mono text-gray-500 shrink-0 space-y-2">
+      <div class="flex items-center justify-between text-gray-400">
+        <span class="uppercase tracking-wider">status colors</span>
+        <button on:click={() => showStatusHelp = false} class="text-gray-700 hover:text-gray-400">×</button>
+      </div>
+      <div class="grid grid-cols-1 gap-1.5">
+        <div><span class="text-orange-500">● ! attention</span> — explicitly flagged</div>
+        <div><span class="text-cyan-500">● new ◆</span> — unseen artifacts</div>
+        <div><span class="text-red-500">● ⚠ repair</span> — missing/inaccessible worktree or unknown git state</div>
+        <div><span class="text-yellow-500">● ± dirty</span> — uncommitted, untracked, or unpushed work</div>
+        <div><span class="text-green-500">● ▶ active</span> — tmux/editor/recent activity</div>
+        <div><span class="text-gray-500">● 🧹 cleanup</span> — full scan verified safe to prune</div>
+        <div><span class="text-gray-500">● scan</span> — old/stopped in fast list, not git-verified yet</div>
+      </div>
+      <div class="pt-1 border-t border-[#1e2d4a] text-gray-600">
+        Target chips show <span class="text-gray-400">host</span>, <span class="text-gray-400">docker</span>, or <span class="text-gray-400">gatepost</span>. Gatepost sessions with logs expose a <span class="text-emerald-500">logs</span> link.
+      </div>
+    </div>
+  {/if}
+
   <!-- Key hint bar (desktop only) -->
   <div class="hidden lg:flex items-center gap-4 px-3 h-7 border-t border-[#1e2d4a] text-[10px] font-mono text-gray-700 shrink-0 select-none">
+    <button on:click={() => showStatusHelp = !showStatusHelp} class="text-gray-600 hover:text-cyan-400 border border-[#1e2d4a] px-1 leading-none" title="status color legend">?</button>
     <span>↑↓ nav</span>
     <span>⏎ open</span>
     <span>/ search</span>

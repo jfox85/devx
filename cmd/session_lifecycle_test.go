@@ -114,7 +114,7 @@ func removeTestSession(t *testing.T, sessionName string) {
 	}
 
 	// Remove git worktree
-	if err := removeGitWorktree(sess.Path); err != nil {
+	if err := removeGitWorktree(sess); err != nil {
 		t.Logf("Warning: failed to remove git worktree: %v", err)
 	}
 

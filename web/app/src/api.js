@@ -28,9 +28,21 @@ async function apiFetch(path, options = {}) {
 }
 
 export async function listSessions() {
-  const res = await apiFetch('/sessions')
-  const data = await res.json()
+  const data = await listSessionsWithSummary()
   return data.sessions || []
+}
+
+export async function listSessionsWithSummary() {
+  const res = await apiFetch('/sessions')
+  await requireOK(res, 'Failed to list sessions')
+  return res.json()
+}
+
+export async function getStaleSummary(days) {
+  const suffix = days ? '?days=' + encodeURIComponent(days) : ''
+  const res = await apiFetch('/sessions/stale' + suffix)
+  if (!res.ok) throw new Error(`Failed to load stale summary: ${res.status}`)
+  return res.json()
 }
 
 export async function createSession(name, project, options = {}) {
@@ -71,6 +83,17 @@ async function pollSessionCreate(name, onProgress, timeoutMs = 300000) {
 export async function deleteSession(name) {
   const res = await apiFetch('/sessions?name=' + encodeURIComponent(name), { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`)
+}
+
+export async function pruneStaleCleanSessions(days) {
+  const suffix = days ? '?days=' + encodeURIComponent(days) : ''
+  const res = await apiFetch('/sessions/stale-clean' + suffix, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to clean stale sessions: ${res.status}`)
+}
+
+export async function markSessionReviewed(name) {
+  const res = await apiFetch('/sessions/reviewed?name=' + encodeURIComponent(name), { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to mark reviewed: ${res.status}`)
 }
 
 export async function flagSession(name) {
@@ -230,6 +253,11 @@ export async function listArtifacts(sessionName, filters = {}) {
   if (!res.ok) throw new Error(`Failed to list artifacts: ${res.status}`)
   const data = await res.json()
   return data.artifacts || []
+}
+
+export async function markArtifactsSeen(sessionName) {
+  const res = await apiFetch('/artifacts/seen?session=' + encodeURIComponent(sessionName), { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to mark artifacts seen: ${res.status}`)
 }
 
 export async function uploadArtifacts(sessionName, files, { title = '', tags = '', retention = 'session', type = '', summary = '' } = {}) {

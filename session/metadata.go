@@ -2,36 +2,40 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jfox85/devx/config"
 )
 
 type Session struct {
-	Name            string            `json:"name"`
-	ProjectAlias    string            `json:"project_alias,omitempty"` // Reference to project in registry
-	ProjectPath     string            `json:"project_path,omitempty"`  // Resolved project path
-	Branch          string            `json:"branch"`
-	Path            string            `json:"path"`
-	Ports           map[string]int    `json:"ports"`
-	Routes          map[string]string `json:"routes,omitempty"`     // service -> hostname mapping
-	EditorPID       int               `json:"editor_pid,omitempty"` // PID of the editor process
-	AttentionFlag   bool              `json:"attention_flag,omitempty"`
-	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
-	AttentionSource string            `json:"attention_source,omitempty"`
-	AttentionTime   time.Time         `json:"attention_time,omitempty"`
-	DisplayName     string            `json:"display_name,omitempty"`
-	Color           string            `json:"color,omitempty"`
-	LastAttached    time.Time         `json:"last_attached,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	Target          TargetMeta        `json:"target,omitempty"`
+	Name               string            `json:"name"`
+	ProjectAlias       string            `json:"project_alias,omitempty"` // Reference to project in registry
+	ProjectPath        string            `json:"project_path,omitempty"`  // Resolved project path
+	Branch             string            `json:"branch"`
+	Path               string            `json:"path"`
+	Ports              map[string]int    `json:"ports"`
+	Routes             map[string]string `json:"routes,omitempty"`     // service -> hostname mapping
+	EditorPID          int               `json:"editor_pid,omitempty"` // PID of the editor process
+	AttentionFlag      bool              `json:"attention_flag,omitempty"`
+	AttentionReason    string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
+	AttentionSource    string            `json:"attention_source,omitempty"`
+	AttentionTime      time.Time         `json:"attention_time,omitempty"`
+	DisplayName        string            `json:"display_name,omitempty"`
+	Color              string            `json:"color,omitempty"`
+	LastAttached       time.Time         `json:"last_attached,omitempty"`
+	LastArtifactSeenAt time.Time         `json:"last_artifact_seen_at,omitempty"`
+	LastReviewedAt     time.Time         `json:"last_reviewed_at,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+	Target             TargetMeta        `json:"target,omitempty"`
 }
 
 // TargetMeta describes the execution environment for a session.
@@ -85,6 +89,10 @@ func (s *Session) TargetType() string {
 func (s *Session) IsContainerized() bool {
 	return s.TargetType() != "host"
 }
+
+var ErrSessionNotFound = errors.New("session not found")
+
+var sessionsProcessLock sync.Mutex
 
 type SessionStore struct {
 	Sessions      map[string]*Session `json:"sessions"`
@@ -142,6 +150,17 @@ func getSessionsLockPath() string {
 	return getSessionsPath() + ".lock"
 }
 
+// SessionsMetadataFingerprint returns a cheap version string for the sessions
+// metadata file. Web caches use this to notice mutations made by other devx
+// processes without parsing the whole store on every request.
+func SessionsMetadataFingerprint() string {
+	info, err := os.Stat(getSessionsPath())
+	if err != nil {
+		return "missing"
+	}
+	return fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
+}
+
 // withSessionsLock runs fn while holding an exclusive advisory lock on the
 // sessions metadata file. All read-modify-write cycles must go through this so
 // that concurrent devx processes (CLI, TUI, web daemon) cannot clobber each
@@ -151,6 +170,13 @@ func getSessionsLockPath() string {
 // Mutate, which run under this lock) must not call Save, UpdateSession, or
 // Mutate, or they will deadlock trying to reacquire the lock.
 func withSessionsLock(fn func() error) error {
+	// Serialize in-process callers before taking the OS file lock. This avoids a
+	// Windows LockFileEx self-deadlock when concurrent goroutines in one devx
+	// process attempt to take conflicting byte-range locks on separate handles.
+	// The file lock below still protects against other devx processes.
+	sessionsProcessLock.Lock()
+	defer sessionsProcessLock.Unlock()
+
 	lockPath := getSessionsLockPath()
 	if dir := filepath.Dir(lockPath); dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -306,7 +332,7 @@ func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error
 		}
 		session, exists := fresh.Sessions[name]
 		if !exists {
-			return fmt.Errorf("session %s not found", name)
+			return fmt.Errorf("%w: %s", ErrSessionNotFound, name)
 		}
 
 		updateFn(session)
@@ -317,6 +343,26 @@ func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error
 		}
 		s.adoptFrom(fresh)
 		return nil
+	})
+}
+
+// MarkReviewed records an explicit stale-review/snooze marker without treating
+// the review as real activity or changing UpdatedAt.
+func MarkReviewed(name string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return withSessionsLock(func() error {
+		fresh, err := loadSessionsUnlocked()
+		if err != nil {
+			return err
+		}
+		sess, exists := fresh.Sessions[name]
+		if !exists {
+			return fmt.Errorf("%w: %s", ErrSessionNotFound, name)
+		}
+		sess.LastReviewedAt = at
+		return fresh.writeStoreAtomic()
 	})
 }
 

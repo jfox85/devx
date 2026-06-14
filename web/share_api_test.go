@@ -26,6 +26,7 @@ func shareTestMux() *http.ServeMux {
 
 func setupEmptySessionStoreForTest(t *testing.T) {
 	t.Helper()
+	invalidateSessionListCache()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".config", "devx"), 0o755); err != nil {
@@ -276,5 +277,53 @@ func TestShareTargetFileCommitCleansTempFile(t *testing.T) {
 	}
 	if err := json.Unmarshal(commit.Body.Bytes(), &resp); err != nil || len(resp.Artifacts) != 1 {
 		t.Fatalf("bad response %#v err=%v", resp, err)
+	}
+}
+
+func TestShareIntentCommitInvalidatesSessionListCache(t *testing.T) {
+	resetShareStoreForTest(t)
+	sess := setupArtifactAPITest(t)
+	mux := shareTestMux()
+
+	listArtifactCount := func() int {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list sessions status %d: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Sessions []struct {
+				Name          string `json:"name"`
+				ArtifactCount int    `json:"artifact_count"`
+			} `json:"sessions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid sessions json: %v", err)
+		}
+		for _, s := range resp.Sessions {
+			if s.Name == sess.Name {
+				return s.ArtifactCount
+			}
+		}
+		t.Fatalf("session %q missing from list", sess.Name)
+		return 0
+	}
+	if got := listArtifactCount(); got != 0 {
+		t.Fatalf("initial artifact_count = %d, want 0", got)
+	}
+
+	intent := &shareIntent{ID: "cache", Title: "Shared", Text: "hello", Created: time.Now(), Expires: time.Now().Add(time.Minute)}
+	if err := insertShareIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.NewReader(`{"session":"` + sess.Name + `","title":"Shared","type":"document","format":"md"}`)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/share-intents/cache", body))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := listArtifactCount(); got != 1 {
+		t.Fatalf("artifact_count after share = %d, want 1", got)
 	}
 }

@@ -33,9 +33,11 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("POST /api/login", handleLogin)
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
+	mux.HandleFunc("GET /api/sessions/stale", handleStaleSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
 	mux.HandleFunc("GET /api/sessions/create-status", handleSessionCreateStatus)
 	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
+	mux.HandleFunc("DELETE /api/sessions/stale-clean", handleDeleteStaleCleanSessions)
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
@@ -51,6 +53,7 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
+	mux.HandleFunc("POST /api/sessions/reviewed", handleMarkSessionReviewed)
 	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
 	// Reverse-proxy the per-session Gatepost Logs UI so it is reachable wherever
 	// the devx web UI is (Caddy / Cloudflare tunnel), with the token injected
@@ -66,6 +69,81 @@ var execTmuxOutput = func(args ...string) ([]byte, error) {
 
 var execTmuxRun = func(args ...string) error {
 	return exec.Command("tmux", args...).Run()
+}
+
+var markSessionReviewed = session.MarkReviewed
+
+const sessionListCacheTTL = 10 * time.Second
+const fullStaleScanCacheTTL = 30 * time.Second
+
+var sessionListCache = struct {
+	sync.Mutex
+	key     string
+	expires time.Time
+	payload map[string]any
+}{}
+
+var fullStaleScanCache = struct {
+	sync.Mutex
+	key     string
+	expires time.Time
+	payload map[string]any
+}{}
+
+func getCachedSessionList(key string) (map[string]any, bool) {
+	sessionListCache.Lock()
+	defer sessionListCache.Unlock()
+	if key == sessionListCache.key && time.Now().Before(sessionListCache.expires) && sessionListCache.payload != nil {
+		return sessionListCache.payload, true
+	}
+	return nil, false
+}
+
+func setCachedSessionList(key string, payload map[string]any) {
+	sessionListCache.Lock()
+	defer sessionListCache.Unlock()
+	sessionListCache.key = key
+	sessionListCache.payload = payload
+	sessionListCache.expires = time.Now().Add(sessionListCacheTTL)
+}
+
+func invalidateSessionListCache() {
+	sessionListCache.Lock()
+	sessionListCache.key = ""
+	sessionListCache.expires = time.Time{}
+	sessionListCache.payload = nil
+	sessionListCache.Unlock()
+
+	fullStaleScanCache.Lock()
+	fullStaleScanCache.key = ""
+	fullStaleScanCache.expires = time.Time{}
+	fullStaleScanCache.payload = nil
+	fullStaleScanCache.Unlock()
+}
+
+func getCachedFullStaleScan(key string) (map[string]any, bool) {
+	fullStaleScanCache.Lock()
+	defer fullStaleScanCache.Unlock()
+	if key == fullStaleScanCache.key && time.Now().Before(fullStaleScanCache.expires) && fullStaleScanCache.payload != nil {
+		return fullStaleScanCache.payload, true
+	}
+	return nil, false
+}
+
+func computeCachedFullStaleScan(key string, compute func() (map[string]any, error)) (map[string]any, error) {
+	fullStaleScanCache.Lock()
+	defer fullStaleScanCache.Unlock()
+	if key == fullStaleScanCache.key && time.Now().Before(fullStaleScanCache.expires) && fullStaleScanCache.payload != nil {
+		return fullStaleScanCache.payload, nil
+	}
+	payload, err := compute()
+	if err != nil {
+		return nil, err
+	}
+	fullStaleScanCache.key = key
+	fullStaleScanCache.payload = payload
+	fullStaleScanCache.expires = time.Now().Add(fullStaleScanCacheTTL)
+	return payload, nil
 }
 
 var paneContentViewTmpl = template.Must(template.New("pane-content-view").Parse(`<!doctype html>
@@ -112,6 +190,35 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func defaultStaleDays() int {
+	days := viper.GetInt("stale_sessions.threshold_days")
+	if days <= 0 || days > session.MaxStaleThresholdDays {
+		days = 14
+	}
+	return days
+}
+
+func parseStaleDays(raw string) (int, error) {
+	if raw == "" {
+		return defaultStaleDays(), nil
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("days must be a positive integer")
+	}
+	if _, err := session.StaleThresholdDuration(days); err != nil {
+		return 0, err
+	}
+	return days, nil
+}
+
+func webStaleThreshold(days int) (time.Duration, error) {
+	if days <= 0 {
+		days = defaultStaleDays()
+	}
+	return session.StaleThresholdDuration(days)
+}
+
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -156,18 +263,22 @@ type gatepostResponse struct {
 }
 
 type sessionResponse struct {
-	Name              string            `json:"name"`
-	DisplayName       string            `json:"display_name,omitempty"`
-	Color             string            `json:"color"`
-	Branch            string            `json:"branch"`
-	ProjectAlias      string            `json:"project_alias,omitempty"`
-	Ports             map[string]int    `json:"ports"`
-	Routes            map[string]string `json:"routes"`
-	ExternalRoutes    map[string]string `json:"external_routes,omitempty"`
-	AttentionFlag     bool              `json:"attention_flag"`
-	ArtifactCount     int               `json:"artifact_count"`
-	FocusedArtifactID string            `json:"focused_artifact_id,omitempty"`
-	Gatepost          *gatepostResponse `json:"gatepost,omitempty"`
+	Name                string                       `json:"name"`
+	DisplayName         string                       `json:"display_name,omitempty"`
+	Color               string                       `json:"color"`
+	Branch              string                       `json:"branch"`
+	ProjectAlias        string                       `json:"project_alias,omitempty"`
+	Ports               map[string]int               `json:"ports"`
+	Routes              map[string]string            `json:"routes"`
+	ExternalRoutes      map[string]string            `json:"external_routes,omitempty"`
+	TargetType          string                       `json:"target_type"`
+	AttentionFlag       bool                         `json:"attention_flag"`
+	ArtifactCount       int                          `json:"artifact_count"`
+	FocusedArtifactID   string                       `json:"focused_artifact_id,omitempty"`
+	UnseenArtifactCount int                          `json:"unseen_artifact_count,omitempty"`
+	Gatepost            *gatepostResponse            `json:"gatepost,omitempty"`
+	Stale               session.StaleStatus          `json:"stale"`
+	Status              session.SessionStatusSummary `json:"status"`
 }
 
 func buildSessionResponse(sess *session.Session) sessionResponse {
@@ -190,7 +301,7 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 			}
 		}
 	}
-	artifactCount, focusedArtifactID := artifactCountAndFocus(sess)
+	artifactCount, focusedArtifactID, unseenArtifactCount := artifactCountAndFocus(sess)
 	var gatepost *gatepostResponse
 	if sess.Target.Gatepost.Enabled {
 		logsURL := ""
@@ -202,18 +313,20 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		gatepost = &gatepostResponse{Enabled: true, Runtime: sess.Target.Gatepost.Runtime, LogsURL: logsURL, Bypass: sess.Target.Gatepost.Bypass, ProviderMode: sess.Target.Gatepost.ProviderMode, RegisteredProviders: sess.Target.Gatepost.RegisteredProviders, ProviderWarnings: sess.Target.Gatepost.ProviderWarnings}
 	}
 	return sessionResponse{
-		Name:              sess.Name,
-		DisplayName:       sess.DisplayName,
-		Color:             sess.EffectiveColor(),
-		Branch:            sess.Branch,
-		ProjectAlias:      sess.ProjectAlias,
-		Ports:             sess.Ports,
-		Routes:            sess.Routes,
-		ExternalRoutes:    externalRoutes,
-		AttentionFlag:     sess.AttentionFlag,
-		ArtifactCount:     artifactCount,
-		FocusedArtifactID: focusedArtifactID,
-		Gatepost:          gatepost,
+		Name:                sess.Name,
+		DisplayName:         sess.DisplayName,
+		Color:               sess.EffectiveColor(),
+		Branch:              sess.Branch,
+		ProjectAlias:        sess.ProjectAlias,
+		Ports:               sess.Ports,
+		Routes:              sess.Routes,
+		ExternalRoutes:      externalRoutes,
+		TargetType:          sess.TargetType(),
+		AttentionFlag:       sess.AttentionFlag,
+		ArtifactCount:       artifactCount,
+		FocusedArtifactID:   focusedArtifactID,
+		UnseenArtifactCount: unseenArtifactCount,
+		Gatepost:            gatepost,
 	}
 }
 
@@ -241,18 +354,71 @@ func handleGatepostLogsRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListSessions(w http.ResponseWriter, r *http.Request) {
+	cacheKey := os.Getenv("HOME") + "|" + session.SessionsMetadataFingerprint() + "|" + strconv.Itoa(defaultStaleDays())
+	if payload, ok := getCachedSessionList(cacheKey); ok {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+
 	store, err := session.LoadSessions()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
+	threshold, err := webStaleThreshold(defaultStaleDays())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	summary := session.AnalyzeStaleSessionsWithOptions(store, session.FastStaleAnalysisOptions(threshold))
+	staleByName := make(map[string]session.StaleStatus, len(summary.Statuses))
+	for _, status := range summary.Statuses {
+		staleByName[status.SessionName] = status
+	}
+
 	sessions := make([]sessionResponse, 0, len(store.Sessions))
 	for _, sess := range store.Sessions {
-		sessions = append(sessions, buildSessionResponse(sess))
+		resp := buildSessionResponse(sess)
+		resp.Stale = staleByName[sess.Name]
+		resp.Status = session.DeriveSessionStatus(sess, resp.Stale, resp.ArtifactCount, resp.UnseenArtifactCount)
+		sessions = append(sessions, resp)
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Name < sessions[j].Name })
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+	payload := map[string]any{"sessions": sessions, "stale_summary": summary}
+	setCachedSessionList(cacheKey, payload)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func handleStaleSessions(w http.ResponseWriter, r *http.Request) {
+	days, err := parseStaleDays(r.URL.Query().Get("days"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	threshold, err := webStaleThreshold(days)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cacheKey := os.Getenv("HOME") + "|" + session.SessionsMetadataFingerprint() + "|" + strconv.Itoa(days)
+	if payload, ok := getCachedFullStaleScan(cacheKey); ok {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	payload, err := computeCachedFullStaleScan(cacheKey, func() (map[string]any, error) {
+		store, err := session.LoadSessions()
+		if err != nil {
+			return nil, err
+		}
+		summary := session.AnalyzeStaleSessionsWithOptions(store, session.CleanupStaleAnalysisOptions(threshold))
+		return map[string]any{"stale_summary": summary}, nil
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 type createSessionRequest struct {
@@ -348,6 +514,7 @@ func handleSessionCreateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sess, ok := store.Sessions[name]; ok {
+		invalidateSessionListCache()
 		writeJSON(w, http.StatusOK, buildSessionResponse(sess))
 	} else {
 		// Check if job errored
@@ -383,6 +550,21 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleDeleteStaleCleanSessions(w http.ResponseWriter, r *http.Request) {
+	days, err := parseStaleDays(r.URL.Query().Get("days"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := runSelf("session", "prune", "--force", "--days", strconv.Itoa(days)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -410,7 +592,29 @@ func handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleMarkSessionReviewed(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	if err := markSessionReviewed(name, time.Now()); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	invalidateSessionListCache()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
 }
 
 func handleColorSession(w http.ResponseWriter, r *http.Request) {
@@ -431,6 +635,7 @@ func handleColorSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -451,6 +656,7 @@ func (s *Server) handleFlagSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(map[string]any{
 		"session": name,
 		"flagged": true,
@@ -473,6 +679,7 @@ func (s *Server) handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(map[string]any{
 		"session": name,
 		"flagged": false,
@@ -498,6 +705,7 @@ func (s *Server) handleFlagNotify(w http.ResponseWriter, r *http.Request) {
 	if reason == "" && flagged {
 		reason = "manual"
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(map[string]any{
 		"session": name,
 		"flagged": flagged,

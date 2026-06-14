@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { listArtifacts, uploadArtifacts, createTextArtifact, renameArtifact, archiveArtifact, removeArtifact } from '../../api.js'
+  import { listArtifacts, markArtifactsSeen, uploadArtifacts, createTextArtifact, renameArtifact, archiveArtifact, removeArtifact } from '../../api.js'
 
   export let session
   export let selectedArtifactID = null
@@ -66,10 +66,14 @@
   }
 
   async function load() {
-    if (!session?.name) return
+    const sessionName = session?.name
+    if (!sessionName) return
     loading = true
     try {
-      artifacts = await listArtifacts(session.name)
+      const listed = await listArtifacts(sessionName)
+      if (session?.name !== sessionName) return
+      artifacts = listed
+      if (listed.length) markArtifactsSeen(sessionName).catch(() => {})
       if (selectedArtifactID) selected = artifacts.find(a => a.id === selectedArtifactID) || selected
       if (!selected && artifacts.length) selected = artifacts.find(a => a.focus) || artifacts[0]
       if (selected) selected = artifacts.find(a => a.id === selected.id) || artifacts[0] || null
