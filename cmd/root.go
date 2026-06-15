@@ -109,6 +109,10 @@ func initConfig() {
 	viper.SetDefault("web_secret_token", "")
 	viper.SetDefault("web_port", 7777)
 	viper.SetDefault("web_bind", "127.0.0.1")
+	// Comma-separated CIDRs of reverse-proxy peers whose X-Forwarded-* headers
+	// are trusted, in addition to the loopback default. Needed when the proxy
+	// reaches devx web over a non-loopback path (e.g. Docker port publishing).
+	viper.SetDefault("web_trusted_proxies", "")
 	viper.SetDefault("web_autostart", false)
 	viper.SetDefault("artifact_trigger_key", "Ctrl+Space")
 

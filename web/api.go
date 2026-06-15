@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jfox85/devx/caddy"
@@ -31,8 +33,11 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("POST /api/login", handleLogin)
 	mux.HandleFunc("GET /api/sessions", handleListSessions)
+	mux.HandleFunc("GET /api/sessions/stale", handleStaleSessions)
 	mux.HandleFunc("POST /api/sessions", handleCreateSession)
+	mux.HandleFunc("GET /api/sessions/create-status", handleSessionCreateStatus)
 	mux.HandleFunc("DELETE /api/sessions", handleDeleteSession)
+	mux.HandleFunc("DELETE /api/sessions/stale-clean", handleDeleteStaleCleanSessions)
 	// Session name passed as query param (?name=...) to avoid path-segment
 	// splitting on session names that contain slashes.
 	mux.HandleFunc("GET /api/windows", handleListWindows)
@@ -50,7 +55,12 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
 	mux.HandleFunc("GET /api/sessions/review", handleGetSessionReview)
 	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
-	mux.HandleFunc("DELETE /api/sessions/review", handleClearSessionReview)
+	mux.HandleFunc("POST /api/sessions/reviewed", handleMarkSessionReviewed)
+	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
+	// Reverse-proxy the per-session Gatepost Logs UI so it is reachable wherever
+	// the devx web UI is (Caddy / Cloudflare tunnel), with the token injected
+	// server-side. Catch-all so branch-style session names (with slashes) work.
+	mux.HandleFunc(gatepostLogsPathPrefix, handleGatepostLogsProxy)
 	// Serve uploaded files — auth enforced via /uploads/ prefix in authMiddleware.
 	mux.HandleFunc("GET /uploads/", handleServeUpload)
 }
@@ -63,7 +73,80 @@ var execTmuxRun = func(args ...string) error {
 	return exec.Command("tmux", args...).Run()
 }
 
-var runSelfCommand = runSelf
+var markSessionReviewed = session.MarkReviewed
+
+const sessionListCacheTTL = 10 * time.Second
+const fullStaleScanCacheTTL = 30 * time.Second
+
+var sessionListCache = struct {
+	sync.Mutex
+	key     string
+	expires time.Time
+	payload map[string]any
+}{}
+
+var fullStaleScanCache = struct {
+	sync.Mutex
+	key     string
+	expires time.Time
+	payload map[string]any
+}{}
+
+func getCachedSessionList(key string) (map[string]any, bool) {
+	sessionListCache.Lock()
+	defer sessionListCache.Unlock()
+	if key == sessionListCache.key && time.Now().Before(sessionListCache.expires) && sessionListCache.payload != nil {
+		return sessionListCache.payload, true
+	}
+	return nil, false
+}
+
+func setCachedSessionList(key string, payload map[string]any) {
+	sessionListCache.Lock()
+	defer sessionListCache.Unlock()
+	sessionListCache.key = key
+	sessionListCache.payload = payload
+	sessionListCache.expires = time.Now().Add(sessionListCacheTTL)
+}
+
+func invalidateSessionListCache() {
+	sessionListCache.Lock()
+	sessionListCache.key = ""
+	sessionListCache.expires = time.Time{}
+	sessionListCache.payload = nil
+	sessionListCache.Unlock()
+
+	fullStaleScanCache.Lock()
+	fullStaleScanCache.key = ""
+	fullStaleScanCache.expires = time.Time{}
+	fullStaleScanCache.payload = nil
+	fullStaleScanCache.Unlock()
+}
+
+func getCachedFullStaleScan(key string) (map[string]any, bool) {
+	fullStaleScanCache.Lock()
+	defer fullStaleScanCache.Unlock()
+	if key == fullStaleScanCache.key && time.Now().Before(fullStaleScanCache.expires) && fullStaleScanCache.payload != nil {
+		return fullStaleScanCache.payload, true
+	}
+	return nil, false
+}
+
+func computeCachedFullStaleScan(key string, compute func() (map[string]any, error)) (map[string]any, error) {
+	fullStaleScanCache.Lock()
+	defer fullStaleScanCache.Unlock()
+	if key == fullStaleScanCache.key && time.Now().Before(fullStaleScanCache.expires) && fullStaleScanCache.payload != nil {
+		return fullStaleScanCache.payload, nil
+	}
+	payload, err := compute()
+	if err != nil {
+		return nil, err
+	}
+	fullStaleScanCache.key = key
+	fullStaleScanCache.payload = payload
+	fullStaleScanCache.expires = time.Now().Add(fullStaleScanCacheTTL)
+	return payload, nil
+}
 
 var paneContentViewTmpl = template.Must(template.New("pane-content-view").Parse(`<!doctype html>
 <html>
@@ -104,13 +187,7 @@ type loginRequest struct {
 }
 
 func handleSettings(w http.ResponseWriter, r *http.Request) {
-	defaultTarget := viper.GetString("session_target")
-	if defaultTarget == "" {
-		defaultTarget = viper.GetString("target")
-	}
-	if defaultTarget == "" {
-		defaultTarget = viper.GetString("execution_target")
-	}
+	defaultTarget := viper.GetString("target")
 	if defaultTarget == "" {
 		defaultTarget = "host"
 	}
@@ -118,6 +195,35 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		"artifact_trigger_key":   viper.GetString("artifact_trigger_key"),
 		"default_session_target": defaultTarget,
 	})
+}
+
+func defaultStaleDays() int {
+	days := viper.GetInt("stale_sessions.threshold_days")
+	if days <= 0 || days > session.MaxStaleThresholdDays {
+		days = 14
+	}
+	return days
+}
+
+func parseStaleDays(raw string) (int, error) {
+	if raw == "" {
+		return defaultStaleDays(), nil
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("days must be a positive integer")
+	}
+	if _, err := session.StaleThresholdDuration(days); err != nil {
+		return 0, err
+	}
+	return days, nil
+}
+
+func webStaleThreshold(days int) (time.Duration, error) {
+	if days <= 0 {
+		days = defaultStaleDays()
+	}
+	return session.StaleThresholdDuration(days)
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -143,48 +249,58 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		// Secure is intentionally omitted: devx web runs on localhost over plain
-		// HTTP. Browsers permit httpOnly cookies on localhost without Secure.
-		// If you expose devx web through a TLS proxy, add Secure: true here.
+		// Secure when the login arrived over HTTPS (direct TLS, or via a trusted
+		// proxy that set X-Forwarded-Proto). Plain-HTTP localhost logins still
+		// work: browsers permit httpOnly cookies on localhost without Secure.
+		Secure: requestIsHTTPS(r),
 		MaxAge: 30 * 24 * 60 * 60, // 30 days — survive browser restarts
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // sessionResponse is the JSON shape returned for each session.
-type sessionResponse struct {
-	Name              string                `json:"name"`
-	DisplayName       string                `json:"display_name,omitempty"`
-	Color             string                `json:"color"`
-	Branch            string                `json:"branch"`
-	ProjectAlias      string                `json:"project_alias,omitempty"`
-	Ports             map[string]int        `json:"ports"`
-	Routes            map[string]string     `json:"routes"`
-	ExternalRoutes    map[string]string     `json:"external_routes,omitempty"`
-	AttentionFlag     bool                  `json:"attention_flag"`
-	ArtifactCount     int                   `json:"artifact_count"`
-	FocusedArtifactID string                `json:"focused_artifact_id,omitempty"`
-	Review            *sessionReviewSummary `json:"review,omitempty"`
+type gatepostResponse struct {
+	Enabled             bool     `json:"enabled"`
+	Runtime             string   `json:"runtime,omitempty"`
+	LogsURL             string   `json:"logs_url,omitempty"`
+	Bypass              bool     `json:"bypass,omitempty"`
+	ProviderMode        string   `json:"provider_mode,omitempty"`
+	RegisteredProviders []string `json:"registered_providers,omitempty"`
+	ProviderWarnings    []string `json:"provider_warnings,omitempty"`
 }
 
-type sessionReviewSummary struct {
-	BaseBranch         string    `json:"base_branch,omitempty"`
-	ReviewedAt         time.Time `json:"reviewed_at,omitempty"`
-	Harness            string    `json:"harness,omitempty"`
-	Classification     string    `json:"classification"`
-	Summary            string    `json:"summary,omitempty"`
-	Stale              bool      `json:"stale,omitempty"`
-	Error              string    `json:"error,omitempty"`
-	UniqueCommitCount  int       `json:"unique_commit_count"`
-	ChangedFileCount   int       `json:"changed_file_count"`
-	DirtyFileCount     int       `json:"dirty_file_count"`
-	UntrackedFileCount int       `json:"untracked_file_count"`
+type sessionResponse struct {
+	Name                string                       `json:"name"`
+	DisplayName         string                       `json:"display_name,omitempty"`
+	Color               string                       `json:"color"`
+	Branch              string                       `json:"branch"`
+	ProjectAlias        string                       `json:"project_alias,omitempty"`
+	Ports               map[string]int               `json:"ports"`
+	Routes              map[string]string            `json:"routes"`
+	ExternalRoutes      map[string]string            `json:"external_routes,omitempty"`
+	TargetType          string                       `json:"target_type"`
+	AttentionFlag       bool                         `json:"attention_flag"`
+	ArtifactCount       int                          `json:"artifact_count"`
+	FocusedArtifactID   string                       `json:"focused_artifact_id,omitempty"`
+	UnseenArtifactCount int                          `json:"unseen_artifact_count,omitempty"`
+	Gatepost            *gatepostResponse            `json:"gatepost,omitempty"`
+	Stale               session.StaleStatus          `json:"stale"`
+	Status              session.SessionStatusSummary `json:"status"`
 }
 
 func buildSessionResponse(sess *session.Session) sessionResponse {
 	externalDomain := viper.GetString("external_domain")
 	externalRoutes := make(map[string]string)
 	if externalDomain != "" {
+		// Prefer tunnel URLs for every service the UI can display. Some older
+		// sessions have stored Caddy routes whose service labels are not present
+		// in Ports (or vice versa), so derive external hostnames from both sets.
+		for svc := range sess.Routes {
+			h := caddy.BuildExternalHostname(sess.Name, svc, sess.ProjectAlias, externalDomain)
+			if h != "" {
+				externalRoutes[svc] = h
+			}
+		}
 		for svc := range sess.Ports {
 			h := caddy.BuildExternalHostname(sess.Name, svc, sess.ProjectAlias, externalDomain)
 			if h != "" {
@@ -192,72 +308,135 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 			}
 		}
 	}
-	artifactCount, focusedArtifactID := artifactCountAndFocus(sess)
+	artifactCount, focusedArtifactID, unseenArtifactCount := artifactCountAndFocus(sess)
+	var gatepost *gatepostResponse
+	if sess.Target.Gatepost.Enabled {
+		logsURL := ""
+		if sess.Target.Gatepost.LogsURL != "" {
+			// Point at the same-origin reverse proxy so the Logs UI works through
+			// Caddy / the Cloudflare tunnel and on other devices.
+			logsURL = gatepostLogsProxyURL(sess.Name)
+		}
+		gatepost = &gatepostResponse{Enabled: true, Runtime: sess.Target.Gatepost.Runtime, LogsURL: logsURL, Bypass: sess.Target.Gatepost.Bypass, ProviderMode: sess.Target.Gatepost.ProviderMode, RegisteredProviders: sess.Target.Gatepost.RegisteredProviders, ProviderWarnings: sess.Target.Gatepost.ProviderWarnings}
+	}
 	return sessionResponse{
-		Name:              sess.Name,
-		DisplayName:       sess.DisplayName,
-		Color:             sess.EffectiveColor(),
-		Branch:            sess.Branch,
-		ProjectAlias:      sess.ProjectAlias,
-		Ports:             sess.Ports,
-		Routes:            sess.Routes,
-		ExternalRoutes:    externalRoutes,
-		AttentionFlag:     sess.AttentionFlag,
-		ArtifactCount:     artifactCount,
-		FocusedArtifactID: focusedArtifactID,
-		Review:            reviewWithStaleness(sess),
+		Name:                sess.Name,
+		DisplayName:         sess.DisplayName,
+		Color:               sess.EffectiveColor(),
+		Branch:              sess.Branch,
+		ProjectAlias:        sess.ProjectAlias,
+		Ports:               sess.Ports,
+		Routes:              sess.Routes,
+		ExternalRoutes:      externalRoutes,
+		TargetType:          sess.TargetType(),
+		AttentionFlag:       sess.AttentionFlag,
+		ArtifactCount:       artifactCount,
+		FocusedArtifactID:   focusedArtifactID,
+		UnseenArtifactCount: unseenArtifactCount,
+		Gatepost:            gatepost,
 	}
 }
 
-func reviewWithStaleness(sess *session.Session) *sessionReviewSummary {
-	if sess == nil || sess.Review == nil {
-		return nil
+func handleGatepostLogsRedirect(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("session")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session query param required"})
+		return
 	}
-	review := sess.Review
-	uniqueCommitCount := review.UniqueCommitCount
-	if uniqueCommitCount == 0 {
-		uniqueCommitCount = len(review.UniqueCommits)
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
-	changedFileCount := review.ChangedFileCount
-	if changedFileCount == 0 {
-		changedFileCount = len(review.ChangedFiles)
+	sess, ok := store.GetSession(name)
+	if !ok || !sess.Target.Gatepost.Enabled || sess.Target.Gatepost.LogsURL == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "gatepost logs not found"})
+		return
 	}
-	dirtyFileCount := review.DirtyFileCount
-	if dirtyFileCount == 0 {
-		dirtyFileCount = len(review.DirtyFiles)
-	}
-	untrackedFileCount := review.UntrackedFileCount
-	if untrackedFileCount == 0 {
-		untrackedFileCount = len(review.UntrackedFiles)
-	}
-	return &sessionReviewSummary{
-		BaseBranch:         review.BaseBranch,
-		ReviewedAt:         review.ReviewedAt,
-		Harness:            review.Harness,
-		Classification:     review.Classification,
-		Summary:            review.Summary,
-		Stale:              review.Stale,
-		Error:              review.Error,
-		UniqueCommitCount:  uniqueCommitCount,
-		ChangedFileCount:   changedFileCount,
-		DirtyFileCount:     dirtyFileCount,
-		UntrackedFileCount: untrackedFileCount,
-	}
+	// Redirect to the same-origin reverse proxy. This keeps the Logs UI
+	// reachable through Caddy / the Cloudflare tunnel (and on other devices)
+	// without publishing the per-session logs port or leaking the access token
+	// into the browser URL — the proxy injects the token server-side.
+	http.Redirect(w, r, gatepostLogsProxyURL(sess.Name), http.StatusFound)
 }
 
 func handleListSessions(w http.ResponseWriter, r *http.Request) {
+	cacheKey := os.Getenv("HOME") + "|" + session.SessionsMetadataFingerprint() + "|" + strconv.Itoa(defaultStaleDays())
+	if payload, ok := getCachedSessionList(cacheKey); ok {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+
 	store, err := session.LoadSessions()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
+	threshold, err := webStaleThreshold(defaultStaleDays())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	summary := session.AnalyzeStaleSessionsWithOptions(store, session.FastStaleAnalysisOptions(threshold))
+	staleByName := make(map[string]session.StaleStatus, len(summary.Statuses))
+	for _, status := range summary.Statuses {
+		staleByName[status.SessionName] = status
+	}
+
 	sessions := make([]sessionResponse, 0, len(store.Sessions))
 	for _, sess := range store.Sessions {
-		sessions = append(sessions, buildSessionResponse(sess))
+		resp := buildSessionResponse(sess)
+		resp.Stale = staleByName[sess.Name]
+		resp.Status = session.DeriveSessionStatus(sess, resp.Stale, resp.ArtifactCount, resp.UnseenArtifactCount)
+		sessions = append(sessions, resp)
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Name < sessions[j].Name })
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+	payload := map[string]any{"sessions": sessions, "stale_summary": summary}
+	setCachedSessionList(cacheKey, payload)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func handleStaleSessions(w http.ResponseWriter, r *http.Request) {
+	days, err := parseStaleDays(r.URL.Query().Get("days"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	threshold, err := webStaleThreshold(days)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cacheKey := os.Getenv("HOME") + "|" + session.SessionsMetadataFingerprint() + "|" + strconv.Itoa(days)
+	if payload, ok := getCachedFullStaleScan(cacheKey); ok {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	payload, err := computeCachedFullStaleScan(cacheKey, func() (map[string]any, error) {
+		store, err := session.LoadSessions()
+		if err != nil {
+			return nil, err
+		}
+		summary := session.AnalyzeStaleSessionsWithOptions(store, session.CleanupStaleAnalysisOptions(threshold))
+		for i := range summary.Statuses {
+			status := &summary.Statuses[i]
+			if status.Category == session.StaleCategoryActive {
+				continue
+			}
+			if sess, ok := store.GetSession(status.SessionName); ok {
+				if review, err := session.ReviewSession(sess, session.ReviewOptions{}); err == nil {
+					status.CleanupReview = session.CompactSessionReview(review)
+				}
+			}
+		}
+		return map[string]any{"stale_summary": summary}, nil
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 type createSessionRequest struct {
@@ -273,6 +452,18 @@ func isValidSessionTarget(target string) bool {
 	default:
 		return false
 	}
+}
+
+// sessionCreateJobs tracks in-progress async session creations.
+var sessionCreateJobs sync.Map // name -> *sessionCreateJob
+
+type sessionCreateJob struct {
+	Name      string
+	Done      chan struct{}
+	Err       error
+	mu        sync.Mutex
+	Messages  []string // progress lines from stdout
+	StartedAt time.Time
 }
 
 func handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -294,12 +485,19 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use -- to separate flags from the positional session name, preventing
-	// a name starting with "-" from being misinterpreted as a flag by Cobra.
-	// Web requests should return once the session has been created. The CLI's
-	// default create flow launches and attaches to tmux, which can keep the HTTP
-	// request open until that tmux client exits. The web UI lazily starts/restores
-	// the tmux session when the user opens the session, so skip tmux during create.
+	// Start creation asynchronously so long-running targets (e.g. Gatepost
+	// Docker) don't time out the HTTP connection.
+	job := &sessionCreateJob{Name: req.Name, Done: make(chan struct{}), StartedAt: time.Now()}
+	if existing, loaded := sessionCreateJobs.LoadOrStore(req.Name, job); loaded {
+		// Allow retry if the previous job is stale (>6 min, covers 5 min timeout + 60s buffer).
+		old := existing.(*sessionCreateJob)
+		if time.Since(old.StartedAt) < 6*time.Minute {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session creation already in progress"})
+			return
+		}
+		// Stale job — replace it.
+		sessionCreateJobs.Store(req.Name, job)
+	}
 	args := []string{"session", "create", "--no-tmux"}
 	if req.Project != "" {
 		args = append(args, "--project", req.Project)
@@ -308,20 +506,66 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--target", req.Target)
 	}
 	args = append(args, "--", req.Name)
-	if err := runSelfCommand(args...); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	go func() {
+		defer close(job.Done)
+		job.Err = runSelfWithProgress(args, func(line string) {
+			job.mu.Lock()
+			if len(job.Messages) < 50 { // cap to avoid unbounded growth
+				job.Messages = append(job.Messages, line)
+			}
+			job.mu.Unlock()
+		})
+		// Keep job in map for 60s after completion so the status endpoint can
+		// return the error to the browser even if it polls slightly late.
+		time.AfterFunc(60*time.Second, func() { sessionCreateJobs.Delete(req.Name) })
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"name": req.Name, "status": "creating"})
+}
+
+func handleSessionCreateStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
 		return
 	}
-
+	v, inProgress := sessionCreateJobs.Load(name)
+	if inProgress {
+		job := v.(*sessionCreateJob)
+		select {
+		case <-job.Done:
+			// just finished — fall through to session lookup below
+		default:
+			job.mu.Lock()
+			msgs := append([]string(nil), job.Messages...)
+			job.mu.Unlock()
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{"name": name, "status": "creating", "messages": msgs})
+			return
+		}
+	}
 	store, err := session.LoadSessions()
 	if err != nil || store == nil {
-		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	if sess, ok := store.Sessions[req.Name]; ok {
-		writeJSON(w, http.StatusCreated, buildSessionResponse(sess))
+	if sess, ok := store.Sessions[name]; ok {
+		invalidateSessionListCache()
+		writeJSON(w, http.StatusOK, buildSessionResponse(sess))
 	} else {
-		writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+		// Check if job errored
+		if inProgress {
+			job := v.(*sessionCreateJob)
+			if job.Err != nil {
+				// Strip leading "exit status N: " prefix for cleaner UI messages.
+				msg := job.Err.Error()
+				if i := strings.Index(msg, ": "); i >= 0 && strings.HasPrefix(msg, "exit status") {
+					msg = msg[i+2:]
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg})
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 	}
 }
 
@@ -337,10 +581,25 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	// Pass --force to skip the interactive y/N prompt. runSelf has no stdin
 	// connected, so Scanln blocks forever without it.
 	// Use -- to separate flags from the positional name argument.
-	if err := runSelfCommand("session", "rm", "--force", "--", name); err != nil {
+	if err := runSelf("session", "rm", "--force", "--", name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleDeleteStaleCleanSessions(w http.ResponseWriter, r *http.Request) {
+	days, err := parseStaleDays(r.URL.Query().Get("days"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := runSelf("session", "prune", "--force", "--days", strconv.Itoa(days)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -364,37 +623,16 @@ func handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	} else {
 		args = append(args, "--", name, displayName)
 	}
-	if err := runSelfCommand(args...); err != nil {
+	if err := runSelf(args...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func handleColorSession(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	color := r.URL.Query().Get("color")
-	if name == "" || color == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and color query params required"})
-		return
-	}
-	if !requireValidSession(w, name) {
-		return
-	}
-	if !session.IsValidColor(color) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid color"})
-		return
-	}
-	if err := runSelfCommand("session", "color", "--", name, color); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 type reviewSessionRequest struct {
-	Base    string `json:"base"`
-	Harness string `json:"harness"`
+	Base string `json:"base"`
 }
 
 func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
@@ -406,38 +644,14 @@ func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	store, err := session.LoadSessions()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	sess, ok := store.GetSession(name)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	if sess.Review == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "review not found"})
-		return
-	}
-	if _, err := session.RefreshSessionReviewStale(name, sess); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	store, err = session.LoadSessions()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	sess, _ = store.GetSession(name)
 	if review, err := session.LoadSessionReviewDetails(name); err == nil {
-		writeJSON(w, http.StatusOK, session.MergeReviewDetails(sess.Review, review))
+		writeJSON(w, http.StatusOK, review)
 		return
 	} else if !errors.Is(err, os.ErrNotExist) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load review details: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sess.Review)
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "review not found"})
 }
 
 func handleReviewSession(w http.ResponseWriter, r *http.Request) {
@@ -471,18 +685,11 @@ func handleReviewSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if req.Harness != "" && req.Harness != "deterministic" {
-		review.Harness = req.Harness
-		review.Details = "Agent harness execution from web is not configured in this build; deterministic review was saved. Run `devx session review " + name + " --harness-command ...` for an agent pass."
-	}
-	if err := session.PersistSessionReview(name, review); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
+	_ = session.SaveSessionReviewDetails(name, review)
 	writeJSON(w, http.StatusOK, review)
 }
 
-func handleClearSessionReview(w http.ResponseWriter, r *http.Request) {
+func handleMarkSessionReviewed(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
@@ -491,10 +698,37 @@ func handleClearSessionReview(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
-	if err := session.ClearSessionReview(name); err != nil {
+	if err := markSessionReviewed(name, time.Now()); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
+}
+
+func handleColorSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	color := r.URL.Query().Get("color")
+	if name == "" || color == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and color query params required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	if !session.IsValidColor(color) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid color"})
+		return
+	}
+	if err := runSelf("session", "color", "--", name, color); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -515,6 +749,7 @@ func (s *Server) handleFlagSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(map[string]any{
 		"session": name,
 		"flagged": true,
@@ -537,6 +772,7 @@ func (s *Server) handleUnflagSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(map[string]any{
 		"session": name,
 		"flagged": false,
@@ -562,6 +798,7 @@ func (s *Server) handleFlagNotify(w http.ResponseWriter, r *http.Request) {
 	if reason == "" && flagged {
 		reason = "manual"
 	}
+	invalidateSessionListCache()
 	payload, _ := json.Marshal(map[string]any{
 		"session": name,
 		"flagged": flagged,
@@ -1006,7 +1243,9 @@ var allowedImageTypes = map[string]string{
 }
 
 // handleUploadImage accepts a multipart image upload, saves it to
-// ~/.devx/uploads/{hex}.ext, and returns the absolute path as JSON.
+// ~/.devx/uploads/<session>/{hex}.ext, and returns the path as JSON.
+// For Gatepost sessions the returned path uses the container mount point
+// so the agent can access the file directly.
 func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	// Cap the raw request body to 20 MB before parsing to prevent disk exhaustion.
 	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
@@ -1021,6 +1260,8 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	sessionName := r.FormValue("session")
 
 	// Always sniff magic bytes to determine MIME type — never trust the
 	// client-supplied Content-Type header, which is trivially spoofable.
@@ -1051,7 +1292,13 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uploadDir := filepath.Join(home, ".devx", "uploads")
+	// Per-session upload directory so each session is isolated and Gatepost
+	// containers only see their own files.
+	uploadSubdir := "uploads"
+	if sessionName != "" {
+		uploadSubdir = filepath.Join("uploads", sessionName)
+	}
+	uploadDir := filepath.Join(home, ".devx", uploadSubdir)
 	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot create upload dir"})
 		return
@@ -1077,15 +1324,34 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"path": destPath})
+	// For Gatepost sessions, return the container-side path so the agent
+	// can read the file from the mounted uploads directory.
+	resultPath := destPath
+	if sessionName != "" {
+		store, _ := session.LoadSessions()
+		if store != nil {
+			if sess, ok := store.Sessions[sessionName]; ok && sess.Target.Gatepost.Enabled {
+				resultPath = filepath.Join("/root/.devx/uploads", filename)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"path": resultPath})
 }
 
 // handleServeUpload serves files from ~/.devx/uploads/ by filename.
-// Path traversal is prevented by rejecting any filename that contains a slash.
+// Supports both legacy flat paths (/uploads/{file}) and per-session
+// paths (/uploads/{session}/{file}). Path traversal is prevented by
+// rejecting ".." segments.
 func handleServeUpload(w http.ResponseWriter, r *http.Request) {
-	filename := strings.TrimPrefix(r.URL.Path, "/uploads/")
-	// Reject empty names and any path traversal attempts.
-	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\") {
+	subpath := strings.TrimPrefix(r.URL.Path, "/uploads/")
+	if subpath == "" || strings.Contains(subpath, "..") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// Allow at most one slash (session/filename).
+	parts := strings.SplitN(subpath, "/", 3)
+	if len(parts) > 2 {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -1095,7 +1361,7 @@ func handleServeUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot find home dir", http.StatusInternalServerError)
 		return
 	}
-	filePath := filepath.Join(home, ".devx", "uploads", filename)
+	filePath := filepath.Join(home, ".devx", "uploads", subpath)
 
 	// Serve the file — http.ServeFile sets Content-Type, ETag, etc.
 	http.ServeFile(w, r, filePath)
@@ -1185,25 +1451,84 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 // TMUX and TMUX_PANE are stripped so that commands like "session create"
 // don't detect they're inside tmux and skip launching the session.
 func runSelf(args ...string) error {
+	return runSelfWithProgress(args, nil)
+}
+
+func runSelfWithProgress(args []string, onLine func(string)) error {
+	return runSelfTimeoutProgress(5*time.Minute, args, onLine)
+}
+
+func runSelfTimeoutProgress(timeout time.Duration, args []string, onLine func(string)) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to find executable: %w", err)
 	}
+	self = runSelfExecutable(self)
 	env := make([]string, 0, len(os.Environ()))
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "TMUX=") && !strings.HasPrefix(e, "TMUX_PANE=") {
 			env = append(env, e)
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	var stderr bytes.Buffer
-	cmd := exec.Command(self, args...)
+	cmd := exec.CommandContext(ctx, self, args...)
 	cmd.Env = env
 	cmd.Stderr = &stderr
+	if onLine != nil {
+		pr, pw, err := os.Pipe()
+		if err == nil {
+			cmd.Stdout = pw
+			go func() {
+				defer pr.Close()
+				buf := make([]byte, 4096)
+				var line []byte
+				for {
+					n, err := pr.Read(buf)
+					for _, b := range buf[:n] {
+						if b == '\n' {
+							if s := strings.TrimSpace(string(line)); s != "" {
+								onLine(s)
+							}
+							line = line[:0]
+						} else {
+							line = append(line, b)
+						}
+					}
+					if err != nil {
+						break
+					}
+				}
+			}()
+			defer pw.Close()
+		}
+	}
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("timed out after %s: %w", timeout, ctx.Err())
+		}
 		if stderr.Len() > 0 {
-			return fmt.Errorf("%w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+			// Take only the first line — cobra appends full usage text after the error.
+			firstLine := bytes.TrimSpace(bytes.SplitN(stderr.Bytes(), []byte{'\n'}, 2)[0])
+			return fmt.Errorf("%s", firstLine)
 		}
 		return err
 	}
 	return nil
+}
+
+func runSelfExecutable(current string) string {
+	if override := os.Getenv("DEVX_CLI_BINARY"); override != "" {
+		return override
+	}
+	if strings.Contains(filepath.Base(current), "devx-desktop") {
+		// The desktop shell runs the same web package, but re-executing itself for
+		// CLI subcommands would open a second desktop window instead of creating a
+		// session. Prefer the real devx CLI from PATH when embedded in desktop.
+		if cli, err := exec.LookPath("devx"); err == nil {
+			return cli
+		}
+	}
+	return current
 }

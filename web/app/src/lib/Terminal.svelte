@@ -8,6 +8,8 @@
   import MobileActionsMenu from './terminal/MobileActionsMenu.svelte'
   import PaneViewerModal from './terminal/PaneViewerModal.svelte'
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
+  import PromptComposer from './composer/PromptComposer.svelte'
+  import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
 
   export let session
   export let artifactEvent = null
@@ -38,6 +40,8 @@
   let focusedArtifactDismissed = false
   let pasteArtifactNonce = 0
   let focusedArtifactTimer
+  let composerOpen = false
+  let softKeysOpen = false
   $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
   $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
   $: terminalPaneCSS = !artifactsIsVisible ? 'flex: 1 1 0;' : splitMode === 'vertical' ? 'width: 50%; flex: 0 0 50%;' : splitMode === 'horizontal' ? 'height: 50%; flex: 0 0 50%;' : 'flex: 1 1 0;'
@@ -66,22 +70,39 @@
     return ALLOWED_EXTS.some(ext => name.endsWith(ext))
   }
 
-  // Encode session names so slashes ("/") don't split the URL path.
-  $: slug = encodeURIComponent(session.name)
-  $: iframeURL = `/terminal/${slug}/`
-
-  // iframeKey drives the {#key} block around the iframe. Changing it destroys
-  // and recreates the iframe element, causing xterm.js to reconnect and
-  // re-report the correct terminal dimensions to the server.
+  // --- Iframe keep-alive pool (plan 0C) ---------------------------------------
+  // Recently used session iframes stay mounted (absolutely positioned, hidden
+  // via visibility) so switching back skips iframe teardown, ttyd HTML reload,
+  // and the WebSocket re-handshake entirely. visibility:hidden (not
+  // display:none) keeps the layout box, so xterm's measured dimensions stay
+  // valid and FitAddon has real geometry on re-show. pointer-events:none and
+  // tabindex=-1 on hidden frames prevent focus/click stealing.
   //
-  // We bump it in two situations:
-  //   1. Session changes — same as the old {#key session.name} behaviour.
-  //   2. Tab was hidden for > 30 s — handles the case where another device
-  //      (e.g. phone) resized the PTY while this tab was in the background.
-  //      On return, xterm.js reconnects and immediately sends the correct
-  //      dimensions, so the terminal reflowes to this viewport.
-  let iframeKey = session.name
+  // Pool entries: { name, key } — bumping key recreates that session's iframe
+  // (used for the long-absence reload path). Active session is always pool[0].
+  // Mobile gets no pool (cap 1): keeping multiple xterm WebGL contexts alive
+  // on a phone costs memory and background sockets die with the tab anyway.
+  const IFRAME_POOL_MAX = (typeof window !== 'undefined' && window.innerWidth >= 1024) ? 3 : 1
+  let pool = [{ name: session.name, key: 0 }]
+  let frameEls = {}
+  // Frames whose xterm never initialised (e.g. backend returned an error page)
+  // must not be served from the pool — promote forces a fresh reload instead.
+  let frameHealthy = {}
   let hiddenAt = null
+
+  function frameURL(name) {
+    // Encode session names so slashes ("/") don't split the URL path.
+    const path = `/terminal/${encodeURIComponent(name)}/`
+    const desktop = typeof window !== 'undefined' && window.__DEVX_DESKTOP
+    if (!desktop?.terminalBase || !desktop?.terminalToken) return path
+    const url = new URL(path, desktop.terminalBase)
+    url.searchParams.set('desktop_token', desktop.terminalToken)
+    return url.toString()
+  }
+
+  function reloadActiveFrame() {
+    pool = pool.map(p => p.name === session.name ? { ...p, key: Date.now() } : p)
+  }
 
   // Reset windows and iframe key when session changes (component reused with
   // different session). currentSession stores the previous value of session.name
@@ -89,10 +110,11 @@
   // don't receive the old value, so we track it manually.
   let currentSession = session.name
   $: if (session.name !== currentSession) {
+    // Save outgoing session's layout chrome so switching back restores it.
+    setSessionChrome(currentSession, { splitMode, artifactPaneOpen, selectedArtifactID })
     currentSession = session.name
     windows = []
-    iframeKey = session.name
-    artifactPaneOpen = false
+    promoteInPool(session.name)
     artifactFullScreen = false
     paneViewerOpen = false
     paneViewerURL = ''
@@ -101,11 +123,53 @@
     artifactSearchOpen = false
     artifactQuery = ''
     artifactSearchItems = []
-    selectedArtifactID = null
     focusedArtifactDismissed = false
-    splitMode = 'vertical'
+    // Restore incoming session's chrome (or defaults for first visit).
+    const chrome = getSessionChrome(session.name)
+    artifactPaneOpen = chrome?.artifactPaneOpen ?? false
+    splitMode = chrome?.splitMode ?? 'vertical'
+    selectedArtifactID = chrome?.selectedArtifactID ?? null
     if (session.focused_artifact_id) {
       scheduleFocusedArtifactOpen(session.focused_artifact_id)
+    }
+  }
+
+  // Bring a session to the front of the pool. If its iframe is still mounted
+  // (warm hit), reuse it: re-fit, refresh, focus — no reload, no re-handshake.
+  function promoteInPool(name) {
+    const existing = pool.find(p => p.name === name)
+    if (existing && frameHealthy[name] === false) {
+      // Pooled frame holds an error page — recreate it instead of reusing.
+      delete frameHealthy[name]
+      pool = [{ ...existing, key: Date.now() }, ...pool.filter(p => p !== existing)]
+      return
+    }
+    if (existing) {
+      pool = [existing, ...pool.filter(p => p !== existing)]
+      tick().then(async () => {
+        iframeEl = frameEls[name]
+        // Pooled switch: terminal is already connected. Record near-zero
+        // switch timings (warm path) and resync size/focus.
+        markIframeLoad(name)
+        markTerminalReady(name)
+        triggerFitAddon()
+        await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
+        try { await refreshTerminal(name) } catch { /* ignore */ }
+        focusTerminalSoon()
+        setTimeout(restoreStoredWindow, 0)
+        resizeObserver?.disconnect()
+        if (iframeEl) {
+          resizeObserver = new ResizeObserver(scheduleRefresh)
+          resizeObserver.observe(iframeEl)
+        }
+      })
+    } else {
+      pool = [{ name, key: 0 }, ...pool].slice(0, IFRAME_POOL_MAX)
+      // Drop element refs for evicted sessions so they can be GC'd.
+      const live = new Set(pool.map(p => p.name))
+      for (const k of Object.keys(frameEls)) {
+        if (!live.has(k)) delete frameEls[k]
+      }
     }
   }
   $: if (session?.focused_artifact_id && !artifactPaneOpen && !focusedArtifactDismissed) {
@@ -149,7 +213,7 @@
       hiddenAt = null
       if (absent > 180_000) {
         // Long absence: reload iframe entirely so xterm.js reconnects fresh.
-        iframeKey = session.name + '::' + Date.now()
+        reloadActiveFrame()
       } else {
         // Short absence: another device may have changed the PTY size while
         // this tab was backgrounded. Re-trigger FitAddon so xterm.js sends
@@ -177,15 +241,56 @@
         return
       }
     } catch { /* ignore any cross-origin / not-yet-loaded errors */ }
-    // Fallback: at minimum route events to the iframe window
+    // Fallback: at minimum route events to the iframe window. Desktop Wails
+    // terminal frames are intentionally cross-origin (wails:// parent,
+    // 127.0.0.1 iframe) so this is the primary focus path there.
     iframeEl?.focus()
+  }
+
+  function focusTerminalSoon() {
+    focusTerminal()
+    // WebKit often ignores the first focus while swapping iframe visibility or
+    // immediately after navigation. Retry across a few frames so session
+    // switches land keyboard focus in the active terminal without a click.
+    setTimeout(focusTerminal, 0)
+    setTimeout(focusTerminal, 60)
+    setTimeout(focusTerminal, 180)
+    setTimeout(focusTerminal, 360)
+  }
+
+  export function focusTerminalSurface() {
+    focusTerminalSoon()
   }
 
   // Ctrl+Shift+S, registered on the iframe's document in capture phase so
   // xterm never sees it. Dispatches to the parent window (lexical `window`
   // is the parent since this function is defined in the parent scope).
+  function toggleComposer() {
+    composerOpen = !composerOpen
+  }
+
+  function closeComposer() {
+    composerOpen = false
+    focusTerminal()
+  }
+
+  function windowHotkey(e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      toggleComposer()
+    }
+  }
+
   function iframeHotkey(e) {
-    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      e.stopPropagation()
+      toggleComposer()
+    } else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+      e.preventDefault()
+      e.stopPropagation()
+      window.dispatchEvent(new CustomEvent('devx:quickSwitcher'))
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
@@ -291,6 +396,18 @@
     fileInputEl?.click()
   }
 
+  function handleDesktopCommand(e) {
+    switch (e.detail || e.type.replace('devx:terminal:', '')) {
+      case 'composer': toggleComposer(); break
+      case 'artifacts': toggleArtifacts(); break
+      case 'split': cycleSplitMode(); break
+      case 'view-output': openPaneViewer(); break
+      case 'insert-artifact': openArtifactSearch('insert'); break
+      case 'new-artifact': openPasteArtifact(); break
+      case 'focus': focusTerminalSoon(); break
+    }
+  }
+
   async function openPaneViewer() {
     const params = new URLSearchParams({ name: session.name })
     try {
@@ -349,6 +466,7 @@
   //      redraw) and resize-window to the current client's dimensions,
   //      working around the tmux grouped-session size-constraint bug.
   async function handleIframeLoad() {
+    markIframeLoad(session.name)
     // Inject Nerd Font into the iframe immediately so the font is available
     // before xterm.js initialises and measures character cell size.
     // The font file is already cached by the parent page's preload hint.
@@ -381,19 +499,23 @@
 
     // Poll until xterm's helper textarea appears (signals full init).
     const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
+    let xtermReady = false
     while (Date.now() < deadline) {
       try {
-        if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) break
+        if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) { xtermReady = true; break }
       } catch { /* cross-origin / not-yet-loaded */ }
       await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
     }
+    // Record health so the keep-alive pool never serves a cached error page.
+    frameHealthy[session.name] = xtermReady
     // Re-trigger FitAddon so it sends the current browser viewport dimensions
     // to the PTY. Small wait after so ioctl has time to propagate before the
     // subsequent refresh-client call.
+    markTerminalReady(session.name)
     triggerFitAddon()
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
-    focusTerminal()
+    focusTerminalSoon()
     // Restore window tabs after the terminal is interactive; don't block the first
     // usable paint/focus on tmux bookkeeping.
     setTimeout(restoreStoredWindow, 0)
@@ -520,7 +642,7 @@
     const objectURLs = valid.map(f => URL.createObjectURL(f))
 
     try {
-      const results = await Promise.all(valid.map(f => uploadImage(f)))
+      const results = await Promise.all(valid.map(f => uploadImage(f, session.name)))
       const paths = results.map(r => r.path)
       // Inject all paths into active tmux pane (no Enter — user confirms).
       // Use sendLiteral so spaces in paths are preserved verbatim.
@@ -636,6 +758,20 @@
     if (goBack) popModalHistory('artifact-search')
   }
 
+  function handleComposerSent(event) {
+    scheduleRefresh()
+    // Sending from the desktop overlay dismisses it; paste-only keeps it open
+    // so the user can continue composing while reviewing the staged text.
+    if (composerOpen && event.detail?.submit) {
+      composerOpen = false
+    }
+    if (!composerOpen) focusTerminal()
+  }
+
+  function handleComposerImagePaste(event) {
+    processImageFiles(event.detail?.files || [])
+  }
+
   // Exported so App.svelte can route parent-window paste events here.
   export function handleImagePaste(file) {
     processImageFile(file)
@@ -693,6 +829,14 @@
     document.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('popstate', handlePopState)
     document.addEventListener('click', handleDocumentClick)
+    window.addEventListener('keydown', windowHotkey)
+    window.addEventListener('devx:terminal:composer', handleDesktopCommand)
+    window.addEventListener('devx:terminal:artifacts', handleDesktopCommand)
+    window.addEventListener('devx:terminal:split', handleDesktopCommand)
+    window.addEventListener('devx:terminal:view-output', handleDesktopCommand)
+    window.addEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
+    window.addEventListener('devx:terminal:new-artifact', handleDesktopCommand)
+    window.addEventListener('devx:terminal:focus', handleDesktopCommand)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
@@ -703,6 +847,14 @@
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     window.removeEventListener('popstate', handlePopState)
     document.removeEventListener('click', handleDocumentClick)
+    window.removeEventListener('keydown', windowHotkey)
+    window.removeEventListener('devx:terminal:composer', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:artifacts', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:split', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:view-output', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:new-artifact', handleDesktopCommand)
+    window.removeEventListener('devx:terminal:focus', handleDesktopCommand)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
@@ -789,6 +941,13 @@
         class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
       >[split: {splitMode}]</button>
 
+      <!-- Compose overlay (Cmd/Ctrl+K) -->
+      <button
+        on:click={toggleComposer}
+        title="compose a prompt outside the terminal (⌘/Ctrl+K)"
+        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >[compose]</button>
+
       <!-- Attach image button -->
       <button
         on:click={() => fileInputEl?.click()}
@@ -821,22 +980,30 @@
 
   <div class="flex-1 min-h-0 flex {splitMode === 'horizontal' ? 'flex-col' : 'flex-row'}">
     {#if terminalIsVisible}
-      <div class="min-h-0 min-w-0 flex flex-col" style={terminalPaneCSS}>
+      <div class="min-h-0 min-w-0 flex flex-col relative" style={terminalPaneCSS}>
         <!--
-          Wrap in {#key} so switching sessions destroys the old iframe element rather
-          than navigating it. Navigating triggers ttyd's beforeunload handler and shows
-          the browser's "Leave site?" dialog. Removing an iframe element does not.
+          Keep-alive pool: every pooled session's iframe stays mounted in this
+          container; only the active one is visible. Hidden frames keep their
+          WebSocket + xterm state alive, making switch-back instant. Keyed per
+          (name, key) so evicting/reloading destroys the element rather than
+          navigating it (navigation would trigger ttyd's beforeunload dialog).
+          Hidden frames use visibility:hidden so they keep real layout geometry
+          for xterm, plus pointer-events:none and tabindex=-1 so they can't
+          steal clicks or keyboard focus.
         -->
-        {#key iframeKey}
+        {#each pool as frame (frame.name + '::' + frame.key)}
+          {@const isActiveFrame = frame.name === session.name}
           <iframe
-            bind:this={iframeEl}
-            src={iframeURL}
-            title="Terminal — {session.name}"
-            class="flex-1 min-h-0 w-full border-0"
+            bind:this={frameEls[frame.name]}
+            src={frameURL(frame.name)}
+            title="Terminal — {frame.name}"
+            class="absolute inset-0 w-full h-full border-0"
+            style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0};"
+            tabindex={isActiveFrame ? 0 : -1}
             allow="clipboard-read; clipboard-write"
-            on:load={handleIframeLoad}
+            on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() } }}
           ></iframe>
-        {/key}
+        {/each}
       </div>
     {/if}
 
@@ -861,10 +1028,27 @@
     <PaneViewerModal {session} url={paneViewerURL} onClose={() => closePaneViewer()} />
   {/if}
 
-  <!-- Soft key toolbar — mobile only -->
+  <!-- Desktop: transient composer overlay (Cmd/Ctrl+K) -->
+  {#if composerOpen}
+    <PromptComposer variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} />
+  {/if}
+
+  <!-- Mobile: docked composer is THE input; terminal is mostly a display surface.
+       The soft keybar is collapsed behind the ⌨ toggle to save vertical space. -->
   {#if terminalIsVisible}
     <div class="lg:hidden">
-      <SoftKeybar onKey={sendKey} />
+      <PromptComposer
+        variant="docked"
+        sessionName={session.name}
+        keysOpen={softKeysOpen}
+        on:sent={handleComposerSent}
+        on:layoutchange={scheduleRefresh}
+        on:imagepaste={handleComposerImagePaste}
+        on:togglekeys={() => { softKeysOpen = !softKeysOpen; scheduleRefresh() }}
+      />
+      {#if softKeysOpen}
+        <SoftKeybar onKey={sendKey} />
+      {/if}
     </div>
   {/if}
 

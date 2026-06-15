@@ -3,11 +3,13 @@ package session
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type WorktreeInfo struct {
@@ -312,8 +314,11 @@ func PullFromOrigin(repoPath, branch string) error {
 		return fmt.Errorf("cannot pull: repository has uncommitted changes")
 	}
 
-	// Fetch from origin first
-	fetchCmd := exec.Command("git", "fetch", "origin")
+	// Fetch from origin first — with a timeout so a slow/unreachable remote
+	// doesn't block session creation indefinitely.
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer fetchCancel()
+	fetchCmd := exec.CommandContext(fetchCtx, "git", "fetch", "origin")
 	fetchCmd.Dir = repoPath
 	if output, err := fetchCmd.CombinedOutput(); err != nil {
 		// Check if it's a network error or missing remote
@@ -327,7 +332,9 @@ func PullFromOrigin(repoPath, branch string) error {
 	}
 
 	// Now pull from origin
-	pullCmd := exec.Command("git", "pull", "origin", branch, "--ff-only")
+	pullCtx, pullCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pullCancel()
+	pullCmd := exec.CommandContext(pullCtx, "git", "pull", "origin", branch, "--ff-only")
 	pullCmd.Dir = repoPath
 	if output, err := pullCmd.CombinedOutput(); err != nil {
 		// Check for common non-fatal errors

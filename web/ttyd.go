@@ -13,10 +13,14 @@ import (
 )
 
 type ttydInstance struct {
-	port  int
-	cmd   *exec.Cmd
-	conns int
-	timer *time.Timer
+	port       int
+	cmd        *exec.Cmd
+	conns      int
+	timer      *time.Timer
+	startedAt  time.Time
+	lastUsedAt time.Time
+	prewarmed  bool
+	lastError  string
 }
 
 type ttydManager struct {
@@ -96,7 +100,8 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 		return 0, fmt.Errorf("failed to start ttyd: %w", err)
 	}
 
-	m.sessions[sessionName] = &ttydInstance{port: port, cmd: cmd}
+	now := time.Now()
+	m.sessions[sessionName] = &ttydInstance{port: port, cmd: cmd, startedAt: now, lastUsedAt: now}
 
 	// Clean up map entry when process exits. Pass cmd as parameter to avoid
 	// deleting a newly-started replacement instance if the session is restarted
@@ -175,6 +180,8 @@ func (m *ttydManager) clientConnected(sessionName string) {
 	defer m.mu.Unlock()
 	if inst, ok := m.sessions[sessionName]; ok {
 		inst.conns++
+		inst.prewarmed = false
+		inst.lastUsedAt = time.Now()
 		if inst.timer != nil {
 			inst.timer.Stop()
 			inst.timer = nil
@@ -207,13 +214,61 @@ func (m *ttydManager) portForSession(name string) (int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if inst, ok := m.sessions[name]; ok {
-		if inst.timer != nil {
-			inst.timer.Stop()
-			inst.timer = nil
-		}
+		inst.lastUsedAt = time.Now()
 		return inst.port, true
 	}
 	return 0, false
+}
+
+func (m *ttydManager) statusForSession(name string) (terminalStatus, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.sessions[name]
+	if !ok {
+		return terminalStatus{}, false
+	}
+	state := terminalStateReady
+	ready := true
+	if inst.lastError != "" {
+		state = terminalStateError
+		ready = false
+	}
+	return terminalStatus{
+		Session: name,
+		Ready:   ready,
+		Running: true,
+		State:   state,
+		Error:   inst.lastError,
+	}, true
+}
+
+func (m *ttydManager) prewarmedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, inst := range m.sessions {
+		if inst.prewarmed && inst.conns == 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *ttydManager) markPrewarmed(name string, idleTimeout time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.sessions[name]
+	if !ok {
+		return
+	}
+	inst.prewarmed = true
+	inst.lastUsedAt = time.Now()
+	if inst.timer != nil {
+		inst.timer.Stop()
+	}
+	inst.timer = time.AfterFunc(idleTimeout, func() {
+		m.stopSession(name)
+	})
 }
 
 // findSessionByPathPrefix finds the running session whose name is the longest prefix
@@ -223,6 +278,7 @@ func (m *ttydManager) findSessionByPathPrefix(path string) (name string, port in
 	defer m.mu.Unlock()
 	for n, inst := range m.sessions {
 		if (strings.HasPrefix(path, n+"/") || path == n) && len(n) > len(name) {
+			inst.lastUsedAt = time.Now()
 			name = n
 			port = inst.port
 			found = true

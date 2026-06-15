@@ -28,14 +28,26 @@ async function apiFetch(path, options = {}) {
 }
 
 export async function listSessions() {
-  const res = await apiFetch('/sessions')
-  const data = await res.json()
+  const data = await listSessionsWithSummary()
   return data.sessions || []
 }
 
-export async function createSession(name, project, target) {
+export async function listSessionsWithSummary() {
+  const res = await apiFetch('/sessions')
+  await requireOK(res, 'Failed to list sessions')
+  return res.json()
+}
+
+export async function getStaleSummary(days) {
+  const suffix = days ? '?days=' + encodeURIComponent(days) : ''
+  const res = await apiFetch('/sessions/stale' + suffix)
+  if (!res.ok) throw new Error(`Failed to load stale summary: ${res.status}`)
+  return res.json()
+}
+
+export async function createSession(name, project, options = {}) {
   const body = { name, project }
-  if (target) body.target = target
+  if (options.target) body.target = options.target
   const res = await apiFetch('/sessions', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -44,12 +56,58 @@ export async function createSession(name, project, target) {
     const err = await res.json()
     throw new Error(err.error || 'Failed to create session')
   }
+  // 202 Accepted = async creation in progress; poll until done.
+  if (res.status === 202) {
+    return pollSessionCreate(name, options?.onProgress)
+  }
   return res.json()
+}
+
+async function pollSessionCreate(name, onProgress, timeoutMs = 300000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000))
+    const res = await apiFetch('/sessions/create-status?name=' + encodeURIComponent(name))
+    if (res.status === 202) {
+      const data = await res.json()
+      if (onProgress && data.messages?.length) onProgress(data.messages)
+      continue
+    }
+    if (res.status === 500) {
+      const err = await res.json()
+      throw new Error(err.error || 'Session creation failed')
+    }
+    if (res.ok) return res.json()
+  }
+  throw new Error('Timed out waiting for session to be created')
 }
 
 export async function deleteSession(name) {
   const res = await apiFetch('/sessions?name=' + encodeURIComponent(name), { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`)
+}
+
+export async function pruneStaleCleanSessions(days) {
+  const suffix = days ? '?days=' + encodeURIComponent(days) : ''
+  const res = await apiFetch('/sessions/stale-clean' + suffix, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to clean stale sessions: ${res.status}`)
+}
+
+export async function markSessionReviewed(name) {
+  const res = await apiFetch('/sessions/reviewed?name=' + encodeURIComponent(name), { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to mark reviewed: ${res.status}`)
+}
+
+export async function reviewSession(name, { base = '' } = {}) {
+  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), {
+    method: 'POST',
+    body: JSON.stringify({ base }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Session review failed')
+  }
+  return res.json()
 }
 
 export async function flagSession(name) {
@@ -80,35 +138,6 @@ export async function colorSession(name, color) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.error || 'Color change failed')
-  }
-}
-
-export async function getSessionReview(name) {
-  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name))
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || 'Fetch review failed')
-  }
-  return res.json()
-}
-
-export async function reviewSession(name, { base = '', harness = '' } = {}) {
-  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), {
-    method: 'POST',
-    body: JSON.stringify({ base, harness }),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || 'Session review failed')
-  }
-  return res.json()
-}
-
-export async function clearSessionReview(name) {
-  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), { method: 'DELETE' })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || 'Clear review failed')
   }
 }
 
@@ -162,6 +191,29 @@ export async function refreshTerminal(sessionName) {
   await apiFetch('/refresh?name=' + encodeURIComponent(sessionName), { method: 'POST' })
 }
 
+export async function prewarmTerminal(sessionName) {
+  const res = await apiFetch('/terminal/prewarm', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName }),
+  })
+  await requireOK(res, 'Failed to prewarm terminal')
+  return res.json()
+}
+
+export async function getTerminalStatus(sessionName) {
+  const res = await apiFetch('/terminal/status?session=' + encodeURIComponent(sessionName))
+  await requireOK(res, 'Failed to get terminal status')
+  return res.json()
+}
+
+export async function sendInput(sessionName, text, { submit = false, mode = 'paste-buffer' } = {}) {
+  const res = await apiFetch('/terminal/send-input', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName, text, submit, mode }),
+  })
+  await requireOK(res, 'Failed to send input')
+}
+
 async function requireOK(res, fallbackMessage) {
   if (res.ok) return
   const e = await res.json().catch(() => ({}))
@@ -186,9 +238,10 @@ export async function sendLiteral(sessionName, text) {
   await requireOK(res, 'Failed to send text')
 }
 
-export async function uploadImage(file) {
+export async function uploadImage(file, sessionName) {
   const form = new FormData()
   form.append('image', file)
+  if (sessionName) form.append('session', sessionName)
   const res = await fetch(base + '/upload-image', {
     method: 'POST',
     credentials: 'same-origin',
@@ -214,6 +267,11 @@ export async function listArtifacts(sessionName, filters = {}) {
   if (!res.ok) throw new Error(`Failed to list artifacts: ${res.status}`)
   const data = await res.json()
   return data.artifacts || []
+}
+
+export async function markArtifactsSeen(sessionName) {
+  const res = await apiFetch('/artifacts/seen?session=' + encodeURIComponent(sessionName), { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to mark artifacts seen: ${res.status}`)
 }
 
 export async function uploadArtifacts(sessionName, files, { title = '', tags = '', retention = 'session', type = '', summary = '' } = {}) {

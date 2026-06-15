@@ -1,10 +1,14 @@
 package web
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,28 +16,6 @@ import (
 )
 
 const wsWriteDeadline = 60 * time.Second
-
-// effectiveHosts returns the host values that count as "same origin" for this
-// request. It always includes r.Host, and additionally includes
-// X-Forwarded-Host when present. devx sits behind a trusted reverse proxy
-// (Caddy, and Cloudflare's tunnel) that rewrites the upstream Host header to
-// "localhost" so dev servers accept the request, while forwarding the original
-// external hostname in X-Forwarded-Host. Without honoring it, the browser's
-// Origin (the real external host) never matches r.Host ("localhost"), which
-// rejected terminal WebSocket upgrades reached via Caddy or the Cloudflare
-// tunnel.
-func effectiveHosts(r *http.Request) []string {
-	hosts := []string{r.Host}
-	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
-		// X-Forwarded-Host may be a comma-separated list; the first value is the
-		// original client-facing host.
-		if first, _, found := strings.Cut(xfh, ","); found {
-			xfh = first
-		}
-		hosts = append(hosts, strings.TrimSpace(xfh))
-	}
-	return hosts
-}
 
 var upgrader = websocket.Upgrader{
 	// Only allow requests whose Origin matches the server's own host.
@@ -138,5 +120,96 @@ func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 		Scheme: "http",
 		Host:   fmt.Sprintf("localhost:%d", backendPort),
 	}
-	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	baseDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		// We rewrite ttyd HTML to inject desktop helpers; ask the backend for
+		// identity encoding so the browser never receives rewritten compressed
+		// bytes as plain text.
+		req.Header.Del("Accept-Encoding")
+	}
+	proxy.ModifyResponse = injectTerminalCopyOnSelect
+	proxy.ServeHTTP(w, r)
 }
+
+func injectTerminalCopyOnSelect(resp *http.Response) error {
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		return nil
+	}
+	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	var reader io.Reader = resp.Body
+	if encoding == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+		defer gz.Close()
+		reader = gz
+	} else if encoding != "" && encoding != "identity" {
+		// Unknown compression (e.g. br): leave response untouched rather than
+		// corrupting it by removing Content-Encoding after a partial rewrite.
+		return nil
+	}
+	body, err := io.ReadAll(reader)
+	resp.Body.Close()
+	if err != nil {
+		return err
+	}
+	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.Header.Del("Content-Encoding")
+	return nil
+}
+
+const terminalHeadAddons = `<link rel="stylesheet" href="/nerd-font.css">
+<style>
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+.xterm, .xterm-viewport {
+  touch-action: pan-y !important;
+}
+.xterm-viewport {
+  -webkit-overflow-scrolling: touch !important;
+  overscroll-behavior-y: contain;
+}
+</style>`
+
+const terminalCopyOnSelectScript = `<script>
+(function () {
+  if (window.__devxCopyOnSelect) return;
+  window.__devxCopyOnSelect = true;
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) {}
+  }
+  function copySelection() {
+    var selection = window.getSelection && String(window.getSelection());
+    if (!selection || !selection.trim()) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(selection).catch(function () { fallbackCopy(selection); });
+    } else {
+      fallbackCopy(selection);
+    }
+  }
+  document.addEventListener('mouseup', function () { setTimeout(copySelection, 0); }, true);
+  document.addEventListener('touchend', function () { setTimeout(copySelection, 0); }, true);
+})();
+</script>`

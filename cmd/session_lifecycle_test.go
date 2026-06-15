@@ -114,7 +114,7 @@ func removeTestSession(t *testing.T, sessionName string) {
 	}
 
 	// Remove git worktree
-	if err := removeGitWorktree(sess.Path); err != nil {
+	if err := removeGitWorktree(sess); err != nil {
 		t.Logf("Warning: failed to remove git worktree: %v", err)
 	}
 
@@ -177,13 +177,13 @@ func TestSessionListEmpty(t *testing.T) {
 	// Save original sessions and restore after test
 	originalSessions := store.Sessions
 	store.Sessions = make(map[string]*session.Session)
-	if err := store.Save(); err != nil {
+	if err := store.Overwrite(); err != nil {
 		t.Fatalf("Failed to save empty sessions: %v", err)
 	}
 
 	defer func() {
 		store.Sessions = originalSessions
-		_ = store.Save()
+		_ = store.Overwrite()
 	}()
 
 	// Test empty session list - should not panic or error

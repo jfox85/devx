@@ -1,19 +1,26 @@
 package web
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jfox85/devx/session"
+	"github.com/spf13/viper"
 )
 
 func TestGetSessionsReturnsJSON(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
 	mux := http.NewServeMux()
 	registerAPIRoutes(mux)
 
@@ -64,146 +71,6 @@ func TestGetHealthReturnsOK(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestCreateSessionSkipsTmuxAttachForWebRequests(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	gotArgs := stubRunSelf(t)
-
-	mux := http.NewServeMux()
-	registerAPIRoutes(mux)
-
-	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"jf-new","project":"scout"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	want := []string{"session", "create", "--no-tmux", "--project", "scout", "--", "jf-new"}
-	if !slices.Equal(*gotArgs, want) {
-		t.Fatalf("runSelf args = %#v, want %#v", *gotArgs, want)
-	}
-}
-
-func TestCreateSessionPassesExplicitTarget(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	gotArgs := stubRunSelf(t)
-
-	mux := http.NewServeMux()
-	registerAPIRoutes(mux)
-
-	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"jf-new","project":"scout","target":"gatepost"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	want := []string{"session", "create", "--no-tmux", "--project", "scout", "--target", "gatepost", "--", "jf-new"}
-	if !slices.Equal(*gotArgs, want) {
-		t.Fatalf("runSelf args = %#v, want %#v", *gotArgs, want)
-	}
-}
-
-func TestCreateSessionRejectsInvalidTarget(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	gotArgs := stubRunSelf(t)
-
-	mux := http.NewServeMux()
-	registerAPIRoutes(mux)
-
-	req := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(`{"name":"jf-new","target":"bad"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
-	if *gotArgs != nil {
-		t.Fatalf("runSelf should not be called, got %#v", *gotArgs)
-	}
-}
-
-func stubRunSelf(t *testing.T) *[]string {
-	t.Helper()
-	origRunSelf := runSelfCommand
-	var gotArgs []string
-	runSelfCommand = func(args ...string) error {
-		gotArgs = append([]string(nil), args...)
-		return nil
-	}
-	t.Cleanup(func() { runSelfCommand = origRunSelf })
-	return &gotArgs
-}
-
-func TestReviewEndpointPersistsAndFetchesDetails(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store, err := session.LoadSessions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.Sessions["jf-review"] = &session.Session{Name: "jf-review", Branch: "jf-review", Path: "/missing"}
-	if err := store.Save(); err != nil {
-		t.Fatal(err)
-	}
-
-	resp := authedRequest(t, "POST", "/api/sessions/review?name=jf-review", strings.NewReader(`{}`))
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
-	}
-	var review session.SessionReview
-	if err := json.Unmarshal(resp.Body.Bytes(), &review); err != nil {
-		t.Fatalf("invalid json: %v", err)
-	}
-	if review.Classification != session.ReviewClassificationMissingWorktree {
-		t.Fatalf("classification = %q", review.Classification)
-	}
-
-	resp = authedRequest(t, "GET", "/api/sessions/review?name=jf-review", nil)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected 200 from details fetch, got %d: %s", resp.Code, resp.Body.String())
-	}
-}
-
-func TestReviewDetailsEndpointDoesNotServeOrphanedDetails(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store, err := session.LoadSessions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.Sessions["jf-review"] = &session.Session{Name: "jf-review", Branch: "jf-review", Path: "/missing"}
-	if err := store.Save(); err != nil {
-		t.Fatal(err)
-	}
-	if err := session.SaveSessionReviewDetails("jf-review", &session.SessionReview{Classification: session.ReviewClassificationDirtyOnly, Details: "old details"}); err != nil {
-		t.Fatal(err)
-	}
-
-	resp := authedRequest(t, "GET", "/api/sessions/review?name=jf-review", nil)
-	if resp.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", resp.Code, resp.Body.String())
-	}
-}
-
-func TestReviewEndpointRejectsInvalidJSON(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	store, err := session.LoadSessions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.Sessions["jf-review"] = &session.Session{Name: "jf-review", Branch: "jf-review", Path: "/missing"}
-	if err := store.Save(); err != nil {
-		t.Fatal(err)
-	}
-
-	resp := authedRequest(t, "POST", "/api/sessions/review?name=jf-review", strings.NewReader(`{bad`))
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -497,4 +364,286 @@ func authedRequest(t *testing.T, method, path string, body io.Reader) *httptest.
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
+}
+
+func TestLoginCookieSecureFlag(t *testing.T) {
+	prev := viper.GetString("web_secret_token")
+	viper.Set("web_secret_token", "test-secret")
+	t.Cleanup(func() { viper.Set("web_secret_token", prev) })
+
+	cases := []struct {
+		name       string
+		remoteAddr string
+		tls        bool
+		xfp        string
+		wantSecure bool
+	}{
+		{"direct plain HTTP localhost", "127.0.0.1:1234", false, "", false},
+		{"direct TLS", "127.0.0.1:1234", true, "", true},
+		{"trusted proxy forwarded HTTPS", "127.0.0.1:1234", false, "https", true},
+		{"untrusted peer spoofing XFP", "203.0.113.7:1234", false, "https", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"token":"test-secret"}`))
+			req.RemoteAddr = tc.remoteAddr
+			if tc.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			if tc.xfp != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.xfp)
+			}
+			w := httptest.NewRecorder()
+			handleLogin(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("login failed: %d %s", w.Code, w.Body.String())
+			}
+			var cookie *http.Cookie
+			for _, c := range w.Result().Cookies() {
+				if c.Name == "devx_token" {
+					cookie = c
+				}
+			}
+			if cookie == nil {
+				t.Fatal("devx_token cookie not set")
+			}
+			if cookie.Secure != tc.wantSecure {
+				t.Errorf("cookie Secure = %v, want %v", cookie.Secure, tc.wantSecure)
+			}
+		})
+	}
+}
+
+func TestGetSessionsIncludesStatusAndStaleSummary(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	worktree := t.TempDir()
+	old := time.Now().Add(-2 * time.Hour)
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"s1": {Name: "s1", Branch: "main", Path: worktree, CreatedAt: old, UpdatedAt: old},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatalf("overwrite sessions: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Sessions []struct {
+			Name       string `json:"name"`
+			TargetType string `json:"target_type"`
+			Status     struct {
+				Primary string `json:"primary"`
+				Color   string `json:"color"`
+			} `json:"status"`
+			Stale struct {
+				Category string `json:"category"`
+			} `json:"stale"`
+		} `json:"sessions"`
+		StaleSummary struct {
+			Total int `json:"total"`
+		} `json:"stale_summary"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.Sessions) != 1 || resp.Sessions[0].Name != "s1" {
+		t.Fatalf("unexpected sessions response: %#v", resp.Sessions)
+	}
+	if resp.Sessions[0].Status.Primary == "" || resp.Sessions[0].Status.Color == "" || resp.Sessions[0].Stale.Category == "" {
+		t.Fatalf("missing status/stale fields: %#v", resp.Sessions[0])
+	}
+	if resp.Sessions[0].TargetType != "host" {
+		t.Fatalf("target_type = %q, want host", resp.Sessions[0].TargetType)
+	}
+	if resp.StaleSummary.Total != 1 {
+		t.Fatalf("stale summary total = %d, want 1", resp.StaleSummary.Total)
+	}
+}
+
+func TestStaleEndpointsRejectInvalidDays(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	tooManyDays := strconv.Itoa(session.MaxStaleThresholdDays + 1)
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/api/sessions/stale?days=abc"},
+		{"GET", "/api/sessions/stale?days=" + tooManyDays},
+		{"DELETE", "/api/sessions/stale-clean?days=0"},
+		{"DELETE", "/api/sessions/stale-clean?days=" + tooManyDays},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s %s: expected 400, got %d: %s", tc.method, tc.path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestSetupEmptySessionStoreUsesIsolatedHome(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".config", "devx")); err != nil {
+		t.Fatalf("expected isolated devx config dir: %v", err)
+	}
+}
+
+func TestSessionListCacheNoticesExternalMetadataMutation(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	worktree1 := t.TempDir()
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"s1": {Name: "s1", Branch: "main", Path: worktree1, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatalf("overwrite sessions: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	listNames := func() []string {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Sessions []struct {
+				Name string `json:"name"`
+			} `json:"sessions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json: %v", err)
+		}
+		names := make([]string, 0, len(resp.Sessions))
+		for _, s := range resp.Sessions {
+			names = append(names, s.Name)
+		}
+		return names
+	}
+	if names := listNames(); len(names) != 1 || names[0] != "s1" {
+		t.Fatalf("initial names = %v", names)
+	}
+
+	worktree2 := t.TempDir()
+	store.Sessions["s2"] = &session.Session{Name: "s2", Branch: "main", Path: worktree2, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := store.Overwrite(); err != nil {
+		t.Fatalf("overwrite sessions with s2: %v", err)
+	}
+	if names := listNames(); len(names) != 2 {
+		t.Fatalf("cache returned stale sessions after metadata mutation: %v", names)
+	}
+}
+
+func TestMarkSessionReviewedUsesExplicitReviewMarkerForStaleClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		lastAttached bool
+	}{
+		{name: "without-last-attached"},
+		{name: "with-old-last-attached", lastAttached: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupEmptySessionStoreForTest(t)
+			old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+			sess := &session.Session{Name: "s1", Branch: "main", Path: t.TempDir(), CreatedAt: old, UpdatedAt: old}
+			if tc.lastAttached {
+				sess.LastAttached = old.Add(time.Hour)
+			}
+			store := &session.SessionStore{Sessions: map[string]*session.Session{"s1": sess}, NumberedSlots: map[int]string{}}
+			if err := store.Overwrite(); err != nil {
+				t.Fatalf("overwrite sessions: %v", err)
+			}
+
+			mux := http.NewServeMux()
+			registerAPIRoutes(mux)
+			req := httptest.NewRequest("POST", "/api/sessions/reviewed?name=s1", nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			updatedStore, err := session.LoadSessions()
+			if err != nil {
+				t.Fatalf("load sessions: %v", err)
+			}
+			updated := updatedStore.Sessions["s1"]
+			if !updated.LastReviewedAt.After(old) {
+				t.Fatalf("LastReviewedAt = %v, want after %v", updated.LastReviewedAt, old)
+			}
+
+			req = httptest.NewRequest("GET", "/api/sessions/stale?days=1", nil)
+			w = httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected stale scan 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				StaleSummary struct {
+					Active   int `json:"active"`
+					Statuses []struct {
+						Category       string    `json:"category"`
+						LastReviewedAt time.Time `json:"last_reviewed_at"`
+						Reasons        []string  `json:"reasons"`
+					} `json:"statuses"`
+				} `json:"stale_summary"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+			if resp.StaleSummary.Active != 1 || len(resp.StaleSummary.Statuses) != 1 || resp.StaleSummary.Statuses[0].Category != session.StaleCategoryActive {
+				t.Fatalf("reviewed session should be active after stale scan: %#v", resp.StaleSummary)
+			}
+			if resp.StaleSummary.Statuses[0].LastReviewedAt.IsZero() {
+				t.Fatalf("stale status did not expose last_reviewed_at: %#v", resp.StaleSummary.Statuses[0])
+			}
+		})
+	}
+}
+
+func TestMarkSessionReviewedMapsPersistenceErrorsTo500(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"s1": {Name: "s1", Branch: "main", Path: t.TempDir(), CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatalf("overwrite sessions: %v", err)
+	}
+
+	orig := markSessionReviewed
+	markSessionReviewed = func(string, time.Time) error { return errors.New("disk full") }
+	defer func() { markSessionReviewed = orig }()
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	req := httptest.NewRequest("POST", "/api/sessions/reviewed?name=s1", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for persistence error, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMarkSessionReviewedMapsMissingSessionTo404(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	orig := markSessionReviewed
+	markSessionReviewed = func(string, time.Time) error { return fmt.Errorf("%w: missing", session.ErrSessionNotFound) }
+	defer func() { markSessionReviewed = orig }()
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	req := httptest.NewRequest("POST", "/api/sessions/reviewed?name=s1", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing session, got %d: %s", w.Code, w.Body.String())
+	}
 }

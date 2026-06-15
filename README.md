@@ -214,6 +214,45 @@ Any configuration value can be overridden with environment variables using the `
 DEVX_BASEDOMAIN=custom.local devx config view
 ```
 
+## Gatepost target
+
+DevX can launch a session behind Gatepost with:
+
+```bash
+devx session create my-session --target gatepost
+```
+
+The first runtime is `docker-mitmproxy`: DevX starts an agent container on an internal-only network plus a Gatepost proxy container with egress. Gatepost owns policy, secret injection, event ingestion, smart evaluation, and audit logs; DevX stores only the capability metadata needed for lifecycle, bypass, and links.
+
+Useful user-global config (`~/.config/devx/config.yaml`; executable Gatepost commands are intentionally not trusted from project `.devx/config.yaml`):
+
+```yaml
+web_secret_token: "..."              # required for `devx web`
+gatepost:
+  agent_image: gatepost-pi-agent:latest
+  # Prefer packaged commands when available:
+  logs_command: gatepost-logs
+  provider_bootstrap_command: gatepost-provider-bootstrap
+  # Source checkout fallback for local development:
+  root: /path/to/gatepost-checkout
+  # Optional: use real Pi auth while testing with a temporary HOME.
+  auth_home: ~/.pi-auth-home
+  # Comma-separated readiness gate. For the full Pi/subscription setup,
+  # fail session creation unless all expected providers registered.
+  required_providers: anthropic-oauth,codex-oauth,openai-key
+```
+
+Provider credentials are registered from the host into Gatepost; the agent receives placeholders only. Credentials can come from the Gatepost provider bootstrap helper or host env (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `CLIPROXYAPI_API_KEY`). Session metadata records the provider bootstrap mode, registered providers, and warnings so partial provider readiness is visible. The initial policy broadly allows common AI provider destinations and sends unknown traffic to smart evaluation. Gatepost Logs are linked from the DevX web UI and shown in TUI session details via the DevX web redirect.
+
+Emergency host-side controls:
+
+```bash
+devx session gatepost bypass <session>
+devx session gatepost enforce <session>
+```
+
+These commands mutate Docker network attachment from the host/orchestrator side; the agent does not receive the Gatepost control token or Docker socket.
+
 ## Usage
 
 ### Terminal User Interface (TUI)
@@ -731,6 +770,11 @@ The web server has three layers:
 web_secret_token: "your-secret-token"  # required to start devx web
 web_port: 7777                          # default port
 web_autostart: false                    # set true to auto-start with TUI
+web_bind: "127.0.0.1"                   # loopback only; 0.0.0.0 is for containers
+web_trusted_proxies: ""                 # extra CIDRs whose X-Forwarded-* headers are
+                                        # trusted (loopback always is). Only needed when
+                                        # your reverse proxy reaches devx web over a
+                                        # non-loopback path, e.g. Docker port publishing.
 ```
 
 **2. Start the web server:**

@@ -1,13 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -28,8 +33,20 @@ func init() {
 }
 
 func runSessionRm(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	return removeSessionByName(args[0], removeSessionOptions{
+		SkipConfirm:      forceFlag,
+		DiscardArtifacts: forceFlag,
+		SyncRoutes:       true,
+	})
+}
 
+type removeSessionOptions struct {
+	SkipConfirm      bool
+	DiscardArtifacts bool
+	SyncRoutes       bool
+}
+
+func removeSessionByName(name string, opts removeSessionOptions) error {
 	// Load existing sessions
 	store, err := session.LoadSessions()
 	if err != nil {
@@ -43,7 +60,7 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 	}
 
 	// Confirm deletion unless force flag is used
-	if !forceFlag {
+	if !opts.SkipConfirm {
 		fmt.Printf("This will remove session '%s' and its worktree at %s\n", name, sess.Path)
 		fmt.Print("Are you sure? (y/N): ")
 
@@ -61,54 +78,93 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: failed to terminate editor: %v\n", err)
 	}
 
-	// Kill tmux session if it exists
+	// For targets with their own tmux server, stop it before tearing down host-side
+	// tmux sessions used by the web terminal.
+	if err := target.KillTmuxServer(sess.Target); err != nil {
+		fmt.Printf("Warning: failed to kill target tmux server: %v\n", err)
+	}
 	if err := killTmuxSession(name); err != nil {
 		fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+	}
+	if err := killTmuxSession(name + "-web"); err != nil {
+		fmt.Printf("Warning: failed to kill web tmux session: %v\n", err)
 	}
 
 	// Archive retained artifacts before cleanup or worktree deletion. Archive
 	// failures must block normal removal so retention=archive artifacts are not
 	// silently lost. --force is the explicit discard path.
 	if archiveDir, count, err := artifactpkg.ArchiveSessionArtifacts(sess); err != nil {
-		if !forceFlag {
-			return fmt.Errorf("failed to archive retained artifacts; rerun with --force to discard and remove session anyway: %w", err)
+		if !opts.DiscardArtifacts {
+			return fmt.Errorf("failed to archive retained artifacts; rerun single-session rm with --force to discard and remove session anyway: %w", err)
 		}
-		fmt.Printf("Warning: failed to archive artifacts; continuing because --force was used: %v\n", err)
+		fmt.Printf("Warning: failed to archive artifacts; continuing because artifact discard was allowed: %v\n", err)
 	} else if count > 0 {
 		fmt.Printf("Archived %d artifact(s) to %s\n", count, archiveDir)
 	}
 
-	// Run cleanup command if configured
-	if err := session.RunCleanupCommandForShell(sess); err != nil {
-		fmt.Printf("Warning: cleanup command failed: %v\n", err)
+	// Run cleanup command — inside container for Docker sessions, on host otherwise
+	if sess.IsContainerized() {
+		if cleanupCmd := viper.GetString("cleanup_command"); cleanupCmd != "" {
+			fmt.Printf("Running cleanup command inside container...\n")
+			cleanup := target.ExecInSession(sess.Target, []string{"sh", "-c", cleanupCmd}, false)
+			cleanup.Stdout = os.Stdout
+			cleanup.Stderr = os.Stderr
+			if err := cleanup.Run(); err != nil {
+				fmt.Printf("Warning: cleanup command failed: %v\n", err)
+			}
+		}
+	} else {
+		if err := session.RunCleanupCommandForShell(sess); err != nil {
+			fmt.Printf("Warning: cleanup command failed: %v\n", err)
+		}
+	}
+
+	// Stop the target (container + network for Docker; no-op for host)
+	if sess.IsContainerized() {
+		tgt, err := target.Resolve(sess.TargetType())
+		if err == nil {
+			if err := tgt.Stop(context.Background(), sess.Target); err != nil {
+				fmt.Printf("Warning: failed to stop %s target: %v\n", sess.TargetType(), err)
+			} else {
+				fmt.Printf("Stopped target runtime '%s'\n", target.RuntimeName(sess.Target))
+			}
+		}
 	}
 
 	// Remove git worktree
-	if err := removeGitWorktree(sess.Path); err != nil {
+	if err := removeGitWorktree(sess); err != nil {
 		fmt.Printf("Warning: failed to remove git worktree: %v\n", err)
 	}
 
-	// Remove session from metadata and reconcile slots in a single save. Review
-	// details are removed after metadata is saved; orphaned details are ignored by
-	// the API unless current metadata still references a review for that session.
-	delete(store.Sessions, name)
-	store.ReconcileSlots()
-	if err := store.Save(); err != nil {
+	// Clean up per-session uploads directory.
+	if home, err := os.UserHomeDir(); err == nil {
+		uploadsDir := filepath.Join(home, ".devx", "uploads", name)
+		_ = os.RemoveAll(uploadsDir)
+	}
+
+	// Remove any persisted cleanup-review details for this session.
+	_ = session.RemoveSessionReviewDetails(name)
+
+	// Remove session from metadata and reconcile slots in a single lock-guarded
+	// read-modify-write so a concurrent writer is not clobbered.
+	if err := store.Mutate(func(fresh *session.SessionStore) error {
+		delete(fresh.Sessions, name)
+		fresh.ReconcileSlots()
+		return nil
+	}); err != nil {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
-	if err := session.RemoveSessionReviewDetails(name); err != nil {
-		fmt.Printf("Warning: failed to remove review details: %v\n", err)
-	}
 
-	// Sync Caddy routes after removal
-	if err := syncAllCaddyRoutes(); err != nil {
-		fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)
+	if opts.SyncRoutes {
+		// Sync Caddy routes after removal
+		if err := syncAllCaddyRoutes(); err != nil {
+			fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)
+		}
+		if err := syncAllCloudflareRoutes(); err != nil {
+			return fmt.Errorf("removed session %q locally, but failed to sync Cloudflare routes: %w", name, err)
+		}
 	}
 	fmt.Printf("Removed session '%s'\n", name)
-
-	if err := syncAllCloudflareRoutes(); err != nil {
-		return fmt.Errorf("removed session %q locally, but failed to sync Cloudflare routes: %w", name, err)
-	}
 	return nil
 }
 
@@ -135,17 +191,26 @@ func killTmuxSession(sessionName string) error {
 	return nil
 }
 
-func removeGitWorktree(worktreePath string) error {
+func removeGitWorktree(sess *session.Session) error {
+	worktreePath := sess.Path
 	// Check if worktree exists
 	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 		return nil // already removed
 	}
 
-	// Use git worktree remove command with --force flag as specified in requirements
+	// Use git worktree remove command with --force flag as specified in requirements.
+	// This is allowed for paths registered with git; if it fails, manual fallback
+	// is gated by validateManualWorktreeRemoval below.
 	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+	if sess.ProjectPath != "" {
+		cmd.Dir = sess.ProjectPath
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// If git command fails, try manual removal
+		// If git command fails, try manual removal only for canonical managed paths.
+		if err := validateManualWorktreeRemoval(sess); err != nil {
+			return fmt.Errorf("refusing manual worktree removal after git error %q: %w", strings.TrimSpace(string(output)), err)
+		}
 		if removeErr := os.RemoveAll(worktreePath); removeErr != nil {
 			return fmt.Errorf("failed to remove worktree: git error: %v; manual removal error: %v",
 				string(output), removeErr)
@@ -155,5 +220,41 @@ func removeGitWorktree(worktreePath string) error {
 		fmt.Printf("Removed git worktree\n")
 	}
 
+	return nil
+}
+
+func validateManualWorktreeRemoval(sess *session.Session) error {
+	worktreePath, err := filepath.Abs(sess.Path)
+	if err != nil {
+		return fmt.Errorf("invalid worktree path: %w", err)
+	}
+	if realPath, err := filepath.EvalSymlinks(worktreePath); err == nil {
+		worktreePath = realPath
+	}
+	projectPath := sess.ProjectPath
+	if projectPath == "" {
+		marker := string(filepath.Separator) + ".worktrees" + string(filepath.Separator)
+		if idx := strings.LastIndex(worktreePath, marker); idx >= 0 {
+			projectPath = worktreePath[:idx]
+		}
+	}
+	if projectPath == "" {
+		return fmt.Errorf("session has no project path for worktree ownership validation")
+	}
+	projectPath, err = filepath.Abs(projectPath)
+	if err != nil {
+		return fmt.Errorf("invalid project path: %w", err)
+	}
+	if realProject, err := filepath.EvalSymlinks(projectPath); err == nil {
+		projectPath = realProject
+	}
+	managedRoot := filepath.Join(projectPath, ".worktrees")
+	if realRoot, err := filepath.EvalSymlinks(managedRoot); err == nil {
+		managedRoot = realRoot
+	}
+	rel, err := filepath.Rel(managedRoot, worktreePath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return fmt.Errorf("worktree path %q is not under managed root %q", worktreePath, managedRoot)
+	}
 	return nil
 }

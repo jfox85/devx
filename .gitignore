@@ -9,6 +9,12 @@ devx
 # Fixed dev token used when running the devx web UI as a containerized service.
 .devx-web-token
 web/app/node_modules/
+# web/dist is gitignored but its build outputs are force-added (git add -f)
+# after `make web-build`: the Go binary embeds web/dist via go:embed, so the
+# committed tree must contain a working build. Always commit the real Vite
+# hashed filenames — never copy new builds onto old names (CDNs cache hashed
+# assets aggressively; recycled names serve stale bundles).
 web/dist/
 .DS_Store
 .playwright-mcp/
+.gstack/

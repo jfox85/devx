@@ -12,13 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/session"
+	"github.com/spf13/viper"
 )
 
 func setupArtifactAPITest(t *testing.T) *session.Session {
 	t.Helper()
+	invalidateSessionListCache()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".config", "devx"), 0o755); err != nil {
@@ -30,7 +33,7 @@ func setupArtifactAPITest(t *testing.T) *session.Session {
 	}
 	sess := &session.Session{Name: "feature/web-artifacts", Branch: "feature/web-artifacts", Path: worktree, Ports: map[string]int{"ui": 3000}}
 	store := &session.SessionStore{Sessions: map[string]*session.Session{sess.Name: sess}, NumberedSlots: map[int]string{}}
-	if err := store.Save(); err != nil {
+	if err := store.Overwrite(); err != nil {
 		t.Fatalf("Save sessions: %v", err)
 	}
 	return sess
@@ -311,6 +314,23 @@ func TestClearArtifactFocus(t *testing.T) {
 	}
 }
 
+func TestSessionResponseBuildsExternalRoutesFromStoredRoutes(t *testing.T) {
+	prev := viper.GetString("external_domain")
+	viper.Set("external_domain", "jon-fox.com")
+	t.Cleanup(func() { viper.Set("external_domain", prev) })
+
+	sess := &session.Session{
+		Name:         "jf-redesign",
+		ProjectAlias: "croutoncreations",
+		Ports:        map[string]int{"ui": 3000},
+		Routes:       map[string]string{"frontend": "croutoncreations-jf-redesign-frontend.localhost"},
+	}
+	resp := buildSessionResponse(sess)
+	if got, want := resp.ExternalRoutes["frontend"], "croutoncreations-jf-redesign-frontend.jon-fox.com"; got != want {
+		t.Fatalf("frontend external route = %q, want %q", got, want)
+	}
+}
+
 func TestSessionResponseIncludesArtifactCountAndFocus(t *testing.T) {
 	sess := setupArtifactAPITest(t)
 	source := filepath.Join(t.TempDir(), "plan.html")
@@ -324,5 +344,152 @@ func TestSessionResponseIncludesArtifactCountAndFocus(t *testing.T) {
 	resp := buildSessionResponse(sess)
 	if resp.ArtifactCount != 1 || resp.FocusedArtifactID != a.ID {
 		t.Fatalf("artifact fields missing: %#v", resp)
+	}
+}
+
+func TestListArtifactsDoesNotMarkSeen(t *testing.T) {
+	sess := setupArtifactAPITest(t)
+	source := filepath.Join(t.TempDir(), "plan.html")
+	if err := os.WriteFile(source, []byte("<h1>Plan</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: source, Type: "plan", Title: "Plan"}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/artifacts?session="+url.QueryEscape(sess.Name), nil)
+	w := httptest.NewRecorder()
+	artifactMux().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := store.Sessions[sess.Name]
+	if !updated.LastArtifactSeenAt.IsZero() {
+		t.Fatalf("GET /api/artifacts marked artifacts seen: %v", updated.LastArtifactSeenAt)
+	}
+}
+
+func TestMarkArtifactsSeenPOSTPreservesUpdatedAtAndNoopsForEmptyManifest(t *testing.T) {
+	sess := setupArtifactAPITest(t)
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialUpdatedAt := store.Sessions[sess.Name].UpdatedAt
+
+	emptyReq := httptest.NewRequest("POST", "/api/artifacts/seen?session="+url.QueryEscape(sess.Name), nil)
+	emptyW := httptest.NewRecorder()
+	artifactMux().ServeHTTP(emptyW, emptyReq)
+	if emptyW.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for empty manifest, got %d: %s", emptyW.Code, emptyW.Body.String())
+	}
+	store, err = session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Sessions[sess.Name].LastArtifactSeenAt.IsZero() {
+		t.Fatalf("empty manifest should not set seen marker: %v", store.Sessions[sess.Name].LastArtifactSeenAt)
+	}
+
+	source := filepath.Join(t.TempDir(), "plan.html")
+	if err := os.WriteFile(source, []byte("<h1>Plan</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: source, Type: "plan", Title: "Plan"}); err != nil {
+		t.Fatal(err)
+	}
+	seenReq := httptest.NewRequest("POST", "/api/artifacts/seen?session="+url.QueryEscape(sess.Name), nil)
+	seenW := httptest.NewRecorder()
+	artifactMux().ServeHTTP(seenW, seenReq)
+	if seenW.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", seenW.Code, seenW.Body.String())
+	}
+	store, err = session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := store.Sessions[sess.Name]
+	if updated.LastArtifactSeenAt.IsZero() {
+		t.Fatal("POST /api/artifacts/seen did not set seen marker")
+	}
+	if !updated.UpdatedAt.Equal(initialUpdatedAt) {
+		t.Fatalf("marking artifacts seen changed UpdatedAt: got %v want %v", updated.UpdatedAt, initialUpdatedAt)
+	}
+}
+
+func TestMarkArtifactsSeenClearsArtifactAttention(t *testing.T) {
+	sess := setupArtifactAPITest(t)
+	source := filepath.Join(t.TempDir(), "plan.html")
+	if err := os.WriteFile(source, []byte("<h1>Plan</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: source, Type: "plan", Title: "Plan"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateSession(sess.Name, func(s *session.Session) {
+		s.AttentionFlag = true
+		s.AttentionReason = "artifact"
+		s.AttentionSource = "artifact"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/artifacts/seen?session="+url.QueryEscape(sess.Name), nil)
+	w := httptest.NewRecorder()
+	artifactMux().ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	store, err = session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := store.Sessions[sess.Name]
+	if updated.AttentionFlag || updated.AttentionSource != "" || updated.AttentionReason != "" {
+		t.Fatalf("artifact attention was not cleared: %#v", updated)
+	}
+}
+
+func TestMarkArtifactsSeenNoopsWhenAlreadySeenAndNoArtifactAttention(t *testing.T) {
+	sess := setupArtifactAPITest(t)
+	source := filepath.Join(t.TempDir(), "note.md")
+	if err := os.WriteFile(source, []byte("# note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: source, Type: "report", Title: "Note"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateSession(sess.Name, func(s *session.Session) {
+		s.LastArtifactSeenAt = artifact.Created.Add(time.Second)
+		s.AttentionFlag = true
+		s.AttentionReason = "manual"
+		s.AttentionSource = "manual"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := session.SessionsMetadataFingerprint()
+	manifest, err := artifactpkg.LoadManifest(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markArtifactsSeen(sess.Name, manifest); err != nil {
+		t.Fatal(err)
+	}
+	after := session.SessionsMetadataFingerprint()
+	if after != before {
+		t.Fatalf("metadata fingerprint changed for no-op seen call: before=%s after=%s", before, after)
 	}
 }

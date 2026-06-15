@@ -263,6 +263,7 @@ func handleCommitShareIntent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "shared content is empty"})
 		return
 	}
+	invalidateSessionListCache()
 	writeJSON(w, http.StatusCreated, map[string]any{"artifacts": added})
 }
 

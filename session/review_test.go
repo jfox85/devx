@@ -2,7 +2,6 @@ package session
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -54,8 +53,10 @@ func TestRefreshSessionReviewStaleDetectsStatusChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Sessions["test"] = &Session{Name: "test", Branch: "feature", Path: repo}
-	if err := store.Save(); err != nil {
+	if err := store.Mutate(func(fresh *SessionStore) error {
+		fresh.Sessions["test"] = &Session{Name: "test", Branch: "feature", Path: repo}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	review, err := ReviewSession(store.Sessions["test"], ReviewOptions{BaseBranch: "main"})
@@ -169,14 +170,4 @@ func initReviewRepo(t *testing.T) string {
 	runGit(t, dir, "commit", "-m", "initial")
 	runGit(t, dir, "checkout", "-b", "feature")
 	return dir
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v failed: %v\n%s", args, err, out)
-	}
 }

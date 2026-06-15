@@ -1,11 +1,13 @@
 <!-- web/app/src/App.svelte -->
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { isLoggedIn, subscribeToEvents, unflagSession } from './api.js'
   import { requestNotificationPermission, notifyFlag } from './lib/notifications.js'
   import Login from './lib/Login.svelte'
   import SessionList from './lib/SessionList.svelte'
   import Terminal from './lib/Terminal.svelte'
+  import QuickSwitcher from './lib/QuickSwitcher.svelte'
+  import { markSwitchStart } from './lib/stores/sessionUiState.js'
   import ImageToast from './lib/ImageToast.svelte'
   import FlagToast from './lib/FlagToast.svelte'
   import ShareTarget from './lib/ShareTarget.svelte'
@@ -36,10 +38,56 @@
   let shareToken = new URLSearchParams(window.location.search).get('share') || ''
 
   let unsubscribeSSE
+  let switcherOpen = false
+
+  function handleGlobalKeydown(e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+      e.preventDefault()
+      switcherOpen = !switcherOpen
+    }
+  }
+
+  async function handleSwitcherSelect(session) {
+    switcherOpen = false
+    markSwitchStart(session.name)
+    openTerminal(session)
+    await tick()
+    setTimeout(() => terminalComponent?.focusTerminalSurface?.(), 0)
+    setTimeout(() => terminalComponent?.focusTerminalSurface?.(), 250)
+  }
+
+  // Named so it can be removed on destroy; dispatched by Terminal's
+  // iframeHotkey bridge when Cmd/Ctrl+P is pressed inside the terminal iframe.
+  function toggleSwitcher() {
+    switcherOpen = !switcherOpen
+  }
+
+  function dispatchTerminalCommand(name) {
+    if (name === 'focus') {
+      terminalComponent?.focusTerminalSurface?.()
+      return
+    }
+    window.dispatchEvent(new CustomEvent(`devx:terminal:${name}`))
+  }
+  const focusTerminalHandler = () => dispatchTerminalCommand('focus')
+  const toggleComposerHandler = () => dispatchTerminalCommand('composer')
+  const toggleArtifactsHandler = () => dispatchTerminalCommand('artifacts')
+  const cycleSplitHandler = () => dispatchTerminalCommand('split')
+  const viewTerminalOutputHandler = () => dispatchTerminalCommand('view-output')
+  const insertArtifactHandler = () => dispatchTerminalCommand('insert-artifact')
+  const newArtifactHandler = () => dispatchTerminalCommand('new-artifact')
 
   onMount(() => {
     if (loggedIn) {
       requestNotificationPermission()
+      window.addEventListener('devx:quickSwitcher', toggleSwitcher)
+      window.addEventListener('devx:focusTerminal', focusTerminalHandler)
+      window.addEventListener('devx:toggleComposer', toggleComposerHandler)
+      window.addEventListener('devx:toggleArtifacts', toggleArtifactsHandler)
+      window.addEventListener('devx:cycleSplit', cycleSplitHandler)
+      window.addEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
+      window.addEventListener('devx:insertArtifact', insertArtifactHandler)
+      window.addEventListener('devx:newArtifact', newArtifactHandler)
       unsubscribeSSE = subscribeToEvents({
         show: (event) => {
           remoteShow = event
@@ -69,6 +117,14 @@
 
   onDestroy(() => {
     unsubscribeSSE?.()
+    window.removeEventListener('devx:quickSwitcher', toggleSwitcher)
+    window.removeEventListener('devx:focusTerminal', focusTerminalHandler)
+    window.removeEventListener('devx:toggleComposer', toggleComposerHandler)
+    window.removeEventListener('devx:toggleArtifacts', toggleArtifactsHandler)
+    window.removeEventListener('devx:cycleSplit', cycleSplitHandler)
+    window.removeEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
+    window.removeEventListener('devx:insertArtifact', insertArtifactHandler)
+    window.removeEventListener('devx:newArtifact', newArtifactHandler)
   })
 
   function dismissRemoteShow() {
@@ -138,7 +194,7 @@
   }
 </script>
 
-<svelte:window on:paste={handleGlobalPaste} />
+<svelte:window on:paste={handleGlobalPaste} on:keydown={handleGlobalKeydown} />
 
 {#if !loggedIn}
   <Login />
@@ -190,6 +246,11 @@
 
     {#if shareToken}
       <ShareTarget token={shareToken} onCancel={clearShareToken} onCreated={handleShareCreated} />
+    {/if}
+
+    <!-- Quick switcher: Cmd/Ctrl+P fuzzy session jump -->
+    {#if switcherOpen}
+      <QuickSwitcher onSelect={handleSwitcherSelect} onClose={() => switcherOpen = false} />
     {/if}
 
   </div>
