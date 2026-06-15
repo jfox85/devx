@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/NewSessionModal.svelte -->
 <script>
   import { onMount, createEventDispatcher } from 'svelte'
-  import { createSession, listProjects } from '../api.js'
+  import { createSession, getSettings, listProjects } from '../api.js'
 
   const dispatch = createEventDispatcher()
 
@@ -9,7 +9,11 @@
 
   let name = ''
   let project = localStorage.getItem(LAST_PROJECT_KEY) || ''
+  let target = 'host'
+  let defaultTarget = 'host'
   let projects = []
+  let projectsLoading = true
+  let projectLoadError = ''
   let error = ''
   let loading = false
   let progress = []
@@ -23,12 +27,21 @@
     setTimeout(focusName, 0)
     setTimeout(focusName, 80)
     try {
+      const settings = await getSettings()
+      defaultTarget = settings.default_session_target || 'host'
+      if (['host', 'gatepost', 'docker'].includes(defaultTarget)) target = defaultTarget
+    } catch { /* settings are optional; keep fallback */ }
+    try {
       projects = await listProjects()
       // If the remembered project is no longer in the list, clear it
       if (project && !projects.includes(project)) project = ''
       // If nothing remembered but there's only one project, pre-select it
       if (!project && projects.length === 1) project = projects[0]
-    } catch { /* if we can't load projects just hide the dropdown */ }
+    } catch (e) {
+      projectLoadError = e.message || 'could not load projects'
+    } finally {
+      projectsLoading = false
+    }
   })
 
   async function handleSubmit() {
@@ -38,6 +51,7 @@
     progress = []
     try {
       const created = await createSession(name.trim(), project || undefined, {
+        target,
         onProgress: (msgs) => { progress = msgs }
       })
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
@@ -94,7 +108,7 @@
   on:click|self={() => dispatch('close')}
   on:keydown={handleModalKeydown}
 >
-  <div class="w-full max-w-sm bg-[#0d1117] border border-[#1e2d4a]">
+  <div class="w-full max-w-sm max-h-[90dvh] overflow-y-auto bg-[#0d1117] border border-[#1e2d4a]">
     <!-- Modal title bar -->
     <div class="flex items-center justify-between px-4 py-2 border-b border-[#1e2d4a]">
       <span class="text-cyan-400 text-xs font-mono font-bold tracking-widest">new session</span>
@@ -122,33 +136,66 @@
         />
       </div>
 
-      {#if projects.length > 0}
-        <div>
-          <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
-            project
-          </label>
-          <!-- Wrap in relative div to overlay a custom dropdown arrow, since
-               appearance-none removes the native one but gives us full style control. -->
-          <div class="relative">
-            <select
-              id="session-project"
-              bind:value={project}
-              on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
-              class="
-                w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
-                text-gray-300 text-xs font-mono px-3 py-2 pr-7
-                outline-none transition-colors appearance-none
-              "
-            >
-              <option value="">— none —</option>
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
+          <span class="text-gray-700 text-[10px] font-mono">default: {defaultTarget}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
+          {#each [
+            ['host', 'host'],
+            ['gatepost', 'gatepost'],
+            ['docker', 'docker'],
+          ] as [value, label]}
+            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
+              <input
+                type="radio"
+                name="session-target"
+                value={value}
+                bind:group={target}
+                class="accent-cyan-600"
+              />
+              <span>{label}</span>
+            </label>
+          {/each}
+        </div>
+      </div>
+
+      <div>
+        <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
+          project
+        </label>
+        <div class="relative">
+          <select
+            id="session-project"
+            bind:value={project}
+            disabled={projectsLoading || projects.length === 0}
+            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
+            class="
+              w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
+              text-gray-300 text-xs font-mono px-3 py-2 pr-7
+              outline-none transition-colors appearance-none disabled:opacity-50
+            "
+          >
+            {#if projectsLoading}
+              <option value="">loading projects…</option>
+            {:else if projects.length === 0}
+              <option value="">no registered projects found</option>
+            {:else}
+              <option value="">default / current directory</option>
               {#each projects as p}
                 <option value={p}>{p}</option>
               {/each}
-            </select>
-            <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
-          </div>
+            {/if}
+          </select>
+          <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-[10px]">▾</span>
         </div>
-      {/if}
+        {#if projectLoadError}
+          <p class="mt-1 text-yellow-600 text-[10px] font-mono leading-relaxed">
+            Could not load projects: {projectLoadError}
+          </p>
+        {/if}
+      </div>
 
       {#if progress.length > 0}
         <div class="border border-[#1e2d4a] bg-[#080c14] p-2 max-h-24 overflow-y-auto">

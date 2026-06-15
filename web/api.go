@@ -53,6 +53,8 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
 	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
+	mux.HandleFunc("GET /api/sessions/review", handleGetSessionReview)
+	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
 	mux.HandleFunc("POST /api/sessions/reviewed", handleMarkSessionReviewed)
 	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
 	// Reverse-proxy the per-session Gatepost Logs UI so it is reachable wherever
@@ -185,8 +187,13 @@ type loginRequest struct {
 }
 
 func handleSettings(w http.ResponseWriter, r *http.Request) {
+	defaultTarget := viper.GetString("target")
+	if defaultTarget == "" {
+		defaultTarget = "host"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"artifact_trigger_key": viper.GetString("artifact_trigger_key"),
+		"artifact_trigger_key":   viper.GetString("artifact_trigger_key"),
+		"default_session_target": defaultTarget,
 	})
 }
 
@@ -412,6 +419,15 @@ func handleStaleSessions(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		summary := session.AnalyzeStaleSessionsWithOptions(store, session.CleanupStaleAnalysisOptions(threshold))
+		// Surface any previously-persisted review so the panel can show prior
+		// results, but do not auto-run reviews here: reviews are explicit,
+		// user-triggered actions in the panel.
+		for i := range summary.Statuses {
+			status := &summary.Statuses[i]
+			if sess, ok := store.GetSession(status.SessionName); ok && sess.Review != nil {
+				status.CleanupReview = sess.Review
+			}
+		}
 		return map[string]any{"stale_summary": summary}, nil
 	})
 	if err != nil {
@@ -424,6 +440,16 @@ func handleStaleSessions(w http.ResponseWriter, r *http.Request) {
 type createSessionRequest struct {
 	Name    string `json:"name"`
 	Project string `json:"project"`
+	Target  string `json:"target"`
+}
+
+func isValidSessionTarget(target string) bool {
+	switch target {
+	case "", "host", "docker", "gatepost":
+		return true
+	default:
+		return false
+	}
 }
 
 // sessionCreateJobs tracks in-progress async session creations.
@@ -452,6 +478,10 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session name"})
 		return
 	}
+	if !isValidSessionTarget(req.Target) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session target"})
+		return
+	}
 
 	// Start creation asynchronously so long-running targets (e.g. Gatepost
 	// Docker) don't time out the HTTP connection.
@@ -469,6 +499,9 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	args := []string{"session", "create", "--no-tmux"}
 	if req.Project != "" {
 		args = append(args, "--project", req.Project)
+	}
+	if req.Target != "" {
+		args = append(args, "--target", req.Target)
 	}
 	args = append(args, "--", req.Name)
 	go func() {
@@ -594,6 +627,83 @@ func handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	}
 	invalidateSessionListCache()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type reviewSessionRequest struct {
+	Base string `json:"base"`
+}
+
+func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	// Only serve review details for a session that still exists, so an orphaned
+	// details file cannot be returned for a deleted/unknown session name.
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, ok := store.GetSession(name); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if review, err := session.LoadSessionReviewDetails(name); err == nil {
+		writeJSON(w, http.StatusOK, review)
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load review details: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "review not found"})
+}
+
+func handleReviewSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	var req reviewSessionRequest
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+	}
+
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	sess, ok := store.GetSession(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	review, err := session.ReviewSession(sess, session.ReviewOptions{BaseBranch: req.Base})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// Persist so the result survives reloads and appears in the next stale scan.
+	// A successful response implies the review was durably stored, so a
+	// persistence failure must surface as an error rather than a false success.
+	if err := session.PersistSessionReview(name, review); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist review: " + err.Error()})
+		return
+	}
+	invalidateSessionListCache()
+	writeJSON(w, http.StatusOK, review)
 }
 
 func handleMarkSessionReviewed(w http.ResponseWriter, r *http.Request) {

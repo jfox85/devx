@@ -95,26 +95,27 @@ func normalizeStaleAnalysisOptions(opts StaleAnalysisOptions) StaleAnalysisOptio
 // StaleStatus describes whether a session is old enough and safe enough for
 // automated cleanup. Only stale-clean sessions are removed in bulk.
 type StaleStatus struct {
-	SessionName               string        `json:"session_name"`
-	Category                  string        `json:"category"`
-	LastActiveAt              time.Time     `json:"last_active_at"`
-	LastReviewedAt            time.Time     `json:"last_reviewed_at,omitempty"`
-	Age                       time.Duration `json:"-"`
-	AgeSeconds                int64         `json:"age_seconds"`
-	WorktreeExists            bool          `json:"worktree_exists"`
-	TmuxStatus                string        `json:"tmux_status"`
-	EditorStatus              string        `json:"editor_status"`
-	HasUncommitted            bool          `json:"has_uncommitted"`
-	HasUntracked              bool          `json:"has_untracked"`
-	HasIgnored                bool          `json:"has_ignored"`
-	HasUnpushedCommits        bool          `json:"has_unpushed_commits"`
-	UnpushedCommits           int           `json:"unpushed_commits"`
-	GitStatusUnknown          bool          `json:"git_status_unknown"`
-	UnpushedStatusUnknown     bool          `json:"unpushed_status_unknown"`
-	GitChecksIncomplete       bool          `json:"git_checks_incomplete"`
-	CleanupCandidate          bool          `json:"cleanup_candidate"`
-	PotentialCleanupCandidate bool          `json:"potential_cleanup_candidate"`
-	Reasons                   []string      `json:"reasons"`
+	SessionName               string         `json:"session_name"`
+	Category                  string         `json:"category"`
+	LastActiveAt              time.Time      `json:"last_active_at"`
+	LastReviewedAt            time.Time      `json:"last_reviewed_at,omitempty"`
+	Age                       time.Duration  `json:"-"`
+	AgeSeconds                int64          `json:"age_seconds"`
+	WorktreeExists            bool           `json:"worktree_exists"`
+	TmuxStatus                string         `json:"tmux_status"`
+	EditorStatus              string         `json:"editor_status"`
+	HasUncommitted            bool           `json:"has_uncommitted"`
+	HasUntracked              bool           `json:"has_untracked"`
+	HasIgnored                bool           `json:"has_ignored"`
+	HasUnpushedCommits        bool           `json:"has_unpushed_commits"`
+	UnpushedCommits           int            `json:"unpushed_commits"`
+	GitStatusUnknown          bool           `json:"git_status_unknown"`
+	UnpushedStatusUnknown     bool           `json:"unpushed_status_unknown"`
+	GitChecksIncomplete       bool           `json:"git_checks_incomplete"`
+	CleanupCandidate          bool           `json:"cleanup_candidate"`
+	PotentialCleanupCandidate bool           `json:"potential_cleanup_candidate"`
+	Reasons                   []string       `json:"reasons"`
+	CleanupReview             *SessionReview `json:"cleanup_review,omitempty"`
 }
 
 // StaleSummary groups analyzed sessions for CLI/API/UI consumers.

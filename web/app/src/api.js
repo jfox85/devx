@@ -46,9 +46,11 @@ export async function getStaleSummary(days) {
 }
 
 export async function createSession(name, project, options = {}) {
+  const body = { name, project }
+  if (options.target) body.target = options.target
   const res = await apiFetch('/sessions', {
     method: 'POST',
-    body: JSON.stringify({ name, project }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const err = await res.json()
@@ -94,6 +96,18 @@ export async function pruneStaleCleanSessions(days) {
 export async function markSessionReviewed(name) {
   const res = await apiFetch('/sessions/reviewed?name=' + encodeURIComponent(name), { method: 'POST' })
   if (!res.ok) throw new Error(`Failed to mark reviewed: ${res.status}`)
+}
+
+export async function reviewSession(name, { base = '' } = {}) {
+  const res = await apiFetch('/sessions/review?name=' + encodeURIComponent(name), {
+    method: 'POST',
+    body: JSON.stringify({ base }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Session review failed')
+  }
+  return res.json()
 }
 
 export async function flagSession(name) {
@@ -169,7 +183,7 @@ export async function listProjects() {
 
 export async function getSettings() {
   const res = await apiFetch('/settings')
-  if (!res.ok) return { artifact_trigger_key: 'Ctrl+Space' }
+  if (!res.ok) return { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host' }
   return res.json()
 }
 

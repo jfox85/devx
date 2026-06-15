@@ -33,6 +33,7 @@ type Session struct {
 	LastAttached       time.Time         `json:"last_attached,omitempty"`
 	LastArtifactSeenAt time.Time         `json:"last_artifact_seen_at,omitempty"`
 	LastReviewedAt     time.Time         `json:"last_reviewed_at,omitempty"`
+	Review             *SessionReview    `json:"review,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 	Target             TargetMeta        `json:"target,omitempty"`
