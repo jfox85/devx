@@ -187,8 +187,11 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 
 	// If reuse flag is set and session exists, verify the worktree is still valid
 	if reuseFlag && sessionExists {
-		// Check if the worktree still exists
-		worktreeExists, err := session.WorktreeExists(projectPath, existingSession.Path)
+		// Check if the worktree (or standalone clone, for containerized sessions)
+		// still exists. Containerized sessions use a standalone clone that is not a
+		// registered git worktree, so a plain worktree-list check would always miss
+		// them and force an unnecessary recreate.
+		worktreeExists, err := session.SessionWorkdirExists(projectPath, existingSession.Path)
 		if err != nil {
 			return fmt.Errorf("failed to check worktree existence: %w", err)
 		}

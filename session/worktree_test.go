@@ -131,3 +131,33 @@ detached
 		t.Errorf("expected empty branch for detached HEAD, got %s", worktrees[0].Branch)
 	}
 }
+
+func TestSessionWorkdirExistsStandaloneClone(t *testing.T) {
+	// A standalone clone (used by containerized sessions) is NOT a registered
+	// git worktree, so it must still be recognised as an existing workdir.
+	_, cloneDir, _ := initGitRepoWithRemote(t)
+
+	// The clone created by initGitRepoWithRemote is a self-contained repo whose
+	// .git is a directory — exactly the shape CreateIndependentClone produces.
+	// Pass a valid repo as the source (cloneDir itself) so the worktree-list
+	// probe succeeds before the standalone-clone fallback is consulted.
+	exists, err := SessionWorkdirExists(cloneDir, cloneDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("standalone clone should be reported as an existing session workdir")
+	}
+}
+
+func TestSessionWorkdirExistsMissing(t *testing.T) {
+	// A directory with no git checkout must not be reported as existing.
+	_, cloneDir, _ := initGitRepoWithRemote(t)
+	exists, err := SessionWorkdirExists(cloneDir, filepath.Join(t.TempDir(), "nope"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exists {
+		t.Fatal("non-existent workdir should not be reported as existing")
+	}
+}

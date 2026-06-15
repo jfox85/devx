@@ -427,6 +427,28 @@ func WorktreeExists(repoPath, worktreePath string) (bool, error) {
 	return false, nil
 }
 
+// SessionWorkdirExists reports whether a session's working directory is still a
+// usable git checkout. It accepts both linked worktrees (registered via
+// `git worktree`) and the standalone clones created by CreateIndependentClone
+// for containerized sessions, which are NOT registered worktrees and therefore
+// never appear in `git worktree list`.
+func SessionWorkdirExists(repoPath, worktreePath string) (bool, error) {
+	exists, err := WorktreeExists(repoPath, worktreePath)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return true, nil
+	}
+	// Standalone clone: a self-contained repo whose .git is a directory.
+	if info, statErr := os.Stat(filepath.Join(worktreePath, ".git")); statErr == nil && info.IsDir() {
+		if exec.Command("git", "-C", worktreePath, "rev-parse", "--git-dir").Run() == nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // PullFromOrigin pulls the latest changes from origin for the specified branch
 func PullFromOrigin(repoPath, branch string) error {
 	// First, check if we have uncommitted changes
