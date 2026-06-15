@@ -668,6 +668,7 @@ func handleReviewSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
 	store, err := session.LoadSessions()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

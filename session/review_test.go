@@ -157,6 +157,31 @@ func TestReviewSessionMissingWorktree(t *testing.T) {
 	}
 }
 
+func TestResolveReviewBaseAcceptsDashLeadingRef(t *testing.T) {
+	repo := initReviewRepo(t)
+	// Create a fully-qualified ref whose short name begins with a dash. Without
+	// --end-of-options at the git call site, git would treat "-hotfix" as an
+	// option and fail to resolve it.
+	runGit(t, repo, "update-ref", "refs/heads/-hotfix", "HEAD")
+	base, err := ResolveReviewBase(repo, "refs/heads/-hotfix")
+	if err != nil {
+		t.Fatalf("ResolveReviewBase rejected a valid dash-leading ref: %v", err)
+	}
+	if base != "refs/heads/-hotfix" {
+		t.Fatalf("base = %q, want refs/heads/-hotfix", base)
+	}
+}
+
+func TestResolveReviewBaseRejectsOptionLikeBase(t *testing.T) {
+	repo := initReviewRepo(t)
+	// An option-like base is treated as an operand (not a flag) and simply does
+	// not resolve to a ref, so resolution fails cleanly rather than executing a
+	// git option.
+	if _, err := ResolveReviewBase(repo, "--output=/tmp/pwned"); err == nil {
+		t.Fatal("expected option-like base to fail resolution")
+	}
+}
+
 func initReviewRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

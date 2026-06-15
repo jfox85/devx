@@ -146,7 +146,10 @@ func ResolveReviewBase(repoPath, requested string) (string, error) {
 		candidates = append(candidates, "origin/main", "main", "origin/master", "master")
 	}
 	for _, c := range candidates {
-		if exec.Command("git", "-C", repoPath, "rev-parse", "--verify", c).Run() == nil {
+		// --end-of-options ensures a user-supplied base is always treated as a
+		// ref operand, never as a git option, while still accepting any legal
+		// refname (including fully-qualified refs that begin with a dash).
+		if exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "--end-of-options", c).Run() == nil {
 			return c, nil
 		}
 	}
