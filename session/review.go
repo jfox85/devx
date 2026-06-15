@@ -97,6 +97,17 @@ func ReviewSession(sess *Session, opts ReviewOptions) (*SessionReview, error) {
 		return review, nil
 	}
 
+	// A worktree directory whose git plumbing is missing or broken (e.g. an
+	// orphaned linked worktree whose .git metadata was pruned) cannot be
+	// reviewed. Detect this explicitly so it is reported clearly instead of
+	// surfacing as a confusing "unable to resolve base branch" error.
+	if !isGitRepo(sess.Path) {
+		review.Classification = ReviewClassificationMissingWorktree
+		review.Error = "worktree is not a valid git repository"
+		review.Summary = fmt.Sprintf("The worktree at %s is no longer a valid git repository (its git metadata is missing or broken), so there are no local changes to recover. Safe to remove.", sess.Path)
+		return review, nil
+	}
+
 	base, err := ResolveReviewBase(sess.Path, opts.BaseBranch)
 	if err != nil {
 		review.Error = err.Error()
@@ -150,6 +161,13 @@ func ReviewSession(sess *Session, opts ReviewOptions) (*SessionReview, error) {
 		review.Summary = fmt.Sprintf("No unique commits or local changes relative to %s.", base)
 	}
 	return review, nil
+}
+
+// isGitRepo reports whether path is the top level of a usable git repository
+// or worktree. It returns false for orphaned/broken worktrees whose git
+// metadata can no longer be resolved.
+func isGitRepo(path string) bool {
+	return exec.Command("git", "-C", path, "rev-parse", "--git-dir").Run() == nil
 }
 
 func ResolveReviewBase(repoPath, requested string) (string, error) {

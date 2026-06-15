@@ -157,6 +157,27 @@ func TestReviewSessionMissingWorktree(t *testing.T) {
 	}
 }
 
+func TestReviewSessionBrokenWorktreeIsMissing(t *testing.T) {
+	// A directory that exists but whose git plumbing is broken (an orphaned
+	// worktree whose .git metadata was pruned) must be reported clearly as a
+	// missing worktree, not as a confusing base-branch resolution error.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"),
+		[]byte("gitdir: "+filepath.Join(dir, "does-not-exist")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := ReviewSession(&Session{Name: "broken", Path: dir}, ReviewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Classification != ReviewClassificationMissingWorktree {
+		t.Fatalf("classification = %q, want %q", review.Classification, ReviewClassificationMissingWorktree)
+	}
+	if review.Summary == "Unable to resolve a base branch for review." {
+		t.Fatalf("broken worktree surfaced the confusing base-branch error")
+	}
+}
+
 func TestReviewSessionNonDirectoryWorktreeIsError(t *testing.T) {
 	// A path that exists but is a regular file is not a missing worktree, so it
 	// must not be classified as safe-to-remove.

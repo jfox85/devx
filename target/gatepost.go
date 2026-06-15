@@ -226,35 +226,19 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 
 	// Start agent on the ports network (normal bridge) so -p port publishing works,
 	// then connect to the internal network for proxy/events access.
-	// Mount the main repo .git dir at the same host path so the container can
-	// resolve worktree references. Then overlay /workspace/.git with a file
-	// that points to a container-local path (/root/.git-worktree) instead of
-	// the host path, so tools like `git rev-parse --git-dir` report container
-	// paths (not /Users/jfox/...). The bootstrap step copies worktree metadata
-	// to /root/.git-worktree and sets commondir to the mounted main .git.
-	mainGitDir := mainRepoGitDir(opts.WorktreePath)
-
-	// Write the container-local .git file to the session dir; it will be
-	// mounted over /workspace/.git so the host's actual .git is untouched.
-	var containerGitFile string
-	if mainGitDir != "" {
-		containerGitFile = filepath.Join(runtime.sessionDir, "container-dot-git")
-		if err := os.WriteFile(containerGitFile, []byte("gitdir: /root/.git-worktree\n"), 0o644); err != nil {
-			return nil, fmt.Errorf("write container .git file: %w", err)
-		}
-	}
-
+	//
+	// The session worktree is a standalone shallow clone (see
+	// session.CreateIndependentClone): its .git is a self-contained directory
+	// with no link into the host repo's .git/worktrees and no shared object
+	// store. We therefore bind-mount only the worktree at /workspace and do NOT
+	// mount or remap the host repo's .git. Git "just works" inside the container
+	// because a standalone repo uses repo-relative internal paths, and nothing
+	// the container does can corrupt host-side git state.
 	agentArgs := []string{"run", "-d", "--name", runtime.agentName,
 		"--network", runtime.portsNet,
 		"--restart", "unless-stopped",
 		"-v", opts.WorktreePath + ":/workspace",
 		"-w", "/workspace",
-	}
-	if mainGitDir != "" {
-		// Mount read-write so git commit/add/push work inside the container.
-		agentArgs = append(agentArgs, "-v", mainGitDir+":"+mainGitDir)
-		// Overlay /workspace/.git with the container-local version.
-		agentArgs = append(agentArgs, "-v", containerGitFile+":/workspace/.git")
 	}
 	for _, port := range opts.HostPorts {
 		agentArgs = append(agentArgs, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, port))
@@ -398,22 +382,6 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		}, " && ")
 		_ = dockerRun(ctx, "exec", runtime.agentName, "bash", "-lc", ghSetup)
 	}
-	// Copy worktree metadata to /root/.git-worktree so git uses container-local
-	// paths. The /workspace/.git file already points here via the overlay mount.
-	if mainGitDir != "" {
-		gitFileData, _ := os.ReadFile(filepath.Join(opts.WorktreePath, ".git"))
-		hostGitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(gitFileData)), "gitdir: "))
-		if hostGitDir != "" {
-			gitRewrite := strings.Join([]string{
-				`mkdir -p /root/.git-worktree`,
-				fmt.Sprintf(`cp -r %q/. /root/.git-worktree/`, hostGitDir),
-				fmt.Sprintf(`echo %q > /root/.git-worktree/commondir`, mainGitDir),
-				`echo /workspace > /root/.git-worktree/gitdir`,
-				`true`,
-			}, " && ")
-			_ = dockerRun(ctx, "exec", runtime.agentName, "bash", "-lc", gitRewrite)
-		}
-	}
 
 	containerID, err := dockerOutput(ctx, "inspect", "--format", "{{.Id}}", runtime.agentName)
 	if err != nil {
@@ -457,30 +425,6 @@ func (g *GatepostTarget) cleanup(ctx context.Context, meta session.TargetMeta) e
 		_ = dockerRunIgnore(ctx, "network", "rm", meta.Gatepost.PortsNetworkName)
 	}
 	return nil
-}
-
-// mainRepoGitDir returns the main repo's .git directory given a worktree path,
-// by reading the worktree's .git file (which contains "gitdir: /path/to/.git/worktrees/<name>").
-// Returns empty string if the worktree .git file can't be resolved.
-func mainRepoGitDir(worktreePath string) string {
-	gitFile := filepath.Join(worktreePath, ".git")
-	data, err := os.ReadFile(gitFile)
-	if err != nil {
-		return ""
-	}
-	// Format: "gitdir: /abs/path/to/.git/worktrees/<name>"
-	line := strings.TrimSpace(string(data))
-	gitdirPath, ok := strings.CutPrefix(line, "gitdir: ")
-	if !ok {
-		return ""
-	}
-	// Walk up from .git/worktrees/<name> to find the main .git dir
-	// .git/worktrees/<name> -> .git/worktrees -> .git
-	mainGit := filepath.Dir(filepath.Dir(gitdirPath))
-	if info, err := os.Stat(mainGit); err != nil || !info.IsDir() {
-		return ""
-	}
-	return mainGit
 }
 
 func gatepostDirs(sessionName string) (string, string, string, error) {

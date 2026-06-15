@@ -269,10 +269,15 @@ func BranchExists(repoPath, branchName string) (bool, error) {
 }
 
 // PruneWorktrees removes stale worktree references.
-// --expire now bypasses git's default 3-month grace period so recently-deleted
-// worktrees are pruned immediately rather than showing as "missing but registered".
+//
+// It deliberately uses git's default grace period (it does NOT pass
+// --expire now). An aggressive `--expire now` previously turned transient
+// worktree inconsistencies — e.g. a containerized session whose .git metadata
+// briefly looked "missing" from the host's perspective — into permanent data
+// loss by immediately pruning the registration and dropping the branch. The
+// default grace period gives such worktrees time to recover before any prune.
 func PruneWorktrees(repoPath string) error {
-	cmd := exec.Command("git", "worktree", "prune", "--expire", "now")
+	cmd := exec.Command("git", "worktree", "prune")
 	cmd.Dir = repoPath
 
 	output, err := cmd.CombinedOutput()
@@ -281,6 +286,129 @@ func PruneWorktrees(repoPath string) error {
 	}
 
 	return nil
+}
+
+// CreateIndependentClone creates a standalone shallow git clone for a
+// containerized (docker/gatepost) session at .worktrees/<name>, instead of a
+// linked git worktree. A standalone clone has no shared .git/worktrees/<name>
+// metadata and no dependency on the host repo's object store, so it cannot be
+// corrupted by container-side git operations or by host-side worktree pruning.
+//
+// The clone is created from the source repo's default branch (origin/main or
+// origin/master) at a shallow depth, then the session branch is created on top.
+// Because sessions are almost always branched off current main, even a shallow
+// clone keeps `origin/main...HEAD` diffs/reviews working: HEAD starts at the
+// fetched tip, and all session commits descend from it.
+//
+// If the worktree directory already exists and is a valid git repo, it is
+// reused as-is (idempotent restarts).
+func CreateIndependentClone(repoPath, name string) (string, error) {
+	worktreePath := filepath.Join(repoPath, ".worktrees", name)
+
+	// Reuse an existing valid clone (idempotent restart).
+	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err == nil {
+		if exec.Command("git", "-C", worktreePath, "rev-parse", "--git-dir").Run() == nil {
+			fmt.Printf("Reusing existing session repo at %s\n", worktreePath)
+			return worktreePath, nil
+		}
+	}
+
+	// Refuse to clobber a non-empty, non-repo directory to avoid destroying data.
+	if entries, err := os.ReadDir(worktreePath); err == nil && len(entries) > 0 {
+		return "", fmt.Errorf("directory %s exists but is not a git repository; remove it manually", worktreePath)
+	}
+
+	defaultBranch, err := defaultRemoteBranch(repoPath)
+	if err != nil {
+		return "", err
+	}
+
+	origin, err := remoteURL(repoPath)
+	if err != nil {
+		return "", err
+	}
+
+	// Determine up-front whether the session branch already exists on origin,
+	// using the source repo's remote refs (the shallow single-branch clone below
+	// will not contain other branches' refs).
+	sessionBranchOnRemote, err := RemoteBranchExists(repoPath, name)
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return "", fmt.Errorf("failed to create worktrees directory: %w", err)
+	}
+
+	// Shallow, single-branch clone of the default branch. Depth gives a little
+	// history headroom for tooling (blame, short logs) without paying for full
+	// history; merge-base with the default branch stays reachable for reviews.
+	cloneCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	clone := exec.CommandContext(cloneCtx, "git", "clone",
+		"--depth", "20",
+		"--single-branch",
+		"--branch", defaultBranch,
+		origin, worktreePath)
+	if output, err := clone.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("failed to clone session repo: %w\n%s", err, output)
+	}
+
+	// If a branch named after the session already exists on origin, fetch and
+	// check it out; otherwise create a fresh branch off the default branch tip.
+	if sessionBranchOnRemote {
+		fetch := exec.Command("git", "-C", worktreePath, "fetch", "--depth", "20", "origin", name)
+		if output, err := fetch.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to fetch existing branch %q: %w\n%s", name, err, output)
+		}
+		co := exec.Command("git", "-C", worktreePath, "checkout", "-b", name, "FETCH_HEAD")
+		if output, err := co.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to check out branch %q: %w\n%s", name, err, output)
+		}
+	} else {
+		co := exec.Command("git", "-C", worktreePath, "checkout", "-b", name)
+		if output, err := co.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to create session branch %q: %w\n%s", name, err, output)
+		}
+	}
+
+	return worktreePath, nil
+}
+
+// defaultRemoteBranch resolves the source repo's default branch, preferring
+// origin/main then origin/master, falling back to the checked-out branch.
+func defaultRemoteBranch(repoPath string) (string, error) {
+	for _, b := range []string{"main", "master"} {
+		check := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet",
+			"refs/remotes/origin/"+b)
+		if check.Run() == nil {
+			return b, nil
+		}
+	}
+	// Fall back to the source repo's current branch.
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("could not determine default branch for %s: %w", repoPath, err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" || branch == "HEAD" {
+		return "", fmt.Errorf("could not determine default branch for %s", repoPath)
+	}
+	return branch, nil
+}
+
+// remoteURL returns the origin URL of the source repo so the clone points at the
+// real remote (for fetch/push/PR), not at the local source path.
+func remoteURL(repoPath string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", fmt.Errorf("could not read origin URL for %s: %w", repoPath, err)
+	}
+	url := strings.TrimSpace(string(out))
+	if url == "" {
+		return "", fmt.Errorf("origin URL for %s is empty", repoPath)
+	}
+	return url, nil
 }
 
 // WorktreeExists checks if a worktree exists at the specified path

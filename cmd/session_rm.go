@@ -203,6 +203,21 @@ func removeGitWorktree(sess *session.Session) error {
 		return nil // already removed
 	}
 
+	// Standalone clones (used by containerized sessions) have a real .git
+	// directory rather than a "gitdir:" link file, and are not registered as
+	// linked worktrees. They are removed by deleting the directory directly,
+	// gated by the same ownership validation as the manual fallback below.
+	if info, err := os.Stat(filepath.Join(worktreePath, ".git")); err == nil && info.IsDir() {
+		if err := validateManualWorktreeRemoval(sess); err != nil {
+			return fmt.Errorf("refusing to remove session clone: %w", err)
+		}
+		if err := os.RemoveAll(worktreePath); err != nil {
+			return fmt.Errorf("failed to remove session clone: %w", err)
+		}
+		fmt.Printf("Removed session clone\n")
+		return nil
+	}
+
 	// Use git worktree remove command with --force flag as specified in requirements.
 	// This is allowed for paths registered with git; if it fails, manual fallback
 	// is gated by validateManualWorktreeRemoval below.

@@ -286,8 +286,20 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create the worktree (or adopt an existing one if the branch is already checked out)
-	worktreePath, err := session.CreateWorktree(projectPath, name, detachFlag)
+	// Create the session's working directory.
+	//
+	// Containerized targets (docker/gatepost) use a standalone shallow clone
+	// instead of a linked git worktree. The container bind-mounts this directory
+	// and runs git against it directly; a standalone clone has no shared
+	// .git/worktrees metadata or object store, so container-side git operations
+	// (and host-side worktree pruning) can never corrupt the host repo's git
+	// state. Host targets continue to use a normal linked worktree.
+	var worktreePath string
+	if targetType == "docker" || targetType == "gatepost" {
+		worktreePath, err = session.CreateIndependentClone(projectPath, name)
+	} else {
+		worktreePath, err = session.CreateWorktree(projectPath, name, detachFlag)
+	}
 	if err != nil {
 		return err
 	}
