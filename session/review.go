@@ -73,13 +73,13 @@ func ReviewSession(sess *Session, opts ReviewOptions) (*SessionReview, error) {
 	if sess.Path == "" {
 		review.Classification = ReviewClassificationMissingWorktree
 		review.Error = "session has no worktree path"
-		review.Summary = "Worktree is missing; only stale metadata remains."
+		review.Summary = "This session has no worktree on disk, so there is nothing to review or preserve. Safe to remove."
 		return review, nil
 	}
 	if info, err := os.Stat(sess.Path); err != nil || !info.IsDir() {
 		review.Classification = ReviewClassificationMissingWorktree
 		review.Error = "worktree path does not exist"
-		review.Summary = "Worktree path is missing; session metadata may be stale."
+		review.Summary = fmt.Sprintf("The worktree at %s no longer exists on disk, so there are no local changes to preserve. Safe to remove.", sess.Path)
 		return review, nil
 	}
 

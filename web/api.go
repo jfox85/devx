@@ -419,15 +419,13 @@ func handleStaleSessions(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		summary := session.AnalyzeStaleSessionsWithOptions(store, session.CleanupStaleAnalysisOptions(threshold))
+		// Surface any previously-persisted review so the panel can show prior
+		// results, but do not auto-run reviews here: reviews are explicit,
+		// user-triggered actions in the panel.
 		for i := range summary.Statuses {
 			status := &summary.Statuses[i]
-			if status.Category == session.StaleCategoryActive {
-				continue
-			}
-			if sess, ok := store.GetSession(status.SessionName); ok {
-				if review, err := session.ReviewSession(sess, session.ReviewOptions{}); err == nil {
-					status.CleanupReview = session.CompactSessionReview(review)
-				}
+			if sess, ok := store.GetSession(status.SessionName); ok && sess.Review != nil {
+				status.CleanupReview = sess.Review
 			}
 		}
 		return map[string]any{"stale_summary": summary}, nil
@@ -685,7 +683,12 @@ func handleReviewSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	_ = session.SaveSessionReviewDetails(name, review)
+	// Persist so the result survives reloads and appears in the next stale scan.
+	if err := session.PersistSessionReview(name, review); err != nil {
+		// Non-fatal: still return the review the caller just computed.
+		fmt.Fprintf(os.Stderr, "warning: failed to persist review for %s: %v\n", name, err)
+	}
+	invalidateSessionListCache()
 	writeJSON(w, http.StatusOK, review)
 }
 

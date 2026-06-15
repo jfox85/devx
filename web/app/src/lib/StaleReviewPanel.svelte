@@ -18,6 +18,7 @@
   let expandedRows = {}
   let reviewByName = {}
   let reviewingByName = {}
+  let reviewStatusByName = {}
   let reviewErrorByName = {}
 
   function reviewFor(status) {
@@ -26,16 +27,37 @@
 
   async function runCleanupReview(status) {
     const name = status.session_name
+    // Make sure the row is expanded so the user can see the progress + result.
+    expandedRows = { ...expandedRows, [name]: true }
     reviewingByName = { ...reviewingByName, [name]: true }
     reviewErrorByName = { ...reviewErrorByName, [name]: '' }
+    reviewStatusByName = { ...reviewStatusByName, [name]: 'Inspecting worktree and git history…' }
     try {
       const review = await reviewSession(name)
       reviewByName = { ...reviewByName, [name]: review }
+      reviewStatusByName = { ...reviewStatusByName, [name]: 'Review complete.' }
     } catch (e) {
       reviewErrorByName = { ...reviewErrorByName, [name]: e.message || 'review failed' }
+      reviewStatusByName = { ...reviewStatusByName, [name]: '' }
     } finally {
       reviewingByName = { ...reviewingByName, [name]: false }
     }
+  }
+
+  // Human-friendly label + color for a review classification.
+  const reviewClassMeta = {
+    'clean': { label: 'clean — no unique work', color: 'text-emerald-400' },
+    'safe-to-delete': { label: 'safe to delete', color: 'text-emerald-400' },
+    'probably-safe-to-delete': { label: 'probably safe to delete', color: 'text-emerald-300' },
+    'missing-worktree': { label: 'worktree gone — safe to remove', color: 'text-gray-400' },
+    'dirty-only': { label: 'local changes only', color: 'text-yellow-400' },
+    'unique-commits': { label: 'has unique commits — review first', color: 'text-amber-400' },
+    'needs-human-review': { label: 'needs human review', color: 'text-amber-400' },
+    'preserve-before-delete': { label: 'preserve before delete', color: 'text-red-400' },
+    'error': { label: 'review error', color: 'text-red-400' },
+  }
+  function reviewClassInfo(review) {
+    return reviewClassMeta[review?.classification] || { label: review?.classification || 'reviewed', color: 'text-purple-400' }
   }
 
   async function runVisibleReviews() {
@@ -67,15 +89,9 @@
     return session?.display_name || status.session_name
   }
 
-  function reviewLabel(status) {
-    const review = reviewFor(status)
-    if (!review) return ''
-    return review.classification || 'reviewed'
-  }
-
   function staleHighLevel(status) {
     const review = reviewFor(status)
-    if (review?.classification) return review.classification
+    if (review?.classification) return reviewClassInfo(review).label
     if (status.category === 'stale-clean') return 'safe to remove'
     if (status.category === 'broken') return status.worktree_exists ? 'needs repair' : 'missing worktree'
     if (status.has_uncommitted || status.has_untracked) return 'local changes'
@@ -193,28 +209,42 @@
               <div class="text-gray-500">
                 <span class="text-gray-400">reasons:</span> {staleReason(status)}
               </div>
-              {#if reviewFor(status)}
+              {#if reviewingByName[status.session_name]}
+                <div class="flex items-center gap-2 border border-purple-900/60 bg-purple-950/10 p-2 text-purple-300">
+                  <span class="inline-block h-3 w-3 rounded-full border-2 border-purple-500 border-t-transparent animate-spin"></span>
+                  <span>Running review… {reviewStatusByName[status.session_name] || ''}</span>
+                </div>
+              {:else if reviewFor(status)}
+                {@const review = reviewFor(status)}
+                {@const info = reviewClassInfo(review)}
                 <div class="border border-purple-950/70 bg-purple-950/10 p-2 space-y-1">
-                  <div class="text-purple-400">review: {reviewLabel(status)}</div>
-                  {#if reviewFor(status).summary}
-                    <div class="text-gray-400 leading-relaxed">{reviewFor(status).summary}</div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="{info.color}">review: {info.label}</span>
+                    {#if reviewStatusByName[status.session_name]}
+                      <span class="text-emerald-600 text-[10px]">{reviewStatusByName[status.session_name]}</span>
+                    {/if}
+                  </div>
+                  {#if review.summary}
+                    <div class="text-gray-400 leading-relaxed">{review.summary}</div>
                   {/if}
                   <div class="grid grid-cols-3 gap-2 text-gray-600">
-                    <span>{reviewFor(status).unique_commit_count || reviewFor(status).unique_commits?.length || 0} commits</span>
-                    <span>{reviewFor(status).dirty_file_count || reviewFor(status).dirty_files?.length || 0} dirty</span>
-                    <span>{reviewFor(status).untracked_file_count || reviewFor(status).untracked_files?.length || 0} untracked</span>
+                    <span>{review.unique_commit_count || review.unique_commits?.length || 0} commits</span>
+                    <span>{review.dirty_file_count || review.dirty_files?.length || 0} dirty</span>
+                    <span>{review.untracked_file_count || review.untracked_files?.length || 0} untracked</span>
                   </div>
-                  {#if reviewFor(status).details}
-                    <pre class="max-h-32 overflow-auto whitespace-pre-wrap text-gray-500 border border-[#1e2d4a] p-2">{reviewFor(status).details}</pre>
+                  {#if review.details}
+                    <pre class="max-h-32 overflow-auto whitespace-pre-wrap text-gray-500 border border-[#1e2d4a] p-2">{review.details}</pre>
                   {/if}
                 </div>
+              {:else}
+                <div class="text-gray-600 italic">Not yet reviewed. Run a review to inspect commits and local changes before cleanup.</div>
               {/if}
               {#if reviewErrorByName[status.session_name]}
                 <div class="text-red-500">review failed: {reviewErrorByName[status.session_name]}</div>
               {/if}
               <div class="flex flex-wrap gap-2 pt-1">
                 <button on:click={() => onOpen(status)} disabled={isDeleting} class="text-cyan-500 hover:text-cyan-300 disabled:text-gray-700 border border-cyan-950 hover:border-cyan-800 disabled:border-gray-900 px-2 py-1 sm:py-0.5">open terminal</button>
-                <button on:click={() => runCleanupReview(status)} disabled={isDeleting || reviewingByName[status.session_name]} class="text-purple-500 hover:text-purple-300 disabled:text-gray-700 border border-purple-950 hover:border-purple-800 disabled:border-gray-900 px-2 py-1 sm:py-0.5">{reviewingByName[status.session_name] ? 'reviewing…' : reviewFor(status) ? 'rerun review' : 'run review'}</button>
+                <button on:click={() => runCleanupReview(status)} disabled={isDeleting || reviewingByName[status.session_name]} class="text-purple-400 hover:text-purple-200 disabled:text-gray-700 border border-purple-900 hover:border-purple-700 disabled:border-gray-900 px-2 py-1 sm:py-0.5">{reviewingByName[status.session_name] ? 'reviewing…' : reviewFor(status) ? 'rerun review' : 'run review'}</button>
                 <button on:click={() => onReviewed(status)} disabled={isDeleting} class="text-amber-500 hover:text-amber-300 disabled:text-gray-700 border border-amber-950 hover:border-amber-800 disabled:border-gray-900 px-2 py-1 sm:py-0.5">mark reviewed</button>
                 {#if session.gatepost?.logs_url}
                   <a href={session.gatepost.logs_url} target="_blank" rel="noopener noreferrer" class="text-emerald-500 hover:text-emerald-300 border border-emerald-950 hover:border-emerald-800 px-2 py-1 sm:py-0.5">gatepost logs</a>
