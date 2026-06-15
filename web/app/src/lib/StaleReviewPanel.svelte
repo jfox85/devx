@@ -96,6 +96,20 @@
   function toggleDetails(name) {
     expandedRows = { ...expandedRows, [name]: !expandedRows[name] }
   }
+
+  // Group the displayed stale sessions by project so the project name is shown
+  // once per group instead of repeated on every row.
+  $: groupedStale = (() => {
+    const groups = new Map()
+    for (const status of staleDisplayStatuses) {
+      const key = staleProject(status)
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(status)
+    }
+    return [...groups.entries()]
+      .map(([project, statuses]) => ({ project, statuses }))
+      .sort((a, b) => a.project.localeCompare(b.project))
+  })()
 </script>
 
 <div class="px-3 pb-3 space-y-3 text-[11px] font-mono max-h-[62dvh] overflow-y-auto overscroll-contain touch-pan-y stale-review-scroll">
@@ -125,15 +139,15 @@
     <div class="text-amber-500">Click again to remove: {staleCleanStatuses.map(s => s.session_name).join(', ')}</div>
   {/if}
   {#if staleDisplayStatuses.length > 0}
-    <div class="border border-[#1e2d4a] divide-y divide-[#1e2d4a] bg-[#080c16]">
-      <div class="hidden sm:grid grid-cols-[56px_minmax(0,1fr)_38px_88px_30px] gap-2 px-2 py-1 text-[9px] uppercase tracking-wider text-gray-700">
-        <span>project</span>
-        <span>session</span>
-        <span>idle</span>
-        <span>status</span>
-        <span></span>
-      </div>
-      {#each staleDisplayStatuses as status (status.session_name)}
+    <div class="space-y-3">
+      {#each groupedStale as group (group.project)}
+        <div class="border border-[#1e2d4a] bg-[#080c16]">
+          <div class="flex items-center justify-between px-2 py-1 border-b border-[#1e2d4a] bg-[#0a1020]">
+            <span class="text-[10px] uppercase tracking-wider text-cyan-600 truncate">{group.project}</span>
+            <span class="text-[9px] text-gray-700 shrink-0">{group.statuses.length} idle</span>
+          </div>
+          <div class="divide-y divide-[#121d33]">
+      {#each group.statuses as status (status.session_name)}
         {@const session = sessionByName[status.session_name] || { name: status.session_name }}
         {@const isExpanded = !!expandedRows[status.session_name]}
         {@const isDeleting = !!deletingSessions[status.session_name]}
@@ -143,32 +157,24 @@
             class="w-full px-2 py-2 text-left hover:bg-[#0d1117] {isDeleting ? 'opacity-60' : ''}"
             title="tap to expand stale session details"
           >
-            <div class="sm:hidden space-y-1">
-              <div class="flex items-start justify-between gap-2">
-                <div class="min-w-0">
-                  <div class="text-gray-400 truncate">{staleDisplayName(status)}</div>
-                  <div class="text-[10px] text-gray-700 truncate">{staleProject(status)} · {session.branch || 'unknown branch'}</div>
-                </div>
-                <div class="text-right shrink-0">
-                  <div class="text-gray-600">{staleAge(status)}</div>
-                  <div class="truncate {isDeleting ? 'text-cyan-400' : staleStatusClass(status)}">{isDeleting ? 'removing…' : staleHighLevel(status)}</div>
-                </div>
-              </div>
-              <div class="flex items-center justify-between text-[10px] text-gray-700">
-                <span>tap for details + actions</span>
-                <span>{isExpanded ? 'hide −' : 'details +'}</span>
-              </div>
+            <!-- Two-line entry: line 1 = session name + expand caret;
+                 line 2 = idle age + branch + status, so the name is never
+                 squeezed by the status column. -->
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-gray-300 truncate">{staleDisplayName(status)}</div>
+              <span class="text-gray-700 text-[10px] shrink-0">{isExpanded ? 'hide −' : 'details +'}</span>
             </div>
-            <div class="hidden sm:grid grid-cols-[56px_minmax(0,1fr)_38px_88px_30px] gap-2 items-center">
-              <span class="text-gray-600 truncate">{staleProject(status)}</span>
-              <span class="text-gray-400 truncate">{staleDisplayName(status)}</span>
-              <span class="text-gray-600">{staleAge(status)}</span>
-              <span class="truncate {isDeleting ? 'text-cyan-400' : staleStatusClass(status)}">{isDeleting ? 'removing…' : staleHighLevel(status)}</span>
-              <span class="text-gray-700 text-right">{isExpanded ? '−' : '+'}</span>
+            <div class="mt-0.5 flex items-center justify-between gap-2 text-[10px]">
+              <div class="text-gray-600 truncate">
+                <span class="text-gray-500">{staleAge(status)}</span>
+                <span class="text-gray-800">·</span>
+                <span class="text-gray-700">{session.branch || 'unknown branch'}</span>
+              </div>
+              <div class="shrink-0 truncate {isDeleting ? 'text-cyan-400' : staleStatusClass(status)}">{isDeleting ? 'removing…' : staleHighLevel(status)}</div>
             </div>
           </button>
           {#if isExpanded}
-            <div class="px-2 pb-3 sm:pl-[66px] bg-[#0d1117] space-y-2">
+            <div class="px-2 pb-3 bg-[#0d1117] space-y-2">
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
                 <div><span class="text-gray-500">name:</span> {status.session_name}</div>
                 <div><span class="text-gray-500">project:</span> {staleProject(status)}</div>
@@ -217,6 +223,9 @@
               </div>
             </div>
           {/if}
+        </div>
+      {/each}
+          </div>
         </div>
       {/each}
     </div>
