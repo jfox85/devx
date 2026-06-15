@@ -157,6 +157,22 @@ func TestReviewSessionMissingWorktree(t *testing.T) {
 	}
 }
 
+func TestReviewSessionNonDirectoryWorktreeIsError(t *testing.T) {
+	// A path that exists but is a regular file is not a missing worktree, so it
+	// must not be classified as safe-to-remove.
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := ReviewSession(&Session{Name: "file", Path: file}, ReviewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Classification != ReviewClassificationError {
+		t.Fatalf("classification = %q, want %q", review.Classification, ReviewClassificationError)
+	}
+}
+
 func TestResolveReviewBaseAcceptsDashLeadingRef(t *testing.T) {
 	repo := initReviewRepo(t)
 	// Create a fully-qualified ref whose short name begins with a dash. Without

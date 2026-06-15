@@ -142,8 +142,13 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		_ = os.RemoveAll(uploadsDir)
 	}
 
-	// Remove any persisted cleanup-review details for this session.
-	_ = session.RemoveSessionReviewDetails(name)
+	// Remove any persisted cleanup-review details for this session. A failure
+	// here should not block teardown, but surface it so stray artifacts are not
+	// silently left behind. (RemoveSessionReviewDetails already treats a missing
+	// file as success.)
+	if err := session.RemoveSessionReviewDetails(name); err != nil {
+		fmt.Printf("Warning: failed to remove review details: %v\n", err)
+	}
 
 	// Remove session from metadata and reconcile slots in a single lock-guarded
 	// read-modify-write so a concurrent writer is not clobbered.

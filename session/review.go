@@ -76,10 +76,24 @@ func ReviewSession(sess *Session, opts ReviewOptions) (*SessionReview, error) {
 		review.Summary = "This session has no worktree on disk, so there is nothing to review or preserve. Safe to remove."
 		return review, nil
 	}
-	if info, err := os.Stat(sess.Path); err != nil || !info.IsDir() {
+	info, err := os.Stat(sess.Path)
+	switch {
+	case err != nil && os.IsNotExist(err):
 		review.Classification = ReviewClassificationMissingWorktree
 		review.Error = "worktree path does not exist"
 		review.Summary = fmt.Sprintf("The worktree at %s no longer exists on disk, so there are no local changes to preserve. Safe to remove.", sess.Path)
+		return review, nil
+	case err != nil:
+		// Permission/I/O errors are not evidence that the worktree is gone, so
+		// they must not be reported as a safe-to-remove state.
+		review.Classification = ReviewClassificationError
+		review.Error = err.Error()
+		review.Summary = fmt.Sprintf("Could not access the worktree at %s; review could not be completed.", sess.Path)
+		return review, nil
+	case !info.IsDir():
+		review.Classification = ReviewClassificationError
+		review.Error = "worktree path is not a directory"
+		review.Summary = fmt.Sprintf("The path %s exists but is not a directory; review could not be completed.", sess.Path)
 		return review, nil
 	}
 

@@ -642,6 +642,17 @@ func handleGetSessionReview(w http.ResponseWriter, r *http.Request) {
 	if !requireValidSession(w, name) {
 		return
 	}
+	// Only serve review details for a session that still exists, so an orphaned
+	// details file cannot be returned for a deleted/unknown session name.
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, ok := store.GetSession(name); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
 	if review, err := session.LoadSessionReviewDetails(name); err == nil {
 		writeJSON(w, http.StatusOK, review)
 		return
@@ -685,9 +696,11 @@ func handleReviewSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Persist so the result survives reloads and appears in the next stale scan.
+	// A successful response implies the review was durably stored, so a
+	// persistence failure must surface as an error rather than a false success.
 	if err := session.PersistSessionReview(name, review); err != nil {
-		// Non-fatal: still return the review the caller just computed.
-		fmt.Fprintf(os.Stderr, "warning: failed to persist review for %s: %v\n", name, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist review: " + err.Error()})
+		return
 	}
 	invalidateSessionListCache()
 	writeJSON(w, http.StatusOK, review)
