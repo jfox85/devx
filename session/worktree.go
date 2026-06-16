@@ -318,22 +318,43 @@ func CreateIndependentClone(repoPath, name string) (string, error) {
 		return "", fmt.Errorf("directory %s exists but is not a git repository; remove it manually", worktreePath)
 	}
 
+	// Refresh the source repo's remote-tracking refs so branch resolution below
+	// reflects the current state of origin rather than whatever was last fetched.
+	// Best-effort: a missing/offline origin must not block session creation
+	// (e.g. a purely local repo), so the error is intentionally ignored.
+	hasOrigin := remoteExists(repoPath, "origin")
+	if hasOrigin {
+		_ = FetchOrigin(repoPath)
+	}
+
 	defaultBranch, err := defaultRemoteBranch(repoPath)
 	if err != nil {
 		return "", err
 	}
 
-	origin, err := remoteURL(repoPath)
-	if err != nil {
-		return "", err
+	// Clone source: prefer origin so the container can fetch/push/PR against the
+	// real remote. For remote-less (local-only) repos, clone from the local repo
+	// path so containerized sessions still work; in that case there is no upstream
+	// to track or push to.
+	cloneSource := repoPath
+	if hasOrigin {
+		origin, urlErr := remoteURL(repoPath)
+		if urlErr != nil {
+			return "", urlErr
+		}
+		cloneSource = origin
 	}
 
 	// Determine up-front whether the session branch already exists on origin,
 	// using the source repo's remote refs (the shallow single-branch clone below
-	// will not contain other branches' refs).
-	sessionBranchOnRemote, err := RemoteBranchExists(repoPath, name)
-	if err != nil {
-		return "", err
+	// will not contain other branches' refs). Only meaningful when an origin
+	// exists; a local-only repo always creates a fresh branch.
+	sessionBranchOnRemote := false
+	if hasOrigin {
+		sessionBranchOnRemote, err = RemoteBranchExists(repoPath, name)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
@@ -349,19 +370,31 @@ func CreateIndependentClone(repoPath, name string) (string, error) {
 		"--depth", "20",
 		"--single-branch",
 		"--branch", defaultBranch,
-		origin, worktreePath)
+		cloneSource, worktreePath)
 	if output, err := clone.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to clone session repo: %w\n%s", err, output)
 	}
 
 	// If a branch named after the session already exists on origin, fetch and
-	// check it out; otherwise create a fresh branch off the default branch tip.
+	// check it out with upstream tracking so plain git pull/push work inside the
+	// container; otherwise create a fresh branch off the default branch tip.
 	if sessionBranchOnRemote {
+		// The single-branch clone only tracks the default branch, so register the
+		// session branch in origin's fetch refspec before fetching it. This makes
+		// origin/<name> a real remote-tracking branch that upstream tracking and
+		// future `git fetch`/`git pull` recognize.
+		if output, err := exec.Command("git", "-C", worktreePath, "config", "--add",
+			"remote.origin.fetch",
+			fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", name, name),
+		).CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to configure fetch for branch %q: %w\n%s", name, err, output)
+		}
 		fetch := exec.Command("git", "-C", worktreePath, "fetch", "--depth", "20", "origin", name)
 		if output, err := fetch.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("failed to fetch existing branch %q: %w\n%s", name, err, output)
 		}
-		co := exec.Command("git", "-C", worktreePath, "checkout", "-b", name, "FETCH_HEAD")
+		co := exec.Command("git", "-C", worktreePath, "checkout", "-b", name,
+			"--track", "origin/"+name)
 		if output, err := co.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("failed to check out branch %q: %w\n%s", name, err, output)
 		}
@@ -372,7 +405,66 @@ func CreateIndependentClone(repoPath, name string) (string, error) {
 		}
 	}
 
+	// Ensure the merge-base with the default branch is present so reviews
+	// (origin/<default>...HEAD) resolve. Sessions are almost always branched off
+	// current main, so the shallow clone already contains the base; but an
+	// existing remote branch forked from an older commit may have its merge-base
+	// below the shallow horizon. Deepen on demand in that case.
+	if sessionBranchOnRemote {
+		if err := ensureMergeBase(worktreePath, defaultBranch); err != nil {
+			return "", err
+		}
+	}
+
 	return worktreePath, nil
+}
+
+// remoteExists reports whether the given remote is configured in repoPath.
+func remoteExists(repoPath, remote string) bool {
+	out, err := exec.Command("git", "-C", repoPath, "remote").Output()
+	if err != nil {
+		return false
+	}
+	for _, r := range strings.Fields(string(out)) {
+		if r == remote {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureMergeBase makes sure the shallow clone contains a merge-base between
+// HEAD and origin/<defaultBranch>, deepening the history as needed so that
+// review diffs against the default branch resolve. It gives up quietly once the
+// repository is fully unshallowed.
+func ensureMergeBase(worktreePath, defaultBranch string) error {
+	base := "origin/" + defaultBranch
+	for attempt := 0; attempt < 6; attempt++ {
+		if exec.Command("git", "-C", worktreePath, "merge-base",
+			"HEAD", base).Run() == nil {
+			return nil
+		}
+		// Already complete history: nothing more to fetch.
+		if !isShallow(worktreePath) {
+			return nil
+		}
+		deepen := exec.Command("git", "-C", worktreePath, "fetch",
+			"--deepen", "50", "origin")
+		if output, err := deepen.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to deepen history for review base: %w\n%s", err, output)
+		}
+	}
+	return nil
+}
+
+// isShallow reports whether worktreePath is a shallow clone.
+func isShallow(worktreePath string) bool {
+	out, err := exec.Command("git", "-C", worktreePath, "rev-parse",
+		"--is-shallow-repository").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
 }
 
 // defaultRemoteBranch resolves the source repo's default branch, preferring
@@ -397,8 +489,9 @@ func defaultRemoteBranch(repoPath string) (string, error) {
 	return branch, nil
 }
 
-// remoteURL returns the origin URL of the source repo so the clone points at the
-// real remote (for fetch/push/PR), not at the local source path.
+// remoteURL returns the origin URL of the source repo so the clone points at
+// the real remote (for fetch/push/PR), not at the local source path. Callers
+// must only invoke this when an origin remote is known to exist.
 func remoteURL(repoPath string) (string, error) {
 	out, err := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin").Output()
 	if err != nil {
