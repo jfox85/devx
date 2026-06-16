@@ -25,35 +25,37 @@ import (
 type GatepostTarget struct{}
 
 type gatepostRuntime struct {
-	base        string
-	agentName   string
-	proxyName   string
-	internalNet string
-	egressNet   string
-	portsNet    string
-	sessionDir  string
-	auditDir    string
-	configDir   string
+	base         string
+	agentName    string
+	proxyName    string
+	internalNet  string
+	egressNet    string
+	portsNet     string
+	sessionDir   string
+	auditDir     string
+	configDir    string
+	agentHomeDir string
 }
 
 func (g *GatepostTarget) Type() string { return "gatepost" }
 
 func newGatepostRuntime(sessionName string) (gatepostRuntime, error) {
 	base := caddy.SanitizeHostname(sessionName)
-	sessionDir, auditDir, configDir, err := gatepostDirs(sessionName)
+	sessionDir, auditDir, configDir, agentHomeDir, err := gatepostDirs(sessionName)
 	if err != nil {
 		return gatepostRuntime{}, err
 	}
 	return gatepostRuntime{
-		base:        base,
-		agentName:   "devx-" + base,
-		proxyName:   "devx-" + base + "-gatepost-proxy",
-		internalNet: "devx-" + base + "-gatepost-internal",
-		egressNet:   "devx-" + base + "-gatepost-egress",
-		portsNet:    "devx-" + base + "-gatepost-ports",
-		sessionDir:  sessionDir,
-		auditDir:    auditDir,
-		configDir:   configDir,
+		base:         base,
+		agentName:    "devx-" + base,
+		proxyName:    "devx-" + base + "-gatepost-proxy",
+		internalNet:  "devx-" + base + "-gatepost-internal",
+		egressNet:    "devx-" + base + "-gatepost-egress",
+		portsNet:     "devx-" + base + "-gatepost-ports",
+		sessionDir:   sessionDir,
+		auditDir:     auditDir,
+		configDir:    configDir,
+		agentHomeDir: agentHomeDir,
 	}, nil
 }
 
@@ -63,6 +65,17 @@ func prepareGatepostStateDirs(r gatepostRuntime, policyPath string) error {
 	}
 	if err := os.MkdirAll(r.configDir, 0o700); err != nil {
 		return err
+	}
+	for _, dir := range []string{
+		r.agentHomeDir,
+		filepath.Join(r.agentHomeDir, ".pi", "agent", "sessions"),
+		filepath.Join(r.agentHomeDir, ".codex"),
+		filepath.Join(r.agentHomeDir, ".claude"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		_ = os.Chmod(dir, 0o700)
 	}
 	if err := writeGatepostPolicy(policyPath); err != nil {
 		return err
@@ -123,9 +136,15 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		return nil, err
 	}
 	gatepostCfg := opts.GatepostConfig
-	gatepostRoot := getenvDefault("DEVX_GATEPOST_ROOT", getenvDefault("GATEPOST_ROOT", gatepostCfg.Root))
+	// gatepost.root is a trusted config value. Do not use env root overrides for
+	// executable helper discovery; workspace shells can influence env.
+	gatepostRoot := gatepostCfg.Root
+	trustedAdaptersDir := gatepostAdaptersDir(gatepostRoot)
 	policyPath := filepath.Join(runtime.configDir, "policy.gatepost.yaml")
 	if err := prepareGatepostStateDirs(runtime, policyPath); err != nil {
+		return nil, err
+	}
+	if err := writeGatepostAgentHookConfigs(runtime, trustedAdaptersDir); err != nil {
 		return nil, err
 	}
 
@@ -248,6 +267,9 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		"--network", runtime.portsNet,
 		"--restart", "unless-stopped",
 		"-v", opts.WorktreePath + ":/workspace",
+		"-v", filepath.Join(runtime.agentHomeDir, ".pi", "agent", "sessions") + ":/root/.pi/agent/sessions",
+		"-v", filepath.Join(runtime.agentHomeDir, ".codex") + ":/root/.codex",
+		"-v", filepath.Join(runtime.agentHomeDir, ".claude") + ":/root/.claude",
 		"-w", "/workspace",
 	}
 	if mainGitDir != "" {
@@ -261,6 +283,9 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	}
 	if models := piModelsFile(); models != "" {
 		agentArgs = append(agentArgs, "-v", models+":/root/.pi/agent/models.json")
+	}
+	if trustedAdaptersDir != "" {
+		agentArgs = append(agentArgs, "-v", trustedAdaptersDir+":/opt/gatepost/adapters:ro")
 	}
 	// Bind-mount sessions.json read-only so `devx artifact` can resolve sessions inside the container.
 	sessionsPath := config.GetSessionsPath()
@@ -321,7 +346,8 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		"NO_PROXY": "localhost,127.0.0.1,gatepost-events", "no_proxy": "localhost,127.0.0.1,gatepost-events",
 		"GATEPOST_EVENTS_URL": "http://gatepost-events:9100/v1/events", "GATEPOST_EVENTS_TOKEN": eventToken,
 		"GATEPOST_AGENT_ROLE": agentRole, "GATEPOST_AGENT_BRANCH": agentBranch,
-		"CLIPROXYAPI_API_KEY": "GATEPOST_SECRET:cliproxy-key", "OPENAI_API_KEY": "GATEPOST_SECRET:openai-key", "GEMINI_API_KEY": "GATEPOST_SECRET:gemini-key",
+		"CLIPROXYAPI_API_KEY": "GATEPOST_SECRET:cliproxy-key", "ANTHROPIC_API_KEY": "sk-ant-oat01-GATEPOST_SECRET:anthropic-oauth", "OPENAI_API_KEY": "GATEPOST_SECRET:openai-key", "GEMINI_API_KEY": "GATEPOST_SECRET:gemini-key",
+		"CODEX_HOME": "/root/.codex", "CODEX_DISABLE_UPDATE_CHECK": "1", "DISABLE_AUTOUPDATER": "1",
 		// DevX artifact support inside the container.
 		"SESSION_NAME": opts.SessionName, "DEVX_SESSION_PATH": "/workspace",
 		// Prevent Go from auto-downloading toolchains through the proxy (large zips can fail).
@@ -432,7 +458,7 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet, LogsPID: logs.PID}})
 		return nil, err
 	}
-	return &StartResult{Meta: session.TargetMeta{Type: "gatepost", ContainerID: containerID, ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Image: agentImage, Gatepost: session.GatepostMeta{Enabled: true, Runtime: "docker-mitmproxy", ProxyContainerName: runtime.proxyName, InternalNetworkName: runtime.internalNet, EgressNetworkName: runtime.egressNet, PortsNetworkName: runtime.portsNet, SessionDir: runtime.sessionDir, AuditDir: runtime.auditDir, ConfigDir: runtime.configDir, AuditLog: filepath.Join(runtime.auditDir, "audit.jsonl"), CompanionLog: filepath.Join(runtime.auditDir, "companion.jsonl"), ControlURL: controlURL, LogsURL: logs.PublicURL, LogsTokenPath: logsTokenPath, LogsPID: logs.PID, ProviderMode: providerBootstrap.Mode, ProviderCommand: providerBootstrap.Command, RegisteredProviders: providerBootstrap.Registered, ProviderWarnings: providerBootstrap.Warnings}}}, nil
+	return &StartResult{Meta: session.TargetMeta{Type: "gatepost", ContainerID: containerID, ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Image: agentImage, Gatepost: session.GatepostMeta{Enabled: true, Runtime: "docker-mitmproxy", ProxyContainerName: runtime.proxyName, InternalNetworkName: runtime.internalNet, EgressNetworkName: runtime.egressNet, PortsNetworkName: runtime.portsNet, SessionDir: runtime.sessionDir, AuditDir: runtime.auditDir, ConfigDir: runtime.configDir, AgentHomeDir: runtime.agentHomeDir, AuditLog: filepath.Join(runtime.auditDir, "audit.jsonl"), CompanionLog: filepath.Join(runtime.auditDir, "companion.jsonl"), ControlURL: controlURL, LogsURL: logs.PublicURL, LogsTokenPath: logsTokenPath, LogsPID: logs.PID, ProviderMode: providerBootstrap.Mode, ProviderCommand: providerBootstrap.Command, RegisteredProviders: providerBootstrap.Registered, ProviderWarnings: providerBootstrap.Warnings}}}, nil
 }
 
 func (g *GatepostTarget) Stop(ctx context.Context, meta session.TargetMeta) error {
@@ -483,13 +509,123 @@ func mainRepoGitDir(worktreePath string) string {
 	return mainGit
 }
 
-func gatepostDirs(sessionName string) (string, string, string, error) {
+func gatepostAdaptersDir(gatepostRoot string) string {
+	if gatepostRoot == "" {
+		return ""
+	}
+	dir := filepath.Join(gatepostRoot, "adapters")
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return ""
+	}
+	if info, err := os.Stat(resolvedDir); err != nil || !info.IsDir() || info.Mode().Perm()&0o002 != 0 {
+		return ""
+	}
+	for _, rel := range []string{
+		filepath.Join("claude", "gatepost-events.py"),
+		filepath.Join("codex", "gatepost-events.py"),
+	} {
+		path, err := filepath.EvalSymlinks(filepath.Join(resolvedDir, rel))
+		if err != nil {
+			return ""
+		}
+		if info, err := os.Stat(path); err != nil || info.IsDir() || info.Mode().Perm()&0o002 != 0 {
+			return ""
+		}
+	}
+	return resolvedDir
+}
+
+type gatepostHookEvent struct {
+	Name    string
+	Matcher string
+}
+
+func writeGatepostAgentHookConfigs(r gatepostRuntime, adaptersDir string) error {
+	if adaptersDir == "" {
+		return nil
+	}
+	if err := writeHookConfig(
+		filepath.Join(r.agentHomeDir, ".claude", "settings.json"),
+		"python3 /opt/gatepost/adapters/claude/gatepost-events.py",
+		[]gatepostHookEvent{
+			{"SessionStart", "startup|resume|clear|compact"}, {"UserPromptSubmit", ""},
+			{"PreToolUse", "*"}, {"PostToolUse", "*"}, {"PostToolUseFailure", "*"},
+			{"PermissionRequest", "*"}, {"PermissionDenied", "*"}, {"PostToolBatch", ""},
+			{"Stop", ""}, {"StopFailure", "*"}, {"SessionEnd", "*"},
+			{"PreCompact", "manual|auto"}, {"PostCompact", "manual|auto"},
+			{"SubagentStart", "*"}, {"SubagentStop", "*"}, {"Notification", "*"},
+			{"CwdChanged", ""}, {"InstructionsLoaded", "*"},
+		},
+	); err != nil {
+		return err
+	}
+	return writeHookConfig(
+		filepath.Join(r.agentHomeDir, ".codex", "hooks.json"),
+		"python3 /opt/gatepost/adapters/codex/gatepost-events.py",
+		[]gatepostHookEvent{
+			{"SessionStart", "startup|resume|clear|compact"}, {"UserPromptSubmit", ""},
+			{"PreToolUse", "*"}, {"PostToolUse", "*"}, {"PermissionRequest", "*"},
+			{"Stop", ""}, {"PreCompact", "manual|auto"}, {"PostCompact", "manual|auto"},
+			{"SubagentStart", "*"}, {"SubagentStop", "*"},
+		},
+	)
+}
+
+func writeHookConfig(path, command string, events []gatepostHookEvent) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to overwrite symlink hook config: %s", path)
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	type hookEntry struct {
+		Name          string `json:"name"`
+		Type          string `json:"type"`
+		Command       string `json:"command"`
+		Timeout       int    `json:"timeout"`
+		StatusMessage string `json:"statusMessage"`
+	}
+	type hookGroup struct {
+		Matcher string      `json:"matcher,omitempty"`
+		Hooks   []hookEntry `json:"hooks"`
+	}
+	data := struct {
+		Hooks map[string][]hookGroup `json:"hooks"`
+	}{Hooks: map[string][]hookGroup{}}
+	for _, event := range events {
+		group := hookGroup{
+			Matcher: event.Matcher,
+			Hooks: []hookEntry{{
+				Name:          "gatepost-events",
+				Type:          "command",
+				Command:       command,
+				Timeout:       10,
+				StatusMessage: "Gatepost event capture",
+			}},
+		}
+		data.Hooks[event.Name] = append(data.Hooks[event.Name], group)
+	}
+	body, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func gatepostDirs(sessionName string) (string, string, string, string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	base := filepath.Join(home, ".local", "share", "devx", "gatepost", caddy.SanitizeHostname(sessionName))
-	return base, filepath.Join(base, "audit"), filepath.Join(base, "config"), nil
+	return base, filepath.Join(base, "audit"), filepath.Join(base, "config"), filepath.Join(base, "agent-home"), nil
 }
 
 func freePort() (int, error) {
@@ -589,10 +725,9 @@ func ReprovisionGatepostSecrets(gp session.GatepostMeta, cfg GatepostRuntimeConf
 	if len(body.Secrets) > 0 {
 		return // secrets present, nothing to do
 	}
-	// Re-run provider bootstrap.
+	// Re-run provider bootstrap from the trusted configured Gatepost checkout.
 	log.Printf("gatepost reprovision: secrets empty for %s, re-bootstrapping", gp.ControlURL)
-	root := getenvDefault("DEVX_GATEPOST_ROOT", getenvDefault("GATEPOST_ROOT", cfg.Root))
-	if _, err := bootstrapGatepostProviderSecrets(cfg, root, gp.ControlURL, token); err != nil {
+	if _, err := bootstrapGatepostProviderSecrets(cfg, cfg.Root, gp.ControlURL, token); err != nil {
 		log.Printf("gatepost reprovision: %v", err)
 	} else {
 		log.Printf("gatepost reprovision: secrets restored")

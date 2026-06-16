@@ -63,6 +63,7 @@ type GatepostMeta struct {
 	SessionDir          string   `json:"session_dir,omitempty"`
 	AuditDir            string   `json:"audit_dir,omitempty"`
 	ConfigDir           string   `json:"config_dir,omitempty"`
+	AgentHomeDir        string   `json:"agent_home_dir,omitempty"`
 	AuditLog            string   `json:"audit_log,omitempty"`
 	CompanionLog        string   `json:"companion_log,omitempty"`
 	ControlURL          string   `json:"control_url,omitempty"`

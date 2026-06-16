@@ -69,10 +69,10 @@ func startGatepostLogs(ctx context.Context, cfg GatepostRuntimeConfig, gatepostR
 
 func gatepostLogsCommand(cfg GatepostRuntimeConfig, gatepostRoot, auditLog string, port int) (string, []string, string, error) {
 	listen := fmt.Sprintf("127.0.0.1:%d", port)
-	if raw := getenvDefault("DEVX_GATEPOST_LOGS_CMD", cfg.LogsCommand); raw != "" {
+	if raw := cfg.LogsCommand; raw != "" {
 		fields := strings.Fields(raw)
 		if len(fields) == 0 {
-			return "", nil, "", fmt.Errorf("DEVX_GATEPOST_LOGS_CMD is empty")
+			return "", nil, "", fmt.Errorf("gatepost.logs_command is empty")
 		}
 		return fields[0], append(fields[1:], "--audit", auditLog, "--listen", listen), "", nil
 	}
@@ -81,7 +81,7 @@ func gatepostLogsCommand(cfg GatepostRuntimeConfig, gatepostRoot, auditLog strin
 			return "go", []string{"run", "./cmd/gatepost-logs", "--audit", auditLog, "--listen", listen}, gatepostRoot, nil
 		}
 	}
-	return "", nil, "", fmt.Errorf("gatepost logs command not found; set trusted gatepost.logs_command/DEVX_GATEPOST_LOGS_CMD, or set gatepost.root/DEVX_GATEPOST_ROOT to a Gatepost checkout")
+	return "", nil, "", fmt.Errorf("gatepost logs command not found; set trusted gatepost.logs_command, or set trusted gatepost.root to a Gatepost checkout")
 }
 
 func stopGatepostLogs(pid int) {

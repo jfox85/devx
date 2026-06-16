@@ -141,6 +141,9 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		uploadsDir := filepath.Join(home, ".devx", "uploads", name)
 		_ = os.RemoveAll(uploadsDir)
 	}
+	if err := removeGatepostStateDir(sess); err != nil {
+		fmt.Printf("Warning: failed to remove Gatepost state dir: %v\n", err)
+	}
 
 	// Remove any persisted cleanup-review details for this session. A failure
 	// here should not block teardown, but surface it so stray artifacts are not
@@ -170,6 +173,44 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		}
 	}
 	fmt.Printf("Removed session '%s'\n", name)
+	return nil
+}
+
+func removeGatepostStateDir(sess *session.Session) error {
+	dir := sess.Target.Gatepost.SessionDir
+	if dir == "" {
+		dir = sess.Target.Gatepost.AgentHomeDir
+		if dir != "" {
+			dir = filepath.Dir(dir)
+		}
+	}
+	if dir == "" {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	root := filepath.Join(home, ".local", "share", "devx", "gatepost")
+	cleanDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	cleanRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(cleanRoot, cleanDir)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return fmt.Errorf("refusing to remove Gatepost state outside %s: %s", cleanRoot, cleanDir)
+	}
+	if err := os.RemoveAll(cleanDir); err != nil {
+		return err
+	}
+	fmt.Printf("Removed Gatepost state directory\n")
 	return nil
 }
 
