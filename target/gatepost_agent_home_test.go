@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -85,6 +86,9 @@ func TestGatepostAdaptersDirRejectsWritableIntermediateDir(t *testing.T) {
 }
 
 func TestGatepostAdaptersDirRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior/privileges vary on Windows runners")
+	}
 	root := t.TempDir()
 	escape := t.TempDir()
 	for _, base := range []string{root, escape} {
@@ -148,13 +152,16 @@ func TestWriteGatepostAgentHookConfigs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", path, err)
 		}
-		if got := info.Mode().Perm(); got != 0o600 {
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 			t.Fatalf("%s mode = %o, want 600", path, got)
 		}
 	}
 }
 
 func TestWriteHookConfigRefusesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior/privileges vary on Windows runners")
+	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.json")
 	link := filepath.Join(dir, "settings.json")
@@ -186,6 +193,7 @@ func TestRemoveGatepostRuntimeStateRemovesSessionDir(t *testing.T) {
 func TestPrepareGatepostStateDirsCreatesAgentHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	r, err := newGatepostRuntime("demo/session")
 	if err != nil {

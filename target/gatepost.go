@@ -510,8 +510,15 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 }
 
 func (g *GatepostTarget) Stop(ctx context.Context, meta session.TargetMeta) error {
-	stopGatepostLogs(meta.Gatepost.LogsPID)
-	return g.cleanupStrict(ctx, meta)
+	logsErr := stopGatepostLogs(meta.Gatepost.LogsPID)
+	cleanupErr := g.cleanupStrict(ctx, meta)
+	if logsErr != nil && cleanupErr != nil {
+		return fmt.Errorf("stop gatepost logs: %w; cleanup failed: %v", logsErr, cleanupErr)
+	}
+	if logsErr != nil {
+		return logsErr
+	}
+	return cleanupErr
 }
 
 func (g *GatepostTarget) cleanupStrict(ctx context.Context, meta session.TargetMeta) error {
@@ -519,8 +526,10 @@ func (g *GatepostTarget) cleanupStrict(ctx context.Context, meta session.TargetM
 }
 
 func (g *GatepostTarget) cleanupWithRunner(ctx context.Context, meta session.TargetMeta, run func(args ...string) error) error {
-	stopGatepostLogs(meta.Gatepost.LogsPID)
 	var errs []string
+	if err := stopGatepostLogs(meta.Gatepost.LogsPID); err != nil {
+		errs = append(errs, fmt.Sprintf("stop gatepost logs: %v", err))
+	}
 	cleanup := func(args ...string) {
 		if err := run(args...); err != nil && !isDockerAlreadyGone(err) {
 			errs = append(errs, fmt.Sprintf("docker %s: %v", strings.Join(args, " "), err))

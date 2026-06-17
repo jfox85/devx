@@ -57,11 +57,15 @@ func startGatepostLogs(ctx context.Context, cfg GatepostRuntimeConfig, gatepostR
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
-		stopGatepostLogsProcessGroup(cmd.Process.Pid)
+		if stopErr := stopGatepostLogsProcessGroup(cmd.Process.Pid); stopErr != nil {
+			return gatepostLogsProcess{}, fmt.Errorf("timed out waiting for gatepost-logs URL; stop failed: %w", stopErr)
+		}
 		return gatepostLogsProcess{}, fmt.Errorf("timed out waiting for gatepost-logs URL")
 	}
 	if result.Token == "" {
-		stopGatepostLogsProcessGroup(cmd.Process.Pid)
+		if stopErr := stopGatepostLogsProcessGroup(cmd.Process.Pid); stopErr != nil {
+			return gatepostLogsProcess{}, fmt.Errorf("gatepost-logs did not report an access token; stop failed: %w", stopErr)
+		}
 		return gatepostLogsProcess{}, fmt.Errorf("gatepost-logs did not report an access token")
 	}
 	return result, nil
@@ -84,9 +88,9 @@ func gatepostLogsCommand(cfg GatepostRuntimeConfig, gatepostRoot, auditLog strin
 	return "", nil, "", fmt.Errorf("gatepost logs command not found; set trusted gatepost.logs_command, or set trusted gatepost.root to a Gatepost checkout")
 }
 
-func stopGatepostLogs(pid int) {
+func stopGatepostLogs(pid int) error {
 	if pid <= 0 {
-		return
+		return nil
 	}
-	stopGatepostLogsProcessGroup(pid)
+	return stopGatepostLogsProcessGroup(pid)
 }
