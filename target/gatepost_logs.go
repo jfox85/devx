@@ -57,11 +57,15 @@ func startGatepostLogs(ctx context.Context, cfg GatepostRuntimeConfig, gatepostR
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
+		if stopErr := stopGatepostLogsProcessGroup(cmd.Process.Pid); stopErr != nil {
+			return gatepostLogsProcess{}, fmt.Errorf("timed out waiting for gatepost-logs URL; stop failed: %w", stopErr)
+		}
 		return gatepostLogsProcess{}, fmt.Errorf("timed out waiting for gatepost-logs URL")
 	}
 	if result.Token == "" {
-		_ = cmd.Process.Kill()
+		if stopErr := stopGatepostLogsProcessGroup(cmd.Process.Pid); stopErr != nil {
+			return gatepostLogsProcess{}, fmt.Errorf("gatepost-logs did not report an access token; stop failed: %w", stopErr)
+		}
 		return gatepostLogsProcess{}, fmt.Errorf("gatepost-logs did not report an access token")
 	}
 	return result, nil
@@ -69,10 +73,10 @@ func startGatepostLogs(ctx context.Context, cfg GatepostRuntimeConfig, gatepostR
 
 func gatepostLogsCommand(cfg GatepostRuntimeConfig, gatepostRoot, auditLog string, port int) (string, []string, string, error) {
 	listen := fmt.Sprintf("127.0.0.1:%d", port)
-	if raw := getenvDefault("DEVX_GATEPOST_LOGS_CMD", cfg.LogsCommand); raw != "" {
+	if raw := cfg.LogsCommand; raw != "" {
 		fields := strings.Fields(raw)
 		if len(fields) == 0 {
-			return "", nil, "", fmt.Errorf("DEVX_GATEPOST_LOGS_CMD is empty")
+			return "", nil, "", fmt.Errorf("gatepost.logs_command is empty")
 		}
 		return fields[0], append(fields[1:], "--audit", auditLog, "--listen", listen), "", nil
 	}
@@ -81,15 +85,12 @@ func gatepostLogsCommand(cfg GatepostRuntimeConfig, gatepostRoot, auditLog strin
 			return "go", []string{"run", "./cmd/gatepost-logs", "--audit", auditLog, "--listen", listen}, gatepostRoot, nil
 		}
 	}
-	return "", nil, "", fmt.Errorf("gatepost logs command not found; set trusted gatepost.logs_command/DEVX_GATEPOST_LOGS_CMD, or set gatepost.root/DEVX_GATEPOST_ROOT to a Gatepost checkout")
+	return "", nil, "", fmt.Errorf("gatepost logs command not found; set trusted gatepost.logs_command, or set trusted gatepost.root to a Gatepost checkout")
 }
 
-func stopGatepostLogs(pid int) {
+func stopGatepostLogs(pid int) error {
 	if pid <= 0 {
-		return
+		return nil
 	}
-	p, err := os.FindProcess(pid)
-	if err == nil {
-		_ = p.Kill()
-	}
+	return stopGatepostLogsProcessGroup(pid)
 }

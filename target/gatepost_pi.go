@@ -59,8 +59,8 @@ func bootstrapGatepostProviderSecrets(cfg GatepostRuntimeConfig, gatepostRoot, c
 		result.Command = strings.Join(append([]string{cmdPath}, args...), " ")
 		cmd := exec.Command(cmdPath, args...)
 		cmd.Env = setEnv(os.Environ(), "GATEPOST_CONTROL_TOKEN", token)
-		if authHome := getenvDefault("DEVX_GATEPOST_AUTH_HOME", cfg.AuthHome); authHome != "" {
-			cmd.Env = setEnv(cmd.Env, "HOME", authHome)
+		if cfg.AuthHome != "" {
+			cmd.Env = setEnv(cmd.Env, "HOME", cfg.AuthHome)
 		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
@@ -97,10 +97,10 @@ func bootstrapGatepostProviderSecrets(cfg GatepostRuntimeConfig, gatepostRoot, c
 }
 
 func gatepostProviderBootstrapCommand(cfg GatepostRuntimeConfig, gatepostRoot, controlURL string) (string, []string, string, error) {
-	if raw := getenvDefault("DEVX_GATEPOST_PROVIDER_BOOTSTRAP_CMD", cfg.ProviderBootstrapCommand); raw != "" {
+	if raw := cfg.ProviderBootstrapCommand; raw != "" {
 		fields := strings.Fields(raw)
 		if len(fields) == 0 {
-			return "", nil, "", fmt.Errorf("DEVX_GATEPOST_PROVIDER_BOOTSTRAP_CMD is empty")
+			return "", nil, "", fmt.Errorf("gatepost.provider_bootstrap_command is empty")
 		}
 		return fields[0], append(fields[1:], controlURL), "command", nil
 	}

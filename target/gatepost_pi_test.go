@@ -26,3 +26,18 @@ func TestRequireGatepostProviders(t *testing.T) {
 		t.Fatal("expected missing provider error")
 	}
 }
+
+func TestGatepostProviderBootstrapCommandIgnoresEnvOverride(t *testing.T) {
+	t.Setenv("DEVX_GATEPOST_PROVIDER_BOOTSTRAP_CMD", "/tmp/untrusted-bootstrap")
+	cfg := GatepostRuntimeConfig{ProviderBootstrapCommand: "/trusted/bootstrap --flag"}
+	cmd, args, mode, err := gatepostProviderBootstrapCommand(cfg, "", "http://control")
+	if err != nil {
+		t.Fatalf("gatepostProviderBootstrapCommand: %v", err)
+	}
+	if cmd != "/trusted/bootstrap" || mode != "command" {
+		t.Fatalf("unexpected command/mode: %q %q", cmd, mode)
+	}
+	if len(args) != 2 || args[0] != "--flag" || args[1] != "http://control" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
