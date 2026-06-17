@@ -35,6 +35,28 @@ func TestRemoveGatepostStateDirRejectsOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestRemoveGatepostStateDirRejectsSymlinkStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".local", "share", "devx", "gatepost")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	link := filepath.Join(root, "demo")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	sess := &session.Session{Name: "demo"}
+	sess.Target.Gatepost.SessionDir = link
+	if err := removeGatepostStateDir(sess); err == nil {
+		t.Fatalf("expected symlinked Gatepost state dir to be rejected")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside target should remain: %v", err)
+	}
+}
+
 func TestValidateManualWorktreeRemovalAllowsManagedWorktree(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(project, ".worktrees", "safe")

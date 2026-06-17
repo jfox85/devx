@@ -1,10 +1,13 @@
 package target
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jfox85/devx/session"
 )
 
 func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
@@ -56,6 +59,70 @@ func TestGatepostAdaptersDirRejectsWritableTrustedPaths(t *testing.T) {
 	}
 	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
 		t.Fatalf("gatepostAdaptersDir with group-writable adapter = %q, %v; want empty with error", got, err)
+	}
+}
+
+func TestGatepostAdaptersDirRejectsWritableIntermediateDir(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{
+		filepath.Join("adapters", "claude", "gatepost-events.py"),
+		filepath.Join("adapters", "codex", "gatepost-events.py"),
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/usr/bin/env python3\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(root, "adapters", "claude"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
+		t.Fatalf("gatepostAdaptersDir with group-writable tool dir = %q, %v; want empty with error", got, err)
+	}
+}
+
+func TestGatepostAdaptersDirRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	escape := t.TempDir()
+	for _, base := range []string{root, escape} {
+		for _, rel := range []string{
+			filepath.Join("adapters", "claude", "gatepost-events.py"),
+			filepath.Join("adapters", "codex", "gatepost-events.py"),
+		} {
+			path := filepath.Join(base, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("#!/usr/bin/env python3\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(root, "adapters", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(escape, "adapters", "claude"), filepath.Join(root, "adapters", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
+		t.Fatalf("gatepostAdaptersDir with symlink escape = %q, %v; want empty with error", got, err)
+	}
+}
+
+func TestGatepostCleanupStrictReportsFailures(t *testing.T) {
+	g := &GatepostTarget{}
+	meta := session.TargetMeta{ContainerName: "agent", NetworkName: "internal", Gatepost: session.GatepostMeta{ProxyContainerName: "proxy"}}
+	err := g.cleanupWithRunner(context.Background(), meta, func(args ...string) error {
+		if len(args) > 0 && args[0] == "rm" {
+			return nil
+		}
+		return os.ErrPermission
+	})
+	if err == nil {
+		t.Fatal("cleanupWithRunner returned nil; want propagated cleanup error")
 	}
 }
 

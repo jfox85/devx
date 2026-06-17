@@ -116,13 +116,20 @@ func recreateGatepostDockerShell(ctx context.Context, r gatepostRuntime) error {
 	}()
 	go func() { netCh <- netErr{dockerRun(ctx, "network", "create", r.egressNet), r.egressNet} }()
 	go func() { netCh <- netErr{dockerRun(ctx, "network", "create", r.portsNet), r.portsNet} }()
+	var firstErr netErr
 	for i := 0; i < 3; i++ {
-		if result := <-netCh; result.err != nil {
-			_ = dockerRunIgnore(ctx, "network", "rm", r.internalNet)
-			_ = dockerRunIgnore(ctx, "network", "rm", r.egressNet)
-			_ = dockerRunIgnore(ctx, "network", "rm", r.portsNet)
-			return fmt.Errorf("create gatepost network %s: %w", result.name, result.err)
+		result := <-netCh
+		if result.err != nil && firstErr.err == nil {
+			firstErr = result
 		}
+	}
+	if firstErr.err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = dockerRunIgnore(cleanupCtx, "network", "rm", r.internalNet)
+		_ = dockerRunIgnore(cleanupCtx, "network", "rm", r.egressNet)
+		_ = dockerRunIgnore(cleanupCtx, "network", "rm", r.portsNet)
+		return fmt.Errorf("create gatepost network %s: %w", firstErr.name, firstErr.err)
 	}
 	return nil
 }
@@ -217,12 +224,21 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	}
 	proxyArgs = append(proxyArgs, "--label", "devx.role=gatepost-proxy", proxyImage)
 	fmt.Println("Starting Gatepost proxy...")
+	cleanupRuntime := func(meta session.TargetMeta) error {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		return g.cleanupStrict(cleanupCtx, meta)
+	}
 	if err := dockerRun(ctx, proxyArgs...); err != nil {
-		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		if cleanupErr := cleanupRuntime(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("create gatepost proxy: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("create gatepost proxy: %w", err)
 	}
 	if err := dockerRun(ctx, "network", "connect", "--alias", "proxy", "--alias", "gatepost-events", runtime.internalNet, runtime.proxyName); err != nil {
-		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		if cleanupErr := cleanupRuntime(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("connect proxy to internal network: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("connect proxy to internal network: %w", err)
 	}
 	controlURL := fmt.Sprintf("http://127.0.0.1:%d", controlPort)
@@ -237,21 +253,25 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		proc, err := startGatepostLogs(logsCtx, gatepostCfg, gatepostRoot, filepath.Join(runtime.auditDir, "audit.jsonl"), logsPort)
 		logsCh <- logsResult{proc, err}
 	}()
-	cleanupWithLogs := func(meta session.TargetMeta) {
+	cleanupWithLogs := func(meta session.TargetMeta) error {
 		logsCancel()
 		if r, ok := <-logsCh; ok && r.proc.PID > 0 {
-			stopGatepostLogs(r.proc.PID)
+			meta.Gatepost.LogsPID = r.proc.PID
 		}
-		_ = g.cleanup(ctx, meta)
+		return cleanupRuntime(meta)
 	}
 	if err := waitHTTP(ctx, controlURL+"/healthz", 30*time.Second); err != nil {
-		cleanupWithLogs(session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("gatepost control did not become healthy: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("gatepost control did not become healthy: %w", err)
 	}
 	fmt.Println("Registering provider secrets...")
 	providerBootstrap, err := bootstrapGatepostProviderSecrets(gatepostCfg, gatepostRoot, controlURL, controlToken)
 	if err != nil {
-		cleanupWithLogs(session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("%w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, err
 	}
 
@@ -271,6 +291,9 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	if mainGitDir != "" {
 		containerGitFile = filepath.Join(runtime.sessionDir, "container-dot-git")
 		if err := os.WriteFile(containerGitFile, []byte("gitdir: /root/.git-worktree\n"), 0o644); err != nil {
+			if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+				return nil, fmt.Errorf("write container .git file: %w; cleanup failed: %v", err, cleanupErr)
+			}
 			return nil, fmt.Errorf("write container .git file: %w", err)
 		}
 	}
@@ -388,12 +411,16 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	agentArgs = append(agentArgs, "--label", "devx.role=agent", agentImage, "sleep", "infinity")
 	fmt.Println("Starting agent container...")
 	if err := dockerRun(ctx, agentArgs...); err != nil {
-		cleanupWithLogs(session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("create gatepost agent: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("create gatepost agent: %w", err)
 	}
 	// Connect agent to the internal network so it can reach the proxy/events service.
 	if err := dockerRun(ctx, "network", "connect", runtime.internalNet, runtime.agentName); err != nil {
-		cleanupWithLogs(session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet, PortsNetworkName: runtime.portsNet}})
+		if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("connect agent to internal network: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, fmt.Errorf("connect agent to internal network: %w", err)
 	}
 	if cfg := piConfigDir(); cfg != "" {
@@ -415,7 +442,9 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 				"true",
 			}, "\n")
 			if err := dockerRun(ctx, "exec", runtime.agentName, "bash", "-lc", bootstrapScript); err != nil {
-				cleanupWithLogs(session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+				if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+					return nil, fmt.Errorf("bootstrap pi extensions: %w; cleanup failed: %v", err, cleanupErr)
+				}
 				return nil, fmt.Errorf("bootstrap pi extensions: %w", err)
 			}
 		}
@@ -455,19 +484,26 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 
 	containerID, err := dockerOutput(ctx, "inspect", "--format", "{{.Id}}", runtime.agentName)
 	if err != nil {
+		if cleanupErr := cleanupWithLogs(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("%w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, err
 	}
 	// Collect the logs process that was started in parallel earlier.
 	logsCancel() // no longer need cancellation — we're collecting the result
 	logsRes := <-logsCh
 	if logsRes.err != nil {
-		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet}})
+		if cleanupErr := cleanupRuntime(gatepostCleanupMeta(runtime, 0)); cleanupErr != nil {
+			return nil, fmt.Errorf("%w; cleanup failed: %v", logsRes.err, cleanupErr)
+		}
 		return nil, logsRes.err
 	}
 	logs := logsRes.proc
 	logsTokenPath := filepath.Join(runtime.sessionDir, "logs.token")
 	if err := os.WriteFile(logsTokenPath, []byte(logs.Token), 0o600); err != nil {
-		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet, LogsPID: logs.PID}})
+		if cleanupErr := cleanupRuntime(gatepostCleanupMeta(runtime, logs.PID)); cleanupErr != nil {
+			return nil, fmt.Errorf("%w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, err
 	}
 	success = true
@@ -476,26 +512,63 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 
 func (g *GatepostTarget) Stop(ctx context.Context, meta session.TargetMeta) error {
 	stopGatepostLogs(meta.Gatepost.LogsPID)
-	return g.cleanup(ctx, meta)
+	return g.cleanupStrict(ctx, meta)
 }
 
 func (g *GatepostTarget) cleanup(ctx context.Context, meta session.TargetMeta) error {
+	_ = g.cleanupWithRunner(ctx, meta, func(args ...string) error { return dockerRunIgnore(ctx, args...) })
+	return nil
+}
+
+func (g *GatepostTarget) cleanupStrict(ctx context.Context, meta session.TargetMeta) error {
+	return g.cleanupWithRunner(ctx, meta, func(args ...string) error { return dockerRun(ctx, args...) })
+}
+
+func (g *GatepostTarget) cleanupWithRunner(ctx context.Context, meta session.TargetMeta, run func(args ...string) error) error {
+	stopGatepostLogs(meta.Gatepost.LogsPID)
+	var errs []string
+	cleanup := func(args ...string) {
+		if err := run(args...); err != nil && !isDockerAlreadyGone(err) {
+			errs = append(errs, fmt.Sprintf("docker %s: %v", strings.Join(args, " "), err))
+		}
+	}
 	if meta.ContainerName != "" {
-		_ = dockerRunIgnore(ctx, "rm", "-f", meta.ContainerName)
+		cleanup("rm", "-f", meta.ContainerName)
 	}
 	if meta.Gatepost.ProxyContainerName != "" {
-		_ = dockerRunIgnore(ctx, "rm", "-f", meta.Gatepost.ProxyContainerName)
+		cleanup("rm", "-f", meta.Gatepost.ProxyContainerName)
 	}
 	if meta.NetworkName != "" {
-		_ = dockerRunIgnore(ctx, "network", "rm", meta.NetworkName)
+		cleanup("network", "rm", meta.NetworkName)
 	}
 	if meta.Gatepost.EgressNetworkName != "" {
-		_ = dockerRunIgnore(ctx, "network", "rm", meta.Gatepost.EgressNetworkName)
+		cleanup("network", "rm", meta.Gatepost.EgressNetworkName)
 	}
 	if meta.Gatepost.PortsNetworkName != "" {
-		_ = dockerRunIgnore(ctx, "network", "rm", meta.Gatepost.PortsNetworkName)
+		cleanup("network", "rm", meta.Gatepost.PortsNetworkName)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("gatepost runtime cleanup failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func isDockerAlreadyGone(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such") || strings.Contains(msg, "not found")
+}
+
+func gatepostCleanupMeta(r gatepostRuntime, logsPID int) session.TargetMeta {
+	return session.TargetMeta{
+		ContainerName: r.agentName,
+		NetworkName:   r.internalNet,
+		Gatepost: session.GatepostMeta{
+			ProxyContainerName: r.proxyName,
+			EgressNetworkName:  r.egressNet,
+			PortsNetworkName:   r.portsNet,
+			LogsPID:            logsPID,
+		},
+	}
 }
 
 // mainRepoGitDir returns the main repo's .git directory given a worktree path,
@@ -526,27 +599,48 @@ func gatepostAdaptersDir(gatepostRoot string) (string, error) {
 	if gatepostRoot == "" {
 		return "", nil
 	}
-	dir := filepath.Join(gatepostRoot, "adapters")
-	resolvedDir, err := filepath.EvalSymlinks(dir)
+	resolvedRoot, err := filepath.EvalSymlinks(gatepostRoot)
+	if err != nil {
+		return "", fmt.Errorf("trusted gatepost root unavailable %s: %w", gatepostRoot, err)
+	}
+	if err := validateTrustedGatepostPath(resolvedRoot, true); err != nil {
+		return "", err
+	}
+	resolvedDir, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, "adapters"))
 	if err != nil {
 		return "", fmt.Errorf("gatepost adapters unavailable under trusted root %s: %w", gatepostRoot, err)
 	}
-	if err := validateTrustedGatepostPath(resolvedDir, true); err != nil {
+	if err := validateTrustedGatepostChild(resolvedRoot, resolvedDir, true); err != nil {
 		return "", err
 	}
-	for _, rel := range []string{
-		filepath.Join("claude", "gatepost-events.py"),
-		filepath.Join("codex", "gatepost-events.py"),
-	} {
-		path, err := filepath.EvalSymlinks(filepath.Join(resolvedDir, rel))
+	for _, tool := range []string{"claude", "codex"} {
+		toolDir, err := filepath.EvalSymlinks(filepath.Join(resolvedDir, tool))
 		if err != nil {
-			return "", fmt.Errorf("gatepost adapter %s unavailable: %w", rel, err)
+			return "", fmt.Errorf("gatepost adapter dir %s unavailable: %w", tool, err)
 		}
-		if err := validateTrustedGatepostPath(path, false); err != nil {
+		if err := validateTrustedGatepostChild(resolvedRoot, toolDir, true); err != nil {
+			return "", err
+		}
+		path, err := filepath.EvalSymlinks(filepath.Join(toolDir, "gatepost-events.py"))
+		if err != nil {
+			return "", fmt.Errorf("gatepost adapter %s unavailable: %w", filepath.Join(tool, "gatepost-events.py"), err)
+		}
+		if err := validateTrustedGatepostChild(resolvedRoot, path, false); err != nil {
 			return "", err
 		}
 	}
 	return resolvedDir, nil
+}
+
+func validateTrustedGatepostChild(root, path string, wantDir bool) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("trusted Gatepost path escapes trusted root %s: %s", root, path)
+	}
+	return validateTrustedGatepostPath(path, wantDir)
 }
 
 func validateTrustedGatepostPath(path string, wantDir bool) error {

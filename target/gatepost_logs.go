@@ -57,11 +57,11 @@ func startGatepostLogs(ctx context.Context, cfg GatepostRuntimeConfig, gatepostR
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
+		stopGatepostLogsProcessGroup(cmd.Process.Pid)
 		return gatepostLogsProcess{}, fmt.Errorf("timed out waiting for gatepost-logs URL")
 	}
 	if result.Token == "" {
-		_ = cmd.Process.Kill()
+		stopGatepostLogsProcessGroup(cmd.Process.Pid)
 		return gatepostLogsProcess{}, fmt.Errorf("gatepost-logs did not report an access token")
 	}
 	return result, nil
@@ -88,8 +88,5 @@ func stopGatepostLogs(pid int) {
 	if pid <= 0 {
 		return
 	}
-	p, err := os.FindProcess(pid)
-	if err == nil {
-		_ = p.Kill()
-	}
+	stopGatepostLogsProcessGroup(pid)
 }

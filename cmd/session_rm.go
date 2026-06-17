@@ -124,6 +124,9 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		tgt, err := target.Resolve(sess.TargetType())
 		if err == nil {
 			if err := tgt.Stop(context.Background(), sess.Target); err != nil {
+				if sess.TargetType() == "gatepost" {
+					return fmt.Errorf("failed to stop gatepost target; session metadata retained for cleanup retry: %w", err)
+				}
 				fmt.Printf("Warning: failed to stop %s target: %v\n", sess.TargetType(), err)
 			} else {
 				fmt.Printf("Stopped target runtime '%s'\n", target.RuntimeName(sess.Target))
@@ -192,25 +195,87 @@ func removeGatepostStateDir(sess *session.Session) error {
 		return err
 	}
 	root := filepath.Join(home, ".local", "share", "devx", "gatepost")
-	cleanDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
 	cleanRoot, err := filepath.Abs(root)
 	if err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(cleanRoot, cleanDir)
+	cleanDir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
-	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+	lexicalRel, err := filepath.Rel(cleanRoot, cleanDir)
+	if err != nil {
+		return err
+	}
+	if lexicalRel == "." || strings.HasPrefix(lexicalRel, ".."+string(filepath.Separator)) || lexicalRel == ".." || filepath.IsAbs(lexicalRel) {
 		return fmt.Errorf("refusing to remove Gatepost state outside %s: %s", cleanRoot, cleanDir)
 	}
-	if err := os.RemoveAll(cleanDir); err != nil {
+	if err := rejectSymlinksInPath(home, cleanRoot); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(cleanRoot); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to remove Gatepost state through symlinked root: %s", cleanRoot)
+	} else if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		return err
+	}
+	if info, err := os.Lstat(cleanDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to remove symlinked Gatepost state directory: %s", cleanDir)
+	} else if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	resolvedDir, err := filepath.EvalSymlinks(cleanDir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedDir)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return fmt.Errorf("refusing to remove Gatepost state outside %s: %s", resolvedRoot, resolvedDir)
+	}
+	if err := os.RemoveAll(resolvedDir); err != nil {
 		return err
 	}
 	fmt.Printf("Removed Gatepost state directory\n")
+	return nil
+}
+
+func rejectSymlinksInPath(base, target string) error {
+	cleanBase, err := filepath.Abs(base)
+	if err != nil {
+		return err
+	}
+	cleanTarget, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(cleanBase, cleanTarget)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return nil
+	}
+	cur := cleanBase
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to remove Gatepost state through symlinked path component: %s", cur)
+		}
+	}
 	return nil
 }
 
