@@ -33,8 +33,8 @@ type StartOpts struct {
 }
 
 // GatepostRuntimeConfig is the trusted host-side contract DevX passes to the
-// Gatepost target. Executable command paths should come from explicit env/CLI
-// or user-global config, never from project repo config.
+// Gatepost target. Executable command paths should come from trusted DevX
+// configuration, never from workspace-controlled project files or env.
 type GatepostRuntimeConfig struct {
 	Root                     string
 	LogsCommand              string

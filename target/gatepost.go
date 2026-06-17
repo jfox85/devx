@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jfox85/devx/caddy"
@@ -139,11 +140,22 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 	// gatepost.root is a trusted config value. Do not use env root overrides for
 	// executable helper discovery; workspace shells can influence env.
 	gatepostRoot := gatepostCfg.Root
-	trustedAdaptersDir := gatepostAdaptersDir(gatepostRoot)
+	trustedAdaptersDir, err := gatepostAdaptersDir(gatepostRoot)
+	if err != nil {
+		return nil, err
+	}
 	policyPath := filepath.Join(runtime.configDir, "policy.gatepost.yaml")
+	statePrepared := false
+	success := false
+	defer func() {
+		if statePrepared && !success {
+			_ = removeGatepostRuntimeState(runtime)
+		}
+	}()
 	if err := prepareGatepostStateDirs(runtime, policyPath); err != nil {
 		return nil, err
 	}
+	statePrepared = true
 	if err := writeGatepostAgentHookConfigs(runtime, trustedAdaptersDir); err != nil {
 		return nil, err
 	}
@@ -458,6 +470,7 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		_ = g.cleanup(ctx, session.TargetMeta{ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Gatepost: session.GatepostMeta{ProxyContainerName: runtime.proxyName, EgressNetworkName: runtime.egressNet, LogsPID: logs.PID}})
 		return nil, err
 	}
+	success = true
 	return &StartResult{Meta: session.TargetMeta{Type: "gatepost", ContainerID: containerID, ContainerName: runtime.agentName, NetworkName: runtime.internalNet, Image: agentImage, Gatepost: session.GatepostMeta{Enabled: true, Runtime: "docker-mitmproxy", ProxyContainerName: runtime.proxyName, InternalNetworkName: runtime.internalNet, EgressNetworkName: runtime.egressNet, PortsNetworkName: runtime.portsNet, SessionDir: runtime.sessionDir, AuditDir: runtime.auditDir, ConfigDir: runtime.configDir, AgentHomeDir: runtime.agentHomeDir, AuditLog: filepath.Join(runtime.auditDir, "audit.jsonl"), CompanionLog: filepath.Join(runtime.auditDir, "companion.jsonl"), ControlURL: controlURL, LogsURL: logs.PublicURL, LogsTokenPath: logsTokenPath, LogsPID: logs.PID, ProviderMode: providerBootstrap.Mode, ProviderCommand: providerBootstrap.Command, RegisteredProviders: providerBootstrap.Registered, ProviderWarnings: providerBootstrap.Warnings}}}, nil
 }
 
@@ -509,17 +522,17 @@ func mainRepoGitDir(worktreePath string) string {
 	return mainGit
 }
 
-func gatepostAdaptersDir(gatepostRoot string) string {
+func gatepostAdaptersDir(gatepostRoot string) (string, error) {
 	if gatepostRoot == "" {
-		return ""
+		return "", nil
 	}
 	dir := filepath.Join(gatepostRoot, "adapters")
 	resolvedDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("gatepost adapters unavailable under trusted root %s: %w", gatepostRoot, err)
 	}
-	if info, err := os.Stat(resolvedDir); err != nil || !info.IsDir() || info.Mode().Perm()&0o002 != 0 {
-		return ""
+	if err := validateTrustedGatepostPath(resolvedDir, true); err != nil {
+		return "", err
 	}
 	for _, rel := range []string{
 		filepath.Join("claude", "gatepost-events.py"),
@@ -527,13 +540,44 @@ func gatepostAdaptersDir(gatepostRoot string) string {
 	} {
 		path, err := filepath.EvalSymlinks(filepath.Join(resolvedDir, rel))
 		if err != nil {
-			return ""
+			return "", fmt.Errorf("gatepost adapter %s unavailable: %w", rel, err)
 		}
-		if info, err := os.Stat(path); err != nil || info.IsDir() || info.Mode().Perm()&0o002 != 0 {
-			return ""
+		if err := validateTrustedGatepostPath(path, false); err != nil {
+			return "", err
 		}
 	}
-	return resolvedDir
+	return resolvedDir, nil
+}
+
+func validateTrustedGatepostPath(path string, wantDir bool) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if wantDir && !info.IsDir() {
+		return fmt.Errorf("trusted Gatepost path is not a directory: %s", path)
+	}
+	if !wantDir && info.IsDir() {
+		return fmt.Errorf("trusted Gatepost adapter is a directory: %s", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("trusted Gatepost path is group/world-writable: %s", path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("could not inspect owner for trusted Gatepost path: %s", path)
+	}
+	if int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("trusted Gatepost path owner uid %d does not match current uid %d: %s", stat.Uid, os.Getuid(), path)
+	}
+	return nil
+}
+
+func removeGatepostRuntimeState(r gatepostRuntime) error {
+	if r.sessionDir == "" {
+		return nil
+	}
+	return os.RemoveAll(r.sessionDir)
 }
 
 type gatepostHookEvent struct {

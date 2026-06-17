@@ -9,8 +9,8 @@ import (
 
 func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
 	root := t.TempDir()
-	if got := gatepostAdaptersDir(root); got != "" {
-		t.Fatalf("gatepostAdaptersDir without hook files = %q, want empty", got)
+	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
+		t.Fatalf("gatepostAdaptersDir without hook files = %q, %v; want empty with error", got, err)
 	}
 	for _, rel := range []string{
 		filepath.Join("adapters", "claude", "gatepost-events.py"),
@@ -28,8 +28,34 @@ func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := gatepostAdaptersDir(root); got != want {
+	got, err := gatepostAdaptersDir(root)
+	if err != nil {
+		t.Fatalf("gatepostAdaptersDir unexpected error: %v", err)
+	}
+	if got != want {
 		t.Fatalf("gatepostAdaptersDir = %q, want %q", got, want)
+	}
+}
+
+func TestGatepostAdaptersDirRejectsWritableTrustedPaths(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{
+		filepath.Join("adapters", "claude", "gatepost-events.py"),
+		filepath.Join("adapters", "codex", "gatepost-events.py"),
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/usr/bin/env python3\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(root, "adapters", "claude", "gatepost-events.py"), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
+		t.Fatalf("gatepostAdaptersDir with group-writable adapter = %q, %v; want empty with error", got, err)
 	}
 }
 
@@ -73,6 +99,20 @@ func TestWriteHookConfigRefusesSymlink(t *testing.T) {
 	}
 	if err := writeHookConfig(link, "python3 /opt/gatepost/adapters/claude/gatepost-events.py", nil); err == nil {
 		t.Fatalf("writeHookConfig followed symlink; want refusal")
+	}
+}
+
+func TestRemoveGatepostRuntimeStateRemovesSessionDir(t *testing.T) {
+	dir := t.TempDir()
+	r := gatepostRuntime{sessionDir: filepath.Join(dir, "session")}
+	if err := os.MkdirAll(filepath.Join(r.sessionDir, "agent-home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeGatepostRuntimeState(r); err != nil {
+		t.Fatalf("removeGatepostRuntimeState: %v", err)
+	}
+	if _, err := os.Stat(r.sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("session dir still exists or unexpected stat error: %v", err)
 	}
 }
 

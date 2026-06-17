@@ -142,7 +142,7 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		_ = os.RemoveAll(uploadsDir)
 	}
 	if err := removeGatepostStateDir(sess); err != nil {
-		fmt.Printf("Warning: failed to remove Gatepost state dir: %v\n", err)
+		return fmt.Errorf("failed to remove Gatepost state dir; session metadata retained for cleanup retry: %w", err)
 	}
 
 	// Remove any persisted cleanup-review details for this session. A failure
