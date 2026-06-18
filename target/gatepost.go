@@ -380,7 +380,10 @@ func (g *GatepostTarget) Start(ctx context.Context, opts StartOpts) (*StartResul
 		"NO_PROXY": "localhost,127.0.0.1,gatepost-events", "no_proxy": "localhost,127.0.0.1,gatepost-events",
 		"GATEPOST_EVENTS_URL": "http://gatepost-events:9100/v1/events", "GATEPOST_EVENTS_TOKEN": eventToken,
 		"GATEPOST_AGENT_ROLE": agentRole, "GATEPOST_AGENT_BRANCH": agentBranch,
-		"CLIPROXYAPI_API_KEY": "GATEPOST_SECRET:cliproxy-key", "ANTHROPIC_API_KEY": "sk-ant-oat01-GATEPOST_SECRET:anthropic-oauth", "OPENAI_API_KEY": "GATEPOST_SECRET:openai-key", "GEMINI_API_KEY": "GATEPOST_SECRET:gemini-key",
+		// Claude Code uses the Anthropic Messages API; route it to host-side
+		// CLIProxyAPI so subscription-backed Claude credentials stay on the host.
+		"ANTHROPIC_BASE_URL": "http://host.docker.internal:8317", "ANTHROPIC_API_KEY": "GATEPOST_SECRET:cliproxy-key",
+		"CLIPROXYAPI_API_KEY": "GATEPOST_SECRET:cliproxy-key", "OPENAI_API_KEY": "GATEPOST_SECRET:openai-key", "GEMINI_API_KEY": "GATEPOST_SECRET:gemini-key",
 		"CODEX_HOME": "/root/.codex", "CODEX_DISABLE_UPDATE_CHECK": "1", "DISABLE_AUTOUPDATER": "1",
 		// DevX artifact support inside the container.
 		"SESSION_NAME": opts.SessionName, "DEVX_SESSION_PATH": "/workspace",

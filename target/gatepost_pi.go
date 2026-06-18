@@ -127,6 +127,7 @@ func parseProviderBootstrapOutput(output string, result *gatepostProviderBootstr
 			case "GATEPOST_SECRET_OPENAI_REGISTERED":
 				registered["openai-key"] = true
 			case "GATEPOST_SECRET_CLIPROXY_REGISTERED":
+				registered["anthropic-cli"] = true
 				registered["cliproxy-key"] = true
 			case "GATEPOST_SECRET_GEMINI_REGISTERED":
 				registered["gemini-key"] = true
