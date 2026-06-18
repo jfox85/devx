@@ -5,15 +5,21 @@ import "testing"
 func TestParseProviderBootstrapOutput(t *testing.T) {
 	var result gatepostProviderBootstrap
 	result.Env = map[string]string{}
-	parseProviderBootstrapOutput("GATEPOST_SECRET_OPENAI_REGISTERED=1\nGATEPOST_SECRET_CODEX_REGISTERED=1\nCODEX_FAKE_JWT=jwt\nCLIPROXYAPI_API_KEY_PLACEHOLDER=GATEPOST_SECRET:cliproxy-key\n", &result)
+	parseProviderBootstrapOutput("GATEPOST_SECRET_OPENAI_REGISTERED=1\nGATEPOST_SECRET_CODEX_REGISTERED=1\nGATEPOST_SECRET_CLIPROXY_REGISTERED=1\nCODEX_FAKE_JWT=jwt\nCLIPROXYAPI_API_KEY_PLACEHOLDER=GATEPOST_SECRET:cliproxy-key\n", &result)
 	if result.Env["CODEX_FAKE_JWT"] != "jwt" {
 		t.Fatalf("missing CODEX_FAKE_JWT env: %#v", result.Env)
 	}
 	if result.Env["CLIPROXYAPI_API_KEY"] != "GATEPOST_SECRET:cliproxy-key" {
 		t.Fatalf("missing cliproxy placeholder env: %#v", result.Env)
 	}
-	if len(result.Registered) != 2 || result.Registered[0] != "codex-oauth" || result.Registered[1] != "openai-key" {
+	want := []string{"anthropic-cli", "cliproxy-key", "codex-oauth", "openai-key"}
+	if len(result.Registered) != len(want) {
 		t.Fatalf("unexpected registered providers: %#v", result.Registered)
+	}
+	for i := range want {
+		if result.Registered[i] != want[i] {
+			t.Fatalf("unexpected registered providers: %#v", result.Registered)
+		}
 	}
 }
 
