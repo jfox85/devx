@@ -59,6 +59,13 @@ import (
 var appIcon []byte
 
 func main() {
+	// GUI-launched macOS apps inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:
+	// /sbin) rather than the user's shell PATH, so subprocesses the server spawns
+	// (tmuxp, tmux, ttyd, direnv, ...) are not found and terminals fail to start.
+	// Prepend common user/tool bin dirs so the embedded server behaves like
+	// `devx web` launched from a terminal.
+	augmentPATH()
+
 	priv, err := web.NewPrivateServer()
 	if err != nil {
 		log.Fatalf("failed to create private devx server: %v", err)
