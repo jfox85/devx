@@ -247,3 +247,17 @@ func TestDispatchDroppedFiles_ExtensionPolicy(t *testing.T) {
 		}
 	}
 }
+
+// TestUploadImageRejectsOversize verifies the size guard rejects an oversize
+// payload (via the pre-decode and post-decode checks) before any HTTP call, so
+// a nil server is never reached. An exactly-at-cap payload must NOT be rejected
+// by the cheap base64 pre-check (padding rounding); that boundary is exercised
+// by the integration upload path, not here, to avoid hitting the live server.
+func TestUploadImageRejectsOversize(t *testing.T) {
+	h := &Host{}
+	over := base64.StdEncoding.EncodeToString(make([]byte, maxDroppedFileBytes+1))
+	_, err := h.UploadImage("x.png", "", over)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected oversize cap error, got %v", err)
+	}
+}

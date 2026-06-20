@@ -453,9 +453,11 @@ func readCappedFile(path string) ([]byte, error) {
 // which is never exposed to the WebView) sidesteps the WebView entirely while
 // keeping the same /api/upload-image enforcement path the browser PWA uses.
 func (h *Host) UploadImage(name, sessionName, dataB64 string) (string, error) {
-	// Reject oversize input before allocating/decoding so a misbehaving WebView
-	// caller can't force a large base64 decode just to fail the cap afterwards.
-	if base64.StdEncoding.DecodedLen(len(dataB64)) > maxDroppedFileBytes {
+	// Cheap pre-check to avoid a large decode allocation for an obviously oversize
+	// payload. DecodedLen overestimates by up to 2 padding bytes, so add slop and
+	// let the post-decode check below enforce the exact cap (so a payload right at
+	// the cap isn't rejected by rounding).
+	if base64.StdEncoding.DecodedLen(len(dataB64)) > maxDroppedFileBytes+3 {
 		return "", fmt.Errorf("image exceeds %d byte cap", maxDroppedFileBytes)
 	}
 	data, err := base64.StdEncoding.DecodeString(dataB64)

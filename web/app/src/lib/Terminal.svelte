@@ -695,8 +695,8 @@
   }
 
   // Replace (or clear) the upload toast, revoking the previous preview object
-  // URL first so a superseded preview doesn't leak. All toastUpload mutations go
-  // through here except the single-image preview wrapper, which sets it inline.
+  // URL first so a superseded preview doesn't leak. dismissToast/onDestroy
+  // revoke directly when tearing down; every other mutation goes through here.
   function setToastUpload(next) {
     if (toastUpload?.objectURL && toastUpload.objectURL !== next?.objectURL) {
       URL.revokeObjectURL(toastUpload.objectURL)

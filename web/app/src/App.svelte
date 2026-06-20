@@ -189,8 +189,9 @@
   }
 
   // Global paste handler: routes image pastes to the terminal component when
-  // focus is in the parent window (e.g. sidebar). The iframe-document paste
-  // handler in Terminal.svelte covers paste events when xterm has focus.
+  // focus is in the parent window (e.g. sidebar). Paste while the terminal
+  // iframe has focus is handled by the bridge script injected into the ttyd
+  // page, which forwards to Terminal.svelte via postMessage.
   function handleGlobalPaste(e) {
     if (!activeSession || !terminalComponent) return
     for (const item of (e.clipboardData?.items || [])) {
@@ -204,7 +205,7 @@
     }
     // Desktop fallback: WKWebView often omits clipboard images from the DOM
     // paste event, so ask the native host for the clipboard image instead. The
-    // terminal owns the call (and dedups against the iframe paste handler).
+    // terminal owns the call (and dedups concurrent requests internally).
     if (isDesktop()) terminalComponent.handleDesktopClipboardPaste()
   }
 
