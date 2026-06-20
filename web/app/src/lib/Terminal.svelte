@@ -316,19 +316,24 @@
     }
   }
 
-  // Receive image pastes forwarded from inside the terminal iframe via
-  // postMessage. The iframe (ttyd page) injects terminalPasteBridgeScript, which
-  // can read its own clipboard event even when the parent cannot add listeners
-  // across the cross-origin boundary (desktop app). Two message shapes:
+  // Single owner of terminal-iframe image paste, for both browser and desktop.
+  // The ttyd page injects terminalPasteBridgeScript, which reads its own paste
+  // event (the parent cannot attach a listener across the cross-origin iframe in
+  // the desktop app) and forwards it here via postMessage. Two message shapes:
   //   devx:terminal-image-paste     — a clipboard image File, shipped as dataURL
   //   devx:terminal-clipboard-image — no File present; try the native clipboard
   function handleTerminalMessage(e) {
-    // Only trust messages from this session's terminal iframe.
-    if (!iframeEl || e.source !== iframeEl.contentWindow) return
+    // Only trust messages from the *active* session's terminal iframe. Compare
+    // against the live active frame (not iframeEl, which lags behind the active
+    // session by a tick during pool promotion) so a background pooled frame
+    // can't route an upload under the newly-active session's name.
+    const activeFrame = frameEls[session.name]
+    if (!activeFrame || e.source !== activeFrame.contentWindow) return
     const data = e.data
     if (!data || typeof data !== 'object') return
     if (data.type === 'devx:terminal-image-paste' && typeof data.dataURL === 'string') {
-      const base64 = data.dataURL.includes(',') ? data.dataURL.slice(data.dataURL.indexOf(',') + 1) : ''
+      const comma = data.dataURL.indexOf(',')
+      const base64 = comma >= 0 ? data.dataURL.slice(comma + 1) : ''
       if (!base64) return
       processImageFile(fileFromBase64({
         name: typeof data.name === 'string' ? data.name : 'clipboard.png',
@@ -338,24 +343,6 @@
     } else if (data.type === 'devx:terminal-clipboard-image' && isDesktop()) {
       handleDesktopClipboardPaste()
     }
-  }
-
-  // Intercept paste events inside the iframe to capture image pastes.
-  function iframePaste(e) {
-    const items = e.clipboardData?.items || []
-    for (const item of items) {
-      if (item.kind === 'file' && item.type.startsWith('image/')) {
-        e.preventDefault()
-        e.stopPropagation()
-        processImageFile(item.getAsFile())
-        return
-      }
-    }
-    // Desktop fallback: WKWebView omits clipboard images from the DOM paste
-    // event, so ask the native host for the clipboard image. Text paste still
-    // proceeds normally when no image is present.
-    if (isDesktop()) handleDesktopClipboardPaste()
-    // No image found — let text paste proceed normally
   }
 
   // Timing constants for xterm.js / FitAddon initialisation.
@@ -553,7 +540,10 @@
     // Register the hotkey after focus so xterm is initialised
     try {
       iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
-      iframeEl.contentDocument?.addEventListener('paste', iframePaste, { capture: true })
+      // Image paste inside the iframe is owned by terminalPasteBridgeScript
+      // (injected into the ttyd page), which forwards via postMessage to
+      // handleTerminalMessage. That works across the cross-origin boundary too,
+      // so no direct contentDocument paste listener is registered here.
       // Drag events do not bubble across iframe boundaries, so a file dragged
       // over the iframe never reaches the outer div's dragenter/drop handlers.
       // Mirror the events onto the parent window so the drop overlay appears
@@ -664,7 +654,7 @@
 
     const valid = files.filter(isImageFile)
     if (valid.length === 0) {
-      toastUpload = null
+      setToastUpload(null)
       toastError = `Unsupported type: ${files[0].type || files[0].name || 'unknown'}`
       return
     }
@@ -680,25 +670,38 @@
       // textarea instead of the tmux pane so a paste/drop while composing lands
       // where the user is typing. Otherwise inject into the active tmux pane
       // (no Enter — user confirms). sendLiteral preserves spaces in paths.
+      // composerComponent can briefly lag composerOpen during mount, so wait a
+      // tick for the bind before deciding where the paths go.
+      if (composerOpen && !composerComponent) await tick()
       if (composerOpen && composerComponent) {
         composerComponent.insertText(joined)
       } else {
         await sendLiteral(session.name, joined)
       }
       toastError = null
-      toastUpload = {
+      setToastUpload({
         path: paths.length === 1 ? paths[0] : `${paths.length} images uploaded`,
         objectURL: objectURLs[0],
-      }
+      })
       // Revoke extra objectURLs not used by the toast preview.
       objectURLs.slice(1).forEach(u => URL.revokeObjectURL(u))
     } catch (e) {
       objectURLs.forEach(u => URL.revokeObjectURL(u))
-      toastUpload = null
+      setToastUpload(null)
       toastError = e.message || 'Upload failed'
     } finally {
       uploading = false
     }
+  }
+
+  // Replace (or clear) the upload toast, revoking the previous preview object
+  // URL first so a superseded preview doesn't leak. All toastUpload mutations go
+  // through here except the single-image preview wrapper, which sets it inline.
+  function setToastUpload(next) {
+    if (toastUpload?.objectURL && toastUpload.objectURL !== next?.objectURL) {
+      URL.revokeObjectURL(toastUpload.objectURL)
+    }
+    toastUpload = next
   }
 
   // Upload a single image. In the desktop shell, route through the native host
@@ -712,7 +715,7 @@
 
   async function uploadOneImageDesktop(file) {
     const data = await fileToBase64(file)
-    const res = await desktopUploadImage({ name: file.name, type: file.type, session: session.name, data })
+    const res = await desktopUploadImage({ name: file.name, session: session.name, data })
     if (!res) return uploadImage(file, session.name) // no host binding; fall back
     return res
   }
@@ -852,7 +855,7 @@
   // Exported so the desktop file-drop bridge can surface host-side rejections
   // (oversize/unreadable/unsupported) through the same toast the web flow uses.
   export function showUploadError(message) {
-    toastUpload = null
+    setToastUpload(null)
     toastError = message
   }
 

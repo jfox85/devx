@@ -45,10 +45,11 @@ export async function clipboardImage() {
 // issued from the WebView, so a multipart fetch upload arrives empty and the
 // server rejects it. Returns the parsed { path } response, or null if there is
 // no host binding (plain browser), letting callers fall back to fetch.
-export async function uploadImage({ name, type, session, data }) {
+export async function uploadImage({ name, session, data }) {
   const binding = host()?.UploadImage
   if (typeof binding !== 'function') return null
-  const res = await binding(name || 'image.png', type || 'image/png', session || '', data)
+  // The server sniffs magic bytes for the MIME type, so no client type is sent.
+  const res = await binding(name || 'image.png', session || '', data)
   return JSON.parse(res)
 }
 

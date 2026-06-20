@@ -1273,6 +1273,14 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	sessionName := r.FormValue("session")
+	// Reject malformed session names before they reach filepath.Join: an
+	// unvalidated value (e.g. "../../...") would let the upload escape the
+	// per-session uploads dir under ~/.devx/uploads. An empty session is allowed
+	// (shared uploads dir); anything non-empty must be a valid session name.
+	if sessionName != "" && !session.IsValidSessionName(sessionName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session"})
+		return
+	}
 
 	// Always sniff magic bytes to determine MIME type — never trust the
 	// client-supplied Content-Type header, which is trivially spoofable.

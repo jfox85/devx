@@ -46,6 +46,7 @@ import (
 	_ "embed"
 
 	"github.com/jfox85/devx/web"
+	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/web/imagepolicy"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -336,11 +337,6 @@ func (h *Host) dispatchEvent(name, detailJSON string) {
 	))
 }
 
-// ClipboardImage returns a base64-encoded PNG of the current clipboard image,
-// or an empty string if the clipboard holds no image. The WebView's DOM paste
-// event does not reliably expose clipboard images on macOS WKWebView, so the
-// frontend calls this binding on Cmd/Ctrl+V and routes the result through the
-// same upload flow as drag/drop.
 // ClipboardImage returns a clipboard image as base64, or "" when the clipboard
 // holds no usable image. WKWebView often omits clipboard images from the DOM
 // paste event, so the desktop paste path calls this native helper instead.
@@ -456,13 +452,21 @@ func readCappedFile(path string) ([]byte, error) {
 // upload in-process to the private loopback server (with the real API token,
 // which is never exposed to the WebView) sidesteps the WebView entirely while
 // keeping the same /api/upload-image enforcement path the browser PWA uses.
-func (h *Host) UploadImage(name, mimeType, session, dataB64 string) (string, error) {
+func (h *Host) UploadImage(name, sessionName, dataB64 string) (string, error) {
+	// Reject oversize input before allocating/decoding so a misbehaving WebView
+	// caller can't force a large base64 decode just to fail the cap afterwards.
+	if base64.StdEncoding.DecodedLen(len(dataB64)) > maxDroppedFileBytes {
+		return "", fmt.Errorf("image exceeds %d byte cap", maxDroppedFileBytes)
+	}
 	data, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
 		return "", fmt.Errorf("decode image: %w", err)
 	}
 	if len(data) > maxDroppedFileBytes {
 		return "", fmt.Errorf("image exceeds %d byte cap", maxDroppedFileBytes)
+	}
+	if sessionName != "" && !session.IsValidSessionName(sessionName) {
+		return "", fmt.Errorf("invalid session")
 	}
 
 	var body bytes.Buffer
@@ -474,8 +478,8 @@ func (h *Host) UploadImage(name, mimeType, session, dataB64 string) (string, err
 	if _, err := part.Write(data); err != nil {
 		return "", err
 	}
-	if session != "" {
-		if err := mw.WriteField("session", session); err != nil {
+	if sessionName != "" {
+		if err := mw.WriteField("session", sessionName); err != nil {
 			return "", err
 		}
 	}
@@ -491,7 +495,9 @@ func (h *Host) UploadImage(name, mimeType, session, dataB64 string) (string, err
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+h.server.Token())
 
-	resp, err := http.DefaultClient.Do(req)
+	// Bound the in-process call so a wedged server can't hang the Wails binding.
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
