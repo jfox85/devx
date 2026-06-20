@@ -10,6 +10,8 @@
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
   import PromptComposer from './composer/PromptComposer.svelte'
   import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
+  import { isImageFile } from './imagePolicy.js'
+  import { isDesktop, desktopConfig, clipboardImage } from './desktopBridge.js'
 
   export let session
   export let artifactEvent = null
@@ -61,13 +63,13 @@
   let toastError = null   // string | null
   let uploading = false   // guard against concurrent uploads
 
-  const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
-  const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
-  function isImageFile(f) {
-    if (ALLOWED_TYPES.includes(f.type)) return true
-    // Fallback: check extension when MIME type is missing or generic (e.g. macOS Finder)
-    const name = (f.name || '').toLowerCase()
-    return ALLOWED_EXTS.some(ext => name.endsWith(ext))
+  // Reconstruct a File from a base64 payload bridged by the desktop host
+  // (file drops and clipboard images). Exported so App.svelte shares one decoder.
+  export function fileFromBase64({ name, type, data }) {
+    const bin = atob(data)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new File([bytes], name || 'image.png', { type: type || 'image/png' })
   }
 
   // --- Iframe keep-alive pool (plan 0C) ---------------------------------------
@@ -93,7 +95,7 @@
   function frameURL(name) {
     // Encode session names so slashes ("/") don't split the URL path.
     const path = `/terminal/${encodeURIComponent(name)}/`
-    const desktop = typeof window !== 'undefined' && window.__DEVX_DESKTOP
+    const desktop = desktopConfig()
     if (!desktop?.terminalBase || !desktop?.terminalToken) return path
     const url = new URL(path, desktop.terminalBase)
     url.searchParams.set('desktop_token', desktop.terminalToken)
@@ -324,6 +326,10 @@
         return
       }
     }
+    // Desktop fallback: WKWebView omits clipboard images from the DOM paste
+    // event, so ask the native host for the clipboard image. Text paste still
+    // proceeds normally when no image is present.
+    if (isDesktop()) handleDesktopClipboardPaste()
     // No image found — let text paste proceed normally
   }
 
@@ -775,6 +781,35 @@
   // Exported so App.svelte can route parent-window paste events here.
   export function handleImagePaste(file) {
     processImageFile(file)
+  }
+
+  // Exported so the desktop shell bridge can route native file drops here.
+  export function handleImageFiles(files) {
+    processImageFiles(files)
+  }
+
+  // Exported so the desktop file-drop bridge can surface host-side rejections
+  // (oversize/unreadable/unsupported) through the same toast the web flow uses.
+  export function showUploadError(message) {
+    toastUpload = null
+    toastError = message
+  }
+
+  // Single owner of desktop clipboard-image paste. Both the iframe paste handler
+  // (xterm focused) and App.svelte's window paste handler (parent focused) call
+  // this; the guard collapses any double-dispatch for one Cmd/Ctrl+V into a
+  // single native ClipboardImage IPC + upload. Exported for App.svelte.
+  let desktopClipboardPasteInFlight = false
+  export async function handleDesktopClipboardPaste() {
+    if (desktopClipboardPasteInFlight) return
+    desktopClipboardPasteInFlight = true
+    try {
+      const data = await clipboardImage()
+      if (!data) return
+      processImageFile(fileFromBase64({ name: 'clipboard.png', type: 'image/png', data }))
+    } catch { /* no clipboard image available */ } finally {
+      desktopClipboardPasteInFlight = false
+    }
   }
 
   function handleFileInput(e) {

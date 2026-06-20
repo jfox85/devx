@@ -1,5 +1,7 @@
 // Notification helpers for flag events.
 
+import { notify as notifyDesktop } from './desktopBridge.js'
+
 // requestNotificationPermission asks the browser for notification permission.
 // Should be called once after login. Silently ignores errors (e.g. the browser
 // may not support notifications, or the user may dismiss the prompt).
@@ -22,13 +24,11 @@ export function notifyFlag(event, { onNavigate, showFallback }) {
   const windowFocused = document.hasFocus()
   const title = `DevX: ${session}`
   const body = reason ? String(reason) : 'Session needs attention'
-  const host = typeof window !== 'undefined' && window.go?.main?.Host
 
-  if (host?.Notify) {
-    // Desktop shell: always use native OS notifications for flags, even when
-    // the window is focused. A session flag is explicitly an attention signal,
-    // and foreground focus reporting is unreliable when ttyd owns focus.
-    host.Notify(title, body).catch(() => showFallback(event))
+  // Desktop shell: always use native OS notifications for flags, even when the
+  // window is focused. A session flag is explicitly an attention signal, and
+  // foreground focus reporting is unreliable when ttyd owns focus.
+  if (notifyDesktop(title, body, () => showFallback(event))) {
     return
   }
 

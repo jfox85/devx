@@ -26,6 +26,7 @@ import (
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/web/imagepolicy"
 	"github.com/spf13/viper"
 )
 
@@ -1252,21 +1253,14 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-var allowedImageTypes = map[string]string{
-	"image/png":  ".png",
-	"image/jpeg": ".jpg",
-	"image/gif":  ".gif",
-	"image/webp": ".webp",
-}
-
 // handleUploadImage accepts a multipart image upload, saves it to
 // ~/.devx/uploads/<session>/{hex}.ext, and returns the path as JSON.
 // For Gatepost sessions the returned path uses the container mount point
 // so the agent can access the file directly.
 func handleUploadImage(w http.ResponseWriter, r *http.Request) {
-	// Cap the raw request body to 20 MB before parsing to prevent disk exhaustion.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	// Cap the raw request body before parsing to prevent disk exhaustion.
+	r.Body = http.MaxBytesReader(w, r.Body, imagepolicy.MaxUploadBytes)
+	if err := r.ParseMultipartForm(imagepolicy.MaxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
 		return
 	}
@@ -1297,7 +1291,7 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext, ok := allowedImageTypes[mediaType]
+	ext, ok := imagepolicy.MIMEToExt[mediaType]
 	if !ok {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
 		return
@@ -1387,9 +1381,9 @@ func handleServeUpload(w http.ResponseWriter, r *http.Request) {
 // handleShow accepts a multipart image upload from the CLI, saves it to
 // ~/.devx/uploads/, then broadcasts its URL to all connected SSE clients.
 func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
-	// Cap the raw request body to 20 MB before parsing.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	// Cap the raw request body before parsing.
+	r.Body = http.MaxBytesReader(w, r.Body, imagepolicy.MaxUploadBytes)
+	if err := r.ParseMultipartForm(imagepolicy.MaxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
 		return
 	}
@@ -1415,7 +1409,7 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid content type"})
 		return
 	}
-	ext, ok := allowedImageTypes[mediaType]
+	ext, ok := imagepolicy.MIMEToExt[mediaType]
 	if !ok {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
 		return

@@ -11,6 +11,7 @@
   import ImageToast from './lib/ImageToast.svelte'
   import FlagToast from './lib/FlagToast.svelte'
   import ShareTarget from './lib/ShareTarget.svelte'
+  import { DESKTOP_EVENTS, isDesktop } from './lib/desktopBridge.js'
 
   // view is only used on mobile to toggle between sessions and terminal.
   // On desktop, both panels are always visible.
@@ -88,6 +89,8 @@
       window.addEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
       window.addEventListener('devx:insertArtifact', insertArtifactHandler)
       window.addEventListener('devx:newArtifact', newArtifactHandler)
+      window.addEventListener(DESKTOP_EVENTS.fileDrop, handleDesktopFileDrop)
+      window.addEventListener(DESKTOP_EVENTS.fileDropRejected, handleDesktopFileDropRejected)
       unsubscribeSSE = subscribeToEvents({
         show: (event) => {
           remoteShow = event
@@ -125,6 +128,8 @@
     window.removeEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
     window.removeEventListener('devx:insertArtifact', insertArtifactHandler)
     window.removeEventListener('devx:newArtifact', newArtifactHandler)
+    window.removeEventListener(DESKTOP_EVENTS.fileDrop, handleDesktopFileDrop)
+    window.removeEventListener(DESKTOP_EVENTS.fileDropRejected, handleDesktopFileDropRejected)
   })
 
   function dismissRemoteShow() {
@@ -191,6 +196,37 @@
         return
       }
     }
+    // Desktop fallback: WKWebView often omits clipboard images from the DOM
+    // paste event, so ask the native host for the clipboard image instead. The
+    // terminal owns the call (and dedups against the iframe paste handler).
+    if (isDesktop()) terminalComponent.handleDesktopClipboardPaste()
+  }
+
+  // Desktop file-drop bridge: the Wails host reads dropped images and emits
+  // them here as base64 payloads, since the WebView swallows OS file drops
+  // before the DOM drop event fires. Decoding lives in the terminal component
+  // so there is a single base64→File path shared with clipboard paste.
+  function handleDesktopFileDrop(e) {
+    if (!activeSession || !terminalComponent) return
+    const payloads = Array.isArray(e.detail) ? e.detail : []
+    // Decode per-payload so one malformed entry can't abort the whole drop.
+    const files = []
+    for (const p of payloads) {
+      try {
+        files.push(terminalComponent.fileFromBase64(p))
+      } catch { /* skip an undecodable payload */ }
+    }
+    if (files.length) terminalComponent.handleImageFiles(files)
+  }
+
+  // The desktop host rejected one or more dropped files (oversize, unreadable,
+  // or unsupported type) — including partial multi-drops where others uploaded.
+  // Surface it through the terminal's upload error toast.
+  function handleDesktopFileDropRejected(e) {
+    if (!activeSession || !terminalComponent) return
+    const names = Array.isArray(e.detail) ? e.detail : []
+    const detail = names.length === 1 ? names[0] : `${names.length} files`
+    terminalComponent.showUploadError(`Couldn't add ${detail}: unsupported, too large, or unreadable`)
   }
 </script>
 
