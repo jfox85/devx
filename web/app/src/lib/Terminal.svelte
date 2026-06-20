@@ -12,6 +12,7 @@
   import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
   import { isImageFile } from './imagePolicy.js'
   import { isDesktop, desktopConfig, clipboardImage, uploadImage as desktopUploadImage } from './desktopBridge.js'
+  import { attachFrameInputListeners as attachListeners } from './terminal/frameInputListeners.js'
 
   export let session
   export let artifactEvent = null
@@ -151,6 +152,9 @@
       pool = [existing, ...pool.filter(p => p !== existing)]
       tick().then(async () => {
         iframeEl = frameEls[name]
+        // Warm reuse skips the iframe `load` event, so ensure input listeners
+        // are attached (no-op if they already are).
+        attachFrameInputListeners(iframeEl)
         // Pooled switch: terminal is already connected. Record near-zero
         // switch timings (warm path) and resync size/focus.
         markIframeLoad(name)
@@ -483,6 +487,43 @@
   //   2. Call refreshTerminal which does refresh-client (forces display
   //      redraw) and resize-window to the current client's dimensions,
   //      working around the tmux grouped-session size-constraint bug.
+  // Per-frame input listeners (paste/keydown/drag/drop) must be attached to
+  // each pooled iframe's contentDocument exactly once. These are separate from
+  // the active-session resync work because a pooled iframe can finish loading
+  // while a *different* session is active, and warm pool promotions reuse an
+  // already-loaded iframe without firing another `load` event. If listener
+  // registration lived only in handleIframeLoad (gated on the active session),
+  // such frames would silently lose paste/drag support. Dedup + attach logic
+  // lives in ./terminal/frameInputListeners.js (unit tested).
+  function attachFrameInputListeners(frameEl) {
+    attachListeners(frameEl?.contentDocument, {
+      onKeydown: iframeHotkey,
+      // Image paste inside the iframe is owned by terminalPasteBridgeScript
+      // (injected into the ttyd page), which forwards via postMessage to
+      // handleTerminalMessage and works across the cross-origin boundary. So no
+      // onPaste handler is registered here, to avoid a duplicate paste pipeline.
+      // Drag events do not bubble across iframe boundaries, so a file dragged
+      // over the iframe never reaches the outer div's dragenter/drop handlers.
+      // Mirror the events onto the parent window so the drop overlay appears
+      // and the file is processed correctly.
+      onDragEnter: (e) => {
+        const hasFiles = Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')
+        if (hasFiles) { dragCounter++; isDragOver = true }
+      },
+      onDragLeave: () => {
+        dragCounter--
+        if (dragCounter <= 0) { dragCounter = 0; isDragOver = false }
+      },
+      onDragOver: (e) => e.preventDefault(),
+      onDrop: (e) => {
+        e.preventDefault()
+        dragCounter = 0; isDragOver = false
+        const files = Array.from(e.dataTransfer?.files || [])
+        if (files.length) processImageFiles(files)
+      },
+    })
+  }
+
   async function handleIframeLoad() {
     markIframeLoad(session.name)
     // Inject Nerd Font into the iframe immediately so the font is available
@@ -537,33 +578,9 @@
     // Restore window tabs after the terminal is interactive; don't block the first
     // usable paint/focus on tmux bookkeeping.
     setTimeout(restoreStoredWindow, 0)
-    // Register the hotkey after focus so xterm is initialised
-    try {
-      iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
-      // Image paste inside the iframe is owned by terminalPasteBridgeScript
-      // (injected into the ttyd page), which forwards via postMessage to
-      // handleTerminalMessage. That works across the cross-origin boundary too,
-      // so no direct contentDocument paste listener is registered here.
-      // Drag events do not bubble across iframe boundaries, so a file dragged
-      // over the iframe never reaches the outer div's dragenter/drop handlers.
-      // Mirror the events onto the parent window so the drop overlay appears
-      // and the file is processed correctly.
-      iframeEl.contentDocument?.addEventListener('dragenter', (e) => {
-        const hasFiles = Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')
-        if (hasFiles) { dragCounter++; isDragOver = true }
-      })
-      iframeEl.contentDocument?.addEventListener('dragleave', () => {
-        dragCounter--
-        if (dragCounter <= 0) { dragCounter = 0; isDragOver = false }
-      })
-      iframeEl.contentDocument?.addEventListener('dragover', (e) => e.preventDefault())
-      iframeEl.contentDocument?.addEventListener('drop', (e) => {
-        e.preventDefault()
-        dragCounter = 0; isDragOver = false
-        const files = Array.from(e.dataTransfer?.files || [])
-        if (files.length) processImageFiles(files)
-      })
-    } catch { /* ignore if contentDocument isn't accessible yet */ }
+    // Register input listeners after focus so xterm is initialised. Idempotent
+    // and shared with the warm pool-promotion path.
+    attachFrameInputListeners(iframeEl)
     // Watch for iframe size changes (mobile browser chrome, keyboard, orientation)
     resizeObserver?.disconnect()
     resizeObserver = new ResizeObserver(scheduleRefresh)
@@ -1110,7 +1127,13 @@
             style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0}; --wails-drop-target: drop;"
             tabindex={isActiveFrame ? 0 : -1}
             allow="clipboard-read; clipboard-write"
-            on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() } }}
+            on:load={() => {
+              // Always attach per-frame input listeners, even for a frame that
+              // finished loading while another session is active — otherwise it
+              // would have no paste/drag support when later promoted warm.
+              attachFrameInputListeners(frameEls[frame.name])
+              if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() }
+            }}
           ></iframe>
         {/each}
       </div>
