@@ -55,7 +55,10 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 	if proto := r.Header.Get("Sec-WebSocket-Protocol"); proto != "" {
 		backendHeader.Set("Sec-WebSocket-Protocol", proto)
 	}
-	backendURL := fmt.Sprintf("ws://localhost:%d%s", backendPort, wsPath)
+	// Dial 127.0.0.1 explicitly: ttyd binds IPv4 loopback only (-i 127.0.0.1), but
+	// "localhost" can resolve to ::1 first (it maps to both in /etc/hosts), which
+	// ttyd refuses, intermittently breaking the terminal proxy.
+	backendURL := fmt.Sprintf("ws://127.0.0.1:%d%s", backendPort, wsPath)
 
 	// Retry the backend dial: portForSession may return a port before waitForPort
 	// completes (the port is in the map as soon as the process starts). Retry for
@@ -118,7 +121,9 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 	target := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("localhost:%d", backendPort),
+		// 127.0.0.1, not "localhost": ttyd binds IPv4 loopback only, and localhost
+		// may resolve to ::1 first, which ttyd refuses.
+		Host:   fmt.Sprintf("127.0.0.1:%d", backendPort),
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
