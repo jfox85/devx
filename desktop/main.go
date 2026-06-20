@@ -45,8 +45,8 @@ import (
 
 	_ "embed"
 
-	"github.com/jfox85/devx/web"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/web"
 	"github.com/jfox85/devx/web/imagepolicy"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"

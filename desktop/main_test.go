@@ -232,13 +232,13 @@ func TestBuildDropEvents_EmptyAndAllRejected(t *testing.T) {
 // without needing a live Wails context.
 func TestDispatchDroppedFiles_ExtensionPolicy(t *testing.T) {
 	cases := map[string]bool{
-		"photo.png":  true,
-		"photo.PNG":  true, // dispatcher lowercases the ext
-		"a.jpeg":     true,
-		"a.webp":     true,
-		"notes.txt":  false,
+		"photo.png":   true,
+		"photo.PNG":   true, // dispatcher lowercases the ext
+		"a.jpeg":      true,
+		"a.webp":      true,
+		"notes.txt":   false,
 		"archive.zip": false,
-		"noext":      false,
+		"noext":       false,
 	}
 	for name, want := range cases {
 		_, ok := imagepolicy.ExtToMIME[strings.ToLower(filepath.Ext(name))]

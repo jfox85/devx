@@ -123,7 +123,7 @@ func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 		Scheme: "http",
 		// 127.0.0.1, not "localhost": ttyd binds IPv4 loopback only, and localhost
 		// may resolve to ::1 first, which ttyd refuses.
-		Host:   fmt.Sprintf("127.0.0.1:%d", backendPort),
+		Host: fmt.Sprintf("127.0.0.1:%d", backendPort),
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
