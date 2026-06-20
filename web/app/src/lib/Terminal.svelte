@@ -11,7 +11,7 @@
   import PromptComposer from './composer/PromptComposer.svelte'
   import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
   import { isImageFile } from './imagePolicy.js'
-  import { isDesktop, desktopConfig, clipboardImage } from './desktopBridge.js'
+  import { isDesktop, desktopConfig, clipboardImage, uploadImage as desktopUploadImage } from './desktopBridge.js'
 
   export let session
   export let artifactEvent = null
@@ -43,6 +43,7 @@
   let pasteArtifactNonce = 0
   let focusedArtifactTimer
   let composerOpen = false
+  let composerComponent = null
   let softKeysOpen = false
   $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
   $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
@@ -312,6 +313,30 @@
       e.preventDefault()
       e.stopPropagation()
       openArtifactSearch('insert')
+    }
+  }
+
+  // Receive image pastes forwarded from inside the terminal iframe via
+  // postMessage. The iframe (ttyd page) injects terminalPasteBridgeScript, which
+  // can read its own clipboard event even when the parent cannot add listeners
+  // across the cross-origin boundary (desktop app). Two message shapes:
+  //   devx:terminal-image-paste     — a clipboard image File, shipped as dataURL
+  //   devx:terminal-clipboard-image — no File present; try the native clipboard
+  function handleTerminalMessage(e) {
+    // Only trust messages from this session's terminal iframe.
+    if (!iframeEl || e.source !== iframeEl.contentWindow) return
+    const data = e.data
+    if (!data || typeof data !== 'object') return
+    if (data.type === 'devx:terminal-image-paste' && typeof data.dataURL === 'string') {
+      const base64 = data.dataURL.includes(',') ? data.dataURL.slice(data.dataURL.indexOf(',') + 1) : ''
+      if (!base64) return
+      processImageFile(fileFromBase64({
+        name: typeof data.name === 'string' ? data.name : 'clipboard.png',
+        type: typeof data.mime === 'string' ? data.mime : 'image/png',
+        data: base64,
+      }))
+    } else if (data.type === 'devx:terminal-clipboard-image' && isDesktop()) {
+      handleDesktopClipboardPaste()
     }
   }
 
@@ -648,11 +673,18 @@
     const objectURLs = valid.map(f => URL.createObjectURL(f))
 
     try {
-      const results = await Promise.all(valid.map(f => uploadImage(f, session.name)))
+      const results = await Promise.all(valid.map(uploadOneImage))
       const paths = results.map(r => r.path)
-      // Inject all paths into active tmux pane (no Enter — user confirms).
-      // Use sendLiteral so spaces in paths are preserved verbatim.
-      await sendLiteral(session.name, paths.join(' ') + ' ')
+      const joined = paths.join(' ') + ' '
+      // When the composer overlay is open, insert the path(s) into the composer
+      // textarea instead of the tmux pane so a paste/drop while composing lands
+      // where the user is typing. Otherwise inject into the active tmux pane
+      // (no Enter — user confirms). sendLiteral preserves spaces in paths.
+      if (composerOpen && composerComponent) {
+        composerComponent.insertText(joined)
+      } else {
+        await sendLiteral(session.name, joined)
+      }
       toastError = null
       toastUpload = {
         path: paths.length === 1 ? paths[0] : `${paths.length} images uploaded`,
@@ -667,6 +699,35 @@
     } finally {
       uploading = false
     }
+  }
+
+  // Upload a single image. In the desktop shell, route through the native host
+  // binding (uploadOneImageDesktop) because WKWebView strips the body of POST
+  // requests issued from the WebView, so a multipart fetch through the Wails
+  // proxy arrives empty. In a browser, use the normal fetch upload.
+  async function uploadOneImage(file) {
+    if (isDesktop()) return uploadOneImageDesktop(file)
+    return uploadImage(file, session.name)
+  }
+
+  async function uploadOneImageDesktop(file) {
+    const data = await fileToBase64(file)
+    const res = await desktopUploadImage({ name: file.name, type: file.type, session: session.name, data })
+    if (!res) return uploadImage(file, session.name) // no host binding; fall back
+    return res
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(reader.error || new Error('read failed'))
+      reader.onload = () => {
+        // reader.result is a data URL: strip the "data:<mime>;base64," prefix.
+        const comma = String(reader.result).indexOf(',')
+        resolve(String(reader.result).slice(comma + 1))
+      }
+      reader.readAsDataURL(file)
+    })
   }
 
   // Single-file convenience wrapper (paste handlers).
@@ -872,6 +933,7 @@
     window.addEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
     window.addEventListener('devx:terminal:new-artifact', handleDesktopCommand)
     window.addEventListener('devx:terminal:focus', handleDesktopCommand)
+    window.addEventListener('message', handleTerminalMessage)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
@@ -890,13 +952,22 @@
     window.removeEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
     window.removeEventListener('devx:terminal:new-artifact', handleDesktopCommand)
     window.removeEventListener('devx:terminal:focus', handleDesktopCommand)
+    window.removeEventListener('message', handleTerminalMessage)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
 
 <!-- Fill parent container (flex-1 set by App.svelte) -->
+<!--
+  --wails-drop-target:drop marks this subtree as a valid native drop target in
+  the desktop shell. Wails' OnFileDrop callback rejects the drop unless
+  document.elementFromPoint(dropX, dropY) carries this CSS property, and on
+  macOS the drop lands on the terminal <iframe>, so the property is set here and
+  on the iframe below. It is inert in the browser PWA (no Wails runtime).
+-->
 <div
   class="flex flex-col flex-1 min-h-0 bg-black relative"
+  style="--wails-drop-target: drop;"
   role="region"
   aria-label="terminal with image drop target"
   on:dragenter={handleDragEnter}
@@ -1033,7 +1104,7 @@
             src={frameURL(frame.name)}
             title="Terminal — {frame.name}"
             class="absolute inset-0 w-full h-full border-0"
-            style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0};"
+            style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0}; --wails-drop-target: drop;"
             tabindex={isActiveFrame ? 0 : -1}
             allow="clipboard-read; clipboard-write"
             on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() } }}
@@ -1065,7 +1136,7 @@
 
   <!-- Desktop: transient composer overlay (Cmd/Ctrl+K) -->
   {#if composerOpen}
-    <PromptComposer variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} />
+    <PromptComposer bind:this={composerComponent} variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} on:desktopclipboardimage={handleDesktopClipboardPaste} />
   {/if}
 
   <!-- Mobile: docked composer is THE input; terminal is mostly a display surface.
@@ -1079,6 +1150,7 @@
         on:sent={handleComposerSent}
         on:layoutchange={scheduleRefresh}
         on:imagepaste={handleComposerImagePaste}
+        on:desktopclipboardimage={handleDesktopClipboardPaste}
         on:togglekeys={() => { softKeysOpen = !softKeysOpen; scheduleRefresh() }}
       />
       {#if softKeysOpen}

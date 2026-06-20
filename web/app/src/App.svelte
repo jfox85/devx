@@ -77,6 +77,10 @@
   const viewTerminalOutputHandler = () => dispatchTerminalCommand('view-output')
   const insertArtifactHandler = () => dispatchTerminalCommand('insert-artifact')
   const newArtifactHandler = () => dispatchTerminalCommand('new-artifact')
+  // Desktop "Paste Image" accelerator (Cmd/Ctrl+Shift+V): pull the clipboard
+  // image from the native host even while the cross-origin terminal iframe has
+  // focus, where a normal paste event never reaches the SPA.
+  const pasteImageHandler = () => terminalComponent?.handleDesktopClipboardPaste?.()
 
   onMount(() => {
     if (loggedIn) {
@@ -89,6 +93,7 @@
       window.addEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
       window.addEventListener('devx:insertArtifact', insertArtifactHandler)
       window.addEventListener('devx:newArtifact', newArtifactHandler)
+      window.addEventListener('devx:pasteImage', pasteImageHandler)
       window.addEventListener(DESKTOP_EVENTS.fileDrop, handleDesktopFileDrop)
       window.addEventListener(DESKTOP_EVENTS.fileDropRejected, handleDesktopFileDropRejected)
       unsubscribeSSE = subscribeToEvents({
@@ -128,6 +133,7 @@
     window.removeEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
     window.removeEventListener('devx:insertArtifact', insertArtifactHandler)
     window.removeEventListener('devx:newArtifact', newArtifactHandler)
+    window.removeEventListener('devx:pasteImage', pasteImageHandler)
     window.removeEventListener(DESKTOP_EVENTS.fileDrop, handleDesktopFileDrop)
     window.removeEventListener(DESKTOP_EVENTS.fileDropRejected, handleDesktopFileDropRejected)
   })

@@ -3,8 +3,12 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -82,9 +86,149 @@ func TestReadDroppedImage_MissingFile(t *testing.T) {
 	}
 }
 
-// TestDispatchDroppedFiles_SkipsUnsupportedExtension verifies the extension
-// filter (keyed off imagepolicy.ExtToMIME) rejects non-image extensions before
-// any read happens. It only checks the policy lookup the dispatcher relies on,
+// TestDropEventNames pins the Go side of the DOM event-name contract; the JS
+// mirror in web/app/src/lib/desktopBridge.js (DESKTOP_EVENTS) is checked against
+// these same constants by TestDesktopBridgeEventNamesInSync.
+func TestDropEventNames(t *testing.T) {
+	if eventFileDrop != "devx:desktop:filedrop" {
+		t.Errorf("eventFileDrop = %q, want devx:desktop:filedrop", eventFileDrop)
+	}
+	if eventFileDropRejected != "devx:desktop:filedrop-rejected" {
+		t.Errorf("eventFileDropRejected = %q, want devx:desktop:filedrop-rejected", eventFileDropRejected)
+	}
+}
+
+// TestDesktopBridgeEventNamesInSync closes the cross-language drift gap that
+// TestDropEventNames alone cannot: it parses the JS mirror in
+// web/app/src/lib/desktopBridge.js (DESKTOP_EVENTS) and asserts each event-name
+// literal matches the Go constant, so a rename on either side fails CI.
+func TestDesktopBridgeEventNamesInSync(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	// thisFile = .../desktop/main_test.go
+	jsPath := filepath.Join(filepath.Dir(thisFile), "..", "web", "app", "src", "lib", "desktopBridge.js")
+	raw, err := os.ReadFile(jsPath)
+	if err != nil {
+		t.Fatalf("reading desktopBridge.js: %v", err)
+	}
+	src := string(raw)
+
+	// Match `fileDrop: '...'` / `fileDropRejected: '...'` with single or double
+	// quotes, tolerant of reformatting.
+	find := func(key string) string {
+		re := regexp.MustCompile(key + `\s*:\s*'([^']*)'|` + key + `\s*:\s*"([^"]*)"`)
+		m := re.FindStringSubmatch(src)
+		if m == nil {
+			t.Fatalf("could not find %s in DESKTOP_EVENTS", key)
+		}
+		if m[1] != "" {
+			return m[1]
+		}
+		return m[2]
+	}
+
+	if got := find("fileDrop"); got != eventFileDrop {
+		t.Errorf("DESKTOP_EVENTS.fileDrop = %q, Go eventFileDrop = %q", got, eventFileDrop)
+	}
+	if got := find("fileDropRejected"); got != eventFileDropRejected {
+		t.Errorf("DESKTOP_EVENTS.fileDropRejected = %q, Go eventFileDropRejected = %q", got, eventFileDropRejected)
+	}
+}
+
+// TestBuildDropEvents_RejectsUnreadableAllowedExtension covers the branch where
+// the extension passes the policy (.png) but readDroppedImage fails (here a
+// symlinked leaf): the file must land in rejected, not accepted, and not abort
+// the rest of the drop.
+func TestBuildDropEvents_RejectsUnreadableAllowedExtension(t *testing.T) {
+	dir := t.TempDir()
+	target := writeTemp(t, dir, "secret", 16)
+	link := filepath.Join(dir, "evil.png") // allowed extension, unreadable via O_NOFOLLOW
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	good := writeTemp(t, dir, "ok.png", 8)
+
+	accepted, rejected := buildDropEvents([]string{link, good})
+
+	if len(accepted) != 1 || accepted[0].Name != "ok.png" {
+		t.Fatalf("accepted = %v, want only ok.png", accepted)
+	}
+	if len(rejected) != 1 || rejected[0] != "evil.png" {
+		t.Errorf("rejected = %v, want [evil.png]", rejected)
+	}
+}
+
+// TestBuildDropEvents_PayloadAndPartition asserts the accepted-payload shape
+// (name/type/base64 data the SPA's fileFromBase64 decodes) and that a mixed
+// drop partitions into accepted + rejected correctly.
+func TestBuildDropEvents_PayloadAndPartition(t *testing.T) {
+	dir := t.TempDir()
+	png := writeTemp(t, dir, "shot.png", 8)
+	txt := writeTemp(t, dir, "notes.txt", 8)
+
+	accepted, rejected := buildDropEvents([]string{png, txt})
+
+	if len(accepted) != 1 {
+		t.Fatalf("accepted = %d payloads, want 1", len(accepted))
+	}
+	got := accepted[0]
+	if got.Name != "shot.png" {
+		t.Errorf("Name = %q, want shot.png", got.Name)
+	}
+	if got.Type != "image/png" {
+		t.Errorf("Type = %q, want image/png", got.Type)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(got.Data)
+	if err != nil {
+		t.Fatalf("Data is not valid base64: %v", err)
+	}
+	if len(decoded) != 8 {
+		t.Errorf("decoded payload = %d bytes, want 8", len(decoded))
+	}
+
+	if len(rejected) != 1 || rejected[0] != "notes.txt" {
+		t.Errorf("rejected = %v, want [notes.txt]", rejected)
+	}
+
+	// The accepted slice must marshal to the JSON array the SPA expects.
+	encoded, err := json.Marshal(accepted)
+	if err != nil {
+		t.Fatalf("marshal accepted: %v", err)
+	}
+	var roundtrip []map[string]string
+	if err := json.Unmarshal(encoded, &roundtrip); err != nil {
+		t.Fatalf("accepted payload is not a JSON object array: %v", err)
+	}
+	for _, key := range []string{"name", "type", "data"} {
+		if _, ok := roundtrip[0][key]; !ok {
+			t.Errorf("payload JSON missing %q key", key)
+		}
+	}
+}
+
+// TestBuildDropEvents_EmptyAndAllRejected covers the nil-slice contract used by
+// the len()>0 dispatch guards.
+func TestBuildDropEvents_EmptyAndAllRejected(t *testing.T) {
+	if accepted, rejected := buildDropEvents(nil); accepted != nil || rejected != nil {
+		t.Errorf("empty input: accepted=%v rejected=%v, want nil/nil", accepted, rejected)
+	}
+
+	dir := t.TempDir()
+	txt := writeTemp(t, dir, "a.txt", 4)
+	accepted, rejected := buildDropEvents([]string{txt})
+	if accepted != nil {
+		t.Errorf("accepted = %v, want nil", accepted)
+	}
+	if len(rejected) != 1 || rejected[0] != "a.txt" {
+		t.Errorf("rejected = %v, want [a.txt]", rejected)
+	}
+}
+
+// TestDispatchDroppedFiles_ExtensionPolicy verifies the extension filter
+// (keyed off imagepolicy.ExtToMIME) rejects non-image extensions before any
+// read happens. It only checks the policy lookup the dispatcher relies on,
 // without needing a live Wails context.
 func TestDispatchDroppedFiles_ExtensionPolicy(t *testing.T) {
 	cases := map[string]bool{

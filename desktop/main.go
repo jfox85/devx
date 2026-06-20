@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -91,12 +92,26 @@ func main() {
 	devxMenu.AddText("Focus Terminal", keys.Combo("t", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:focusTerminal"))
 	devxMenu.AddText("Focus Session List", keys.Combo("s", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:focusSessionList"))
 	devxMenu.AddText("New Session", keys.Combo("c", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newSession"))
+	// Paste Image needs its own accelerator: the terminal runs in a cross-origin
+	// iframe, so a plain Cmd+V goes straight to xterm and the SPA never sees the
+	// paste event to pull the clipboard image from the native host. This menu
+	// item fires regardless of iframe focus. Plain Cmd+V text paste is left to
+	// xterm.
+	devxMenu.AddText("Paste Image", keys.Combo("v", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:pasteImage"))
 	devxMenu.AddSeparator()
 	devxMenu.AddText("Toggle Artifacts", keys.Combo("a", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:toggleArtifacts"))
 	devxMenu.AddText("Cycle Split", keys.Combo("o", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:cycleSplit"))
-	devxMenu.AddText("View Terminal Output", keys.Combo("v", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:viewTerminalOutput"))
+	// Cmd+Shift+V is reserved for Paste Image above; View Terminal Output uses U
+	// ("oUtput") to avoid a duplicate accelerator that makes the shortcut
+	// ambiguous.
+	devxMenu.AddText("View Terminal Output", keys.Combo("u", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:viewTerminalOutput"))
 	devxMenu.AddText("Insert Artifact", keys.Combo("i", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:insertArtifact"))
 	devxMenu.AddText("New Text Artifact", keys.Combo("n", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newArtifact"))
+	// A standard Edit menu is required so the WebView receives Cut/Copy/Paste/
+	// SelectAll actions through the macOS responder chain. Without it, WKWebView
+	// never gets the paste action, so plain Cmd+V (and tools like Raycast that
+	// paste by simulating Cmd+V) produce no JS paste event in the app at all.
+	appMenu.Append(menu.EditMenu())
 
 	// Keep the SPA loaded from the Wails asset server (no external-link landing
 	// page), but let terminal iframes go directly to the private loopback origin
@@ -145,8 +160,15 @@ window.__DEVX_DESKTOP = { terminalBase: %q, terminalToken: %q };
 		// Wails' WebView swallows OS file drops before the DOM sees them. Enabling
 		// the file-drop bridge makes OnFileDrop fire with absolute paths, which we
 		// forward into the existing web upload flow (see host.startup).
+		//
+		// DisableWebViewDrop is required: our terminal is a cross-origin iframe, so
+		// with WKWebView's own drag handling left enabled the webview rejects the
+		// drop (it "floats back" to the source) before Wails' performDragOperation
+		// runs. Disabling it makes the native handler accept every file drop and
+		// forward the paths to OnFileDrop regardless of the DOM element underneath.
 		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop: true,
+			EnableFileDrop:     true,
+			DisableWebViewDrop: true,
 		},
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{
@@ -223,19 +245,31 @@ func readDroppedImage(p string) ([]byte, error) {
 	return data, nil
 }
 
-// dispatchDroppedFiles reads dropped image files and forwards them to the SPA
-// as a devx:desktop:filedrop CustomEvent carrying {name, type, data(base64)}.
-func (h *Host) dispatchDroppedFiles(paths []string) {
-	if h.ctx == nil {
-		return
-	}
-	type payload struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
-		Data string `json:"data"`
-	}
-	var files []payload
-	var rejected []string
+// DOM CustomEvent names the host dispatches into the SPA. These MUST stay in
+// sync with the DESKTOP_EVENTS constants in web/app/src/lib/desktopBridge.js;
+// there is no cross-language drift check, so the contract is anchored here and
+// pinned by TestDropEventNames in main_test.go.
+const (
+	eventFileDrop         = "devx:desktop:filedrop"
+	eventFileDropRejected = "devx:desktop:filedrop-rejected"
+)
+
+// droppedFile is the payload shape the SPA's filedrop handler decodes
+// (fileFromBase64 in Terminal.svelte).
+type droppedFile struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Data string `json:"data"`
+}
+
+// buildDropEvents partitions dropped paths into accepted image payloads and
+// rejected file names, reading + validating each accepted file. It is the
+// Wails-free, testable core of the drop bridge (it still does filesystem I/O
+// and logging, but no Wails context or DOM); dispatchDroppedFiles wraps it to
+// emit the events. accepted is nil unless at least one file was both a
+// supported type and read successfully; rejected is nil unless at least one
+// file was an unsupported type or failed to read.
+func buildDropEvents(paths []string) (accepted []droppedFile, rejected []string) {
 	for _, p := range paths {
 		name := filepath.Base(p)
 		mime, ok := imagepolicy.ExtToMIME[strings.ToLower(filepath.Ext(p))]
@@ -251,15 +285,26 @@ func (h *Host) dispatchDroppedFiles(paths []string) {
 			rejected = append(rejected, name)
 			continue
 		}
-		files = append(files, payload{
+		accepted = append(accepted, droppedFile{
 			Name: name,
 			Type: mime,
 			Data: base64.StdEncoding.EncodeToString(data),
 		})
 	}
-	if len(files) > 0 {
-		if encoded, err := json.Marshal(files); err == nil {
-			h.dispatchEvent("devx:desktop:filedrop", string(encoded))
+	return accepted, rejected
+}
+
+// dispatchDroppedFiles reads dropped image files and forwards them to the SPA
+// as a devx:desktop:filedrop CustomEvent carrying {name, type, data(base64)},
+// plus a devx:desktop:filedrop-rejected event for any skipped files.
+func (h *Host) dispatchDroppedFiles(paths []string) {
+	if h.ctx == nil {
+		return
+	}
+	accepted, rejected := buildDropEvents(paths)
+	if len(accepted) > 0 {
+		if encoded, err := json.Marshal(accepted); err == nil {
+			h.dispatchEvent(eventFileDrop, string(encoded))
 		} else {
 			log.Printf("desktop: marshaling dropped files failed: %v", err)
 		}
@@ -271,7 +316,7 @@ func (h *Host) dispatchDroppedFiles(paths []string) {
 	// silent. The accepted files still upload via the filedrop event above.
 	if len(rejected) > 0 {
 		if encoded, err := json.Marshal(rejected); err == nil {
-			h.dispatchEvent("devx:desktop:filedrop-rejected", string(encoded))
+			h.dispatchEvent(eventFileDropRejected, string(encoded))
 		} else {
 			log.Printf("desktop: marshaling rejected drops failed: %v", err)
 		}
@@ -296,19 +341,43 @@ func (h *Host) dispatchEvent(name, detailJSON string) {
 // event does not reliably expose clipboard images on macOS WKWebView, so the
 // frontend calls this binding on Cmd/Ctrl+V and routes the result through the
 // same upload flow as drag/drop.
+// ClipboardImage returns a clipboard image as base64, or "" when the clipboard
+// holds no usable image. WKWebView often omits clipboard images from the DOM
+// paste event, so the desktop paste path calls this native helper instead.
+//
+// Two clipboard shapes are handled because macOS apps populate the pasteboard
+// differently: image editors and screenshots-to-clipboard put raw image data
+// (coercible to «class PNGf»), while Finder copies and screenshot tools that
+// save-then-copy put a file URL («class furl») pointing at the image file. The
+// browser PWA's paste event surfaces both as a File; here we replicate that by
+// trying raw image data first, then falling back to reading the referenced file.
 func (h *Host) ClipboardImage() (string, error) {
 	if goruntime.GOOS != "darwin" {
 		return "", nil
 	}
+	if data := clipboardImageData(); len(data) > 0 {
+		return base64.StdEncoding.EncodeToString(data), nil
+	}
+	if data := clipboardImageFile(); len(data) > 0 {
+		return base64.StdEncoding.EncodeToString(data), nil
+	}
+	return "", nil // clipboard held no image; expected on text paste
+}
+
+// clipboardImageData coerces raw clipboard image data to PNG via AppleScript and
+// returns the bytes, or nil when the clipboard has no coercible image data.
+func clipboardImageData() []byte {
 	tmp, err := os.CreateTemp("", "devx-clip-*.png")
 	if err != nil {
-		return "", err
+		log.Printf("desktop: clipboard temp file: %v", err)
+		return nil
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
-	// Write any clipboard image to a PNG file via AppleScript. If the clipboard
-	// has no image data, the «class PNGf» coercion fails and we return empty.
+	// The «class PNGf» coercion fails (osascript still exits 0 via the on-error
+	// branch) when the clipboard holds no raw image data, e.g. plain text or a
+	// file reference; that is the expected no-image path, not an error.
 	script := fmt.Sprintf(`try
 	set png to (the clipboard as «class PNGf»)
 	set f to open for access POSIX file %q with write permission
@@ -319,37 +388,122 @@ on error
 	try
 		close access f
 	end try
-	return ""
 end try`, tmpPath)
 	if err := exec.Command("osascript", "-e", script).Run(); err != nil {
-		// A non-zero exit here is an osascript execution/permission failure, not
-		// "clipboard has no image" (that path returns "" with exit 0). Log it so a
-		// regressed clipboard bridge is debuggable, but still fail soft for paste.
 		log.Printf("desktop: clipboard image osascript failed: %v", err)
-		return "", nil
+		return nil
 	}
-	// Bound the read like the drop path: a misbehaving app could leave a huge
-	// image on the clipboard, and the upload API rejects anything over the cap
-	// anyway, so fail fast instead of buffering + base64-encoding it.
-	clip, err := os.Open(tmpPath)
-	if err != nil {
-		log.Printf("desktop: opening clipboard temp file failed: %v", err)
-		return "", nil
-	}
-	defer clip.Close()
-	data, err := io.ReadAll(io.LimitReader(clip, maxDroppedFileBytes+1))
+	data, err := readCappedFile(tmpPath)
 	if err != nil {
 		log.Printf("desktop: reading clipboard temp file failed: %v", err)
-		return "", nil
+		return nil
 	}
-	if len(data) == 0 {
-		return "", nil // clipboard held no image; expected on text paste
+	return data
+}
+
+// clipboardImageFile handles the «class furl» case: the clipboard references a
+// file (Finder copy, save-then-copy screenshot tools). If it points at a
+// supported image type, its bytes are read through the same hardened path as
+// dropped files (O_NOFOLLOW, regular-file check, size cap).
+func clipboardImageFile() []byte {
+	out, err := exec.Command("osascript", "-e",
+		`try
+	return POSIX path of (the clipboard as «class furl»)
+end try`).Output()
+	if err != nil {
+		return nil
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return nil
+	}
+	if _, ok := imagepolicy.ExtToMIME[strings.ToLower(filepath.Ext(path))]; !ok {
+		return nil // not a supported image type
+	}
+	data, err := readDroppedImage(path)
+	if err != nil {
+		log.Printf("desktop: reading clipboard file %q failed: %v", path, err)
+		return nil
+	}
+	return data
+}
+
+// readCappedFile reads up to the upload cap (plus one byte to detect overflow)
+// and returns an error if the file exceeds it, matching the drop-path bound.
+func readCappedFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxDroppedFileBytes+1))
+	if err != nil {
+		return nil, err
 	}
 	if len(data) > maxDroppedFileBytes {
-		log.Printf("desktop: clipboard image exceeds %d byte cap", maxDroppedFileBytes)
-		return "", nil
+		return nil, fmt.Errorf("clipboard image exceeds %d byte cap", maxDroppedFileBytes)
 	}
-	return base64.StdEncoding.EncodeToString(data), nil
+	return data, nil
+}
+
+// UploadImage saves a clipboard/dropped image to the session's upload dir and
+// returns the upload handler's JSON response ({"path": ...}).
+//
+// This native binding exists because WKWebView's custom-scheme handler drops
+// the HTTP body of POST requests issued by the WebView (fetch/XHR), so a
+// multipart upload sent through the Wails asset-server proxy arrives with an
+// empty body and the server rejects it with "failed to parse form". Routing the
+// upload in-process to the private loopback server (with the real API token,
+// which is never exposed to the WebView) sidesteps the WebView entirely while
+// keeping the same /api/upload-image enforcement path the browser PWA uses.
+func (h *Host) UploadImage(name, mimeType, session, dataB64 string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if err != nil {
+		return "", fmt.Errorf("decode image: %w", err)
+	}
+	if len(data) > maxDroppedFileBytes {
+		return "", fmt.Errorf("image exceeds %d byte cap", maxDroppedFileBytes)
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("image", name)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if session != "" {
+		if err := mw.WriteField("session", session); err != nil {
+			return "", err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return "", err
+	}
+
+	url := "http://" + h.server.Addr() + "/api/upload-image"
+	req, err := http.NewRequest(http.MethodPost, url, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+h.server.Token())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return string(respBody), nil
 }
 
 func (h *Host) shutdown(ctx context.Context) {

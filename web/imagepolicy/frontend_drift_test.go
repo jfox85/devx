@@ -22,17 +22,29 @@ func frontendPolicyPath(t *testing.T) string {
 }
 
 // parseJSArray extracts the string literals from `export const <name> = [...]`.
+// The array body matcher uses [\s\S]*? so a multi-line / Prettier-reformatted
+// array still parses (the . metacharacter would not cross newlines), and both
+// single- and double-quoted literals are accepted — a harmless reformat must
+// not turn into a false "could not find" CI failure that masquerades as real
+// drift.
 func parseJSArray(t *testing.T, src, name string) []string {
 	t.Helper()
-	re := regexp.MustCompile(`export const ` + regexp.QuoteMeta(name) + `\s*=\s*\[([^\]]*)\]`)
+	re := regexp.MustCompile(`export const ` + regexp.QuoteMeta(name) + `\s*=\s*\[([\s\S]*?)\]`)
 	m := re.FindStringSubmatch(src)
 	if m == nil {
 		t.Fatalf("could not find `export const %s = [...]` in imagePolicy.js", name)
 	}
-	items := regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(m[1], -1)
+	items := regexp.MustCompile(`'([^']*)'|"([^"]*)"`).FindAllStringSubmatch(m[1], -1)
 	out := make([]string, 0, len(items))
 	for _, it := range items {
-		out = append(out, it[1])
+		// Alternation: group 1 captures single-quoted literals, group 2 double-
+		// quoted. Exactly one branch matches; the unused group is the empty string.
+		// (An empty literal '' or "" yields "" from either branch, which is correct.)
+		if it[1] != "" {
+			out = append(out, it[1])
+		} else {
+			out = append(out, it[2])
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -83,6 +95,12 @@ func TestFrontendPolicyInSync(t *testing.T) {
 
 // TestPolicyMapsConsistent guards the two Go maps against each other: every
 // MIME type must have an extension that maps back to that MIME type.
+//
+// This is intentionally one-directional (MIMEToExt -> ExtToMIME). The reverse
+// is not total: ExtToMIME has alias extensions (e.g. ".jpeg") that share a MIME
+// type whose canonical extension in MIMEToExt is different (".jpg"), so a strict
+// reverse round-trip would false-positive on those aliases. Each ExtToMIME value
+// must still be a known MIME type, which the check below verifies via membership.
 func TestPolicyMapsConsistent(t *testing.T) {
 	for mimeType, ext := range MIMEToExt {
 		back, ok := ExtToMIME[ext]
@@ -92,6 +110,12 @@ func TestPolicyMapsConsistent(t *testing.T) {
 		}
 		if back != mimeType {
 			t.Errorf("round-trip mismatch: %q -> %q -> %q", mimeType, ext, back)
+		}
+	}
+	// Every extension alias must still resolve to a MIME type the server accepts.
+	for ext, mimeType := range ExtToMIME {
+		if _, ok := MIMEToExt[mimeType]; !ok {
+			t.Errorf("ExtToMIME[%q]=%q is not an accepted MIME type", ext, mimeType)
 		}
 	}
 }

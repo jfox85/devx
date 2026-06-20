@@ -39,6 +39,19 @@ export async function clipboardImage() {
   return data || null
 }
 
+// uploadImage sends an image to the native host, which uploads it in-process to
+// the private loopback server and returns the saved path. This bypasses the
+// Wails asset-server proxy because WKWebView drops the body of POST requests
+// issued from the WebView, so a multipart fetch upload arrives empty and the
+// server rejects it. Returns the parsed { path } response, or null if there is
+// no host binding (plain browser), letting callers fall back to fetch.
+export async function uploadImage({ name, type, session, data }) {
+  const binding = host()?.UploadImage
+  if (typeof binding !== 'function') return null
+  const res = await binding(name || 'image.png', type || 'image/png', session || '', data)
+  return JSON.parse(res)
+}
+
 // openExternal opens a URL in the user's default browser via the host. Returns
 // true if it handled the open (desktop), false in a browser so the caller can
 // fall back to default link behaviour. onError runs if the native call rejects.

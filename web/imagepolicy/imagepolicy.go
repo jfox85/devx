@@ -1,9 +1,17 @@
 // Package imagepolicy is the single source of truth for which image types the
-// upload flow accepts and the maximum upload size. The HTTP upload handlers
-// (package web), the desktop file-drop/clipboard bridge (the Wails shell), and
-// the SPA all enforce the same rules; keeping the values here means a policy
-// change is one edit instead of four. The frontend mirror lives in
-// web/app/src/lib/imagePolicy.js and is kept in lockstep by a drift test.
+// upload flow accepts and the maximum upload size.
+//
+// The accepted MIME/extension set is enforced in three places: the HTTP upload
+// handlers (package web), the desktop file-drop/clipboard bridge (the Wails
+// shell), and the SPA. Keeping the values here means a type/ext policy change is
+// one edit; the frontend mirror in web/app/src/lib/imagePolicy.js is kept in
+// lockstep by a drift test (frontend_drift_test.go).
+//
+// MaxUploadBytes is authoritative but enforced only server-side (and in the
+// desktop host, which fails fast before bridging). The SPA deliberately does
+// not mirror or pre-check the size cap — the server is the boundary that rejects
+// oversize uploads — so MaxUploadBytes intentionally has no imagePolicy.js
+// counterpart and is not part of the drift check.
 package imagepolicy
 
 // MaxUploadBytes is the maximum accepted image size. The server rejects larger

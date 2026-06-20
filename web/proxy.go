@@ -158,7 +158,7 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 		return err
 	}
 	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
-	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+terminalPasteBridgeScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -211,5 +211,54 @@ const terminalCopyOnSelectScript = `<script>
   }
   document.addEventListener('mouseup', function () { setTimeout(copySelection, 0); }, true);
   document.addEventListener('touchend', function () { setTimeout(copySelection, 0); }, true);
+})();
+</script>`
+
+// terminalPasteBridgeScript forwards image pastes from inside the (cross-origin)
+// ttyd terminal iframe up to the parent SPA via postMessage. The SPA cannot add
+// a paste listener to the terminal iframe directly because, in the desktop app,
+// the iframe is served from the private loopback origin and contentDocument is
+// cross-origin. xterm would otherwise paste raw image bytes into the shell as
+// garbage. When a clipboard image File is present it is shipped as a data URL;
+// when it is not (WKWebView omits the File, or the clipboard holds a file URL),
+// a flag tells the parent to fall back to the native clipboard read.
+const terminalPasteBridgeScript = `<script>
+(function () {
+  if (window.__devxPasteBridge) return;
+  window.__devxPasteBridge = true;
+  document.addEventListener('paste', function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
+        var file = it.getAsFile();
+        if (!file) continue;
+        e.preventDefault();
+        e.stopPropagation();
+        var reader = new FileReader();
+        reader.onload = function () {
+          try {
+            parent.postMessage({
+              type: 'devx:terminal-image-paste',
+              name: file.name || 'clipboard.png',
+              mime: file.type || 'image/png',
+              dataURL: reader.result,
+            }, '*');
+          } catch (err) {}
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+    }
+    // No image File on the clipboard. In the desktop app this is also the path
+    // for clipboard images WKWebView hides and for file-URL clipboards (e.g.
+    // Raycast "paste recent screenshot"); ask the parent to try the native
+    // clipboard. Only do so when there is no text, so normal text paste into
+    // the shell is never intercepted.
+    var text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+    if (!text) {
+      try { parent.postMessage({ type: 'devx:terminal-clipboard-image' }, '*'); } catch (err) {}
+    }
+  }, true);
 })();
 </script>`
