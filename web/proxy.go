@@ -163,7 +163,7 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 		return err
 	}
 	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
-	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+terminalPasteBridgeScript+"</body>"), 1)
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalHelperScript+terminalPasteBridgeScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -188,10 +188,29 @@ html, body {
 }
 </style>`
 
-const terminalCopyOnSelectScript = `<script>
+const terminalHelperScript = `<script>
 (function () {
-  if (window.__devxCopyOnSelect) return;
+  if (window.__devxTerminalHelpers) return;
+  window.__devxTerminalHelpers = true;
   window.__devxCopyOnSelect = true;
+  function focusTerminalInput() {
+    var attempts = 0;
+    function tryFocus() {
+      attempts++;
+      var textarea = document.querySelector('.xterm-helper-textarea');
+      if (textarea) {
+        textarea.focus();
+        return;
+      }
+      if (attempts < 12) setTimeout(tryFocus, 50);
+    }
+    tryFocus();
+  }
+  window.addEventListener('message', function (event) {
+    if (event.source !== window.parent) return;
+    if (event && event.data && event.data.type === 'devx:focus-terminal') focusTerminalInput();
+  });
+  window.addEventListener('focus', focusTerminalInput);
   function fallbackCopy(text) {
     try {
       var ta = document.createElement('textarea');

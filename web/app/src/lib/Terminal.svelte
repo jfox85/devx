@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
+  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, sendInput, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
   import ArtifactPane from './artifacts/ArtifactPane.svelte'
@@ -22,6 +22,13 @@
   let windowPollTimer
   let iframeEl
   let fileInputEl
+  let keyboardProxyEl
+  let keyboardProxyValue = ''
+  let keyboardProxyComposing = false
+  let keyboardProxyQueue = Promise.resolve()
+  let keyboardProxyTextBuffer = ''
+  let keyboardProxyTextSession = ''
+  let keyboardProxyFlushTimer
 
   // Artifact pane/reference state
   let artifactPaneOpen = false
@@ -128,6 +135,12 @@
     artifactQuery = ''
     artifactSearchItems = []
     focusedArtifactDismissed = false
+    keyboardProxyQueue = Promise.resolve()
+    keyboardProxyValue = ''
+    keyboardProxyComposing = false
+    keyboardProxyTextBuffer = ''
+    keyboardProxyTextSession = ''
+    clearTimeout(keyboardProxyFlushTimer)
     // Restore incoming session's chrome (or defaults for first visit).
     const chrome = getSessionChrome(session.name)
     artifactPaneOpen = chrome?.artifactPaneOpen ?? false
@@ -250,8 +263,17 @@
     } catch { /* ignore any cross-origin / not-yet-loaded errors */ }
     // Fallback: at minimum route events to the iframe window. Desktop Wails
     // terminal frames are intentionally cross-origin (wails:// parent,
-    // 127.0.0.1 iframe) so this is the primary focus path there.
+    // 127.0.0.1 iframe), so ask the injected terminal helper to focus xterm's
+    // textarea from inside the iframe. WKWebView still won't always transfer
+    // keyboard focus to a cross-origin iframe programmatically, so keep a tiny
+    // parent-side keyboard proxy focused as a desktop fallback and forward keys
+    // to tmux until the user manually clicks inside the terminal frame.
     iframeEl?.focus()
+    try {
+      const targetOrigin = new URL(iframeEl?.src || frameURL(session.name), window.location.href).origin
+      iframeEl?.contentWindow?.postMessage({ type: 'devx:focus-terminal' }, targetOrigin)
+    } catch { /* ignore */ }
+    if (typeof window !== 'undefined' && window.__DEVX_DESKTOP) keyboardProxyEl?.focus()
   }
 
   function focusTerminalSoon() {
@@ -288,36 +310,54 @@
     }
   }
 
-  function iframeHotkey(e) {
+  function handleTerminalAppShortcut(e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault()
       e.stopPropagation()
       toggleComposer()
-    } else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+      return true
+    }
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:quickSwitcher'))
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:newSession'))
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
       e.preventDefault()
       e.stopPropagation()
       toggleArtifacts()
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
       e.preventDefault()
       e.stopPropagation()
       cycleSplitMode()
-    } else if ((artifactTriggerKey === 'Ctrl+Space' && e.ctrlKey && !e.metaKey && !e.altKey && e.key === ' ') || (!e.ctrlKey && !e.metaKey && !e.altKey && artifactTriggerKey.length === 1 && e.key === artifactTriggerKey)) {
+      return true
+    }
+    if ((artifactTriggerKey === 'Ctrl+Space' && e.ctrlKey && !e.metaKey && !e.altKey && e.key === ' ') || (!e.ctrlKey && !e.metaKey && !e.altKey && artifactTriggerKey.length === 1 && e.key === artifactTriggerKey)) {
       e.preventDefault()
       e.stopPropagation()
       openArtifactSearch('insert')
+      return true
     }
+    return false
+  }
+
+  function iframeHotkey(e) {
+    handleTerminalAppShortcut(e)
   }
 
   // Single owner of terminal-iframe image paste, for both browser and desktop.
@@ -346,6 +386,98 @@
       }))
     } else if (data.type === 'devx:terminal-clipboard-image' && isDesktop()) {
       handleDesktopClipboardPaste()
+    }
+  }
+
+  function tmuxKeyForEvent(e) {
+    const named = {
+      Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'BSpace', Delete: 'Delete',
+      ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+      Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'IC',
+    }
+    if (named[e.key]) return named[e.key]
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key?.length === 1 && /[a-zA-Z]/.test(e.key)) {
+      return 'C-' + e.key.toLowerCase()
+    }
+    if (e.altKey && !e.metaKey && !e.ctrlKey && e.key?.length === 1) {
+      return 'M-' + e.key
+    }
+    return ''
+  }
+
+  function enqueueKeyboardProxyInput(sessionName, send) {
+    keyboardProxyQueue = keyboardProxyQueue.catch(() => {}).then(() => send(sessionName))
+    return keyboardProxyQueue
+  }
+
+  function flushKeyboardProxyText() {
+    clearTimeout(keyboardProxyFlushTimer)
+    const text = keyboardProxyTextBuffer
+    const sessionName = keyboardProxyTextSession
+    keyboardProxyTextBuffer = ''
+    keyboardProxyTextSession = ''
+    if (!text || !sessionName) return keyboardProxyQueue
+    return enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text, { mode: 'literal' }))
+  }
+
+  function bufferKeyboardProxyText(sessionName, text) {
+    if (!text) return
+    if (keyboardProxyTextSession && keyboardProxyTextSession !== sessionName) {
+      flushKeyboardProxyText()
+    }
+    keyboardProxyTextSession = sessionName
+    keyboardProxyTextBuffer += text
+    clearTimeout(keyboardProxyFlushTimer)
+    keyboardProxyFlushTimer = setTimeout(flushKeyboardProxyText, 75)
+  }
+
+  function handleKeyboardProxyKeydown(e) {
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    if (handleTerminalAppShortcut(e)) return
+    if (e.metaKey) return
+    const key = tmuxKeyForEvent(e)
+    if (!key) return
+    e.preventDefault()
+    e.stopPropagation()
+    const sessionName = session.name
+    flushKeyboardProxyText()
+    enqueueKeyboardProxyInput(sessionName, (name) => sendKey(key, name))
+  }
+
+  function handleKeyboardProxyInput(e) {
+    if (keyboardProxyComposing || e?.isComposing) return
+    const text = keyboardProxyValue
+    const sessionName = session.name
+    keyboardProxyValue = ''
+    if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    bufferKeyboardProxyText(sessionName, text)
+  }
+
+  function handleKeyboardProxyCompositionStart() {
+    keyboardProxyComposing = true
+  }
+
+  function handleKeyboardProxyCompositionEnd() {
+    keyboardProxyComposing = false
+    handleKeyboardProxyInput()
+  }
+
+  function handleKeyboardProxyPaste(e) {
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    const items = e.clipboardData?.items || []
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        e.preventDefault()
+        processImageFile(item.getAsFile())
+        return
+      }
+    }
+    const text = e.clipboardData?.getData('text/plain') || ''
+    if (text) {
+      e.preventDefault()
+      const sessionName = session.name
+      flushKeyboardProxyText()
+      enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text))
     }
   }
 
@@ -587,8 +719,8 @@
     resizeObserver.observe(iframeEl)
   }
 
-  async function sendKey(key) {
-    try { await apiSendKeys(session.name, key) } catch { /* ignore */ }
+  async function sendKey(key, sessionName = session.name) {
+    try { await apiSendKeys(sessionName, key) } catch { /* ignore */ }
   }
 
   // Stable sessionStorage key for the active window preference of a session.
@@ -959,6 +1091,7 @@
     clearInterval(windowPollTimer)
     clearTimeout(resizeTimer)
     clearTimeout(focusedArtifactTimer)
+    clearTimeout(keyboardProxyFlushTimer)
     resizeObserver?.disconnect()
     window.visualViewport?.removeEventListener('resize', scheduleRefresh)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -995,6 +1128,21 @@
   on:dragover={handleDragOver}
   on:drop={handleDrop}
 >
+
+  <textarea
+    bind:this={keyboardProxyEl}
+    bind:value={keyboardProxyValue}
+    aria-hidden="true"
+    autocomplete="off"
+    autocapitalize="off"
+    spellcheck="false"
+    class="fixed w-px h-px opacity-0 pointer-events-none -left-10 top-0"
+    on:keydown={handleKeyboardProxyKeydown}
+    on:input={handleKeyboardProxyInput}
+    on:compositionstart={handleKeyboardProxyCompositionStart}
+    on:compositionend={handleKeyboardProxyCompositionEnd}
+    on:paste={handleKeyboardProxyPaste}
+  ></textarea>
 
   <!-- Drag-and-drop overlay -->
   {#if isDragOver}

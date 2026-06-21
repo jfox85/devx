@@ -43,7 +43,7 @@ func ttydArgs(sessionName string, port int) []string {
 		"-W",
 		"--base-path", "/terminal/" + sessionName,
 		"-t", fmt.Sprintf("scrollback=%d", ttydScrollbackLines),
-		"-t", "fontFamily=HackNerdFontMono, monospace",
+		"-t", "fontFamily=Menlo, HackNerdFontMono, monospace",
 		"-t", "macOptionClickForcesSelection=true",
 		"tmux", "new-session", "-A", "-s", webSession, "-t", "=" + sessionName,
 	}

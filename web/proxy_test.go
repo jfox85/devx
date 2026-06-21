@@ -22,6 +22,9 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	if !strings.Contains(got, "__devxCopyOnSelect") || !strings.Contains(got, "navigator.clipboard.writeText") {
 		t.Fatalf("copy-on-select script missing from response: %s", got)
 	}
+	if !strings.Contains(got, "devx:focus-terminal") || !strings.Contains(got, "event.source !== window.parent") || !strings.Contains(got, ".xterm-helper-textarea") {
+		t.Fatalf("focus bridge script missing from response: %s", got)
+	}
 	if !strings.Contains(got, `/nerd-font.css`) || !strings.Contains(got, "overscroll-behavior") {
 		t.Fatalf("terminal head addons missing from response: %s", got)
 	}

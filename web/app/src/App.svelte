@@ -145,6 +145,10 @@
   function openTerminal(session) {
     activeSession = session
     view = 'terminal'
+    tick().then(() => {
+      setTimeout(() => terminalComponent?.focusTerminalSurface?.(), 0)
+      setTimeout(() => terminalComponent?.focusTerminalSurface?.(), 250)
+    })
     if (session.attention_flag) {
       unflagSession(session.name).catch(() => {})
     }
