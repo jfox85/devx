@@ -23,6 +23,9 @@
   let keyboardProxyValue = ''
   let keyboardProxyComposing = false
   let keyboardProxyQueue = Promise.resolve()
+  let keyboardProxyTextBuffer = ''
+  let keyboardProxyTextSession = ''
+  let keyboardProxyFlushTimer
 
   // Artifact pane/reference state
   let artifactPaneOpen = false
@@ -131,6 +134,9 @@
     keyboardProxyQueue = Promise.resolve()
     keyboardProxyValue = ''
     keyboardProxyComposing = false
+    keyboardProxyTextBuffer = ''
+    keyboardProxyTextSession = ''
+    clearTimeout(keyboardProxyFlushTimer)
     // Restore incoming session's chrome (or defaults for first visit).
     const chrome = getSessionChrome(session.name)
     artifactPaneOpen = chrome?.artifactPaneOpen ?? false
@@ -382,6 +388,27 @@
     return keyboardProxyQueue
   }
 
+  function flushKeyboardProxyText() {
+    clearTimeout(keyboardProxyFlushTimer)
+    const text = keyboardProxyTextBuffer
+    const sessionName = keyboardProxyTextSession
+    keyboardProxyTextBuffer = ''
+    keyboardProxyTextSession = ''
+    if (!text || !sessionName) return keyboardProxyQueue
+    return enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text, { mode: 'literal' }))
+  }
+
+  function bufferKeyboardProxyText(sessionName, text) {
+    if (!text) return
+    if (keyboardProxyTextSession && keyboardProxyTextSession !== sessionName) {
+      flushKeyboardProxyText()
+    }
+    keyboardProxyTextSession = sessionName
+    keyboardProxyTextBuffer += text
+    clearTimeout(keyboardProxyFlushTimer)
+    keyboardProxyFlushTimer = setTimeout(flushKeyboardProxyText, 75)
+  }
+
   function handleKeyboardProxyKeydown(e) {
     if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
     if (handleTerminalAppShortcut(e)) return
@@ -391,6 +418,7 @@
     e.preventDefault()
     e.stopPropagation()
     const sessionName = session.name
+    flushKeyboardProxyText()
     enqueueKeyboardProxyInput(sessionName, (name) => sendKey(key, name))
   }
 
@@ -400,7 +428,7 @@
     const sessionName = session.name
     keyboardProxyValue = ''
     if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
-    enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text))
+    bufferKeyboardProxyText(sessionName, text)
   }
 
   function handleKeyboardProxyCompositionStart() {
@@ -425,6 +453,7 @@
     if (text) {
       e.preventDefault()
       const sessionName = session.name
+      flushKeyboardProxyText()
       enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text))
     }
   }
@@ -944,6 +973,7 @@
     clearInterval(windowPollTimer)
     clearTimeout(resizeTimer)
     clearTimeout(focusedArtifactTimer)
+    clearTimeout(keyboardProxyFlushTimer)
     resizeObserver?.disconnect()
     window.visualViewport?.removeEventListener('resize', scheduleRefresh)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
