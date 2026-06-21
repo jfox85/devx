@@ -202,6 +202,7 @@ const terminalCopyOnSelectScript = `<script>
     tryFocus();
   }
   window.addEventListener('message', function (event) {
+    if (event.source !== window.parent) return;
     if (event && event.data && event.data.type === 'devx:focus-terminal') focusTerminalInput();
   });
   window.addEventListener('focus', focusTerminalInput);
