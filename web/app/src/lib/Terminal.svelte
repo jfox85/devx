@@ -128,6 +128,9 @@
     artifactQuery = ''
     artifactSearchItems = []
     focusedArtifactDismissed = false
+    keyboardProxyQueue = Promise.resolve()
+    keyboardProxyValue = ''
+    keyboardProxyComposing = false
     // Restore incoming session's chrome (or defaults for first visit).
     const chrome = getSessionChrome(session.name)
     artifactPaneOpen = chrome?.artifactPaneOpen ?? false
@@ -374,8 +377,8 @@
     return ''
   }
 
-  function enqueueKeyboardProxyInput(send) {
-    keyboardProxyQueue = keyboardProxyQueue.catch(() => {}).then(send)
+  function enqueueKeyboardProxyInput(sessionName, send) {
+    keyboardProxyQueue = keyboardProxyQueue.catch(() => {}).then(() => send(sessionName))
     return keyboardProxyQueue
   }
 
@@ -387,15 +390,17 @@
     if (!key) return
     e.preventDefault()
     e.stopPropagation()
-    enqueueKeyboardProxyInput(() => sendKey(key))
+    const sessionName = session.name
+    enqueueKeyboardProxyInput(sessionName, (name) => sendKey(key, name))
   }
 
   function handleKeyboardProxyInput(e) {
     if (keyboardProxyComposing || e?.isComposing) return
     const text = keyboardProxyValue
+    const sessionName = session.name
     keyboardProxyValue = ''
     if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
-    enqueueKeyboardProxyInput(() => sendInput(session.name, text))
+    enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text))
   }
 
   function handleKeyboardProxyCompositionStart() {
@@ -419,7 +424,8 @@
     const text = e.clipboardData?.getData('text/plain') || ''
     if (text) {
       e.preventDefault()
-      enqueueKeyboardProxyInput(() => sendInput(session.name, text))
+      const sessionName = session.name
+      enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text))
     }
   }
 
@@ -645,8 +651,8 @@
     resizeObserver.observe(iframeEl)
   }
 
-  async function sendKey(key) {
-    try { await apiSendKeys(session.name, key) } catch { /* ignore */ }
+  async function sendKey(key, sessionName = session.name) {
+    try { await apiSendKeys(sessionName, key) } catch { /* ignore */ }
   }
 
   // Stable sessionStorage key for the active window preference of a session.

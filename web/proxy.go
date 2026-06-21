@@ -158,7 +158,7 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 		return err
 	}
 	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
-	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalHelperScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -183,7 +183,7 @@ html, body {
 }
 </style>`
 
-const terminalCopyOnSelectScript = `<script>
+const terminalHelperScript = `<script>
 (function () {
   if (window.__devxTerminalHelpers) return;
   window.__devxTerminalHelpers = true;
