@@ -463,6 +463,7 @@
   }
 
   function handleKeyboardProxyPaste(e) {
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
     const items = e.clipboardData?.items || []
     for (const item of items) {
       if (item.kind === 'file' && item.type.startsWith('image/')) {

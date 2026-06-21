@@ -31,6 +31,8 @@ go mod tidy
 
 # 7. Ensure generated frontend assets are committed when changed
 git diff --exit-code web/dist
+untracked=$(git ls-files --others web/dist)
+test -z "$untracked" || { echo "$untracked"; exit 1; }
 ```
 
 These checks are enforced in CI and will cause builds to fail if not passing.
