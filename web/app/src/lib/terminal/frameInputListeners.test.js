@@ -80,6 +80,20 @@ describe('attachFrameInputListeners', () => {
     expect(handlers.onDrop).toHaveBeenCalledTimes(1)
   })
 
+  it('omits the paste listener when onPaste is not provided', () => {
+    // The desktop/terminal-bridge path owns iframe image paste via an injected
+    // ttyd script + postMessage, so Terminal.svelte attaches without onPaste.
+    // The other listeners must still wire, and dispatching paste must not throw.
+    const handlers = makeHandlers()
+    delete handlers.onPaste
+
+    expect(attachFrameInputListeners(doc, handlers)).toBe(true)
+    expect(() => doc.dispatchEvent(new Event('paste', { bubbles: true }))).not.toThrow()
+
+    doc.dispatchEvent(new Event('keydown', { bubbles: true }))
+    expect(handlers.onKeydown).toHaveBeenCalledTimes(1)
+  })
+
   it('is a safe no-op for a missing/cross-origin document', () => {
     const handlers = makeHandlers()
     expect(attachFrameInputListeners(null, handlers)).toBe(false)

@@ -161,7 +161,10 @@ func applyMobileTmuxOptions(sessionName string) {
 
 // waitForPort polls addr until it accepts a TCP connection or the timeout elapses.
 func waitForPort(port int, timeout time.Duration) error {
-	addr := fmt.Sprintf("localhost:%d", port)
+	// 127.0.0.1, not "localhost": ttyd binds IPv4 loopback only, and "localhost"
+	// may resolve to ::1 first, so a localhost dial can report ready (or not) on
+	// the wrong stack relative to where the proxy later connects.
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)

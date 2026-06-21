@@ -18,7 +18,11 @@ const attachedDocs = new WeakSet()
 // Attach input listeners to a frame's contentDocument exactly once.
 //
 // handlers: {
-//   onKeydown(e), onPaste(e),   // forwarded with capture: true
+//   onKeydown(e),               // forwarded with capture: true
+//   onPaste(e),                 // optional; forwarded with capture: true when
+//                               // present. Omitted when iframe image paste is
+//                               // owned by the injected ttyd bridge script
+//                               // (postMessage), so no duplicate paste pipeline.
 //   onDragEnter(e), onDragLeave(e), onDragOver(e), onDrop(e),
 // }
 //
@@ -28,7 +32,7 @@ export function attachFrameInputListeners(doc, handlers) {
   if (!doc || attachedDocs.has(doc)) return false
   try {
     doc.addEventListener('keydown', handlers.onKeydown, { capture: true })
-    doc.addEventListener('paste', handlers.onPaste, { capture: true })
+    if (handlers.onPaste) doc.addEventListener('paste', handlers.onPaste, { capture: true })
     // Drag events do not bubble across iframe boundaries, so a file dragged
     // over the iframe never reaches the outer div's dragenter/drop handlers.
     // Mirror the events onto the parent window so the drop overlay appears and
