@@ -28,6 +28,9 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	if !strings.Contains(got, `/nerd-font.css`) || !strings.Contains(got, "overscroll-behavior") {
 		t.Fatalf("terminal head addons missing from response: %s", got)
 	}
+	if !strings.Contains(got, "__devxPasteBridge") || !strings.Contains(got, "devx:terminal-image-paste") {
+		t.Fatalf("paste bridge script missing from response: %s", got)
+	}
 	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
 		t.Fatal("content encoding should be cleared after body rewrite")
 	}

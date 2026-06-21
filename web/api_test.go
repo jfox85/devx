@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -645,5 +647,50 @@ func TestMarkSessionReviewedMapsMissingSessionTo404(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing session, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func uploadImageRequest(t *testing.T, sessionName string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("image", "x.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Minimal valid PNG header so the handler's magic-byte sniff succeeds.
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	png = append(png, make([]byte, 32)...)
+	if _, err := part.Write(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("session", sessionName); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/upload-image", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req
+}
+
+func TestHandleUploadImageRejectsInvalidSession(t *testing.T) {
+	for _, name := range []string{"../escape", "../../etc", "a/../b", "bad\x00name"} {
+		w := httptest.NewRecorder()
+		handleUploadImage(w, uploadImageRequest(t, name))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("session %q: expected 400, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandleUploadImageAcceptsValidSession(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	w := httptest.NewRecorder()
+	handleUploadImage(w, uploadImageRequest(t, "my-session"))
+	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "invalid session") {
+		t.Fatalf("valid session wrongly rejected: %s", w.Body.String())
 	}
 }
