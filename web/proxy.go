@@ -185,8 +185,26 @@ html, body {
 
 const terminalCopyOnSelectScript = `<script>
 (function () {
-  if (window.__devxCopyOnSelect) return;
+  if (window.__devxTerminalHelpers) return;
+  window.__devxTerminalHelpers = true;
   window.__devxCopyOnSelect = true;
+  function focusTerminalInput() {
+    var attempts = 0;
+    function tryFocus() {
+      attempts++;
+      var textarea = document.querySelector('.xterm-helper-textarea');
+      if (textarea) {
+        textarea.focus();
+        return;
+      }
+      if (attempts < 12) setTimeout(tryFocus, 50);
+    }
+    tryFocus();
+  }
+  window.addEventListener('message', function (event) {
+    if (event && event.data && event.data.type === 'devx:focus-terminal') focusTerminalInput();
+  });
+  window.addEventListener('focus', focusTerminalInput);
   function fallbackCopy(text) {
     try {
       var ta = document.createElement('textarea');

@@ -19,6 +19,8 @@
   let windowPollTimer
   let iframeEl
   let fileInputEl
+  let keyboardProxyEl
+  let keyboardProxyValue = ''
 
   // Artifact pane/reference state
   let artifactPaneOpen = false
@@ -243,8 +245,14 @@
     } catch { /* ignore any cross-origin / not-yet-loaded errors */ }
     // Fallback: at minimum route events to the iframe window. Desktop Wails
     // terminal frames are intentionally cross-origin (wails:// parent,
-    // 127.0.0.1 iframe) so this is the primary focus path there.
+    // 127.0.0.1 iframe), so ask the injected terminal helper to focus xterm's
+    // textarea from inside the iframe. WKWebView still won't always transfer
+    // keyboard focus to a cross-origin iframe programmatically, so keep a tiny
+    // parent-side keyboard proxy focused as a desktop fallback and forward keys
+    // to tmux until the user manually clicks inside the terminal frame.
     iframeEl?.focus()
+    try { iframeEl?.contentWindow?.postMessage({ type: 'devx:focus-terminal' }, '*') } catch { /* ignore */ }
+    if (typeof window !== 'undefined' && window.__DEVX_DESKTOP) keyboardProxyEl?.focus()
   }
 
   function focusTerminalSoon() {
@@ -325,6 +333,54 @@
       }
     }
     // No image found — let text paste proceed normally
+  }
+
+  function tmuxKeyForEvent(e) {
+    const named = {
+      Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'BSpace', Delete: 'Delete',
+      ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+      Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'IC',
+    }
+    if (named[e.key]) return named[e.key]
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key?.length === 1 && /[a-zA-Z]/.test(e.key)) {
+      return 'C-' + e.key.toLowerCase()
+    }
+    if (e.altKey && !e.metaKey && !e.ctrlKey && e.key?.length === 1) {
+      return 'M-' + e.key
+    }
+    return ''
+  }
+
+  function handleKeyboardProxyKeydown(e) {
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    if (e.metaKey) return
+    const key = tmuxKeyForEvent(e)
+    if (!key) return
+    e.preventDefault()
+    sendKey(key)
+  }
+
+  function handleKeyboardProxyInput() {
+    const text = keyboardProxyValue
+    keyboardProxyValue = ''
+    if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    sendLiteral(session.name, text).catch(() => {})
+  }
+
+  function handleKeyboardProxyPaste(e) {
+    const items = e.clipboardData?.items || []
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        e.preventDefault()
+        processImageFile(item.getAsFile())
+        return
+      }
+    }
+    const text = e.clipboardData?.getData('text/plain') || ''
+    if (text) {
+      e.preventDefault()
+      sendLiteral(session.name, text).catch(() => {})
+    }
   }
 
   // Timing constants for xterm.js / FitAddon initialisation.
@@ -869,6 +925,19 @@
   on:dragover={handleDragOver}
   on:drop={handleDrop}
 >
+
+  <textarea
+    bind:this={keyboardProxyEl}
+    bind:value={keyboardProxyValue}
+    aria-hidden="true"
+    autocomplete="off"
+    autocapitalize="off"
+    spellcheck="false"
+    class="fixed w-px h-px opacity-0 pointer-events-none -left-10 top-0"
+    on:keydown={handleKeyboardProxyKeydown}
+    on:input={handleKeyboardProxyInput}
+    on:paste={handleKeyboardProxyPaste}
+  ></textarea>
 
   <!-- Drag-and-drop overlay -->
   {#if isDragOver}
