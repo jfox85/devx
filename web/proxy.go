@@ -281,6 +281,8 @@ const terminalPasteBridgeScript = `<script>
     // the shell is never intercepted.
     var text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
     if (!text) {
+      e.preventDefault();
+      e.stopPropagation();
       try { parent.postMessage({ type: 'devx:terminal-clipboard-image' }, '*'); } catch (err) {}
     }
   }, true);

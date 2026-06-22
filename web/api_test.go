@@ -63,6 +63,54 @@ func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
 	}
 }
 
+func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	projectDir := filepath.Join(tmp, "nibit")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".devx", "config.yaml"), []byte("target: host\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registryDir := filepath.Join(tmp, ".config", "devx")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	registryJSON := fmt.Sprintf(`{"projects":{"nibit":{"name":"nibit","path":%q},"mystorymates":{"name":"mystorymates","path":%q}}}`, projectDir, filepath.Join(tmp, "mystorymates"))
+	if err := os.WriteFile(filepath.Join(registryDir, "projects.json"), []byte(registryJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/projects", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Projects       []string          `json:"projects"`
+		ProjectTargets map[string]string `json:"project_targets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got, want := resp.Projects, []string{"mystorymates", "nibit"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("projects = %v, want %v", got, want)
+	}
+	if got := resp.ProjectTargets["nibit"]; got != "host" {
+		t.Fatalf("nibit target = %q, want host; response=%s", got, w.Body.String())
+	}
+	if _, ok := resp.ProjectTargets["mystorymates"]; ok {
+		t.Fatalf("project without config should not have target: %#v", resp.ProjectTargets)
+	}
+}
+
 func TestGetHealthReturnsOK(t *testing.T) {
 	mux := http.NewServeMux()
 	registerAPIRoutes(mux)
