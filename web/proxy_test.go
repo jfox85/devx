@@ -31,6 +31,18 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	if !strings.Contains(got, "__devxPasteBridge") || !strings.Contains(got, "devx:terminal-image-paste") {
 		t.Fatalf("paste bridge script missing from response: %s", got)
 	}
+	fallback := strings.Index(got, "devx:terminal-clipboard-image")
+	if fallback == -1 {
+		t.Fatalf("desktop clipboard fallback missing from response: %s", got)
+	}
+	fallbackStart := strings.LastIndex(got[:fallback], "var text =")
+	if fallbackStart == -1 {
+		t.Fatalf("desktop clipboard fallback guard missing from response: %s", got)
+	}
+	fallbackBranch := got[fallbackStart:fallback]
+	if !strings.Contains(fallbackBranch, "e.preventDefault();") || !strings.Contains(fallbackBranch, "e.stopPropagation();") {
+		t.Fatalf("desktop clipboard fallback should stop terminal paste before posting message: %s", got)
+	}
 	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
 		t.Fatal("content encoding should be cleared after body rewrite")
 	}

@@ -9,9 +9,10 @@
 
   let name = ''
   let project = localStorage.getItem(LAST_PROJECT_KEY) || ''
-  let target = 'host'
+  let targetOverride = ''
   let defaultTarget = 'host'
   let projects = []
+  let projectTargets = {}
   let projectsLoading = true
   let projectLoadError = ''
   let error = ''
@@ -19,6 +20,9 @@
   let progress = []
   let nameInputEl
   let modalEl
+
+  $: effectiveDefaultTarget = projectTargets[project] || defaultTarget
+  $: selectedTarget = targetOverride || effectiveDefaultTarget
 
   onMount(async () => {
     // Explicitly focus the name field — autofocus alone fails when an iframe held focus.
@@ -29,10 +33,11 @@
     try {
       const settings = await getSettings()
       defaultTarget = settings.default_session_target || 'host'
-      if (['host', 'gatepost', 'docker'].includes(defaultTarget)) target = defaultTarget
     } catch { /* settings are optional; keep fallback */ }
     try {
-      projects = await listProjects()
+      const projectData = await listProjects()
+      projects = projectData.projects || []
+      projectTargets = projectData.projectTargets || {}
       // If the remembered project is no longer in the list, clear it
       if (project && !projects.includes(project)) project = ''
       // If nothing remembered but there's only one project, pre-select it
@@ -51,7 +56,7 @@
     progress = []
     try {
       const created = await createSession(name.trim(), project || undefined, {
-        target,
+        target: selectedTarget,
         onProgress: (msgs) => { progress = msgs }
       })
       if (project) localStorage.setItem(LAST_PROJECT_KEY, project)
@@ -137,31 +142,6 @@
       </div>
 
       <div>
-        <div class="flex items-center justify-between mb-1">
-          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
-          <span class="text-gray-700 text-[10px] font-mono">default: {defaultTarget}</span>
-        </div>
-        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
-          {#each [
-            ['host', 'host'],
-            ['gatepost', 'gatepost'],
-            ['docker', 'docker'],
-          ] as [value, label]}
-            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
-              <input
-                type="radio"
-                name="session-target"
-                value={value}
-                bind:group={target}
-                class="accent-cyan-600"
-              />
-              <span>{label}</span>
-            </label>
-          {/each}
-        </div>
-      </div>
-
-      <div>
         <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
           project
         </label>
@@ -195,6 +175,32 @@
             Could not load projects: {projectLoadError}
           </p>
         {/if}
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
+          <span class="text-gray-700 text-[10px] font-mono">default: {effectiveDefaultTarget}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
+          {#each [
+            ['host', 'host'],
+            ['gatepost', 'gatepost'],
+            ['docker', 'docker'],
+          ] as [value, label]}
+            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {selectedTarget === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
+              <input
+                type="radio"
+                name="session-target"
+                value={value}
+                checked={selectedTarget === value}
+                on:change={() => { targetOverride = value }}
+                class="accent-cyan-600"
+              />
+              <span>{label}</span>
+            </label>
+          {/each}
+        </div>
       </div>
 
       {#if progress.length > 0}

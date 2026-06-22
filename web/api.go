@@ -1066,7 +1066,8 @@ func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListProjects returns the sorted list of project aliases from the registry.
+// handleListProjects returns the sorted list of project aliases from the registry,
+// along with each project's configured default session target when available.
 func handleListProjects(w http.ResponseWriter, r *http.Request) {
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
@@ -1074,11 +1075,20 @@ func handleListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aliases := make([]string, 0, len(registry.Projects))
-	for alias := range registry.Projects {
+	projectTargets := make(map[string]string)
+	for alias, project := range registry.Projects {
 		aliases = append(aliases, alias)
+		if project == nil || project.Path == "" {
+			continue
+		}
+		cfg, err := config.GetProjectConfig(project.Path)
+		if err != nil || cfg == nil || !isValidSessionTarget(cfg.Target) || cfg.Target == "" {
+			continue
+		}
+		projectTargets[alias] = cfg.Target
 	}
 	sort.Strings(aliases)
-	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases})
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "project_targets": projectTargets})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches
