@@ -55,7 +55,10 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 	if proto := r.Header.Get("Sec-WebSocket-Protocol"); proto != "" {
 		backendHeader.Set("Sec-WebSocket-Protocol", proto)
 	}
-	backendURL := fmt.Sprintf("ws://localhost:%d%s", backendPort, wsPath)
+	// Dial 127.0.0.1 explicitly: ttyd binds IPv4 loopback only (-i 127.0.0.1), but
+	// "localhost" can resolve to ::1 first (it maps to both in /etc/hosts), which
+	// ttyd refuses, intermittently breaking the terminal proxy.
+	backendURL := fmt.Sprintf("ws://127.0.0.1:%d%s", backendPort, wsPath)
 
 	// Retry the backend dial: portForSession may return a port before waitForPort
 	// completes (the port is in the map as soon as the process starts). Retry for
@@ -118,7 +121,9 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 	target := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("localhost:%d", backendPort),
+		// 127.0.0.1, not "localhost": ttyd binds IPv4 loopback only, and localhost
+		// may resolve to ::1 first, which ttyd refuses.
+		Host: fmt.Sprintf("127.0.0.1:%d", backendPort),
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
@@ -158,7 +163,7 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 		return err
 	}
 	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
-	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalHelperScript+terminalPasteBridgeScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -183,10 +188,29 @@ html, body {
 }
 </style>`
 
-const terminalCopyOnSelectScript = `<script>
+const terminalHelperScript = `<script>
 (function () {
-  if (window.__devxCopyOnSelect) return;
+  if (window.__devxTerminalHelpers) return;
+  window.__devxTerminalHelpers = true;
   window.__devxCopyOnSelect = true;
+  function focusTerminalInput() {
+    var attempts = 0;
+    function tryFocus() {
+      attempts++;
+      var textarea = document.querySelector('.xterm-helper-textarea');
+      if (textarea) {
+        textarea.focus();
+        return;
+      }
+      if (attempts < 12) setTimeout(tryFocus, 50);
+    }
+    tryFocus();
+  }
+  window.addEventListener('message', function (event) {
+    if (event.source !== window.parent) return;
+    if (event && event.data && event.data.type === 'devx:focus-terminal') focusTerminalInput();
+  });
+  window.addEventListener('focus', focusTerminalInput);
   function fallbackCopy(text) {
     try {
       var ta = document.createElement('textarea');
@@ -250,5 +274,56 @@ const terminalCopyOnSelectScript = `<script>
       };
     }
   } catch (e) {}
+})();
+</script>`
+
+// terminalPasteBridgeScript forwards image pastes from inside the (cross-origin)
+// ttyd terminal iframe up to the parent SPA via postMessage. The SPA cannot add
+// a paste listener to the terminal iframe directly because, in the desktop app,
+// the iframe is served from the private loopback origin and contentDocument is
+// cross-origin. xterm would otherwise paste raw image bytes into the shell as
+// garbage. When a clipboard image File is present it is shipped as a data URL;
+// when it is not (WKWebView omits the File, or the clipboard holds a file URL),
+// a flag tells the parent to fall back to the native clipboard read.
+const terminalPasteBridgeScript = `<script>
+(function () {
+  if (window.__devxPasteBridge) return;
+  window.__devxPasteBridge = true;
+  document.addEventListener('paste', function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.kind === 'file' && it.type && it.type.indexOf('image/') === 0) {
+        var file = it.getAsFile();
+        if (!file) continue;
+        e.preventDefault();
+        e.stopPropagation();
+        var reader = new FileReader();
+        reader.onload = function () {
+          try {
+            parent.postMessage({
+              type: 'devx:terminal-image-paste',
+              name: file.name || 'clipboard.png',
+              mime: file.type || 'image/png',
+              dataURL: reader.result,
+            }, '*');
+          } catch (err) {}
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+    }
+    // No image File on the clipboard. In the desktop app this is also the path
+    // for clipboard images WKWebView hides and for file-URL clipboards (e.g.
+    // Raycast "paste recent screenshot"); ask the parent to try the native
+    // clipboard. Only do so when there is no text, so normal text paste into
+    // the shell is never intercepted.
+    var text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+    if (!text) {
+      e.preventDefault();
+      e.stopPropagation();
+      try { parent.postMessage({ type: 'devx:terminal-clipboard-image' }, '*'); } catch (err) {}
+    }
+  }, true);
 })();
 </script>`

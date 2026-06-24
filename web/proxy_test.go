@@ -22,6 +22,9 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	if !strings.Contains(got, "__devxCopyOnSelect") || !strings.Contains(got, "navigator.clipboard.writeText") {
 		t.Fatalf("copy-on-select script missing from response: %s", got)
 	}
+	if !strings.Contains(got, "devx:focus-terminal") || !strings.Contains(got, "event.source !== window.parent") || !strings.Contains(got, ".xterm-helper-textarea") {
+		t.Fatalf("focus bridge script missing from response: %s", got)
+	}
 	if !strings.Contains(got, `/nerd-font.css`) || !strings.Contains(got, "overscroll-behavior") {
 		t.Fatalf("terminal head addons missing from response: %s", got)
 	}
@@ -29,6 +32,21 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	// bridge, gated on the desktop_token query param, must be injected.
 	if !strings.Contains(got, "devx:openExternal") || !strings.Contains(got, "desktop_token") {
 		t.Fatalf("desktop link-forwarding script missing from response: %s", got)
+	}
+	if !strings.Contains(got, "__devxPasteBridge") || !strings.Contains(got, "devx:terminal-image-paste") {
+		t.Fatalf("paste bridge script missing from response: %s", got)
+	}
+	fallback := strings.Index(got, "devx:terminal-clipboard-image")
+	if fallback == -1 {
+		t.Fatalf("desktop clipboard fallback missing from response: %s", got)
+	}
+	fallbackStart := strings.LastIndex(got[:fallback], "var text =")
+	if fallbackStart == -1 {
+		t.Fatalf("desktop clipboard fallback guard missing from response: %s", got)
+	}
+	fallbackBranch := got[fallbackStart:fallback]
+	if !strings.Contains(fallbackBranch, "e.preventDefault();") || !strings.Contains(fallbackBranch, "e.stopPropagation();") {
+		t.Fatalf("desktop clipboard fallback should stop terminal paste before posting message: %s", got)
 	}
 	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
 		t.Fatal("content encoding should be cleared after body rewrite")

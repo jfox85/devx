@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
+  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, sendInput, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
   import ArtifactPane from './artifacts/ArtifactPane.svelte'
@@ -10,6 +10,9 @@
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
   import PromptComposer from './composer/PromptComposer.svelte'
   import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
+  import { isImageFile } from './imagePolicy.js'
+  import { isDesktop, desktopConfig, clipboardImage, uploadImage as desktopUploadImage, openExternal } from './desktopBridge.js'
+  import { attachFrameInputListeners as attachListeners } from './terminal/frameInputListeners.js'
 
   export let session
   export let artifactEvent = null
@@ -19,6 +22,13 @@
   let windowPollTimer
   let iframeEl
   let fileInputEl
+  let keyboardProxyEl
+  let keyboardProxyValue = ''
+  let keyboardProxyComposing = false
+  let keyboardProxyQueue = Promise.resolve()
+  let keyboardProxyTextBuffer = ''
+  let keyboardProxyTextSession = ''
+  let keyboardProxyFlushTimer
 
   // Artifact pane/reference state
   let artifactPaneOpen = false
@@ -41,6 +51,7 @@
   let pasteArtifactNonce = 0
   let focusedArtifactTimer
   let composerOpen = false
+  let composerComponent = null
   let softKeysOpen = false
   $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
   $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
@@ -61,13 +72,13 @@
   let toastError = null   // string | null
   let uploading = false   // guard against concurrent uploads
 
-  const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
-  const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
-  function isImageFile(f) {
-    if (ALLOWED_TYPES.includes(f.type)) return true
-    // Fallback: check extension when MIME type is missing or generic (e.g. macOS Finder)
-    const name = (f.name || '').toLowerCase()
-    return ALLOWED_EXTS.some(ext => name.endsWith(ext))
+  // Reconstruct a File from a base64 payload bridged by the desktop host
+  // (file drops and clipboard images). Exported so App.svelte shares one decoder.
+  export function fileFromBase64({ name, type, data }) {
+    const bin = atob(data)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new File([bytes], name || 'image.png', { type: type || 'image/png' })
   }
 
   // --- Iframe keep-alive pool (plan 0C) ---------------------------------------
@@ -93,7 +104,7 @@
   function frameURL(name) {
     // Encode session names so slashes ("/") don't split the URL path.
     const path = `/terminal/${encodeURIComponent(name)}/`
-    const desktop = typeof window !== 'undefined' && window.__DEVX_DESKTOP
+    const desktop = desktopConfig()
     if (!desktop?.terminalBase || !desktop?.terminalToken) return path
     const url = new URL(path, desktop.terminalBase)
     url.searchParams.set('desktop_token', desktop.terminalToken)
@@ -124,6 +135,12 @@
     artifactQuery = ''
     artifactSearchItems = []
     focusedArtifactDismissed = false
+    keyboardProxyQueue = Promise.resolve()
+    keyboardProxyValue = ''
+    keyboardProxyComposing = false
+    keyboardProxyTextBuffer = ''
+    keyboardProxyTextSession = ''
+    clearTimeout(keyboardProxyFlushTimer)
     // Restore incoming session's chrome (or defaults for first visit).
     const chrome = getSessionChrome(session.name)
     artifactPaneOpen = chrome?.artifactPaneOpen ?? false
@@ -148,6 +165,9 @@
       pool = [existing, ...pool.filter(p => p !== existing)]
       tick().then(async () => {
         iframeEl = frameEls[name]
+        // Warm reuse skips the iframe `load` event, so ensure input listeners
+        // are attached (no-op if they already are).
+        attachFrameInputListeners(iframeEl)
         // Pooled switch: terminal is already connected. Record near-zero
         // switch timings (warm path) and resync size/focus.
         markIframeLoad(name)
@@ -243,8 +263,17 @@
     } catch { /* ignore any cross-origin / not-yet-loaded errors */ }
     // Fallback: at minimum route events to the iframe window. Desktop Wails
     // terminal frames are intentionally cross-origin (wails:// parent,
-    // 127.0.0.1 iframe) so this is the primary focus path there.
+    // 127.0.0.1 iframe), so ask the injected terminal helper to focus xterm's
+    // textarea from inside the iframe. WKWebView still won't always transfer
+    // keyboard focus to a cross-origin iframe programmatically, so keep a tiny
+    // parent-side keyboard proxy focused as a desktop fallback and forward keys
+    // to tmux until the user manually clicks inside the terminal frame.
     iframeEl?.focus()
+    try {
+      const targetOrigin = new URL(iframeEl?.src || frameURL(session.name), window.location.href).origin
+      iframeEl?.contentWindow?.postMessage({ type: 'devx:focus-terminal' }, targetOrigin)
+    } catch { /* ignore */ }
+    if (typeof window !== 'undefined' && window.__DEVX_DESKTOP) keyboardProxyEl?.focus()
   }
 
   function focusTerminalSoon() {
@@ -281,77 +310,178 @@
     }
   }
 
-  function iframeHotkey(e) {
+  function handleTerminalAppShortcut(e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault()
       e.stopPropagation()
       toggleComposer()
-    } else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+      return true
+    }
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:quickSwitcher'))
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:focusSessionList'))
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault()
       e.stopPropagation()
       window.dispatchEvent(new CustomEvent('devx:newSession'))
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
       e.preventDefault()
       e.stopPropagation()
       toggleArtifacts()
-    } else if (e.ctrlKey && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
+      return true
+    }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
       e.preventDefault()
       e.stopPropagation()
       cycleSplitMode()
-    } else if ((artifactTriggerKey === 'Ctrl+Space' && e.ctrlKey && !e.metaKey && !e.altKey && e.key === ' ') || (!e.ctrlKey && !e.metaKey && !e.altKey && artifactTriggerKey.length === 1 && e.key === artifactTriggerKey)) {
+      return true
+    }
+    if ((artifactTriggerKey === 'Ctrl+Space' && e.ctrlKey && !e.metaKey && !e.altKey && e.key === ' ') || (!e.ctrlKey && !e.metaKey && !e.altKey && artifactTriggerKey.length === 1 && e.key === artifactTriggerKey)) {
       e.preventDefault()
       e.stopPropagation()
       openArtifactSearch('insert')
+      return true
+    }
+    return false
+  }
+
+  function iframeHotkey(e) {
+    handleTerminalAppShortcut(e)
+  }
+
+  // Single owner of terminal-iframe image paste, for both browser and desktop.
+  // The ttyd page injects terminalPasteBridgeScript, which reads its own paste
+  // event (the parent cannot attach a listener across the cross-origin iframe in
+  // the desktop app) and forwards it here via postMessage. Two message shapes:
+  //   devx:terminal-image-paste     — a clipboard image File, shipped as dataURL
+  //   devx:terminal-clipboard-image — no File present; try the native clipboard
+  function handleTerminalMessage(e) {
+    // Only trust messages from the *active* session's terminal iframe. Compare
+    // against the live active frame (not iframeEl, which lags behind the active
+    // session by a tick during pool promotion) so a background pooled frame
+    // can't route an upload under the newly-active session's name.
+    const activeFrame = frameEls[session.name]
+    if (!activeFrame || e.source !== activeFrame.contentWindow) return
+    const data = e.data
+    if (!data || typeof data !== 'object') return
+    if (data.type === 'devx:terminal-image-paste' && typeof data.dataURL === 'string') {
+      const comma = data.dataURL.indexOf(',')
+      const base64 = comma >= 0 ? data.dataURL.slice(comma + 1) : ''
+      if (!base64) return
+      processImageFile(fileFromBase64({
+        name: typeof data.name === 'string' ? data.name : 'clipboard.png',
+        type: typeof data.mime === 'string' ? data.mime : 'image/png',
+        data: base64,
+      }))
+    } else if (data.type === 'devx:terminal-clipboard-image' && isDesktop()) {
+      handleDesktopClipboardPaste()
+    } else if (data.type === 'devx:openExternal' && typeof data.url === 'string') {
+      // The ttyd page's injected window.open override forwards clicked terminal
+      // URLs here so the desktop shell opens them in the user's real browser.
+      if (/^https?:\/\//.test(data.url)) openExternal(data.url)
     }
   }
 
-  // Intercept paste events inside the iframe to capture image pastes.
-  function iframePaste(e) {
+  function tmuxKeyForEvent(e) {
+    const named = {
+      Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'BSpace', Delete: 'Delete',
+      ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+      Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'IC',
+    }
+    if (named[e.key]) return named[e.key]
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key?.length === 1 && /[a-zA-Z]/.test(e.key)) {
+      return 'C-' + e.key.toLowerCase()
+    }
+    if (e.altKey && !e.metaKey && !e.ctrlKey && e.key?.length === 1) {
+      return 'M-' + e.key
+    }
+    return ''
+  }
+
+  function enqueueKeyboardProxyInput(sessionName, send) {
+    keyboardProxyQueue = keyboardProxyQueue.catch(() => {}).then(() => send(sessionName))
+    return keyboardProxyQueue
+  }
+
+  function flushKeyboardProxyText() {
+    clearTimeout(keyboardProxyFlushTimer)
+    const text = keyboardProxyTextBuffer
+    const sessionName = keyboardProxyTextSession
+    keyboardProxyTextBuffer = ''
+    keyboardProxyTextSession = ''
+    if (!text || !sessionName) return keyboardProxyQueue
+    return enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text, { mode: 'literal' }))
+  }
+
+  function bufferKeyboardProxyText(sessionName, text) {
+    if (!text) return
+    if (keyboardProxyTextSession && keyboardProxyTextSession !== sessionName) {
+      flushKeyboardProxyText()
+    }
+    keyboardProxyTextSession = sessionName
+    keyboardProxyTextBuffer += text
+    clearTimeout(keyboardProxyFlushTimer)
+    keyboardProxyFlushTimer = setTimeout(flushKeyboardProxyText, 75)
+  }
+
+  function handleKeyboardProxyKeydown(e) {
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    if (handleTerminalAppShortcut(e)) return
+    if (e.metaKey) return
+    const key = tmuxKeyForEvent(e)
+    if (!key) return
+    e.preventDefault()
+    e.stopPropagation()
+    const sessionName = session.name
+    flushKeyboardProxyText()
+    enqueueKeyboardProxyInput(sessionName, (name) => sendKey(key, name))
+  }
+
+  function handleKeyboardProxyInput(e) {
+    if (keyboardProxyComposing || e?.isComposing) return
+    const text = keyboardProxyValue
+    const sessionName = session.name
+    keyboardProxyValue = ''
+    if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    bufferKeyboardProxyText(sessionName, text)
+  }
+
+  function handleKeyboardProxyCompositionStart() {
+    keyboardProxyComposing = true
+  }
+
+  function handleKeyboardProxyCompositionEnd() {
+    keyboardProxyComposing = false
+    handleKeyboardProxyInput()
+  }
+
+  function handleKeyboardProxyPaste(e) {
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
     const items = e.clipboardData?.items || []
     for (const item of items) {
       if (item.kind === 'file' && item.type.startsWith('image/')) {
         e.preventDefault()
-        e.stopPropagation()
         processImageFile(item.getAsFile())
         return
       }
     }
-    // No image found — let text paste proceed normally
-  }
-
-  // In the desktop (Wails) shell, links rendered by xterm's web-links addon
-  // open via window.open, which the WebView ignores — so terminal URLs appear
-  // unclickable. The terminal iframe is cross-origin to the wails:// parent, so
-  // the parent cannot patch the iframe's window.open directly. Instead a script
-  // injected into the ttyd HTML (web/proxy.go) intercepts window.open inside the
-  // iframe and posts the URL up here; we forward it to the native OpenExternal
-  // host binding. No-op in the browser, where window.open works normally.
-  function handleExternalLinkMessage(e) {
-    // Only accept messages from one of our mounted terminal iframes. Origin
-    // can't be pinned (the iframe is cross-origin wails:// vs 127.0.0.1), but
-    // source-window identity is checkable. The pool keeps several frames
-    // mounted, so match against any of them, not just the active one.
-    const fromOwnFrame = Object.values(frameEls).some(el => el?.contentWindow === e?.source)
-    if (!fromOwnFrame) return
-    const data = e?.data
-    if (!data || data.type !== 'devx:openExternal') return
-    const url = data.url
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return
-    const host = typeof window !== 'undefined' && window.go?.main?.Host
-    if (host?.OpenExternal) {
-      host.OpenExternal(url).catch(() => {})
-    } else {
-      // Non-desktop fallback (shouldn't normally fire since the iframe only
-      // posts when desktop_token is present).
-      window.open(url, '_blank', 'noopener')
+    const text = e.clipboardData?.getData('text/plain') || ''
+    if (text) {
+      e.preventDefault()
+      const sessionName = session.name
+      flushKeyboardProxyText()
+      enqueueKeyboardProxyInput(sessionName, (name) => sendInput(name, text))
     }
   }
 
@@ -493,6 +623,43 @@
   //   2. Call refreshTerminal which does refresh-client (forces display
   //      redraw) and resize-window to the current client's dimensions,
   //      working around the tmux grouped-session size-constraint bug.
+  // Per-frame input listeners (paste/keydown/drag/drop) must be attached to
+  // each pooled iframe's contentDocument exactly once. These are separate from
+  // the active-session resync work because a pooled iframe can finish loading
+  // while a *different* session is active, and warm pool promotions reuse an
+  // already-loaded iframe without firing another `load` event. If listener
+  // registration lived only in handleIframeLoad (gated on the active session),
+  // such frames would silently lose paste/drag support. Dedup + attach logic
+  // lives in ./terminal/frameInputListeners.js (unit tested).
+  function attachFrameInputListeners(frameEl) {
+    attachListeners(frameEl?.contentDocument, {
+      onKeydown: iframeHotkey,
+      // Image paste inside the iframe is owned by terminalPasteBridgeScript
+      // (injected into the ttyd page), which forwards via postMessage to
+      // handleTerminalMessage and works across the cross-origin boundary. So no
+      // onPaste handler is registered here, to avoid a duplicate paste pipeline.
+      // Drag events do not bubble across iframe boundaries, so a file dragged
+      // over the iframe never reaches the outer div's dragenter/drop handlers.
+      // Mirror the events onto the parent window so the drop overlay appears
+      // and the file is processed correctly.
+      onDragEnter: (e) => {
+        const hasFiles = Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')
+        if (hasFiles) { dragCounter++; isDragOver = true }
+      },
+      onDragLeave: () => {
+        dragCounter--
+        if (dragCounter <= 0) { dragCounter = 0; isDragOver = false }
+      },
+      onDragOver: (e) => e.preventDefault(),
+      onDrop: (e) => {
+        e.preventDefault()
+        dragCounter = 0; isDragOver = false
+        const files = Array.from(e.dataTransfer?.files || [])
+        if (files.length) processImageFiles(files)
+      },
+    })
+  }
+
   async function handleIframeLoad() {
     markIframeLoad(session.name)
     // Inject Nerd Font into the iframe immediately so the font is available
@@ -547,38 +714,17 @@
     // Restore window tabs after the terminal is interactive; don't block the first
     // usable paint/focus on tmux bookkeeping.
     setTimeout(restoreStoredWindow, 0)
-    // Register the hotkey after focus so xterm is initialised
-    try {
-      iframeEl.contentDocument?.addEventListener('keydown', iframeHotkey, { capture: true })
-      iframeEl.contentDocument?.addEventListener('paste', iframePaste, { capture: true })
-      // Drag events do not bubble across iframe boundaries, so a file dragged
-      // over the iframe never reaches the outer div's dragenter/drop handlers.
-      // Mirror the events onto the parent window so the drop overlay appears
-      // and the file is processed correctly.
-      iframeEl.contentDocument?.addEventListener('dragenter', (e) => {
-        const hasFiles = Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')
-        if (hasFiles) { dragCounter++; isDragOver = true }
-      })
-      iframeEl.contentDocument?.addEventListener('dragleave', () => {
-        dragCounter--
-        if (dragCounter <= 0) { dragCounter = 0; isDragOver = false }
-      })
-      iframeEl.contentDocument?.addEventListener('dragover', (e) => e.preventDefault())
-      iframeEl.contentDocument?.addEventListener('drop', (e) => {
-        e.preventDefault()
-        dragCounter = 0; isDragOver = false
-        const files = Array.from(e.dataTransfer?.files || [])
-        if (files.length) processImageFiles(files)
-      })
-    } catch { /* ignore if contentDocument isn't accessible yet */ }
+    // Register input listeners after focus so xterm is initialised. Idempotent
+    // and shared with the warm pool-promotion path.
+    attachFrameInputListeners(iframeEl)
     // Watch for iframe size changes (mobile browser chrome, keyboard, orientation)
     resizeObserver?.disconnect()
     resizeObserver = new ResizeObserver(scheduleRefresh)
     resizeObserver.observe(iframeEl)
   }
 
-  async function sendKey(key) {
-    try { await apiSendKeys(session.name, key) } catch { /* ignore */ }
+  async function sendKey(key, sessionName = session.name) {
+    try { await apiSendKeys(sessionName, key) } catch { /* ignore */ }
   }
 
   // Stable sessionStorage key for the active window preference of a session.
@@ -661,7 +807,7 @@
 
     const valid = files.filter(isImageFile)
     if (valid.length === 0) {
-      toastUpload = null
+      setToastUpload(null)
       toastError = `Unsupported type: ${files[0].type || files[0].name || 'unknown'}`
       return
     }
@@ -670,25 +816,74 @@
     const objectURLs = valid.map(f => URL.createObjectURL(f))
 
     try {
-      const results = await Promise.all(valid.map(f => uploadImage(f, session.name)))
+      const results = await Promise.all(valid.map(uploadOneImage))
       const paths = results.map(r => r.path)
-      // Inject all paths into active tmux pane (no Enter — user confirms).
-      // Use sendLiteral so spaces in paths are preserved verbatim.
-      await sendLiteral(session.name, paths.join(' ') + ' ')
+      const joined = paths.join(' ') + ' '
+      // When the composer overlay is open, insert the path(s) into the composer
+      // textarea instead of the tmux pane so a paste/drop while composing lands
+      // where the user is typing. Otherwise inject into the active tmux pane
+      // (no Enter — user confirms). sendLiteral preserves spaces in paths.
+      // composerComponent can briefly lag composerOpen during mount, so wait a
+      // tick for the bind before deciding where the paths go.
+      if (composerOpen && !composerComponent) await tick()
+      if (composerOpen && composerComponent) {
+        composerComponent.insertText(joined)
+      } else {
+        await sendLiteral(session.name, joined)
+      }
       toastError = null
-      toastUpload = {
+      setToastUpload({
         path: paths.length === 1 ? paths[0] : `${paths.length} images uploaded`,
         objectURL: objectURLs[0],
-      }
+      })
       // Revoke extra objectURLs not used by the toast preview.
       objectURLs.slice(1).forEach(u => URL.revokeObjectURL(u))
     } catch (e) {
       objectURLs.forEach(u => URL.revokeObjectURL(u))
-      toastUpload = null
+      setToastUpload(null)
       toastError = e.message || 'Upload failed'
     } finally {
       uploading = false
     }
+  }
+
+  // Replace (or clear) the upload toast, revoking the previous preview object
+  // URL first so a superseded preview doesn't leak. dismissToast/onDestroy
+  // revoke directly when tearing down; every other mutation goes through here.
+  function setToastUpload(next) {
+    if (toastUpload?.objectURL && toastUpload.objectURL !== next?.objectURL) {
+      URL.revokeObjectURL(toastUpload.objectURL)
+    }
+    toastUpload = next
+  }
+
+  // Upload a single image. In the desktop shell, route through the native host
+  // binding (uploadOneImageDesktop) because WKWebView strips the body of POST
+  // requests issued from the WebView, so a multipart fetch through the Wails
+  // proxy arrives empty. In a browser, use the normal fetch upload.
+  async function uploadOneImage(file) {
+    if (isDesktop()) return uploadOneImageDesktop(file)
+    return uploadImage(file, session.name)
+  }
+
+  async function uploadOneImageDesktop(file) {
+    const data = await fileToBase64(file)
+    const res = await desktopUploadImage({ name: file.name, session: session.name, data })
+    if (!res) return uploadImage(file, session.name) // no host binding; fall back
+    return res
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(reader.error || new Error('read failed'))
+      reader.onload = () => {
+        // reader.result is a data URL: strip the "data:<mime>;base64," prefix.
+        const comma = String(reader.result).indexOf(',')
+        resolve(String(reader.result).slice(comma + 1))
+      }
+      reader.readAsDataURL(file)
+    })
   }
 
   // Single-file convenience wrapper (paste handlers).
@@ -805,6 +1000,35 @@
     processImageFile(file)
   }
 
+  // Exported so the desktop shell bridge can route native file drops here.
+  export function handleImageFiles(files) {
+    processImageFiles(files)
+  }
+
+  // Exported so the desktop file-drop bridge can surface host-side rejections
+  // (oversize/unreadable/unsupported) through the same toast the web flow uses.
+  export function showUploadError(message) {
+    setToastUpload(null)
+    toastError = message
+  }
+
+  // Single owner of desktop clipboard-image paste. Both the iframe paste handler
+  // (xterm focused) and App.svelte's window paste handler (parent focused) call
+  // this; the guard collapses any double-dispatch for one Cmd/Ctrl+V into a
+  // single native ClipboardImage IPC + upload. Exported for App.svelte.
+  let desktopClipboardPasteInFlight = false
+  export async function handleDesktopClipboardPaste() {
+    if (desktopClipboardPasteInFlight) return
+    desktopClipboardPasteInFlight = true
+    try {
+      const data = await clipboardImage()
+      if (!data) return
+      processImageFile(fileFromBase64({ name: 'clipboard.png', type: 'image/png', data }))
+    } catch { /* no clipboard image available */ } finally {
+      desktopClipboardPasteInFlight = false
+    }
+  }
+
   function handleFileInput(e) {
     const files = Array.from(e.target.files || [])
     if (files.length) processImageFiles(files)
@@ -865,12 +1089,13 @@
     window.addEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
     window.addEventListener('devx:terminal:new-artifact', handleDesktopCommand)
     window.addEventListener('devx:terminal:focus', handleDesktopCommand)
-    window.addEventListener('message', handleExternalLinkMessage)
+    window.addEventListener('message', handleTerminalMessage)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
     clearTimeout(resizeTimer)
     clearTimeout(focusedArtifactTimer)
+    clearTimeout(keyboardProxyFlushTimer)
     resizeObserver?.disconnect()
     window.visualViewport?.removeEventListener('resize', scheduleRefresh)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -884,14 +1109,22 @@
     window.removeEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
     window.removeEventListener('devx:terminal:new-artifact', handleDesktopCommand)
     window.removeEventListener('devx:terminal:focus', handleDesktopCommand)
-    window.removeEventListener('message', handleExternalLinkMessage)
+    window.removeEventListener('message', handleTerminalMessage)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>
 
 <!-- Fill parent container (flex-1 set by App.svelte) -->
+<!--
+  --wails-drop-target:drop marks this subtree as a valid native drop target in
+  the desktop shell. Wails' OnFileDrop callback rejects the drop unless
+  document.elementFromPoint(dropX, dropY) carries this CSS property, and on
+  macOS the drop lands on the terminal <iframe>, so the property is set here and
+  on the iframe below. It is inert in the browser PWA (no Wails runtime).
+-->
 <div
   class="flex flex-col flex-1 min-h-0 bg-black relative"
+  style="--wails-drop-target: drop;"
   role="region"
   aria-label="terminal with image drop target"
   on:dragenter={handleDragEnter}
@@ -899,6 +1132,21 @@
   on:dragover={handleDragOver}
   on:drop={handleDrop}
 >
+
+  <textarea
+    bind:this={keyboardProxyEl}
+    bind:value={keyboardProxyValue}
+    aria-hidden="true"
+    autocomplete="off"
+    autocapitalize="off"
+    spellcheck="false"
+    class="fixed w-px h-px opacity-0 pointer-events-none -left-10 top-0"
+    on:keydown={handleKeyboardProxyKeydown}
+    on:input={handleKeyboardProxyInput}
+    on:compositionstart={handleKeyboardProxyCompositionStart}
+    on:compositionend={handleKeyboardProxyCompositionEnd}
+    on:paste={handleKeyboardProxyPaste}
+  ></textarea>
 
   <!-- Drag-and-drop overlay -->
   {#if isDragOver}
@@ -1028,10 +1276,16 @@
             src={frameURL(frame.name)}
             title="Terminal — {frame.name}"
             class="absolute inset-0 w-full h-full border-0"
-            style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0};"
+            style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0}; --wails-drop-target: drop;"
             tabindex={isActiveFrame ? 0 : -1}
             allow="clipboard-read; clipboard-write"
-            on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() } }}
+            on:load={() => {
+              // Always attach per-frame input listeners, even for a frame that
+              // finished loading while another session is active — otherwise it
+              // would have no paste/drag support when later promoted warm.
+              attachFrameInputListeners(frameEls[frame.name])
+              if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() }
+            }}
           ></iframe>
         {/each}
       </div>
@@ -1060,7 +1314,7 @@
 
   <!-- Desktop: transient composer overlay (Cmd/Ctrl+K) -->
   {#if composerOpen}
-    <PromptComposer variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} />
+    <PromptComposer bind:this={composerComponent} variant="overlay" sessionName={session.name} on:sent={handleComposerSent} on:close={closeComposer} on:imagepaste={handleComposerImagePaste} on:desktopclipboardimage={handleDesktopClipboardPaste} />
   {/if}
 
   <!-- Mobile: docked composer is THE input; terminal is mostly a display surface.
@@ -1074,6 +1328,7 @@
         on:sent={handleComposerSent}
         on:layoutchange={scheduleRefresh}
         on:imagepaste={handleComposerImagePaste}
+        on:desktopclipboardimage={handleDesktopClipboardPaste}
         on:togglekeys={() => { softKeysOpen = !softKeysOpen; scheduleRefresh() }}
       />
       {#if softKeysOpen}

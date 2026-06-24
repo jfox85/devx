@@ -857,6 +857,45 @@ devx cloudflare check  # validate tunnel setup (binary, config, DNS)
 
 devx manages the cloudflared ingress config file automatically when sessions are created or removed. You manage the cloudflared daemon separately.
 
+### Desktop app (Wails)
+
+The `desktop/` directory builds a native desktop shell (macOS, Linux, Windows) around the same web UI using [Wails v2](https://wails.io/). It is a thin native window — each launch starts a private, loopback-only `devx web` server on a random port with an ephemeral in-memory token, and the WebView loads only that private origin. The auth token is injected server-side by the shell's reverse proxy and is never exposed to the WebView, URLs, CLI args, logs, or disk.
+
+**Build requirements (platform WebView toolchain):**
+
+- **macOS** — Xcode Command Line Tools
+- **Linux** — `webkit2gtk`
+- **Windows** — WebView2 runtime
+
+```bash
+cd desktop
+wails build          # produces the platform app bundle
+wails dev            # development loop with hot reload
+```
+
+> **macOS native build:** install an arm64 Go toolchain (e.g. `brew install go`) and build with `cd desktop && ./build-macos-app.sh`. Running the build under Rosetta (Intel Go/tmux on PATH) produces a translated x86_64 binary.
+
+**Native bridge.** The shell adds a few native capabilities the browser can't provide. They are exposed only through the privileged `Host` binding (plan invariant: service/artifact previews never get access to it):
+
+- **File drop** — Wails' WebView swallows OS file drops before the DOM sees them, so the host reads each dropped image and forwards it to the SPA as a `devx:desktop:filedrop` event routed through the normal upload flow.
+- **Clipboard image paste** — macOS WKWebView often omits clipboard images from the DOM paste event, so Cmd/Ctrl+V calls the native `Host.ClipboardImage` binding (AppleScript `«class PNGf»`) and uploads the result the same way.
+- **Open external links** — `target=_blank` doesn't behave like a browser tab in a WebView, so service/artifact links route through `Host.OpenExternal` to the system browser.
+- **Native notifications** — session attention flags fire OS notifications via `Host.Notify`.
+
+**Image policy is centralized.** Accepted image types and the upload size cap live in one Go source of truth (`web/imagepolicy`), consumed by the HTTP upload handlers and the desktop drop/clipboard bridge. The frontend mirror (`web/app/src/lib/imagePolicy.js`) is kept in lockstep by a drift test (`web/imagepolicy/frontend_drift_test.go`), so a policy change is a single coordinated edit.
+
+All frontend access to the native shell goes through one adapter, `web/app/src/lib/desktopBridge.js` (bridge config, `Host` bindings, and the `devx:desktop:*` event names). Each helper is a no-op in a plain browser, so the same SPA runs unmodified in both.
+
+**Troubleshooting:**
+
+| Symptom | Likely cause / fix |
+| --- | --- |
+| Dropped/pasted image does nothing | Drop requires an active session. Unsupported type, files over the size cap, or unreadable files are rejected with a toast; check logs for `desktop: skipping dropped file`. |
+| Drop silently ignored, no toast | No active session selected — open a session first. |
+| Clipboard paste does nothing on macOS | Grant the app Automation/AppleScript permission (System Settings → Privacy & Security → Automation). `desktop: clipboard image osascript failed` in logs indicates a permission/exec failure. |
+| App shows stale UI after a rebuild | A previous PWA service worker may be cached; the desktop build unregisters service workers on launch. Fully quit and relaunch. |
+| App runs under Rosetta (slow) | An Intel Go or Intel `tmux` is on PATH. Use an arm64 Go toolchain and arm64 tmux, then rebuild. |
+
 ## Examples
 
 ### Basic Web Development Workflow
