@@ -6,12 +6,17 @@
   const dispatch = createEventDispatcher()
 
   const LAST_PROJECT_KEY = 'devx_last_project'
+  // Valid session types, in display order. Single source of truth for the
+  // radio options and the default-type guard.
+  const TARGET_TYPES = ['host', 'gatepost', 'docker']
 
   let name = ''
   let project = localStorage.getItem(LAST_PROJECT_KEY) || ''
   let target = 'host'
   let defaultTarget = 'host'
+  let globalDefaultTarget = 'host'
   let projects = []
+  let projectTargets = {}
   let projectsLoading = true
   let projectLoadError = ''
   let error = ''
@@ -28,11 +33,15 @@
     setTimeout(focusName, 80)
     try {
       const settings = await getSettings()
-      defaultTarget = settings.default_session_target || 'host'
-      if (['host', 'gatepost', 'docker'].includes(defaultTarget)) target = defaultTarget
+      const g = settings.default_session_target || 'host'
+      // Clamp an unrecognized global default (valid to the CLI but not a
+      // selectable web type) so the label never shows a non-selectable value.
+      globalDefaultTarget = TARGET_TYPES.includes(g) ? g : 'host'
     } catch { /* settings are optional; keep fallback */ }
     try {
-      projects = await listProjects()
+      const { projects: list, targets } = await listProjects()
+      projects = list
+      projectTargets = targets
       // If the remembered project is no longer in the list, clear it
       if (project && !projects.includes(project)) project = ''
       // If nothing remembered but there's only one project, pre-select it
@@ -42,7 +51,32 @@
     } finally {
       projectsLoading = false
     }
+    // Default the session type to the selected project's default (or the global
+    // default when no project is chosen). Done after both loads so the project
+    // selection is settled first.
+    syncTargetToProject()
   })
+
+  // The default session type for a project: the project's configured target,
+  // falling back to the global default. Computed directly (not via a reactive
+  // var) so callers in event handlers see the up-to-date value immediately.
+  // An unrecognized project target (e.g. a typo in .devx/config.yaml) falls
+  // back to the global default so the label never shows a non-selectable type.
+  function defaultTargetFor(proj) {
+    const projectTarget = proj && projectTargets[proj]
+    if (projectTarget && TARGET_TYPES.includes(projectTarget)) return projectTarget
+    return globalDefaultTarget
+  }
+
+  // The default shown in the form label, kept reactive for display.
+  $: defaultTarget = defaultTargetFor(project)
+
+  // Set the chosen type to the project's default. Called on initial load and
+  // whenever the user changes the project so the type tracks the project.
+  // defaultTargetFor already returns a clamped (selectable) type.
+  function syncTargetToProject() {
+    target = defaultTargetFor(project)
+  }
 
   async function handleSubmit() {
     if (!name.trim()) { error = 'session name is required'; return }
@@ -137,31 +171,6 @@
       </div>
 
       <div>
-        <div class="flex items-center justify-between mb-1">
-          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
-          <span class="text-gray-700 text-[10px] font-mono">default: {defaultTarget}</span>
-        </div>
-        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
-          {#each [
-            ['host', 'host'],
-            ['gatepost', 'gatepost'],
-            ['docker', 'docker'],
-          ] as [value, label]}
-            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
-              <input
-                type="radio"
-                name="session-target"
-                value={value}
-                bind:group={target}
-                class="accent-cyan-600"
-              />
-              <span>{label}</span>
-            </label>
-          {/each}
-        </div>
-      </div>
-
-      <div>
         <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
           project
         </label>
@@ -169,8 +178,8 @@
           <select
             id="session-project"
             bind:value={project}
+            on:change={syncTargetToProject}
             disabled={projectsLoading || projects.length === 0}
-            on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
             class="
               w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
               text-gray-300 text-xs font-mono px-3 py-2 pr-7
@@ -195,6 +204,27 @@
             Could not load projects: {projectLoadError}
           </p>
         {/if}
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
+          <span class="text-gray-700 text-[10px] font-mono">default: {defaultTarget}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
+          {#each TARGET_TYPES as value}
+            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
+              <input
+                type="radio"
+                name="session-target"
+                value={value}
+                bind:group={target}
+                class="accent-cyan-600"
+              />
+              <span>{value}</span>
+            </label>
+          {/each}
+        </div>
       </div>
 
       {#if progress.length > 0}

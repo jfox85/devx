@@ -211,5 +211,44 @@ const terminalCopyOnSelectScript = `<script>
   }
   document.addEventListener('mouseup', function () { setTimeout(copySelection, 0); }, true);
   document.addEventListener('touchend', function () { setTimeout(copySelection, 0); }, true);
+
+  // Desktop (Wails) link handling. The terminal iframe is cross-origin to the
+  // wails:// parent, so xterm's window.open-based link opener is swallowed by
+  // the WebView. When loaded inside the desktop shell (signalled by the
+  // desktop_token query param), forward terminal URLs to the parent via
+  // postMessage; the parent routes them to the native OpenExternal binding.
+  // In a normal browser this code does nothing and window.open works as usual.
+  try {
+    if (new URLSearchParams(window.location.search).has('desktop_token')) {
+      var openExternal = function (href) {
+        if (href && /^https?:\/\//i.test(href)) {
+          try { window.parent.postMessage({ type: 'devx:openExternal', url: href }, '*'); } catch (e) {}
+          return true;
+        }
+        return false;
+      };
+      var nativeOpen = window.open ? window.open.bind(window) : null;
+      window.open = function (url) {
+        var href = typeof url === 'string' ? url : (url && url.toString ? url.toString() : '');
+        if (href && openExternal(href)) return null;
+        if (!href) {
+          // xterm's default web-links handler calls window.open() with NO url,
+          // then assigns returnedWindow.location.href = uri. Hand back a stub
+          // whose location.href setter forwards that deferred assignment.
+          var loc = { set href(h) { openExternal(h); } };
+          // focus/blur/close/resizeTo are no-op stubs so any xterm version that
+          // pokes the returned window handle doesn't throw before/after setting
+          // location.href.
+          return {
+            opener: null, closed: false,
+            focus: function () {}, blur: function () {}, close: function () {}, resizeTo: function () {},
+            get location() { return loc; },
+            set location(h) { openExternal(typeof h === 'string' ? h : (h && h.href)); }
+          };
+        }
+        return nativeOpen ? nativeOpen(url) : null;
+      };
+    }
+  } catch (e) {}
 })();
 </script>`

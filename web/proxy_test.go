@@ -25,6 +25,11 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	if !strings.Contains(got, `/nerd-font.css`) || !strings.Contains(got, "overscroll-behavior") {
 		t.Fatalf("terminal head addons missing from response: %s", got)
 	}
+	// Desktop link-forwarding: the window.open override and its postMessage
+	// bridge, gated on the desktop_token query param, must be injected.
+	if !strings.Contains(got, "devx:openExternal") || !strings.Contains(got, "desktop_token") {
+		t.Fatalf("desktop link-forwarding script missing from response: %s", got)
+	}
 	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
 		t.Fatal("content encoding should be cleared after body rewrite")
 	}

@@ -327,6 +327,34 @@
     // No image found — let text paste proceed normally
   }
 
+  // In the desktop (Wails) shell, links rendered by xterm's web-links addon
+  // open via window.open, which the WebView ignores — so terminal URLs appear
+  // unclickable. The terminal iframe is cross-origin to the wails:// parent, so
+  // the parent cannot patch the iframe's window.open directly. Instead a script
+  // injected into the ttyd HTML (web/proxy.go) intercepts window.open inside the
+  // iframe and posts the URL up here; we forward it to the native OpenExternal
+  // host binding. No-op in the browser, where window.open works normally.
+  function handleExternalLinkMessage(e) {
+    // Only accept messages from one of our mounted terminal iframes. Origin
+    // can't be pinned (the iframe is cross-origin wails:// vs 127.0.0.1), but
+    // source-window identity is checkable. The pool keeps several frames
+    // mounted, so match against any of them, not just the active one.
+    const fromOwnFrame = Object.values(frameEls).some(el => el?.contentWindow === e?.source)
+    if (!fromOwnFrame) return
+    const data = e?.data
+    if (!data || data.type !== 'devx:openExternal') return
+    const url = data.url
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return
+    const host = typeof window !== 'undefined' && window.go?.main?.Host
+    if (host?.OpenExternal) {
+      host.OpenExternal(url).catch(() => {})
+    } else {
+      // Non-desktop fallback (shouldn't normally fire since the iframe only
+      // posts when desktop_token is present).
+      window.open(url, '_blank', 'noopener')
+    }
+  }
+
   // Timing constants for xterm.js / FitAddon initialisation.
   const XTERM_POLL_DEADLINE_MS = 5000  // max time to wait for xterm.js init
   const XTERM_POLL_INTERVAL_MS = 100   // polling interval while waiting
@@ -837,6 +865,7 @@
     window.addEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
     window.addEventListener('devx:terminal:new-artifact', handleDesktopCommand)
     window.addEventListener('devx:terminal:focus', handleDesktopCommand)
+    window.addEventListener('message', handleExternalLinkMessage)
   })
   onDestroy(() => {
     clearInterval(windowPollTimer)
@@ -855,6 +884,7 @@
     window.removeEventListener('devx:terminal:insert-artifact', handleDesktopCommand)
     window.removeEventListener('devx:terminal:new-artifact', handleDesktopCommand)
     window.removeEventListener('devx:terminal:focus', handleDesktopCommand)
+    window.removeEventListener('message', handleExternalLinkMessage)
     if (toastUpload?.objectURL) URL.revokeObjectURL(toastUpload.objectURL)
   })
 </script>

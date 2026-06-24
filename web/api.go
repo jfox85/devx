@@ -1065,19 +1065,30 @@ func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListProjects returns the sorted list of project aliases from the registry.
+// handleListProjects returns the sorted list of project aliases from the
+// registry, plus each project's default session target so the new-session form
+// can pre-select the right type when a project is chosen. The default mirrors
+// session creation: the project's .devx/config.yaml "target" if set, otherwise
+// the global default.
 func handleListProjects(w http.ResponseWriter, r *http.Request) {
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	globalTarget := viper.GetString("target")
 	aliases := make([]string, 0, len(registry.Projects))
-	for alias := range registry.Projects {
+	targets := make(map[string]string, len(registry.Projects))
+	for alias, project := range registry.Projects {
 		aliases = append(aliases, alias)
+		projectPath := ""
+		if project != nil {
+			projectPath = project.Path
+		}
+		targets[alias] = config.ResolveProjectTarget(projectPath, globalTarget)
 	}
 	sort.Strings(aliases)
-	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases})
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "targets": targets})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches
