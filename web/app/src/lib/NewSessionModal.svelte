@@ -37,7 +37,7 @@
     try {
       const projectData = await listProjects()
       projects = projectData.projects || []
-      projectTargets = projectData.projectTargets || {}
+      projectTargets = projectData.targets || {}
       // If the remembered project is no longer in the list, clear it
       if (project && !projects.includes(project)) project = ''
       // If nothing remembered but there's only one project, pre-select it

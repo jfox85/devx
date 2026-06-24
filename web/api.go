@@ -1066,29 +1066,40 @@ func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListProjects returns the sorted list of project aliases from the registry,
-// along with each project's configured default session target when available.
+// handleListProjects returns the sorted list of project aliases from the
+// registry, plus each project's default session target so the new-session form
+// can pre-select the right type when a project is chosen. The default mirrors
+// session creation: the project's .devx/config.yaml "target" if set, otherwise
+// the global default.
 func handleListProjects(w http.ResponseWriter, r *http.Request) {
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	globalTarget := viper.GetString("target")
 	aliases := make([]string, 0, len(registry.Projects))
-	projectTargets := make(map[string]string)
+	targets := make(map[string]string, len(registry.Projects))
 	for alias, project := range registry.Projects {
 		aliases = append(aliases, alias)
-		if project == nil || project.Path == "" {
-			continue
+		projectPath := ""
+		if project != nil {
+			projectPath = project.Path
 		}
-		cfg, err := config.GetProjectConfig(project.Path)
-		if err != nil || cfg == nil || !isValidSessionTarget(cfg.Target) || cfg.Target == "" {
-			continue
+		// ResolveProjectTarget intentionally skips validation, so a malformed
+		// project-level target could otherwise be preselected in the new-session
+		// form. Fall back to the global default (then host) for invalid values.
+		resolved := config.ResolveProjectTarget(projectPath, globalTarget)
+		if !isValidSessionTarget(resolved) {
+			resolved = config.ResolveProjectTarget("", globalTarget)
+			if !isValidSessionTarget(resolved) {
+				resolved = "host"
+			}
 		}
-		projectTargets[alias] = cfg.Target
+		targets[alias] = resolved
 	}
 	sort.Strings(aliases)
-	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "project_targets": projectTargets})
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "targets": targets})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches

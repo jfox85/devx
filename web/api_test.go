@@ -94,8 +94,8 @@ func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Projects       []string          `json:"projects"`
-		ProjectTargets map[string]string `json:"project_targets"`
+		Projects []string          `json:"projects"`
+		Targets  map[string]string `json:"targets"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
@@ -103,11 +103,57 @@ func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
 	if got, want := resp.Projects, []string{"mystorymates", "nibit"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("projects = %v, want %v", got, want)
 	}
-	if got := resp.ProjectTargets["nibit"]; got != "host" {
+	// handleListProjects resolves a concrete default target for every project so
+	// the new-session form can always pre-select a type: the project's configured
+	// target when set, otherwise the global default (here unset, so "host").
+	if got := resp.Targets["nibit"]; got != "host" {
 		t.Fatalf("nibit target = %q, want host; response=%s", got, w.Body.String())
 	}
-	if _, ok := resp.ProjectTargets["mystorymates"]; ok {
-		t.Fatalf("project without config should not have target: %#v", resp.ProjectTargets)
+	if got := resp.Targets["mystorymates"]; got != "host" {
+		t.Fatalf("mystorymates (no config) should fall back to global default host, got %q", got)
+	}
+}
+
+func TestListProjectsRejectsInvalidProjectTarget(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	projectDir := filepath.Join(tmp, "bad")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A project config with an unknown target must not leak into the UI defaults;
+	// it should fall back to the global default (here unset, so "host").
+	if err := os.WriteFile(filepath.Join(projectDir, ".devx", "config.yaml"), []byte("target: bogus\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registryDir := filepath.Join(tmp, ".config", "devx")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	registryJSON := fmt.Sprintf(`{"projects":{"bad":{"name":"bad","path":%q}}}`, projectDir)
+	if err := os.WriteFile(filepath.Join(registryDir, "projects.json"), []byte(registryJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/projects", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Targets map[string]string `json:"targets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got := resp.Targets["bad"]; got != "host" {
+		t.Fatalf("invalid project target should fall back to host, got %q; response=%s", got, w.Body.String())
 	}
 }
 

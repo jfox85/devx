@@ -11,7 +11,7 @@
   import PromptComposer from './composer/PromptComposer.svelte'
   import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
   import { isImageFile } from './imagePolicy.js'
-  import { isDesktop, desktopConfig, clipboardImage, uploadImage as desktopUploadImage } from './desktopBridge.js'
+  import { isDesktop, desktopConfig, clipboardImage, uploadImage as desktopUploadImage, openExternal } from './desktopBridge.js'
   import { attachFrameInputListeners as attachListeners } from './terminal/frameInputListeners.js'
 
   export let session
@@ -386,6 +386,10 @@
       }))
     } else if (data.type === 'devx:terminal-clipboard-image' && isDesktop()) {
       handleDesktopClipboardPaste()
+    } else if (data.type === 'devx:openExternal' && typeof data.url === 'string') {
+      // The ttyd page's injected window.open override forwards clicked terminal
+      // URLs here so the desktop shell opens them in the user's real browser.
+      if (/^https?:\/\//i.test(data.url)) openExternal(data.url)
     }
   }
 
