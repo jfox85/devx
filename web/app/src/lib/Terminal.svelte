@@ -389,7 +389,7 @@
     } else if (data.type === 'devx:openExternal' && typeof data.url === 'string') {
       // The ttyd page's injected window.open override forwards clicked terminal
       // URLs here so the desktop shell opens them in the user's real browser.
-      if (/^https?:\/\//.test(data.url)) openExternal(data.url)
+      if (/^https?:\/\//i.test(data.url)) openExternal(data.url)
     }
   }
 

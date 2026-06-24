@@ -1086,7 +1086,17 @@ func handleListProjects(w http.ResponseWriter, r *http.Request) {
 		if project != nil {
 			projectPath = project.Path
 		}
-		targets[alias] = config.ResolveProjectTarget(projectPath, globalTarget)
+		// ResolveProjectTarget intentionally skips validation, so a malformed
+		// project-level target could otherwise be preselected in the new-session
+		// form. Fall back to the global default (then host) for invalid values.
+		resolved := config.ResolveProjectTarget(projectPath, globalTarget)
+		if !isValidSessionTarget(resolved) {
+			resolved = config.ResolveProjectTarget("", globalTarget)
+			if !isValidSessionTarget(resolved) {
+				resolved = "host"
+			}
+		}
+		targets[alias] = resolved
 	}
 	sort.Strings(aliases)
 	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "targets": targets})
