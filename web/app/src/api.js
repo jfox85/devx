@@ -175,14 +175,10 @@ export async function switchWindow(sessionName, windowIndex) {
   )
 }
 
-export async function listProjectInfo() {
+export async function listProjects() {
   const res = await apiFetch('/projects')
-  await requireOK(res, 'Failed to list projects')
   const data = await res.json()
-  return {
-    projects: data.projects || [],
-    project_targets: data.project_targets || {},
-  }
+  return { projects: data.projects || [], targets: data.targets || {} }
 }
 
 export async function getSettings() {

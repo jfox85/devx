@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -61,42 +63,97 @@ func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
 	}
 }
 
-func TestListProjectsIncludesPerProjectDefaultTargets(t *testing.T) {
-	setupEmptySessionStoreForTest(t)
-	prevTarget := viper.GetString("target")
-	viper.Set("target", "host")
-	t.Cleanup(func() { viper.Set("target", prevTarget) })
+func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
 
-	home := os.Getenv("HOME")
-	projectRoot := filepath.Join(home, "repo")
-	if err := os.MkdirAll(filepath.Join(projectRoot, ".devx"), 0o755); err != nil {
+	projectDir := filepath.Join(tmp, "nibit")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectRoot, ".devx", "config.yaml"), []byte("target: gatepost\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, ".devx", "config.yaml"), []byte("target: host\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	registryPath := filepath.Join(home, ".config", "devx", "projects.json")
-	registryJSON := fmt.Sprintf(`{"projects":{"devx":{"name":"DevX","path":%q}}}`, projectRoot)
-	if err := os.WriteFile(registryPath, []byte(registryJSON), 0o644); err != nil {
+	registryDir := filepath.Join(tmp, ".config", "devx")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	registryJSON := fmt.Sprintf(`{"projects":{"nibit":{"name":"nibit","path":%q},"mystorymates":{"name":"mystorymates","path":%q}}}`, projectDir, filepath.Join(tmp, "mystorymates"))
+	if err := os.WriteFile(filepath.Join(registryDir, "projects.json"), []byte(registryJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	resp := authedRequest(t, "GET", "/api/projects", nil)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/projects", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var body struct {
-		Projects       []string          `json:"projects"`
-		ProjectTargets map[string]string `json:"project_targets"`
+	var resp struct {
+		Projects []string          `json:"projects"`
+		Targets  map[string]string `json:"targets"`
 	}
-	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
-		t.Fatalf("invalid json: %v", err)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
 	}
-	if len(body.Projects) != 1 || body.Projects[0] != "devx" {
-		t.Fatalf("unexpected projects: %#v", body.Projects)
+	if got, want := resp.Projects, []string{"mystorymates", "nibit"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("projects = %v, want %v", got, want)
 	}
-	if got := body.ProjectTargets["devx"]; got != "gatepost" {
-		t.Fatalf("project target = %q, want gatepost (body %#v)", got, body)
+	// handleListProjects resolves a concrete default target for every project so
+	// the new-session form can always pre-select a type: the project's configured
+	// target when set, otherwise the global default (here unset, so "host").
+	if got := resp.Targets["nibit"]; got != "host" {
+		t.Fatalf("nibit target = %q, want host; response=%s", got, w.Body.String())
+	}
+	if got := resp.Targets["mystorymates"]; got != "host" {
+		t.Fatalf("mystorymates (no config) should fall back to global default host, got %q", got)
+	}
+}
+
+func TestListProjectsRejectsInvalidProjectTarget(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	projectDir := filepath.Join(tmp, "bad")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A project config with an unknown target must not leak into the UI defaults;
+	// it should fall back to the global default (here unset, so "host").
+	if err := os.WriteFile(filepath.Join(projectDir, ".devx", "config.yaml"), []byte("target: bogus\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registryDir := filepath.Join(tmp, ".config", "devx")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	registryJSON := fmt.Sprintf(`{"projects":{"bad":{"name":"bad","path":%q}}}`, projectDir)
+	if err := os.WriteFile(filepath.Join(registryDir, "projects.json"), []byte(registryJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/projects", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Targets map[string]string `json:"targets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got := resp.Targets["bad"]; got != "host" {
+		t.Fatalf("invalid project target should fall back to host, got %q; response=%s", got, w.Body.String())
 	}
 }
 
@@ -684,5 +741,50 @@ func TestMarkSessionReviewedMapsMissingSessionTo404(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing session, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func uploadImageRequest(t *testing.T, sessionName string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("image", "x.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Minimal valid PNG header so the handler's magic-byte sniff succeeds.
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	png = append(png, make([]byte, 32)...)
+	if _, err := part.Write(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("session", sessionName); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/upload-image", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req
+}
+
+func TestHandleUploadImageRejectsInvalidSession(t *testing.T) {
+	for _, name := range []string{"../escape", "../../etc", "a/../b", "bad\x00name"} {
+		w := httptest.NewRecorder()
+		handleUploadImage(w, uploadImageRequest(t, name))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("session %q: expected 400, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandleUploadImageAcceptsValidSession(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	w := httptest.NewRecorder()
+	handleUploadImage(w, uploadImageRequest(t, "my-session"))
+	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "invalid session") {
+		t.Fatalf("valid session wrongly rejected: %s", w.Body.String())
 	}
 }

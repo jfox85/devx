@@ -179,6 +179,36 @@ func TestTerminalSendInputUsesNamedBufferAndActivePaneTarget(t *testing.T) {
 	}
 }
 
+func TestTerminalSendInputLiteralUsesSendKeysWithoutBuffer(t *testing.T) {
+	s := newTestWebServer(t)
+	s.terminal.loadStore = func() (*session.SessionStore, error) {
+		return &session.SessionStore{Sessions: map[string]*session.Session{
+			"demo": {Name: "demo", Path: t.TempDir()},
+		}}, nil
+	}
+	var calls []string
+	withStubbedTmux(t,
+		func(args ...string) error {
+			call := strings.Join(args, " ")
+			if call == "has-session -t =demo-web" {
+				return errors.New("no web session")
+			}
+			calls = append(calls, call)
+			return nil
+		},
+		func(args ...string) ([]byte, error) { return nil, errors.New("unexpected tmux output") })
+
+	body := bytes.NewBufferString(`{"session":"demo","text":"abc","submit":true,"mode":"literal"}`)
+	resp := serveServerRequest(t, s, "POST", "/api/terminal/send-input", body, true)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", resp.Code, resp.Body.String())
+	}
+	want := []string{"send-keys -t =demo: -l -- abc", "send-keys -t =demo: Enter"}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected tmux calls:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
 func TestTerminalSendInputRejectsOversizedText(t *testing.T) {
 	s := newTestWebServer(t)
 	s.terminal.loadStore = func() (*session.SessionStore, error) {

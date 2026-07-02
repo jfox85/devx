@@ -26,6 +26,7 @@ import (
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/web/imagepolicy"
 	"github.com/spf13/viper"
 )
 
@@ -1065,36 +1066,40 @@ func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListProjects returns the sorted list of project aliases from the registry
-// plus each project's default session target. The projects array is preserved for
-// older clients; project_targets lets the new-session UI reset its type selector
-// when the selected project changes.
+// handleListProjects returns the sorted list of project aliases from the
+// registry, plus each project's default session target so the new-session form
+// can pre-select the right type when a project is chosen. The default mirrors
+// session creation: the project's .devx/config.yaml "target" if set, otherwise
+// the global default.
 func handleListProjects(w http.ResponseWriter, r *http.Request) {
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	globalDefaultTarget := viper.GetString("target")
-	if globalDefaultTarget == "" {
-		globalDefaultTarget = "host"
-	}
+	globalTarget := viper.GetString("target")
 	aliases := make([]string, 0, len(registry.Projects))
-	projectTargets := make(map[string]string, len(registry.Projects))
+	targets := make(map[string]string, len(registry.Projects))
 	for alias, project := range registry.Projects {
 		aliases = append(aliases, alias)
-		projectTargets[alias] = globalDefaultTarget
-		if project == nil || project.Path == "" {
-			continue
+		projectPath := ""
+		if project != nil {
+			projectPath = project.Path
 		}
-		projectCfg, err := config.GetProjectConfig(project.Path)
-		if err != nil || projectCfg == nil || projectCfg.Target == "" {
-			continue
+		// ResolveProjectTarget intentionally skips validation, so a malformed
+		// project-level target could otherwise be preselected in the new-session
+		// form. Fall back to the global default (then host) for invalid values.
+		resolved := config.ResolveProjectTarget(projectPath, globalTarget)
+		if !isValidSessionTarget(resolved) {
+			resolved = config.ResolveProjectTarget("", globalTarget)
+			if !isValidSessionTarget(resolved) {
+				resolved = "host"
+			}
 		}
-		projectTargets[alias] = projectCfg.Target
+		targets[alias] = resolved
 	}
 	sort.Strings(aliases)
-	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "project_targets": projectTargets})
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "targets": targets})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches
@@ -1269,21 +1274,14 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-var allowedImageTypes = map[string]string{
-	"image/png":  ".png",
-	"image/jpeg": ".jpg",
-	"image/gif":  ".gif",
-	"image/webp": ".webp",
-}
-
 // handleUploadImage accepts a multipart image upload, saves it to
 // ~/.devx/uploads/<session>/{hex}.ext, and returns the path as JSON.
 // For Gatepost sessions the returned path uses the container mount point
 // so the agent can access the file directly.
 func handleUploadImage(w http.ResponseWriter, r *http.Request) {
-	// Cap the raw request body to 20 MB before parsing to prevent disk exhaustion.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	// Cap the raw request body before parsing to prevent disk exhaustion.
+	r.Body = http.MaxBytesReader(w, r.Body, imagepolicy.MaxUploadBytes)
+	if err := r.ParseMultipartForm(imagepolicy.MaxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
 		return
 	}
@@ -1296,6 +1294,14 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	sessionName := r.FormValue("session")
+	// Reject malformed session names before they reach filepath.Join: an
+	// unvalidated value (e.g. "../../...") would let the upload escape the
+	// per-session uploads dir under ~/.devx/uploads. An empty session is allowed
+	// (shared uploads dir); anything non-empty must be a valid session name.
+	if sessionName != "" && !session.IsValidSessionName(sessionName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session"})
+		return
+	}
 
 	// Always sniff magic bytes to determine MIME type — never trust the
 	// client-supplied Content-Type header, which is trivially spoofable.
@@ -1314,7 +1320,7 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext, ok := allowedImageTypes[mediaType]
+	ext, ok := imagepolicy.MIMEToExt[mediaType]
 	if !ok {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
 		return
@@ -1404,9 +1410,9 @@ func handleServeUpload(w http.ResponseWriter, r *http.Request) {
 // handleShow accepts a multipart image upload from the CLI, saves it to
 // ~/.devx/uploads/, then broadcasts its URL to all connected SSE clients.
 func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
-	// Cap the raw request body to 20 MB before parsing.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	// Cap the raw request body before parsing.
+	r.Body = http.MaxBytesReader(w, r.Body, imagepolicy.MaxUploadBytes)
+	if err := r.ParseMultipartForm(imagepolicy.MaxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
 		return
 	}
@@ -1432,7 +1438,7 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid content type"})
 		return
 	}
-	ext, ok := allowedImageTypes[mediaType]
+	ext, ok := imagepolicy.MIMEToExt[mediaType]
 	if !ok {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
 		return
