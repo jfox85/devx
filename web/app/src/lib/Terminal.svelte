@@ -777,6 +777,10 @@
     processImageFile(file)
   }
 
+  export function handleTextPaste(text) {
+    if (text) sendLiteral(session.name, text)
+  }
+
   function handleFileInput(e) {
     const files = Array.from(e.target.files || [])
     if (files.length) processImageFiles(files)

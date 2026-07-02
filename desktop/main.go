@@ -26,13 +26,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -40,6 +45,7 @@ import (
 
 	_ "embed"
 
+	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/web"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -66,6 +72,12 @@ func main() {
 
 	host := &Host{server: priv}
 	appMenu := menu.NewMenu()
+	if goruntime.GOOS == "darwin" {
+		// Wails replaces the whole application menu when Menu is supplied. Keep the
+		// standard macOS app menu and add our Cmd+V bridge below so paste shortcuts
+		// are handled by the trusted top-level shell, not by arbitrary WebKit frames.
+		appMenu.Append(menu.AppMenu())
+	}
 	devxMenu := appMenu.AddSubmenu("DevX")
 	emit := func(event string) func(*menu.CallbackData) {
 		return func(_ *menu.CallbackData) {
@@ -79,13 +91,13 @@ func main() {
 	devxMenu.AddText("Focus Terminal", keys.Combo("t", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:focusTerminal"))
 	devxMenu.AddText("Focus Session List", keys.Combo("s", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:focusSessionList"))
 	devxMenu.AddText("New Session", keys.Combo("c", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newSession"))
+	devxMenu.AddText("Paste", keys.CmdOrCtrl("v"), emit("devx:nativePaste"))
 	devxMenu.AddSeparator()
 	devxMenu.AddText("Toggle Artifacts", keys.Combo("a", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:toggleArtifacts"))
 	devxMenu.AddText("Cycle Split", keys.Combo("o", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:cycleSplit"))
 	devxMenu.AddText("View Terminal Output", keys.Combo("v", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:viewTerminalOutput"))
 	devxMenu.AddText("Insert Artifact", keys.Combo("i", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:insertArtifact"))
 	devxMenu.AddText("New Text Artifact", keys.Combo("n", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newArtifact"))
-
 	// Keep the SPA loaded from the Wails asset server (no external-link landing
 	// page), but let terminal iframes go directly to the private loopback origin
 	// so ttyd WebSockets do not traverse Wails' asset-server proxy.
@@ -208,4 +220,101 @@ func (h *Host) Notify(title string, body string) error {
 		log.Printf("notify: %s — %s", title, body)
 		return nil
 	}
+}
+
+// ClipboardImageDataURL returns the current clipboard image as a PNG data URL,
+// or an empty string when the clipboard has no image. It gives the frontend a
+// same-origin paste path for the desktop terminal iframe, whose direct loopback
+// origin intentionally prevents JS from installing an in-iframe paste listener.
+func (h *Host) ClipboardImageDataURL() (string, error) {
+	data, err := readClipboardPNG()
+	if err != nil || len(data) == 0 {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func readClipboardPNG() ([]byte, error) {
+	if goruntime.GOOS != "darwin" {
+		return nil, nil
+	}
+	tmp, err := os.CreateTemp("", "devx-clipboard-*.png")
+	if err != nil {
+		return nil, err
+	}
+	path := tmp.Name()
+	tmp.Close()
+	defer os.Remove(path)
+
+	args := []string{
+		"-e", fmt.Sprintf("set theFile to POSIX file %s", strconv.Quote(path)),
+		"-e", "set img to the clipboard as «class PNGf»",
+		"-e", "set fp to open for access theFile with write permission",
+		"-e", "set eof fp to 0",
+		"-e", "write img to fp",
+		"-e", "close access fp",
+	}
+	if err := exec.Command("/usr/bin/osascript", args...).Run(); err != nil {
+		// No image on the clipboard is not an application error; the frontend will
+		// fall back to text paste.
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return data, nil
+}
+
+// PasteClipboardImage saves the current clipboard image to the same per-session
+// upload directory used by the web multipart endpoint and returns the path that
+// should be inserted into the terminal.
+func (h *Host) PasteClipboardImage(sessionName string) (string, error) {
+	data, err := readClipboardPNG()
+	if err != nil || len(data) == 0 {
+		return "", err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	uploadSubdir := "uploads"
+	if sessionName != "" {
+		uploadSubdir = filepath.Join("uploads", sessionName)
+	}
+	uploadDir := filepath.Join(home, ".devx", uploadSubdir)
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		return "", err
+	}
+	var randBytes [16]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		return "", err
+	}
+	destPath := filepath.Join(uploadDir, hex.EncodeToString(randBytes[:])+".png")
+	if err := os.WriteFile(destPath, data, 0o600); err != nil {
+		return "", err
+	}
+	resultPath := destPath
+	if sessionName != "" {
+		store, _ := session.LoadSessions()
+		if store != nil {
+			if sess, ok := store.Sessions[sessionName]; ok && sess.Target.Gatepost.Enabled {
+				resultPath = filepath.Join("/root/.devx/uploads", filepath.Base(destPath))
+			}
+		}
+	}
+	return resultPath, nil
+}
+
+// ClipboardText returns the current clipboard text. It backs the same native
+// paste bridge as ClipboardImageDataURL so Cmd+V remains useful when the custom
+// image bridge replaces macOS' global WebKit Edit menu paste path.
+func (h *Host) ClipboardText() (string, error) {
+	if h.ctx == nil {
+		return "", nil
+	}
+	return wailsruntime.ClipboardGetText(h.ctx)
 }

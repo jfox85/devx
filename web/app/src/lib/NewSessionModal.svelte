@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/NewSessionModal.svelte -->
 <script>
   import { onMount, createEventDispatcher } from 'svelte'
-  import { createSession, getSettings, listProjects } from '../api.js'
+  import { createSession, getSettings, listProjectInfo } from '../api.js'
 
   const dispatch = createEventDispatcher()
 
@@ -12,6 +12,7 @@
   let target = 'host'
   let defaultTarget = 'host'
   let projects = []
+  let projectTargets = {}
   let projectsLoading = true
   let projectLoadError = ''
   let error = ''
@@ -32,11 +33,14 @@
       if (['host', 'gatepost', 'docker'].includes(defaultTarget)) target = defaultTarget
     } catch { /* settings are optional; keep fallback */ }
     try {
-      projects = await listProjects()
+      const projectInfo = await listProjectInfo()
+      projects = projectInfo.projects || []
+      projectTargets = projectInfo.project_targets || {}
       // If the remembered project is no longer in the list, clear it
       if (project && !projects.includes(project)) project = ''
       // If nothing remembered but there's only one project, pre-select it
       if (!project && projects.length === 1) project = projects[0]
+      applyDefaultTargetForProject(project)
     } catch (e) {
       projectLoadError = e.message || 'could not load projects'
     } finally {
@@ -68,6 +72,15 @@
   function focusName() {
     nameInputEl?.focus()
     nameInputEl?.select()
+  }
+
+  function validTarget(value) {
+    return ['host', 'gatepost', 'docker'].includes(value)
+  }
+
+  function applyDefaultTargetForProject(projectAlias) {
+    const nextTarget = projectAlias ? projectTargets[projectAlias] : defaultTarget
+    target = validTarget(nextTarget) ? nextTarget : defaultTarget
   }
 
   function focusableControls() {
@@ -137,31 +150,6 @@
       </div>
 
       <div>
-        <div class="flex items-center justify-between mb-1">
-          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
-          <span class="text-gray-700 text-[10px] font-mono">default: {defaultTarget}</span>
-        </div>
-        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
-          {#each [
-            ['host', 'host'],
-            ['gatepost', 'gatepost'],
-            ['docker', 'docker'],
-          ] as [value, label]}
-            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
-              <input
-                type="radio"
-                name="session-target"
-                value={value}
-                bind:group={target}
-                class="accent-cyan-600"
-              />
-              <span>{label}</span>
-            </label>
-          {/each}
-        </div>
-      </div>
-
-      <div>
         <label for="session-project" class="block text-gray-600 text-[11px] font-mono mb-1">
           project
         </label>
@@ -170,6 +158,7 @@
             id="session-project"
             bind:value={project}
             disabled={projectsLoading || projects.length === 0}
+            on:change={() => applyDefaultTargetForProject(project)}
             on:keydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSubmit() } }}
             class="
               w-full bg-[#0a0e1a] border border-[#1e2d4a] focus:border-cyan-800
@@ -195,6 +184,31 @@
             Could not load projects: {projectLoadError}
           </p>
         {/if}
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="block text-gray-600 text-[11px] font-mono">session type</span>
+          <span class="text-gray-700 text-[10px] font-mono">default: {project ? (projectTargets[project] || defaultTarget) : defaultTarget}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="session type">
+          {#each [
+            ['host', 'host'],
+            ['gatepost', 'gatepost'],
+            ['docker', 'docker'],
+          ] as [value, label]}
+            <label class="flex items-center gap-2 border border-[#1e2d4a] px-2 py-2 text-[11px] font-mono cursor-pointer transition-colors {target === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/20' : 'text-gray-500 hover:text-gray-300 hover:border-gray-700'}">
+              <input
+                type="radio"
+                name="session-target"
+                value={value}
+                bind:group={target}
+                class="accent-cyan-600"
+              />
+              <span>{label}</span>
+            </label>
+          {/each}
+        </div>
       </div>
 
       {#if progress.length > 0}

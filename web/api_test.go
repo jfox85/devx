@@ -61,6 +61,45 @@ func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
 	}
 }
 
+func TestListProjectsIncludesPerProjectDefaultTargets(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	prevTarget := viper.GetString("target")
+	viper.Set("target", "host")
+	t.Cleanup(func() { viper.Set("target", prevTarget) })
+
+	home := os.Getenv("HOME")
+	projectRoot := filepath.Join(home, "repo")
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".devx"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".devx", "config.yaml"), []byte("target: gatepost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(home, ".config", "devx", "projects.json")
+	registryJSON := fmt.Sprintf(`{"projects":{"devx":{"name":"DevX","path":%q}}}`, projectRoot)
+	if err := os.WriteFile(registryPath, []byte(registryJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := authedRequest(t, "GET", "/api/projects", nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Projects       []string          `json:"projects"`
+		ProjectTargets map[string]string `json:"project_targets"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(body.Projects) != 1 || body.Projects[0] != "devx" {
+		t.Fatalf("unexpected projects: %#v", body.Projects)
+	}
+	if got := body.ProjectTargets["devx"]; got != "gatepost" {
+		t.Fatalf("project target = %q, want gatepost (body %#v)", got, body)
+	}
+}
+
 func TestGetHealthReturnsOK(t *testing.T) {
 	mux := http.NewServeMux()
 	registerAPIRoutes(mux)

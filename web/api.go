@@ -1065,19 +1065,36 @@ func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListProjects returns the sorted list of project aliases from the registry.
+// handleListProjects returns the sorted list of project aliases from the registry
+// plus each project's default session target. The projects array is preserved for
+// older clients; project_targets lets the new-session UI reset its type selector
+// when the selected project changes.
 func handleListProjects(w http.ResponseWriter, r *http.Request) {
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	globalDefaultTarget := viper.GetString("target")
+	if globalDefaultTarget == "" {
+		globalDefaultTarget = "host"
+	}
 	aliases := make([]string, 0, len(registry.Projects))
-	for alias := range registry.Projects {
+	projectTargets := make(map[string]string, len(registry.Projects))
+	for alias, project := range registry.Projects {
 		aliases = append(aliases, alias)
+		projectTargets[alias] = globalDefaultTarget
+		if project == nil || project.Path == "" {
+			continue
+		}
+		projectCfg, err := config.GetProjectConfig(project.Path)
+		if err != nil || projectCfg == nil || projectCfg.Target == "" {
+			continue
+		}
+		projectTargets[alias] = projectCfg.Target
 	}
 	sort.Strings(aliases)
-	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases})
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "project_targets": projectTargets})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches

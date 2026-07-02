@@ -88,6 +88,7 @@
       window.addEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
       window.addEventListener('devx:insertArtifact', insertArtifactHandler)
       window.addEventListener('devx:newArtifact', newArtifactHandler)
+      window.addEventListener('devx:nativePaste', handleNativePaste)
       unsubscribeSSE = subscribeToEvents({
         show: (event) => {
           remoteShow = event
@@ -125,6 +126,7 @@
     window.removeEventListener('devx:viewTerminalOutput', viewTerminalOutputHandler)
     window.removeEventListener('devx:insertArtifact', insertArtifactHandler)
     window.removeEventListener('devx:newArtifact', newArtifactHandler)
+    window.removeEventListener('devx:nativePaste', handleNativePaste)
   })
 
   function dismissRemoteShow() {
@@ -190,6 +192,47 @@
         terminalComponent.handleImagePaste(file)
         return
       }
+    }
+  }
+
+  function insertTextIntoFocusedElement(text) {
+    const el = document.activeElement
+    if (!el || !('value' in el)) return false
+    const tag = el.tagName
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false
+    const start = el.selectionStart ?? el.value.length
+    const end = el.selectionEnd ?? start
+    el.value = el.value.slice(0, start) + text + el.value.slice(end)
+    el.selectionStart = el.selectionEnd = start + text.length
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  }
+
+  async function handleNativePaste() {
+    const host = typeof window !== 'undefined' && window.go?.main?.Host
+    if (!host) return
+    try {
+      if (host.PasteClipboardImage && activeSession && terminalComponent) {
+        const pastedPath = await host.PasteClipboardImage(activeSession.name)
+        if (pastedPath) {
+          terminalComponent.handleTextPaste(pastedPath + ' ')
+          return
+        }
+      }
+      const dataURL = await host.ClipboardImageDataURL?.()
+      if (dataURL && activeSession && terminalComponent) {
+        const res = await fetch(dataURL)
+        const blob = await res.blob()
+        terminalComponent.handleImagePaste(new File([blob], 'clipboard.png', { type: blob.type || 'image/png' }))
+        return
+      }
+      const text = await host.ClipboardText?.()
+      if (!text) return
+      if (insertTextIntoFocusedElement(text)) return
+      if (activeSession && terminalComponent) terminalComponent.handleTextPaste(text)
+    } catch {
+      // Native paste is a convenience bridge; leave normal app state untouched
+      // when clipboard access fails.
     }
   }
 </script>
