@@ -11,6 +11,7 @@
   import ImageToast from './lib/ImageToast.svelte'
   import FlagToast from './lib/FlagToast.svelte'
   import ShareTarget from './lib/ShareTarget.svelte'
+  import AskApprovalModal from './lib/AskApprovalModal.svelte'
 
   // view is only used on mobile to toggle between sessions and terminal.
   // On desktop, both panels are always visible.
@@ -247,6 +248,8 @@
     {#if shareToken}
       <ShareTarget token={shareToken} onCancel={clearShareToken} onCreated={handleShareCreated} />
     {/if}
+
+    <AskApprovalModal />
 
     <!-- Quick switcher: Cmd/Ctrl+P fuzzy session jump -->
     {#if switcherOpen}

@@ -9,19 +9,20 @@ import (
 )
 
 type Config struct {
-	Target                 string   `mapstructure:"target"`
-	BaseDomain             string   `mapstructure:"basedomain"`
-	CaddyAPI               string   `mapstructure:"caddy_api"`
-	TmuxpTemplate          string   `mapstructure:"tmuxp_template"`
-	Ports                  []string `mapstructure:"ports"`
-	BootstrapFiles         []string `mapstructure:"bootstrap_files"`
-	ExternalDomain         string   `mapstructure:"external_domain"`
-	CloudflareTunnelID     string   `mapstructure:"cloudflare_tunnel_id"`
-	CloudflareTunnelConfig string   `mapstructure:"cloudflare_tunnel_config"`
-	WebSecretToken         string   `mapstructure:"web_secret_token"`
-	WebPort                int      `mapstructure:"web_port"`
-	WebAutostart           bool     `mapstructure:"web_autostart"`
-	ArtifactTriggerKey     string   `mapstructure:"artifact_trigger_key"`
+	Target                 string               `mapstructure:"target"`
+	BaseDomain             string               `mapstructure:"basedomain"`
+	CaddyAPI               string               `mapstructure:"caddy_api"`
+	TmuxpTemplate          string               `mapstructure:"tmuxp_template"`
+	Ports                  []string             `mapstructure:"ports"`
+	BootstrapFiles         []string             `mapstructure:"bootstrap_files"`
+	ExternalDomain         string               `mapstructure:"external_domain"`
+	CloudflareTunnelID     string               `mapstructure:"cloudflare_tunnel_id"`
+	CloudflareTunnelConfig string               `mapstructure:"cloudflare_tunnel_config"`
+	WebSecretToken         string               `mapstructure:"web_secret_token"`
+	WebPort                int                  `mapstructure:"web_port"`
+	WebAutostart           bool                 `mapstructure:"web_autostart"`
+	ArtifactTriggerKey     string               `mapstructure:"artifact_trigger_key"`
+	AgentResponder         AgentResponderConfig `mapstructure:"agent_responder"`
 	Gatepost               struct {
 		Root                     string `mapstructure:"root"`
 		AgentImage               string `mapstructure:"agent_image"`
@@ -30,6 +31,15 @@ type Config struct {
 		AuthHome                 string `mapstructure:"auth_home"`
 		RequiredProviders        string `mapstructure:"required_providers"`
 	} `mapstructure:"gatepost"`
+}
+
+type AgentResponderConfig struct {
+	Enabled  bool     `mapstructure:"enabled"`
+	Mode     string   `mapstructure:"mode"`
+	Command  string   `mapstructure:"command"`
+	Args     []string `mapstructure:"args"`
+	Timeout  string   `mapstructure:"timeout"`
+	ReadOnly bool     `mapstructure:"read_only"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -96,6 +106,12 @@ func SaveConfig(cfg *Config) error {
 	viper.Set("web_port", cfg.WebPort)
 	viper.Set("web_autostart", cfg.WebAutostart)
 	viper.Set("artifact_trigger_key", cfg.ArtifactTriggerKey)
+	viper.Set("agent_responder.enabled", cfg.AgentResponder.Enabled)
+	viper.Set("agent_responder.mode", cfg.AgentResponder.Mode)
+	viper.Set("agent_responder.command", cfg.AgentResponder.Command)
+	viper.Set("agent_responder.args", cfg.AgentResponder.Args)
+	viper.Set("agent_responder.timeout", cfg.AgentResponder.Timeout)
+	viper.Set("agent_responder.read_only", cfg.AgentResponder.ReadOnly)
 	viper.Set("gatepost.root", cfg.Gatepost.Root)
 	viper.Set("gatepost.agent_image", cfg.Gatepost.AgentImage)
 	viper.Set("gatepost.logs_command", cfg.Gatepost.LogsCommand)

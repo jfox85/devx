@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jfox85/devx/ask"
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/claude"
 	"github.com/jfox85/devx/config"
@@ -75,6 +77,7 @@ const (
 	stateProjectManagement
 	stateProjectAdd
 	stateRenaming
+	stateAskApproval
 )
 
 type model struct {
@@ -88,6 +91,7 @@ type model struct {
 	confirmMsg      string
 	confirmFunc     func()
 	deleteTarget    string
+	pendingAsk      *ask.Request
 	width           int
 	height          int
 	err             error
@@ -453,7 +457,19 @@ func InitialModel() *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.loadSessions, m.refreshPreview(), m.refreshSessions(), m.checkCaddyHealth(), m.checkForUpdates)
+	return tea.Batch(m.loadSessions, m.loadPendingAsk, m.refreshPreview(), m.refreshSessions(), m.checkCaddyHealth(), m.checkForUpdates)
+}
+
+type pendingAskMsg struct{ req *ask.Request }
+
+type askHandledMsg struct{ status string }
+
+func (m *model) loadPendingAsk() tea.Msg {
+	reqs, err := ask.NewStore().Pending()
+	if err != nil || len(reqs) == 0 {
+		return nil
+	}
+	return pendingAskMsg{req: reqs[0]}
 }
 
 func (m *model) loadSessions() tea.Msg {
@@ -646,6 +662,28 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch m.state {
+		case stateAskApproval:
+			if key.Matches(msg, m.keys.Quit) {
+				return m, tea.Quit
+			}
+			switch strings.ToLower(msg.String()) {
+			case "y":
+				req := m.pendingAsk
+				m.pendingAsk = nil
+				m.state = stateList
+				return m, approvePendingAsk(req, false)
+			case "a":
+				req := m.pendingAsk
+				m.pendingAsk = nil
+				m.state = stateList
+				return m, approvePendingAsk(req, true)
+			case "n", "esc":
+				req := m.pendingAsk
+				m.pendingAsk = nil
+				m.state = stateList
+				return m, denyPendingAsk(req)
+			}
+
 		case stateList:
 			// When filter is active, intercept keys for the search input
 			if m.filterActive {
@@ -1265,7 +1303,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshSessionsMsg:
 		// Reload sessions to reflect changes and continue periodic refresh
 		m.lastSessionRefresh = time.Now()
-		return m, tea.Batch(m.loadSessions, m.refreshSessions())
+		return m, tea.Batch(m.loadSessions, m.loadPendingAsk, m.refreshSessions())
 
 	case gitStatsMsg:
 		// Update cache
@@ -1300,6 +1338,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// No need to reload project data - just update the UI
 		return m, nil
+
+	case pendingAskMsg:
+		if msg.req != nil && m.state == stateList {
+			m.pendingAsk = msg.req
+			m.state = stateAskApproval
+		}
+		return m, nil
+
+	case askHandledMsg:
+		m.statusMsg = fmt.Sprintf("ask %s", msg.status)
+		return m, m.loadPendingAsk
 
 	case errMsg:
 		m.err = msg.err
@@ -1345,6 +1394,8 @@ func (m *model) View() string {
 		content = m.projectAddView()
 	case stateRenaming:
 		content = m.renameView()
+	case stateAskApproval:
+		content = m.askApprovalView()
 	}
 
 	// Create footer with commands
@@ -1373,6 +1424,8 @@ func (m *model) View() string {
 			footer = footerStyle.Width(m.width).Render("enter: add project • esc: cancel")
 		case stateRenaming:
 			footer = footerStyle.Width(m.width).Render("enter: save rename • esc: cancel")
+		case stateAskApproval:
+			footer = footerStyle.Width(m.width).Render("y: approve once • a: approve always • n/esc: deny • q: quit")
 		}
 	}
 
@@ -2196,6 +2249,17 @@ func (m *model) confirmView() string {
 		"  " + m.confirmMsg + "\n"
 }
 
+func (m *model) askApprovalView() string {
+	if m.pendingAsk == nil {
+		return headerStyle.Render("Pending Ask") + "\n\n  No pending asks.\n"
+	}
+	req := m.pendingAsk
+	return headerStyle.Render("Pending DevX Ask Approval") + "\n\n" +
+		fmt.Sprintf("  Session %q wants to ask %q:\n\n", req.FromSession, req.ToSession) +
+		"  " + strings.ReplaceAll(req.Question, "\n", "\n  ") + "\n\n" +
+		dimStyle.Render("  Approving runs the configured responder command in the target worktree.") + "\n"
+}
+
 func (m *model) hostnamesView() string {
 	if len(m.hostnames) == 0 {
 		return headerStyle.Render("Caddy Hostnames") + "\n\n" +
@@ -2511,6 +2575,38 @@ func (m *model) editInEditor(sessionName string) tea.Cmd {
 		}
 
 		return nil
+	}
+}
+
+func approvePendingAsk(req *ask.Request, always bool) tea.Cmd {
+	return func() tea.Msg {
+		if req == nil {
+			return askHandledMsg{status: "approval skipped"}
+		}
+		var updated *ask.Request
+		var err error
+		if always {
+			updated, err = ask.NewStore().ApproveAlwaysAndExecute(context.Background(), req.ID, ask.Policy{})
+		} else {
+			updated, err = ask.NewStore().ApproveAndExecute(context.Background(), req.ID, ask.Policy{})
+		}
+		if err != nil {
+			return errMsg{err}
+		}
+		return askHandledMsg{status: updated.Status}
+	}
+}
+
+func denyPendingAsk(req *ask.Request) tea.Cmd {
+	return func() tea.Msg {
+		if req == nil {
+			return askHandledMsg{status: "deny skipped"}
+		}
+		fresh, err := ask.NewStore().Deny(req.ID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return askHandledMsg{status: fresh.Status}
 	}
 }
 

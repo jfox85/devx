@@ -45,6 +45,25 @@ export async function getStaleSummary(days) {
   return res.json()
 }
 
+export async function listPendingAsks() {
+  const res = await apiFetch('/asks/pending')
+  await requireOK(res, 'Failed to list pending asks')
+  const data = await res.json()
+  return data.requests || []
+}
+
+export async function approveAsk(id, { always = false } = {}) {
+  const res = await apiFetch('/asks/approve', { method: 'POST', body: JSON.stringify({ id, always }) })
+  await requireOK(res, 'Failed to approve ask')
+  return res.json()
+}
+
+export async function denyAsk(id) {
+  const res = await apiFetch('/asks/deny', { method: 'POST', body: JSON.stringify({ id }) })
+  await requireOK(res, 'Failed to deny ask')
+  return res.json()
+}
+
 export async function createSession(name, project, options = {}) {
   const body = { name, project }
   if (options.target) body.target = options.target
