@@ -25,6 +25,7 @@
   let resizingList = false
   let artifactSort = 'newest'
   let relativeNow = Date.now()
+  let desktopMode = false
   let lastAppliedSelectedArtifactID = null
   let wasFullScreen = false
 
@@ -270,6 +271,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-eval' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; media-src data: blob:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'" />
   <style>
     html, body, #root { min-height: 100%; margin: 0; }
     body { background: #f8fafc; color: #0f172a; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -375,6 +377,7 @@
   }
 
   onMount(() => {
+    desktopMode = Boolean(window.__DEVX_DESKTOP)
     load()
     const timer = window.setInterval(() => { relativeNow = Date.now() }, 60_000)
     return () => window.clearInterval(timer)
@@ -460,6 +463,11 @@
       {:else if previewKind(selected) === 'jsx'}
         {#if jsxPreviewMode === 'code'}
           <pre class="text-xs font-mono whitespace-pre-wrap p-4 text-gray-200">{textPreview}</pre>
+        {:else if desktopMode}
+          <div class="p-4 space-y-3 text-xs font-mono text-gray-400">
+            <p>JSX previews are shown as source in the desktop app so native paste shortcuts cannot deliver clipboard contents into scripted artifact previews.</p>
+            <pre class="whitespace-pre-wrap text-gray-200">{textPreview}</pre>
+          </div>
         {:else if textPreview}
           <iframe title="JSX preview — {selected.title}" srcdoc={jsxPreviewSrcdoc(textPreview)} sandbox="allow-scripts" class="w-full h-full border-0 bg-white"></iframe>
         {:else}
