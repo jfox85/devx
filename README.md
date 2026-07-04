@@ -307,6 +307,36 @@ devx session list
 # hotfix-bug         hotfix-bug         WEB:3002,API:3003       ui.localhost,api.localhost         tmux:detached,editor:stopped
 ```
 
+#### Agent Session Context and Asks
+```bash
+# Print agent-friendly metadata for all sessions, including paths, branches,
+# git dirty/clean state, service ports, and local URLs.
+devx session context --json
+
+# Ask another session a question. By default this creates a pending approval
+# request under ~/.config/devx/asks.
+devx ask backend "What API endpoint should the frontend use?"
+
+# Approve or deny pending asks from the CLI. The TUI and web/desktop app also
+# surface pending asks as explicit approval prompts.
+devx ask pending
+devx ask approve req_abc123
+devx ask approve req_abc123 --always  # remember this requester/target pair
+devx ask deny req_abc123
+```
+
+Responder execution is opt-in via config:
+
+```yaml
+agent_responder:
+  enabled: true
+  mode: approval # none | approval | always
+  command: pi
+  args: ["--print", "--no-session", "@{{.PromptFile}}"]
+  timeout: 5m
+  read_only: true # prompt instruction only; not a filesystem sandbox
+```
+
 #### Attach to Session
 ```bash
 # Attach to existing session (launches tmux and editor)

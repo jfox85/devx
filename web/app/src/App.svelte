@@ -11,6 +11,7 @@
   import ImageToast from './lib/ImageToast.svelte'
   import FlagToast from './lib/FlagToast.svelte'
   import ShareTarget from './lib/ShareTarget.svelte'
+  import AskApprovalModal from './lib/AskApprovalModal.svelte'
   import { DESKTOP_EVENTS, isDesktop } from './lib/desktopBridge.js'
 
   // view is only used on mobile to toggle between sessions and terminal.
@@ -294,6 +295,8 @@
     {#if shareToken}
       <ShareTarget token={shareToken} onCancel={clearShareToken} onCreated={handleShareCreated} />
     {/if}
+
+    <AskApprovalModal />
 
     <!-- Quick switcher: Cmd/Ctrl+P fuzzy session jump -->
     {#if switcherOpen}

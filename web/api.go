@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jfox85/devx/ask"
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
@@ -48,6 +49,9 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/pane-content/view", handlePaneContentView)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
 	mux.HandleFunc("GET /api/settings", handleSettings)
+	mux.HandleFunc("GET /api/asks/pending", handleAskPending)
+	mux.HandleFunc("POST /api/asks/approve", handleAskApprove)
+	mux.HandleFunc("POST /api/asks/deny", handleAskDeny)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
@@ -196,6 +200,56 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		"artifact_trigger_key":   viper.GetString("artifact_trigger_key"),
 		"default_session_target": defaultTarget,
 	})
+}
+
+func handleAskPending(w http.ResponseWriter, r *http.Request) {
+	reqs, err := ask.NewStore().Pending()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": reqs})
+}
+
+type askActionRequest struct {
+	ID     string `json:"id"`
+	Always bool   `json:"always"`
+}
+
+func handleAskApprove(w http.ResponseWriter, r *http.Request) {
+	var body askActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	store := ask.NewStore()
+	var req *ask.Request
+	var err error
+	if body.Always {
+		req, err = store.ApproveAlwaysAndExecute(context.Background(), body.ID, ask.Policy{})
+	} else {
+		req, err = store.ApproveAndExecute(context.Background(), body.ID, ask.Policy{})
+	}
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, req)
+}
+
+func handleAskDeny(w http.ResponseWriter, r *http.Request) {
+	var body askActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	store := ask.NewStore()
+	req, err := store.Deny(body.ID)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, req)
 }
 
 func defaultStaleDays() int {
