@@ -115,6 +115,12 @@ func initConfig() {
 	viper.SetDefault("web_trusted_proxies", "")
 	viper.SetDefault("web_autostart", false)
 	viper.SetDefault("artifact_trigger_key", "Ctrl+Space")
+	viper.SetDefault("agent_responder.enabled", false)
+	viper.SetDefault("agent_responder.mode", "approval")
+	viper.SetDefault("agent_responder.command", "pi")
+	viper.SetDefault("agent_responder.args", []string{"--print", "--no-session", "@{{.PromptFile}}"})
+	viper.SetDefault("agent_responder.timeout", "5m")
+	viper.SetDefault("agent_responder.read_only", true)
 
 	// Read primary config (project-level if found, otherwise global)
 	_ = viper.ReadInConfig()
