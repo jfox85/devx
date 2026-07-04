@@ -203,7 +203,7 @@ func (s *terminalService) SendInput(sessionName string, input terminalInput) err
 	if input.Mode == "" {
 		input.Mode = "paste-buffer"
 	}
-	if input.Mode != "paste-buffer" {
+	if input.Mode != "paste-buffer" && input.Mode != "literal" {
 		return terminalHTTPError{status: http.StatusBadRequest, message: "unsupported send mode"}
 	}
 	if input.Text == "" {
@@ -213,6 +213,17 @@ func (s *terminalService) SendInput(sessionName string, input terminalInput) err
 		return terminalHTTPError{status: http.StatusRequestEntityTooLarge, message: "text is too large"}
 	}
 	target := exactTmuxSessionTarget(sessionName) + ":"
+	if input.Mode == "literal" {
+		if err := execTmuxRun("send-keys", "-t", target, "-l", "--", input.Text); err != nil {
+			return terminalHTTPError{status: http.StatusInternalServerError, message: "failed to send input", err: err}
+		}
+		if input.Submit {
+			if err := execTmuxRun("send-keys", "-t", target, "Enter"); err != nil {
+				return terminalHTTPError{status: http.StatusInternalServerError, message: "failed to submit input", err: err}
+			}
+		}
+		return nil
+	}
 	bufferName, err := randomTmuxBufferName()
 	if err != nil {
 		return terminalHTTPError{status: http.StatusInternalServerError, message: "failed to allocate input buffer", err: err}

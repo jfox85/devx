@@ -1,10 +1,11 @@
 import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
+import { isDesktop } from './lib/desktopBridge.js'
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    if (window.__DEVX_DESKTOP) {
+    if (isDesktop()) {
       // The desktop shell serves the SPA through Wails' asset server + private
       // proxy. A PWA service worker is unnecessary there and can leave stale
       // wails:// asset responses across app rebuilds, causing broken/mismatched

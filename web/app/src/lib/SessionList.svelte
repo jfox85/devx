@@ -5,6 +5,7 @@
   import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
   import StaleReviewPanel from './StaleReviewPanel.svelte'
+  import { openExternal as openExternalDesktop } from './desktopBridge.js'
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
@@ -249,10 +250,12 @@
   }
 
   function openExternal(e, url) {
-    const host = typeof window !== 'undefined' && window.go?.main?.Host
-    if (!host?.OpenExternal) return
-    e.preventDefault()
-    host.OpenExternal(url).catch(err => { error = err?.message || String(err) })
+    // In the desktop shell, route through the native host so the link opens in
+    // the user's real browser instead of inside the WebView. In a browser,
+    // openExternalDesktop returns false and we leave the default link behaviour.
+    if (openExternalDesktop(url, (err) => { error = err?.message || String(err) })) {
+      e.preventDefault()
+    }
   }
 
   async function handleCreated(event) {
