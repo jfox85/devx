@@ -42,6 +42,7 @@
   }
 
   async function load() {
+    if (busy) return
     try {
       pending = await listPendingAsks()
       error = ''

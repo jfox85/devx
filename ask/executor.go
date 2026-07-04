@@ -41,6 +41,9 @@ type ExecuteOptions struct {
 }
 
 func Execute(ctx context.Context, req *Request, target *session.Session, opts ExecuteOptions) (*Request, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	store := opts.Store
 	if store == nil {
 		store = NewStore()
@@ -80,7 +83,7 @@ func Execute(ctx context.Context, req *Request, target *session.Session, opts Ex
 
 	promptPath := filepath.Join(store.Dir(), req.ID+".prompt.md")
 	if err := os.WriteFile(promptPath, []byte(RenderPrompt(req, target, policy)), 0600); err != nil {
-		return req, err
+		return req, fmt.Errorf("write ask prompt %s: %w", promptPath, err)
 	}
 
 	data := map[string]string{
@@ -92,19 +95,19 @@ func Execute(ctx context.Context, req *Request, target *session.Session, opts Ex
 	}
 	command, err := renderCommand(policy.Command, data)
 	if err != nil {
-		return req, err
+		return req, fmt.Errorf("render responder command: %w", err)
 	}
 	if strings.ContainsAny(command, " \t\n") {
 		return req, fmt.Errorf("agent_responder.command must be an executable name or path; put arguments in agent_responder.args")
 	}
 	args, err := renderArgs(policy.Args, data)
 	if err != nil {
-		return req, err
+		return req, fmt.Errorf("render responder args: %w", err)
 	}
 
 	started := time.Now().UTC()
 	req.Status = StatusRunning
-	req.Execution = &ExecutionMetadata{Command: strings.Join(append([]string{command}, args...), " "), PromptPath: promptPath, StartedAt: started}
+	req.Execution = &ExecutionMetadata{Command: strings.Join(append([]string{command}, args...), " "), PromptPath: promptPath, StartedAt: &started}
 	_ = store.Save(req)
 
 	timeout := policy.Timeout
@@ -121,7 +124,7 @@ func Execute(ctx context.Context, req *Request, target *session.Session, opts Ex
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	finished := time.Now().UTC()
-	req.Execution.FinishedAt = finished
+	req.Execution.FinishedAt = &finished
 	if cmd.ProcessState != nil {
 		req.Execution.ExitCode = cmd.ProcessState.ExitCode()
 	}
@@ -133,7 +136,7 @@ func Execute(ctx context.Context, req *Request, target *session.Session, opts Ex
 		req.Status = StatusTimedOut
 		req.Error = fmt.Sprintf("responder timed out after %s", timeout)
 		_ = store.Save(req)
-		return req, fmt.Errorf(req.Error)
+		return req, errors.New(req.Error)
 	}
 	if err != nil {
 		req.Status = StatusFailed

@@ -677,11 +677,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingAsk = nil
 				m.state = stateList
 				return m, approvePendingAsk(req, true)
-			case "n", "esc":
+			case "n":
 				req := m.pendingAsk
 				m.pendingAsk = nil
 				m.state = stateList
 				return m, denyPendingAsk(req)
+			case "esc":
+				m.pendingAsk = nil
+				m.state = stateList
+				return m, nil
 			}
 
 		case stateList:
@@ -1425,7 +1429,7 @@ func (m *model) View() string {
 		case stateRenaming:
 			footer = footerStyle.Width(m.width).Render("enter: save rename • esc: cancel")
 		case stateAskApproval:
-			footer = footerStyle.Width(m.width).Render("y: approve once • a: approve always • n/esc: deny • q: quit")
+			footer = footerStyle.Width(m.width).Render("y: approve once • a: approve always • n: deny • esc: dismiss • q: quit")
 		}
 	}
 

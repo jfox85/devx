@@ -55,7 +55,7 @@ var askReadCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		req, err := ask.NewStore().Get(args[0])
 		if err != nil {
-			return err
+			return fmt.Errorf("read ask %s: %w", args[0], err)
 		}
 		return printAsk(cmd, req)
 	},
@@ -72,7 +72,7 @@ var askApproveCmd = &cobra.Command{
 		if askTimeout != "" {
 			d, err := time.ParseDuration(askTimeout)
 			if err != nil {
-				return err
+				return fmt.Errorf("parse ask timeout %q: %w", askTimeout, err)
 			}
 			policy = ask.EffectivePolicy()
 			policy.Timeout = d
@@ -85,7 +85,7 @@ var askApproveCmd = &cobra.Command{
 			req, err = store.ApproveAndExecute(ctx, args[0], policy)
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("approve ask %s: %w", args[0], err)
 		}
 		return printAsk(cmd, req)
 	},
@@ -99,7 +99,7 @@ var askDenyCmd = &cobra.Command{
 		store := ask.NewStore()
 		req, err := store.Deny(args[0])
 		if err != nil {
-			return err
+			return fmt.Errorf("deny ask %s: %w", args[0], err)
 		}
 		return printAsk(cmd, req)
 	},
@@ -113,7 +113,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	sessions, err := session.LoadSessions()
 	if err != nil {
-		return err
+		return fmt.Errorf("load sessions: %w", err)
 	}
 	target, ok := sessions.GetSession(targetName)
 	if !ok {
@@ -132,7 +132,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	askStore := ask.NewStore()
 	req, err := askStore.Create(fromName, targetName, fromPath, target.Path, question)
 	if err != nil {
-		return err
+		return fmt.Errorf("create ask: %w", err)
 	}
 	if askNoAgent {
 		return printAsk(cmd, req)
@@ -141,12 +141,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if policy.Enabled && policy.Mode == "approval" {
 		allowed, err := askStore.IsAllowed(fromName, targetName, fromPath, target.Path)
 		if err != nil {
-			return err
+			return fmt.Errorf("check ask approval allowance: %w", err)
 		}
 		if allowed {
 			req, err = askStore.ApproveAndExecute(context.Background(), req.ID, policy)
 			if err != nil {
-				return err
+				return fmt.Errorf("execute allowed ask %s: %w", req.ID, err)
 			}
 			return printAsk(cmd, req)
 		}
@@ -159,7 +159,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	req, err = ask.Execute(context.Background(), req, target, ask.ExecuteOptions{Policy: policy, Store: askStore})
 	if err != nil {
-		return err
+		return fmt.Errorf("execute ask %s: %w", req.ID, err)
 	}
 	return printAsk(cmd, req)
 }

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -69,7 +70,7 @@ type agentSessionService struct {
 func buildSessionContext() (*agentSessionContext, error) {
 	store, err := session.LoadSessions()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("loading sessions: %w", err)
 	}
 	current := session.GetCurrentSessionName()
 	ctx := &agentSessionContext{CurrentSession: current}
@@ -86,6 +87,7 @@ func buildSessionContext() (*agentSessionContext, error) {
 		workers = len(names)
 	}
 	if workers == 0 {
+		ctx.Sessions = items
 		return ctx, nil
 	}
 	for w := 0; w < workers; w++ {
@@ -131,7 +133,9 @@ func buildSessionContextItem(name string, sess *session.Session) agentSessionCon
 }
 
 func gitStatusSummary(path string) (string, int) {
-	cmd := exec.Command("git", "status", "--porcelain=v1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v1")
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {

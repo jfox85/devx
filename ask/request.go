@@ -34,12 +34,12 @@ type Response struct {
 }
 
 type ExecutionMetadata struct {
-	Command    string    `json:"command,omitempty"`
-	PromptPath string    `json:"prompt_path,omitempty"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	ExitCode   int       `json:"exit_code,omitempty"`
-	LogPath    string    `json:"log_path,omitempty"`
+	Command    string     `json:"command,omitempty"`
+	PromptPath string     `json:"prompt_path,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ExitCode   int        `json:"exit_code,omitempty"`
+	LogPath    string     `json:"log_path,omitempty"`
 }
 
 type Approval struct {

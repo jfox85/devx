@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,9 @@ func TestStoreRejectsInvalidRequestIDs(t *testing.T) {
 }
 
 func TestStoreUsesPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
 	dir := t.TempDir() + "/asks"
 	store := NewStoreAt(dir)
 	req, err := store.Create("frontend", "backend", "/front", "/back", "secret-ish question")

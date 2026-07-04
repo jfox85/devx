@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -16,6 +17,7 @@ type lockFile struct {
 }
 
 func acquireFileLock(path string) (func(), error) {
+	owner := lockFile{PID: os.Getpid(), CreatedAt: time.Now().UTC()}
 	lock, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		if isStaleLock(path) {
@@ -26,9 +28,23 @@ func acquireFileLock(path string) (func(), error) {
 			return nil, fmt.Errorf("lock %s is held: %w", path, err)
 		}
 	}
-	_ = json.NewEncoder(lock).Encode(lockFile{PID: os.Getpid(), CreatedAt: time.Now().UTC()})
+	_ = json.NewEncoder(lock).Encode(owner)
 	_ = lock.Close()
-	return func() { _ = os.Remove(path) }, nil
+	return func() { releaseFileLock(path, owner) }, nil
+}
+
+func releaseFileLock(path string, owner lockFile) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var current lockFile
+	if err := json.Unmarshal(data, &current); err != nil {
+		return
+	}
+	if current.PID == owner.PID && current.CreatedAt.Equal(owner.CreatedAt) {
+		_ = os.Remove(path)
+	}
 }
 
 func isStaleLock(path string) bool {
@@ -45,6 +61,9 @@ func isStaleLock(path string) bool {
 		return true
 	}
 	if info.PID <= 0 {
+		return false
+	}
+	if runtime.GOOS == "windows" {
 		return false
 	}
 	process, err := os.FindProcess(info.PID)

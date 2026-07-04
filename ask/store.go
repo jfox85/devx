@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -103,7 +104,9 @@ func (s *Store) approveAndExecute(ctx context.Context, id string, policy Policy,
 		}
 		updated, err := Execute(ctx, req, target, ExecuteOptions{Policy: policy, Store: s})
 		if err == nil && allowFuture {
-			err = s.AllowFuture(req.FromSession, req.ToSession, req.FromPath, req.ToPath)
+			if allowErr := s.AllowFuture(req.FromSession, req.ToSession, req.FromPath, req.ToPath); allowErr != nil {
+				log.Printf("warning: remember ask approval %s failed: %v", req.ID, allowErr)
+			}
 		}
 		result = updated
 		return err
@@ -153,11 +156,11 @@ func (s *Store) Get(id string) (*Request, error) {
 	}
 	data, err := os.ReadFile(s.path(id))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read ask %s: %w", id, err)
 	}
 	var req Request
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse ask %s: %w", id, err)
 	}
 	return &req, nil
 }
@@ -286,7 +289,7 @@ func (s *Store) withApprovalsLock(fn func() error) error {
 	lockPath := path + ".lock"
 	release, err := acquireFileLock(lockPath)
 	if err != nil {
-		return fmt.Errorf("ask approvals are locked")
+		return fmt.Errorf("ask approvals are locked: %w", err)
 	}
 	defer release()
 	return fn()
