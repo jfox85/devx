@@ -155,7 +155,7 @@ func TestExecuteRejectsModeNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	_, err = Execute(nil, req, nil, ExecuteOptions{Store: store, Policy: Policy{Enabled: true, Mode: "none", Command: "echo", Timeout: time.Second}})
+	_, err = Execute(context.Background(), req, nil, ExecuteOptions{Store: store, Policy: Policy{Enabled: true, Mode: "none", Command: "echo", Timeout: time.Second}})
 	if err == nil {
 		t.Fatal("expected mode none to be rejected")
 	}

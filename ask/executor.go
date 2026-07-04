@@ -126,7 +126,7 @@ func Execute(ctx context.Context, req *Request, target *session.Session, opts Ex
 		req.Execution.ExitCode = cmd.ProcessState.ExitCode()
 	}
 	logPath := filepath.Join(store.Dir(), req.ID+".log")
-	_ = os.WriteFile(logPath, []byte(stderr.String()), 0600)
+	_ = os.WriteFile(logPath, stderr.Bytes(), 0600)
 	req.Execution.LogPath = logPath
 
 	if ctx.Err() == context.DeadlineExceeded {
