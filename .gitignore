@@ -1,4 +1,12 @@
 devx
+coverage.out
+# Local scratch dirs used for manual testing — never commit these.
+final-test/
+test-repo/
+test-tmux/
+test-project/
+test-precedence/
+demo-project/
 .envrc
 .tmuxp.yaml
 .artifacts/
