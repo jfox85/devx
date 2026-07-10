@@ -1,5 +1,0 @@
-basedomain: test.local
-tmuxp_template: /some/custom/path/template.yaml
-ports:
-  - frontend
-  - backend
