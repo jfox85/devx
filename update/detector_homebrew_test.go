@@ -18,6 +18,9 @@ func TestIsHomebrewManagedCellarPaths(t *testing.T) {
 		{"intel cellar", "/usr/local/Cellar/devx/1.2.3/bin/devx", true},
 		{"apple silicon cellar", "/opt/homebrew/Cellar/devx/1.2.3/bin/devx", true},
 		{"unrelated cellar package", "/opt/homebrew/Cellar/ripgrep/14.0/bin/rg", false},
+		// Sibling package sharing the "devx" prefix must not collide: the package
+		// name has to occupy a full path component, not just match as a substring.
+		{"cellar package with devx prefix", "/opt/homebrew/Cellar/devx-tools/1.2.3/bin/devx", false},
 		{"plain manual path", "/usr/local/custom/devx", false},
 		{"go bin path", "/home/user/go/bin/devx", false},
 	}
@@ -52,6 +55,31 @@ func TestIsHomebrewManagedSymlinkToCellar(t *testing.T) {
 
 	if !isHomebrewManaged(link) {
 		t.Errorf("expected symlink pointing into Cellar to be detected as Homebrew-managed")
+	}
+}
+
+// TestIsHomebrewManagedSymlinkToSiblingPackage verifies that a symlink resolving
+// into a sibling Cellar package that merely shares the "devx" prefix (e.g.
+// "devx-tools") is not treated as a devx Homebrew install.
+func TestIsHomebrewManagedSymlinkToSiblingPackage(t *testing.T) {
+	dir := t.TempDir()
+
+	cellar := filepath.Join(dir, "Cellar", "devx-tools", "1.0.0", "bin")
+	if err := os.MkdirAll(cellar, 0o755); err != nil {
+		t.Fatalf("failed to create cellar dir: %v", err)
+	}
+	realBin := filepath.Join(cellar, "devx")
+	if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("failed to write real bin: %v", err)
+	}
+
+	link := filepath.Join(dir, "devx")
+	if err := os.Symlink(realBin, link); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	if isHomebrewManaged(link) {
+		t.Errorf("expected symlink into sibling package 'devx-tools' to not be Homebrew-managed")
 	}
 }
 
