@@ -1,0 +1,381 @@
+<meta charset="utf-8" />
+<title>devx · Workbench prototype</title>
+<style>
+  /* ============ Workbench — dense IDE ============ */
+  #wb, #wb *, #wb *::before, #wb *::after { box-sizing: border-box; }
+  #wb {
+    --bg:        #101216;   /* graphite */
+    --rail:      #0b0d10;
+    --panel:     #15181d;
+    --panel-2:   #191d23;
+    --hover:     #1d222a;
+    --line:      #262b33;
+    --line-soft: #1e232b;
+    --text:      #d6dae1;
+    --text-dim:  #8b93a1;
+    --text-mute: #5a616e;
+    --accent:    #3d8bff;   /* electric blue */
+    --accent-dk: #1f2b3f;
+    --good:      #3fb950;
+    --warn:      #d29922;
+    --crit:      #f85149;
+    --purple:    #a371f7;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+    height: 100dvh; min-height: 640px;
+    display: grid; grid-template-columns: 52px 260px 1fr;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans); font-size: 13px; line-height: 1.4;
+    -webkit-font-smoothing: antialiased; overflow: hidden;
+  }
+  #wb button { font-family: inherit; cursor: pointer; color: inherit; background: none; border: none; }
+  #wb ::-webkit-scrollbar { width: 11px; height: 11px; }
+  #wb ::-webkit-scrollbar-thumb { background: #2c3138; border: 3px solid transparent; background-clip: padding-box; border-radius: 8px; }
+  #wb ::-webkit-scrollbar-thumb:hover { background: #3a414a; background-clip: padding-box; }
+
+  /* ---------- Activity rail ---------- */
+  #wb .rail {
+    background: var(--rail); border-right: 1px solid var(--line-soft);
+    display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px;
+  }
+  #wb .rail .logo {
+    width: 32px; height: 32px; border-radius: 8px; margin-bottom: 8px;
+    background: linear-gradient(135deg, #3d8bff, #a371f7);
+    display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 15px;
+    font-family: var(--mono);
+  }
+  #wb .rail .rbtn {
+    position: relative; width: 40px; height: 40px; border-radius: 9px; color: var(--text-mute);
+    display: grid; place-items: center; transition: color .12s, background .12s;
+  }
+  #wb .rail .rbtn:hover { color: var(--text); background: var(--hover); }
+  #wb .rail .rbtn.on { color: var(--accent); background: var(--accent-dk); }
+  #wb .rail .rbtn.on::before { content: ""; position: absolute; left: -10px; top: 9px; bottom: 9px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+  #wb .rail .rbtn .badge {
+    position: absolute; top: 5px; right: 5px; min-width: 15px; height: 15px; padding: 0 3px;
+    border-radius: 8px; background: var(--crit); color: #fff; font-size: 9.5px; font-weight: 700;
+    display: grid; place-items: center; font-family: var(--mono);
+  }
+  #wb .rail .spacer { flex: 1; }
+
+  /* ---------- Explorer (tree) ---------- */
+  #wb .explorer { background: var(--panel); border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; min-height: 0; }
+  #wb .ex-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 12px 11px 14px; height: 40px;
+  }
+  #wb .ex-head .t { font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-dim); }
+  #wb .ex-head .tools { display: flex; gap: 2px; }
+  #wb .ex-head .tb { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--text-mute); }
+  #wb .ex-head .tb:hover { color: var(--text); background: var(--hover); }
+
+  #wb .ex-filter { padding: 0 10px 8px; }
+  #wb .ex-filter input {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font-family: var(--mono); font-size: 12px; padding: 6px 9px; outline: none;
+  }
+  #wb .ex-filter input:focus { border-color: var(--accent); }
+  #wb .ex-filter input::placeholder { color: var(--text-mute); }
+
+  #wb .tree { flex: 1; overflow-y: auto; padding: 2px 0 12px; }
+  #wb .proj { user-select: none; }
+  #wb .proj-row {
+    display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 8px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  }
+  #wb .proj-row:hover { background: var(--hover); }
+  #wb .proj-row .caret { transition: transform .12s; color: var(--text-mute); display: inline-flex; }
+  #wb .proj.collapsed .caret { transform: rotate(-90deg); }
+  #wb .proj-row .pname { color: var(--text); font-weight: 600; }
+  #wb .proj-row .pcount { margin-left: auto; color: var(--text-mute); font-size: 11px; }
+
+  #wb .proj-kids { overflow: hidden; }
+  #wb .proj.collapsed .proj-kids { display: none; }
+
+  #wb .snode {
+    display: flex; align-items: center; gap: 7px; padding: 4px 12px 4px 28px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim); position: relative;
+  }
+  #wb .snode:hover { background: var(--hover); }
+  #wb .snode.active { background: var(--accent-dk); color: #cfe0ff; }
+  #wb .snode.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+  #wb .snode .st { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  #wb .snode .sn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #wb .snode.active .sn { color: #fff; }
+  #wb .snode .meta { display: inline-flex; align-items: center; gap: 6px; color: var(--text-mute); font-size: 10.5px; }
+  #wb .snode .git { color: var(--warn); }
+  #wb .snode .flag { color: var(--warn); }
+  #wb .snode .art { color: var(--accent); }
+
+  #wb .ex-foot {
+    border-top: 1px solid var(--line-soft); padding: 7px 12px; display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--text-mute);
+  }
+  #wb .ex-foot .b { display: inline-flex; align-items: center; gap: 5px; }
+  #wb .ex-foot .b svg { color: var(--text-dim); }
+
+  /* ---------- Editor area ---------- */
+  #wb .editor { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  /* tab strip */
+  #wb .tabstrip { display: flex; align-items: stretch; background: var(--rail); border-bottom: 1px solid var(--line-soft); height: 38px; }
+  #wb .tabs { display: flex; overflow-x: auto; }
+  #wb .tab {
+    display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 150px; max-width: 220px;
+    border-right: 1px solid var(--line-soft); font-family: var(--mono); font-size: 12px;
+    color: var(--text-mute); background: transparent; position: relative; white-space: nowrap;
+  }
+  #wb .tab:hover { background: var(--panel); }
+  #wb .tab.on { background: var(--bg); color: var(--text); }
+  #wb .tab.on::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent); }
+  #wb .tab .st { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  #wb .tab .tn { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #wb .tab .x { width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; color: var(--text-mute); font-size: 13px; }
+  #wb .tab .x:hover { background: var(--hover); color: var(--text); }
+  #wb .tab .dirty { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+  #wb .tabstrip .newtab { width: 34px; display: grid; place-items: center; color: var(--text-mute); border-right: 1px solid var(--line-soft); }
+  #wb .tabstrip .newtab:hover { color: var(--text); background: var(--panel); }
+
+  /* toolbar / breadcrumb row */
+  #wb .toolbar { display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-bottom: 1px solid var(--line-soft); background: var(--panel); }
+  #wb .bc { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  #wb .bc .seg { display: inline-flex; align-items: center; gap: 6px; }
+  #wb .bc .sep { color: var(--text-mute); }
+  #wb .bc .cur { color: var(--text); }
+  #wb .bc .branch { color: var(--purple); }
+  #wb .toolbar .grow { flex: 1; }
+  #wb .tbtn {
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--line-soft); display: inline-flex; align-items: center; gap: 6px; transition: all .12s;
+  }
+  #wb .tbtn:hover { background: var(--hover); color: var(--text); border-color: var(--line); }
+  #wb .tbtn.run { color: var(--good); border-color: rgba(63,185,80,0.3); }
+  #wb .tbtn.run:hover { background: rgba(63,185,80,0.1); }
+  #wb .tbtn kbd { color: var(--text-mute); font-size: 10px; margin-left: 2px; }
+
+  /* status ribbon (routes) */
+  #wb .ribbon { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--line-soft); background: var(--bg); overflow-x: auto; }
+  #wb .ribbon .r {
+    display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; font-family: var(--mono); font-size: 11.5px;
+    color: var(--text-dim); border-right: 1px solid var(--line-soft); white-space: nowrap;
+  }
+  #wb .ribbon .r:hover { background: var(--panel); color: var(--text); }
+  #wb .ribbon .r .up { width: 6px; height: 6px; border-radius: 50%; }
+  #wb .ribbon .r .svc { color: var(--accent); }
+  #wb .ribbon .r .port { color: var(--text-mute); }
+
+  /* terminal */
+  #wb .term { flex: 1; min-height: 0; background: #0c0e12; font-family: var(--mono); font-size: 12.5px; line-height: 1.65; padding: 14px 16px; overflow: auto; color: #aeb6c2; }
+  #wb .term .p-path { color: var(--accent); } #wb .term .p-branch { color: var(--purple); }
+  #wb .term .g { color: #56d364; } #wb .term .y { color: var(--warn); } #wb .term .m { color: var(--text-mute); } #wb .term .r { color: var(--crit); }
+  #wb .term .cur { display: inline-block; width: 8px; height: 15px; background: var(--accent); vertical-align: text-bottom; animation: wb-blink 1.1s step-end infinite; }
+  @keyframes wb-blink { 50% { opacity: 0; } }
+
+  /* status bar */
+  #wb .statusbar {
+    display: flex; align-items: center; gap: 0; height: 24px; background: var(--accent); color: #eaf1ff;
+    font-family: var(--mono); font-size: 11px;
+  }
+  #wb .statusbar .s { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; height: 100%; }
+  #wb .statusbar .s.dark { background: rgba(0,0,0,0.18); }
+  #wb .statusbar .grow { flex: 1; }
+  #wb .statusbar .s:hover { background: rgba(255,255,255,0.12); }
+
+  @media (max-width: 1000px) {
+    #wb { grid-template-columns: 52px 1fr; }
+    #wb .explorer { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { #wb .cur { animation: none; } }
+</style>
+
+<div id="wb">
+  <!-- ============ ACTIVITY RAIL ============ -->
+  <nav class="rail">
+    <div class="logo">d</div>
+    <button class="rbtn on" title="Sessions" aria-label="Sessions">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
+    </button>
+    <button class="rbtn" title="Attention" aria-label="Attention">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+      <span class="badge">2</span>
+    </button>
+    <button class="rbtn" title="Routes &amp; ports" aria-label="Routes">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5v4a3 3 0 0 0 3 3h6.5"/></svg>
+    </button>
+    <button class="rbtn" title="Artifacts" aria-label="Artifacts">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 12 3 7M12 12v10M12 12l9-5"/></svg>
+    </button>
+    <button class="rbtn" title="Stale review" aria-label="Stale review">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+    </button>
+    <div class="spacer"></div>
+    <button class="rbtn" title="Settings" aria-label="Settings">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1l-.4-2.5H9.6L9.2 6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4L5.1 11a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4.8l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1z"/></svg>
+    </button>
+  </nav>
+
+  <!-- ============ EXPLORER TREE ============ -->
+  <aside class="explorer">
+    <div class="ex-head">
+      <span class="t">Sessions</span>
+      <span class="tools">
+        <button class="tb" title="New session"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="tb" title="Collapse all"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h6V3M20 15h-6v6M14 10l6-6M10 14l-6 6"/></svg></button>
+        <button class="tb" title="Refresh"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg></button>
+      </span>
+    </div>
+    <div class="ex-filter"><input placeholder="filter sessions…" aria-label="filter sessions" /></div>
+
+    <div class="tree">
+      <div class="proj">
+        <div class="proj-row">
+          <span class="caret"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg></span>
+          <span class="pname">devx</span><span class="pcount">3</span>
+        </div>
+        <div class="proj-kids">
+          <div class="snode active">
+            <span class="st" style="background:var(--good)"></span>
+            <span class="sn">ui-prototypes</span>
+            <span class="meta"><span class="git">±</span><span class="art">◆3</span></span>
+          </div>
+          <div class="snode">
+            <span class="st" style="background:var(--warn)"></span>
+            <span class="sn">caddy-health-fix</span>
+            <span class="meta"><span class="flag">⚑</span></span>
+          </div>
+          <div class="snode">
+            <span class="st" style="background:var(--text-mute)"></span>
+            <span class="sn">session-metadata</span>
+            <span class="meta"><span class="m">idle</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="proj">
+        <div class="proj-row">
+          <span class="caret"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg></span>
+          <span class="pname">acme-web</span><span class="pcount">2</span>
+        </div>
+        <div class="proj-kids">
+          <div class="snode">
+            <span class="st" style="background:var(--good)"></span>
+            <span class="sn">checkout-redesign</span>
+            <span class="meta"><span class="art">◆5</span></span>
+          </div>
+          <div class="snode">
+            <span class="st" style="background:var(--warn)"></span>
+            <span class="sn">a11y-audit</span>
+            <span class="meta"><span class="git">±</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="proj">
+        <div class="proj-row">
+          <span class="caret"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg></span>
+          <span class="pname">billing-svc</span><span class="pcount">2</span>
+        </div>
+        <div class="proj-kids">
+          <div class="snode">
+            <span class="st" style="background:var(--crit)"></span>
+            <span class="sn">stripe-webhooks</span>
+            <span class="meta"><span class="m">gatepost</span></span>
+          </div>
+          <div class="snode">
+            <span class="st" style="background:var(--good)"></span>
+            <span class="sn">invoice-pdf</span>
+            <span class="meta"><span class="art">◆1</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ex-foot">
+      <span class="b"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> caddy ok</span>
+      <span class="b" style="margin-left:auto">7 sessions</span>
+    </div>
+  </aside>
+
+  <!-- ============ EDITOR / TABS ============ -->
+  <main class="editor">
+    <div class="tabstrip">
+      <div class="tabs">
+        <div class="tab on"><span class="st" style="background:var(--good)"></span><span class="tn">ui-prototypes</span><span class="dirty" title="uncommitted changes"></span></div>
+        <div class="tab"><span class="st" style="background:var(--good)"></span><span class="tn">checkout-redesign</span><button class="x">×</button></div>
+        <div class="tab"><span class="st" style="background:var(--crit)"></span><span class="tn">stripe-webhooks</span><button class="x">×</button></div>
+      </div>
+      <button class="newtab" title="New session">＋</button>
+    </div>
+
+    <div class="toolbar">
+      <div class="bc">
+        <span class="seg">devx</span><span class="sep">/</span>
+        <span class="seg">.worktrees</span><span class="sep">/</span>
+        <span class="seg cur">ui-prototypes</span>
+        <span class="sep">·</span>
+        <span class="branch">⎇ claude/devx-ui-prototypes</span>
+      </div>
+      <span class="grow"></span>
+      <button class="tbtn run">▶ Attach <kbd>⏎</kbd></button>
+      <button class="tbtn">Compose <kbd>⌘K</kbd></button>
+      <button class="tbtn">Artifacts <kbd>⌃⇧A</kbd></button>
+      <button class="tbtn">Split</button>
+    </div>
+
+    <div class="ribbon">
+      <a class="r"><span class="up" style="background:var(--good)"></span><span class="svc">ui</span> <span>ui-prototypes-ui.localhost</span> <span class="port">:5173</span></a>
+      <a class="r"><span class="up" style="background:var(--good)"></span><span class="svc">api</span> <span>ui-prototypes-api.localhost</span> <span class="port">:8080</span></a>
+      <a class="r"><span class="up" style="background:var(--text-mute)"></span><span class="svc" style="color:var(--text-mute)">db</span> <span class="port">postgres :5432</span></a>
+    </div>
+
+    <div class="term">
+      <div><span class="p-path">~/devx/.worktrees/ui-prototypes</span> <span class="m">git:(</span><span class="p-branch">claude/devx-ui-prototypes</span><span class="m">)</span> <span class="y">±</span></div>
+      <div><span class="g">$</span> git status --short</div>
+      <div class="y"> M web/app/src/lib/SessionList.svelte</div>
+      <div class="g">?? web/prototypes/</div>
+      <div>&nbsp;</div>
+      <div><span class="g">$</span> npm run dev</div>
+      <div class="m">  VITE v5.4.2  ready in 198 ms</div>
+      <div class="g">  ➜  Local:   https://ui-prototypes-ui.localhost/</div>
+      <div><span class="g">$</span> <span class="cur"></span></div>
+    </div>
+
+    <div class="statusbar">
+      <span class="s dark"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9c0 6-6 3-6 9"/></svg> claude/devx-ui-prototypes</span>
+      <span class="s">± 2 changes</span>
+      <span class="s">tmux: 3 windows</span>
+      <span class="grow"></span>
+      <span class="s">host</span>
+      <span class="s">◆ 3 artifacts</span>
+      <span class="s dark">UTF-8</span>
+      <span class="s dark">devx v0.14.2</span>
+    </div>
+  </main>
+</div>
+
+<script>
+  (function () {
+    const root = document.getElementById('wb');
+    // tree selection
+    root.querySelectorAll('.snode').forEach(n => n.addEventListener('click', () => {
+      root.querySelectorAll('.snode').forEach(x => x.classList.remove('active'));
+      n.classList.add('active');
+    }));
+    // collapse projects
+    root.querySelectorAll('.proj-row').forEach(r => r.addEventListener('click', () => {
+      r.parentElement.classList.toggle('collapsed');
+    }));
+    // tab switching
+    root.querySelectorAll('.tab').forEach(t => t.addEventListener('click', (e) => {
+      if (e.target.classList.contains('x')) return;
+      root.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
+      t.classList.add('on');
+    }));
+    // rail
+    root.querySelectorAll('.rail .rbtn').forEach(b => b.addEventListener('click', () => {
+      root.querySelectorAll('.rail .rbtn').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+    }));
+  })();
+</script>

@@ -1,0 +1,410 @@
+<meta charset="utf-8" />
+<title>devx · Cockpit prototype</title>
+<style>
+  /* ============ Cockpit — retro-futuristic HUD ============ */
+  #cp, #cp *, #cp *::before, #cp *::after { box-sizing: border-box; }
+  #cp {
+    --bg:        #05070a;   /* near black */
+    --bg-2:      #080b11;
+    --panel:     #0a0f16;
+    --grid:      rgba(45,212,191,0.05);
+    --line:      #10202a;
+    --line-hot:  #163b44;
+    --text:      #cfe6e4;
+    --text-dim:  #6d8a8a;
+    --text-mute: #3f5658;
+    --cyan:      #2dd4bf;
+    --cyan-br:   #5eead4;
+    --amber:     #f5a524;
+    --amber-br:  #fbbf24;
+    --good:      #34d399;
+    --warn:      #f5a524;
+    --crit:      #fb7185;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+    height: 100dvh; min-height: 660px;
+    display: grid; grid-template-rows: auto 1fr;
+    background:
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 100% 28px,
+      radial-gradient(1000px 500px at 80% -20%, rgba(45,212,191,0.06), transparent 60%),
+      var(--bg);
+    color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.4;
+    -webkit-font-smoothing: antialiased; overflow: hidden;
+  }
+  #cp button { font-family: inherit; cursor: pointer; color: inherit; background: none; border: none; }
+  #cp ::-webkit-scrollbar { width: 9px; height: 9px; }
+  #cp ::-webkit-scrollbar-thumb { background: #14323a; border-radius: 0; }
+  #cp ::-webkit-scrollbar-thumb:hover { background: #1d4a54; }
+  #cp .glow-c { text-shadow: 0 0 10px rgba(45,212,191,0.6); }
+  #cp .glow-a { text-shadow: 0 0 10px rgba(245,165,36,0.55); }
+
+  /* ---------- TOP: telemetry HUD strip ---------- */
+  #cp .hud {
+    display: flex; align-items: stretch; gap: 0;
+    border-bottom: 1px solid var(--line-hot);
+    background: linear-gradient(180deg, rgba(10,15,22,0.9), rgba(5,7,10,0.7));
+    backdrop-filter: blur(4px);
+  }
+  #cp .hud .brand {
+    display: flex; align-items: center; gap: 11px; padding: 0 18px; border-right: 1px solid var(--line);
+  }
+  #cp .hud .brand .logo {
+    font-weight: 800; font-size: 18px; letter-spacing: 0.12em; color: var(--cyan);
+  }
+  #cp .hud .brand .v { font-size: 9px; color: var(--text-mute); letter-spacing: 0.15em; }
+  #cp .hud .brand .reactor {
+    width: 12px; height: 12px; border-radius: 50%; background: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan); animation: cp-pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes cp-pulse { 0%,100% { opacity: .5; box-shadow: 0 0 6px var(--cyan);} 50% { opacity: 1; box-shadow: 0 0 16px var(--cyan);} }
+
+  #cp .gauges { display: flex; flex: 1; overflow-x: auto; }
+  #cp .gauge {
+    display: flex; flex-direction: column; justify-content: center; gap: 3px;
+    padding: 9px 18px; border-right: 1px solid var(--line); min-width: 118px; position: relative;
+  }
+  #cp .gauge .lbl { font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-mute); }
+  #cp .gauge .val { font-size: 17px; font-weight: 700; letter-spacing: 0.02em; line-height: 1; }
+  #cp .gauge .val small { font-size: 10px; color: var(--text-dim); font-weight: 400; letter-spacing: 0; }
+  #cp .gauge .spark { display: flex; align-items: flex-end; gap: 2px; height: 12px; margin-top: 2px; }
+  #cp .gauge .spark i { width: 3px; background: var(--cyan); opacity: .55; }
+  #cp .gauge.ok .val { color: var(--cyan-br); }
+  #cp .gauge.warnc .val { color: var(--amber-br); }
+  #cp .status-led { display: inline-flex; align-items: center; gap: 6px; }
+  #cp .status-led i { width: 8px; height: 8px; border-radius: 50%; }
+
+  #cp .hud .cmd {
+    display: flex; align-items: center; gap: 8px; padding: 0 16px; border-left: 1px solid var(--line);
+    min-width: 250px;
+  }
+  #cp .hud .cmd input {
+    flex: 1; background: transparent; border: none; outline: none; color: var(--cyan-br);
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.02em;
+  }
+  #cp .hud .cmd input::placeholder { color: var(--text-mute); }
+  #cp .hud .cmd .prompt { color: var(--amber); }
+  #cp .hud .seg { display: flex; border-left: 1px solid var(--line); }
+  #cp .hud .seg button {
+    padding: 0 15px; font-size: 11px; letter-spacing: 0.06em; color: var(--text-dim); text-transform: uppercase;
+    border-right: 1px solid var(--line);
+  }
+  #cp .hud .seg button:last-child { border-right: none; }
+  #cp .hud .seg button.on { color: var(--bg); background: var(--cyan); font-weight: 700; }
+  #cp .hud .seg button:hover:not(.on) { color: var(--text); background: rgba(45,212,191,0.06); }
+
+  /* ---------- BODY ---------- */
+  #cp .body { display: grid; grid-template-columns: 320px 1fr; min-height: 0; }
+
+  /* ---------- LEFT DOCK: live session tiles ---------- */
+  #cp .dock { border-right: 1px solid var(--line-hot); display: flex; flex-direction: column; min-height: 0; background: linear-gradient(180deg, rgba(8,11,17,0.6), transparent); }
+  #cp .dock-head {
+    display: flex; align-items: center; justify-content: space-between; padding: 11px 14px;
+    border-bottom: 1px solid var(--line); letter-spacing: 0.14em; font-size: 10px; text-transform: uppercase; color: var(--text-dim);
+  }
+  #cp .dock-head .add {
+    color: var(--cyan); border: 1px solid var(--line-hot); padding: 3px 9px; font-size: 10px; letter-spacing: 0.1em;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  #cp .dock-head .add:hover { background: rgba(45,212,191,0.08); box-shadow: 0 0 12px rgba(45,212,191,0.15); }
+  #cp .dock-scroll { flex: 1; overflow-y: auto; padding: 10px; }
+
+  #cp .grp { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-mute); padding: 12px 4px 6px; display: flex; align-items: center; gap: 8px; }
+  #cp .grp::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  #cp .tile {
+    display: block; width: 100%; text-align: left; position: relative;
+    border: 1px solid var(--line); background: var(--panel); padding: 10px 12px; margin-bottom: 8px;
+    transition: border-color .14s, background .14s; overflow: hidden;
+  }
+  #cp .tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--text-mute); }
+  #cp .tile:hover { border-color: var(--line-hot); background: var(--bg-2); }
+  #cp .tile.active { border-color: var(--cyan); background: rgba(45,212,191,0.05); box-shadow: 0 0 0 1px rgba(45,212,191,0.25) inset, 0 0 22px rgba(45,212,191,0.08); }
+  #cp .tile.active::before { background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+  #cp .tile.s-good::before { background: var(--good); }
+  #cp .tile.s-warn::before { background: var(--warn); box-shadow: 0 0 10px rgba(245,165,36,0.4); }
+  #cp .tile.s-crit::before { background: var(--crit); box-shadow: 0 0 10px rgba(251,113,133,0.4); }
+
+  #cp .tile .t-top { display: flex; align-items: center; gap: 8px; }
+  #cp .tile .t-name { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cp .tile.active .t-name { color: var(--cyan-br); }
+  #cp .tile .t-state { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; padding: 1px 6px; border: 1px solid currentColor; }
+  #cp .tile .t-state.good { color: var(--good); } #cp .tile .t-state.warn { color: var(--warn); } #cp .tile .t-state.crit { color: var(--crit); } #cp .tile .t-state.idle { color: var(--text-mute); }
+  #cp .tile .t-flag { color: var(--amber-br); font-size: 12px; }
+
+  #cp .tile .t-readout { display: flex; gap: 14px; margin-top: 9px; }
+  #cp .tile .ro { display: flex; flex-direction: column; gap: 2px; }
+  #cp .tile .ro .k { font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-mute); }
+  #cp .tile .ro .val { font-size: 12px; color: var(--text-dim); }
+  #cp .tile .ro .val.hot { color: var(--amber); } #cp .tile .ro .val.cy { color: var(--cyan); }
+  #cp .tile .t-bars { display: flex; align-items: flex-end; gap: 2px; height: 16px; margin-left: auto; }
+  #cp .tile .t-bars i { width: 3px; background: var(--cyan); opacity: .4; }
+  #cp .tile.active .t-bars i { opacity: .7; }
+
+  #cp .dock-foot { border-top: 1px solid var(--line); padding: 8px 14px; display: flex; gap: 12px; font-size: 10px; color: var(--text-mute); letter-spacing: 0.08em; }
+  #cp .dock-foot .k { display: inline-flex; align-items: center; gap: 5px; }
+  #cp .dock-foot .k i { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* ---------- MAIN VIEWPORT ---------- */
+  #cp .view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #cp .view-head {
+    display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line);
+  }
+  #cp .view-head .designator { display: flex; flex-direction: column; gap: 2px; }
+  #cp .view-head .designator .id { font-size: 15px; font-weight: 700; letter-spacing: 0.04em; color: var(--cyan-br); }
+  #cp .view-head .designator .sub { font-size: 10px; color: var(--text-dim); letter-spacing: 0.1em; }
+  #cp .view-head .win-tabs { display: flex; gap: 6px; margin-left: 10px; }
+  #cp .view-head .win-tabs .w { font-size: 11px; color: var(--text-mute); padding: 4px 10px; border: 1px solid var(--line); letter-spacing: 0.05em; }
+  #cp .view-head .win-tabs .w.on { color: var(--cyan); border-color: var(--line-hot); background: rgba(45,212,191,0.06); }
+  #cp .view-head .ops { margin-left: auto; display: flex; gap: 6px; }
+  #cp .view-head .op {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+    border: 1px solid var(--line); padding: 6px 11px; transition: all .13s;
+  }
+  #cp .view-head .op:hover { color: var(--cyan); border-color: var(--line-hot); box-shadow: 0 0 12px rgba(45,212,191,0.12); }
+  #cp .view-head .op.hot { color: var(--amber); border-color: rgba(245,165,36,0.3); }
+  #cp .view-head .op.hot:hover { box-shadow: 0 0 12px rgba(245,165,36,0.18); }
+
+  /* route manifold */
+  #cp .manifold { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  #cp .manifold .r { display: flex; align-items: center; gap: 9px; padding: 9px 16px; border-right: 1px solid var(--line); white-space: nowrap; font-size: 11.5px; color: var(--text-dim); }
+  #cp .manifold .r:hover { background: rgba(45,212,191,0.04); color: var(--text); }
+  #cp .manifold .r .led { width: 7px; height: 7px; border-radius: 50%; }
+  #cp .manifold .r .svc { color: var(--cyan); letter-spacing: 0.08em; text-transform: uppercase; font-size: 10px; }
+  #cp .manifold .lbl { padding: 9px 14px; font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-mute); border-right: 1px solid var(--line); display: flex; align-items: center; }
+
+  /* terminal viewport */
+  #cp .screen { flex: 1; min-height: 0; position: relative; padding: 16px 20px; overflow: auto; background: radial-gradient(1200px 700px at 50% 0%, rgba(45,212,191,0.03), transparent 70%); }
+  #cp .screen::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.14) 2px 4px); mix-blend-mode: multiply; }
+  #cp .screen .line { font-size: 13px; line-height: 1.7; }
+  #cp .screen .cy { color: var(--cyan-br); } #cp .screen .am { color: var(--amber-br); } #cp .screen .g { color: var(--good); } #cp .screen .m { color: var(--text-mute); } #cp .screen .r { color: var(--crit); }
+  #cp .screen .cur { display: inline-block; width: 9px; height: 15px; background: var(--cyan); box-shadow: 0 0 10px var(--cyan); vertical-align: text-bottom; animation: cp-blink 1s step-end infinite; }
+  @keyframes cp-blink { 50% { opacity: 0; } }
+
+  @media (max-width: 1040px) {
+    #cp .body { grid-template-columns: 1fr; }
+    #cp .dock { display: none; }
+    #cp .hud .cmd { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { #cp .reactor, #cp .cur { animation: none; } }
+</style>
+
+<div id="cp">
+  <!-- ============ TOP: TELEMETRY HUD ============ -->
+  <header class="hud">
+    <div class="brand">
+      <span class="reactor"></span>
+      <div>
+        <div class="logo glow-c">DEVX</div>
+        <div class="v">CONTROL // v0.14.2</div>
+      </div>
+    </div>
+
+    <div class="gauges">
+      <div class="gauge ok">
+        <span class="lbl">Caddy</span>
+        <span class="val glow-c status-led"><i style="background:var(--good);box-shadow:0 0 8px var(--good)"></i>ONLINE</span>
+      </div>
+      <div class="gauge ok">
+        <span class="lbl">Sessions</span>
+        <span class="val">7 <small>/ 3 live</small></span>
+      </div>
+      <div class="gauge ok">
+        <span class="lbl">Ports held</span>
+        <span class="val">24</span>
+        <span class="spark"><i style="height:40%"></i><i style="height:55%"></i><i style="height:35%"></i><i style="height:70%"></i><i style="height:50%"></i><i style="height:80%"></i><i style="height:60%"></i></span>
+      </div>
+      <div class="gauge ok">
+        <span class="lbl">Tunnels</span>
+        <span class="val">2 <small>cloudflared</small></span>
+      </div>
+      <div class="gauge warnc">
+        <span class="lbl">Attention</span>
+        <span class="val glow-a">2 ⚑</span>
+      </div>
+      <div class="gauge ok">
+        <span class="lbl">Uptime</span>
+        <span class="val">6<small>d</small> 04<small>h</small></span>
+      </div>
+    </div>
+
+    <div class="cmd">
+      <span class="prompt glow-a">❯</span>
+      <input placeholder="devx command… (⌘P)" aria-label="Command" />
+    </div>
+    <div class="seg">
+      <button class="on">Grid</button>
+      <button>Focus</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ============ LEFT DOCK: SESSION TILES ============ -->
+    <aside class="dock">
+      <div class="dock-head">
+        <span>Session bay</span>
+        <button class="add">＋ NEW</button>
+      </div>
+      <div class="dock-scroll">
+
+        <div class="grp">devx</div>
+
+        <button class="tile active s-good">
+          <div class="t-top">
+            <span class="t-name">ui-prototypes</span>
+            <span class="t-state good">active</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">branch</span><span class="val cy">±dirty</span></div>
+            <div class="ro"><span class="k">port</span><span class="val">5173</span></div>
+            <div class="ro"><span class="k">artifacts</span><span class="val hot">3</span></div>
+            <div class="t-bars"><i style="height:35%"></i><i style="height:60%"></i><i style="height:45%"></i><i style="height:80%"></i><i style="height:55%"></i><i style="height:70%"></i></div>
+          </div>
+        </button>
+
+        <button class="tile s-warn">
+          <div class="t-top">
+            <span class="t-name">caddy-health-fix</span>
+            <span class="t-flag">⚑</span>
+            <span class="t-state warn">attn</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">target</span><span class="val">docker</span></div>
+            <div class="ro"><span class="k">port</span><span class="val">8091</span></div>
+            <div class="ro"><span class="k">idle</span><span class="val">2m</span></div>
+          </div>
+        </button>
+
+        <button class="tile">
+          <div class="t-top">
+            <span class="t-name">session-metadata</span>
+            <span class="t-state idle">idle</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">target</span><span class="val">host</span></div>
+            <div class="ro"><span class="k">last</span><span class="val">3d</span></div>
+          </div>
+        </button>
+
+        <div class="grp">acme-web</div>
+
+        <button class="tile s-good">
+          <div class="t-top">
+            <span class="t-name">checkout-redesign</span>
+            <span class="t-state good">active</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">port</span><span class="val">3000</span></div>
+            <div class="ro"><span class="k">tunnel</span><span class="val cy">live</span></div>
+            <div class="ro"><span class="k">artifacts</span><span class="val hot">5</span></div>
+            <div class="t-bars"><i style="height:50%"></i><i style="height:40%"></i><i style="height:75%"></i><i style="height:60%"></i><i style="height:85%"></i><i style="height:45%"></i></div>
+          </div>
+        </button>
+
+        <button class="tile s-warn">
+          <div class="t-top">
+            <span class="t-name">a11y-audit</span>
+            <span class="t-state warn">dirty</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">port</span><span class="val">3001</span></div>
+            <div class="ro"><span class="k">git</span><span class="val hot">+4 −1</span></div>
+          </div>
+        </button>
+
+        <div class="grp">billing-svc</div>
+
+        <button class="tile s-crit">
+          <div class="t-top">
+            <span class="t-name">stripe-webhooks</span>
+            <span class="t-state crit">review</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">target</span><span class="val">gatepost</span></div>
+            <div class="ro"><span class="k">status</span><span class="val" style="color:var(--crit)">unpushed</span></div>
+          </div>
+        </button>
+
+        <button class="tile s-good">
+          <div class="t-top">
+            <span class="t-name">invoice-pdf</span>
+            <span class="t-state good">active</span>
+          </div>
+          <div class="t-readout">
+            <div class="ro"><span class="k">target</span><span class="val">docker</span></div>
+            <div class="ro"><span class="k">port</span><span class="val">4180</span></div>
+            <div class="ro"><span class="k">artifacts</span><span class="val hot">1</span></div>
+          </div>
+        </button>
+      </div>
+
+      <div class="dock-foot">
+        <span class="k"><i style="background:var(--good)"></i>live</span>
+        <span class="k"><i style="background:var(--warn)"></i>attn</span>
+        <span class="k"><i style="background:var(--crit)"></i>review</span>
+        <span class="k" style="margin-left:auto"><i style="background:var(--text-mute)"></i>idle</span>
+      </div>
+    </aside>
+
+    <!-- ============ MAIN VIEWPORT ============ -->
+    <main class="view">
+      <div class="view-head">
+        <div class="designator">
+          <span class="id glow-c">ui-prototypes</span>
+          <span class="sub">DEVX // WORKTREE ACTIVE</span>
+        </div>
+        <div class="win-tabs">
+          <span class="w on">1:server</span>
+          <span class="w">2:claude</span>
+          <span class="w">3:git</span>
+        </div>
+        <div class="ops">
+          <button class="op">◧ Split</button>
+          <button class="op">◆ Artifacts</button>
+          <button class="op">⌨ Compose</button>
+          <button class="op hot">▶ Attach</button>
+        </div>
+      </div>
+
+      <div class="manifold">
+        <span class="lbl">Routes</span>
+        <a class="r"><span class="led" style="background:var(--good);box-shadow:0 0 8px var(--good)"></span><span class="svc">ui</span> ui-prototypes-ui.localhost:5173</a>
+        <a class="r"><span class="led" style="background:var(--good);box-shadow:0 0 8px var(--good)"></span><span class="svc">api</span> ui-prototypes-api.localhost:8080</a>
+        <a class="r"><span class="led" style="background:var(--text-mute)"></span><span class="svc" style="color:var(--text-mute)">db</span> postgres:5432</a>
+      </div>
+
+      <div class="screen">
+        <div class="line"><span class="cy">~/devx/.worktrees/ui-prototypes</span> <span class="m">on</span> <span class="am">claude/devx-ui-prototypes</span> <span class="am">±</span></div>
+        <div class="line"><span class="g">❯</span> devx status</div>
+        <div class="line m">  worktree ....... .worktrees/ui-prototypes</div>
+        <div class="line m">  tmux ........... <span class="cy">3 windows</span>, attached</div>
+        <div class="line m">  caddy .......... <span class="g">2 routes healthy</span></div>
+        <div class="line m">  git ............ <span class="am">2 uncommitted</span>, 0 unpushed</div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="g">❯</span> npm run dev</div>
+        <div class="line g">  VITE v5.4.2  ready in 214 ms  ➜  https://ui-prototypes-ui.localhost/</div>
+        <div class="line"><span class="g">❯</span> <span class="cur"></span></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.getElementById('cp');
+    root.querySelectorAll('.tile').forEach(t => t.addEventListener('click', () => {
+      root.querySelectorAll('.tile').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      const name = t.querySelector('.t-name')?.textContent;
+      const id = root.querySelector('.designator .id');
+      if (name && id) id.textContent = name;
+    }));
+    root.querySelectorAll('.win-tabs .w').forEach(w => w.addEventListener('click', () => {
+      root.querySelectorAll('.win-tabs .w').forEach(x => x.classList.remove('on'));
+      w.classList.add('on');
+    }));
+    root.querySelectorAll('.hud .seg button').forEach(b => b.addEventListener('click', () => {
+      root.querySelectorAll('.hud .seg button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+    }));
+  })();
+</script>

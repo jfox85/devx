@@ -1,0 +1,459 @@
+<meta charset="utf-8" />
+<title>devx · Aurora prototype</title>
+<style>
+  /* ============ Aurora — spacious command deck ============ */
+  #aurora, #aurora *, #aurora *::before, #aurora *::after { box-sizing: border-box; }
+  #aurora {
+    --bg:        #0b0f1c;
+    --bg-2:      #0f1424;
+    --panel:     #131a2e;
+    --panel-2:   #171f36;
+    --line:      #24304f;
+    --line-soft: #1b2440;
+    --text:      #e8ecf7;
+    --text-dim:  #94a1c4;
+    --text-mute: #5b6788;
+    --accent:    #7c9bff;   /* periwinkle */
+    --accent-2:  #56e0d8;   /* aqua */
+    --grad:      linear-gradient(135deg, #7c9bff 0%, #56e0d8 100%);
+    --good:      #4ade80;
+    --warn:      #fbbf24;
+    --crit:      #fb7185;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+
+    position: relative;
+    height: 100dvh;
+    min-height: 640px;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(124,155,255,0.10), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(86,224,216,0.07), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  #aurora button { font-family: inherit; cursor: pointer; color: inherit; background: none; border: none; }
+  #aurora ::-webkit-scrollbar { width: 10px; height: 10px; }
+  #aurora ::-webkit-scrollbar-thumb { background: #263155; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+  #aurora ::-webkit-scrollbar-thumb:hover { background: #34426e; background-clip: padding-box; }
+
+  /* ---------- Top nav ---------- */
+  #aurora .topbar {
+    display: grid;
+    grid-template-columns: 240px 1fr 240px;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, rgba(19,26,46,0.72), rgba(19,26,46,0.35));
+    backdrop-filter: blur(10px);
+  }
+  #aurora .brand { display: flex; align-items: center; gap: 11px; }
+  #aurora .brand .mark {
+    width: 30px; height: 30px; border-radius: 9px; background: var(--grad);
+    display: grid; place-items: center; color: #071018; font-weight: 800; font-size: 15px;
+    box-shadow: 0 4px 18px rgba(86,224,216,0.28);
+  }
+  #aurora .brand .name { font-weight: 700; letter-spacing: -0.01em; font-size: 16px; }
+  #aurora .brand .env { font-size: 11px; color: var(--text-mute); font-family: var(--mono); }
+
+  #aurora .omni {
+    position: relative;
+    max-width: 620px; width: 100%; margin: 0 auto;
+  }
+  #aurora .omni input {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13.5px;
+    padding: 11px 44px 11px 42px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  #aurora .omni input::placeholder { color: var(--text-mute); }
+  #aurora .omni input:focus {
+    border-color: var(--accent);
+    background: var(--panel-2);
+    box-shadow: 0 0 0 4px rgba(124,155,255,0.14);
+  }
+  #aurora .omni .lens { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-mute); pointer-events: none; }
+  #aurora .omni .kbd {
+    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    font-family: var(--mono); font-size: 11px; color: var(--text-mute);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px;
+  }
+  #aurora .topright { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+  #aurora .icon-btn {
+    width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line-soft);
+    display: grid; place-items: center; color: var(--text-dim);
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  #aurora .icon-btn:hover { background: var(--panel); color: var(--text); border-color: var(--line); }
+  #aurora .avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: conic-gradient(from 210deg, #7c9bff, #56e0d8, #7c9bff);
+    display: grid; place-items: center; color: #06121a; font-weight: 700; font-size: 12px;
+  }
+
+  /* ---------- Body ---------- */
+  #aurora .body { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+
+  /* ---------- Left nav ---------- */
+  #aurora .side {
+    border-right: 1px solid var(--line-soft);
+    display: flex; flex-direction: column; min-height: 0;
+    background: linear-gradient(180deg, rgba(15,20,36,0.5), transparent 240px);
+  }
+  #aurora .side-top { padding: 18px 18px 12px; }
+  #aurora .new-btn {
+    width: 100%; border-radius: 11px; padding: 11px 14px;
+    background: var(--grad); color: #06121a; font-weight: 700; font-size: 13.5px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    box-shadow: 0 6px 20px rgba(124,155,255,0.25);
+    transition: transform .12s, box-shadow .15s;
+  }
+  #aurora .new-btn:hover { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(124,155,255,0.34); }
+  #aurora .side-scroll { flex: 1; overflow-y: auto; padding: 6px 12px 16px; }
+
+  #aurora .filters { display: flex; gap: 7px; padding: 4px 6px 12px; }
+  #aurora .chip {
+    font-size: 12px; color: var(--text-dim); padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--line-soft); transition: all .14s; white-space: nowrap;
+  }
+  #aurora .chip:hover { border-color: var(--line); color: var(--text); }
+  #aurora .chip.on { background: rgba(124,155,255,0.12); border-color: rgba(124,155,255,0.5); color: #cdd7ff; }
+  #aurora .chip .n { color: var(--text-mute); margin-left: 5px; font-family: var(--mono); font-size: 11px; }
+
+  #aurora .group-label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-mute); padding: 16px 8px 8px;
+  }
+  #aurora .group-label .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: .8; }
+  #aurora .group-label .count { margin-left: auto; font-family: var(--mono); letter-spacing: 0; }
+
+  #aurora .card {
+    position: relative; display: block; width: 100%; text-align: left;
+    border-radius: 13px; padding: 12px 13px 12px 15px; margin-bottom: 7px;
+    border: 1px solid transparent;
+    transition: background .14s, border-color .14s, transform .1s;
+  }
+  #aurora .card:hover { background: var(--panel); border-color: var(--line-soft); }
+  #aurora .card.active { background: var(--panel-2); border-color: rgba(124,155,255,0.45); box-shadow: 0 0 0 1px rgba(124,155,255,0.15) inset, 0 8px 22px rgba(0,0,0,0.35); }
+  #aurora .card.active::before {
+    content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 3px; background: var(--grad);
+  }
+  #aurora .card .row1 { display: flex; align-items: center; gap: 9px; }
+  #aurora .card .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px rgba(255,255,255,0.03); }
+  #aurora .card .title { font-weight: 600; font-size: 13.5px; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #aurora .card.active .title { color: #fff; }
+  #aurora .card .flag { color: var(--warn); font-size: 13px; }
+  #aurora .card .row2 { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-left: 17px; }
+  #aurora .tag {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .02em;
+    padding: 2px 7px; border-radius: 6px; color: var(--text-dim);
+    background: rgba(255,255,255,0.03); border: 1px solid var(--line-soft);
+  }
+  #aurora .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600; padding: 2px 8px 2px 6px; border-radius: 999px;
+  }
+  #aurora .pill i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  #aurora .pill.good { color: #86efac; background: rgba(74,222,128,0.10); }
+  #aurora .pill.good i { background: var(--good); }
+  #aurora .pill.warn { color: #fcd34d; background: rgba(251,191,36,0.10); }
+  #aurora .pill.warn i { background: var(--warn); }
+  #aurora .pill.crit { color: #fda4af; background: rgba(251,113,133,0.10); }
+  #aurora .pill.crit i { background: var(--crit); }
+  #aurora .pill.idle { color: var(--text-mute); background: rgba(255,255,255,0.03); }
+  #aurora .pill.idle i { background: var(--text-mute); }
+  #aurora .card .art { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--accent-2); display: inline-flex; align-items: center; gap: 4px; }
+
+  #aurora .side-foot {
+    border-top: 1px solid var(--line-soft); padding: 12px 18px;
+    display: flex; align-items: center; gap: 14px; color: var(--text-mute); font-size: 11.5px;
+  }
+  #aurora .side-foot .st { display: inline-flex; align-items: center; gap: 6px; }
+  #aurora .side-foot .st i { width: 7px; height: 7px; border-radius: 50%; }
+
+  /* ---------- Main ---------- */
+  #aurora .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #aurora .crumbs {
+    display: flex; align-items: center; gap: 10px; padding: 16px 22px 14px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  #aurora .crumbs .path { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+  #aurora .crumbs .path a { color: var(--text-dim); }
+  #aurora .crumbs .path a:hover { color: var(--text); }
+  #aurora .crumbs .path .sep { color: var(--text-mute); }
+  #aurora .crumbs .path .cur { color: var(--text); font-weight: 600; }
+  #aurora .crumbs .actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  #aurora .ghost {
+    font-size: 12.5px; color: var(--text-dim); padding: 7px 13px; border-radius: 9px;
+    border: 1px solid var(--line-soft); display: inline-flex; align-items: center; gap: 7px; transition: all .14s;
+  }
+  #aurora .ghost:hover { background: var(--panel); color: var(--text); border-color: var(--line); }
+  #aurora .ghost.primary { background: rgba(124,155,255,0.12); border-color: rgba(124,155,255,0.4); color: #cdd7ff; }
+  #aurora .ghost.primary:hover { background: rgba(124,155,255,0.2); }
+
+  #aurora .route-strip { display: flex; align-items: center; gap: 8px; padding: 12px 22px; border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+  #aurora .route {
+    display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px;
+    color: var(--text-dim); padding: 6px 11px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line-soft);
+    transition: all .14s;
+  }
+  #aurora .route:hover { border-color: var(--accent); color: var(--text); }
+  #aurora .route .svc { color: var(--accent-2); font-weight: 600; }
+  #aurora .route .up { width: 6px; height: 6px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px var(--good); }
+
+  #aurora .stage { flex: 1; min-height: 0; padding: 22px; display: grid; grid-template-rows: 1fr; }
+  #aurora .terminal {
+    border-radius: 16px; border: 1px solid var(--line); overflow: hidden;
+    background: linear-gradient(180deg, #0a0e1a, #080b14);
+    display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(0,0,0,0.45);
+  }
+  #aurora .term-bar { display: flex; align-items: center; gap: 8px; padding: 11px 15px; border-bottom: 1px solid var(--line-soft); background: rgba(255,255,255,0.015); }
+  #aurora .traffic { display: flex; gap: 7px; }
+  #aurora .traffic i { width: 11px; height: 11px; border-radius: 50%; }
+  #aurora .term-title { font-family: var(--mono); font-size: 12px; color: var(--text-mute); margin-left: 6px; }
+  #aurora .term-tabs { display: flex; gap: 4px; margin-left: 14px; }
+  #aurora .term-tabs .tt { font-family: var(--mono); font-size: 11.5px; color: var(--text-mute); padding: 4px 10px; border-radius: 7px; }
+  #aurora .term-tabs .tt.on { color: var(--accent-2); background: rgba(86,224,216,0.10); }
+  #aurora .term-body { flex: 1; padding: 18px 20px; font-family: var(--mono); font-size: 13px; line-height: 1.7; overflow: auto; color: #b9c4e0; }
+  #aurora .term-body .c-g { color: #7ee2b8; } #aurora .term-body .c-b { color: var(--accent); }
+  #aurora .term-body .c-y { color: var(--warn); } #aurora .term-body .c-m { color: var(--text-mute); }
+  #aurora .term-body .cursor { display: inline-block; width: 9px; height: 16px; background: var(--accent-2); vertical-align: text-bottom; animation: aur-blink 1.1s step-end infinite; }
+  @keyframes aur-blink { 50% { opacity: 0; } }
+
+  @media (max-width: 1000px) {
+    #aurora .topbar { grid-template-columns: 1fr auto; }
+    #aurora .omni { display: none; }
+    #aurora .body { grid-template-columns: 1fr; }
+    #aurora .side { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { #aurora .cursor { animation: none; } }
+</style>
+
+<div id="aurora">
+  <!-- ============ TOP NAV: centered omnibox ============ -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">d</div>
+      <div>
+        <div class="name">devx</div>
+        <div class="env">local · caddy healthy</div>
+      </div>
+    </div>
+
+    <div class="omni">
+      <span class="lens">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      </span>
+      <input placeholder="Search sessions, jump to a route, or run a command…" aria-label="Command palette" />
+      <span class="kbd">⌘P</span>
+    </div>
+
+    <div class="topright">
+      <button class="icon-btn" title="Notifications" aria-label="Notifications">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+      </button>
+      <button class="icon-btn" title="Settings" aria-label="Settings">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <div class="avatar">JF</div>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ============ LEFT NAV: airy project list ============ -->
+    <nav class="side">
+      <div class="side-top">
+        <button class="new-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+          New session
+        </button>
+      </div>
+
+      <div class="side-scroll">
+        <div class="filters">
+          <button class="chip on">All <span class="n">7</span></button>
+          <button class="chip">Active <span class="n">3</span></button>
+          <button class="chip">Needs&nbsp;you <span class="n">2</span></button>
+        </div>
+
+        <div class="group-label"><span class="dot"></span> devx <span class="count">3</span></div>
+
+        <button class="card active">
+          <div class="row1">
+            <span class="sdot" style="background:#4ade80"></span>
+            <span class="title">ui-prototypes</span>
+            <span class="art">◆ 3</span>
+          </div>
+          <div class="row2">
+            <span class="pill good"><i></i> active</span>
+            <span class="tag">host</span>
+            <span class="tag">±dirty</span>
+          </div>
+        </button>
+
+        <button class="card">
+          <div class="row1">
+            <span class="sdot" style="background:#fbbf24"></span>
+            <span class="title">caddy-health-fix</span>
+            <span class="flag">⚑</span>
+          </div>
+          <div class="row2">
+            <span class="pill warn"><i></i> attention</span>
+            <span class="tag">docker</span>
+          </div>
+        </button>
+
+        <button class="card">
+          <div class="row1">
+            <span class="sdot" style="background:#5b6788"></span>
+            <span class="title">session-metadata</span>
+          </div>
+          <div class="row2">
+            <span class="pill idle"><i></i> idle</span>
+            <span class="tag">host</span>
+          </div>
+        </button>
+
+        <div class="group-label"><span class="dot" style="background:#56e0d8"></span> acme-web <span class="count">2</span></div>
+
+        <button class="card">
+          <div class="row1">
+            <span class="sdot" style="background:#4ade80"></span>
+            <span class="title">checkout-redesign</span>
+            <span class="art">◆ 5</span>
+          </div>
+          <div class="row2">
+            <span class="pill good"><i></i> active</span>
+            <span class="tag">host</span>
+          </div>
+        </button>
+
+        <button class="card">
+          <div class="row1">
+            <span class="sdot" style="background:#fbbf24"></span>
+            <span class="title">a11y-audit</span>
+          </div>
+          <div class="row2">
+            <span class="pill warn"><i></i> dirty</span>
+            <span class="tag">host</span>
+          </div>
+        </button>
+
+        <div class="group-label"><span class="dot" style="background:#a855f7"></span> billing-svc <span class="count">2</span></div>
+
+        <button class="card">
+          <div class="row1">
+            <span class="sdot" style="background:#fb7185"></span>
+            <span class="title">stripe-webhooks</span>
+          </div>
+          <div class="row2">
+            <span class="pill crit"><i></i> review</span>
+            <span class="tag">gatepost</span>
+          </div>
+        </button>
+
+        <button class="card">
+          <div class="row1">
+            <span class="sdot" style="background:#4ade80"></span>
+            <span class="title">invoice-pdf</span>
+            <span class="art">◆ 1</span>
+          </div>
+          <div class="row2">
+            <span class="pill good"><i></i> active</span>
+            <span class="tag">docker</span>
+          </div>
+        </button>
+      </div>
+
+      <div class="side-foot">
+        <span class="st"><i style="background:#4ade80"></i> 3 running</span>
+        <span class="st"><i style="background:#fbbf24"></i> 2 idle</span>
+        <span class="st" style="margin-left:auto"><i style="background:#56e0d8"></i> 24 ports</span>
+      </div>
+    </nav>
+
+    <!-- ============ MAIN ============ -->
+    <main class="main">
+      <div class="crumbs">
+        <div class="path">
+          <a href="#">devx</a><span class="sep">/</span>
+          <a href="#">worktrees</a><span class="sep">/</span>
+          <span class="cur">ui-prototypes</span>
+        </div>
+        <div class="actions">
+          <button class="ghost">Compose</button>
+          <button class="ghost">Artifacts</button>
+          <button class="ghost primary">Attach</button>
+        </div>
+      </div>
+
+      <div class="route-strip">
+        <a class="route"><span class="up"></span> <span class="svc">ui</span> ui-prototypes-ui.localhost:5173</a>
+        <a class="route"><span class="up"></span> <span class="svc">api</span> ui-prototypes-api.localhost:8080</a>
+        <a class="route" style="color:var(--text-mute)"><span style="width:6px;height:6px;border-radius:50%;background:var(--text-mute);display:inline-block"></span> <span class="svc" style="color:var(--text-mute)">db</span> :5432</a>
+      </div>
+
+      <div class="stage">
+        <section class="terminal">
+          <div class="term-bar">
+            <span class="traffic"><i style="background:#fb7185"></i><i style="background:#fbbf24"></i><i style="background:#4ade80"></i></span>
+            <span class="term-title">ui-prototypes · tmux</span>
+            <span class="term-tabs">
+              <span class="tt on">1:server</span>
+              <span class="tt">2:claude</span>
+              <span class="tt">3:git</span>
+            </span>
+          </div>
+          <div class="term-body">
+            <div><span class="c-b">~/devx/.worktrees/ui-prototypes</span> <span class="c-m">on</span> <span class="c-y">claude/devx-ui-prototypes</span></div>
+            <div><span class="c-g">➜</span> npm run dev</div>
+            <div class="c-m">  VITE v5.4.2  ready in 214 ms</div>
+            <div><span class="c-g">  ➜  Local:</span>   https://ui-prototypes-ui.localhost/</div>
+            <div><span class="c-b">  ➜  Network:</span> use --host to expose</div>
+            <div>&nbsp;</div>
+            <div><span class="c-g">➜</span> serving 3 prototypes · <span class="c-y">hot reload on</span></div>
+            <div><span class="c-g">➜</span> <span class="cursor"></span></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.getElementById('aurora');
+    root.querySelectorAll('.card').forEach(card => {
+      card.addEventListener('click', () => {
+        root.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+      });
+    });
+    root.querySelectorAll('.chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        root.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+        chip.classList.add('on');
+      });
+    });
+    root.querySelectorAll('.term-tabs .tt').forEach(tt => {
+      tt.addEventListener('click', () => {
+        root.querySelectorAll('.term-tabs .tt').forEach(t => t.classList.remove('on'));
+        tt.classList.add('on');
+      });
+    });
+  })();
+</script>
