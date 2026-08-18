@@ -25,6 +25,14 @@ go test -v -race ./...
 
 # 5. Ensure go.mod is tidy
 go mod tidy
+
+# 6. Validate the embedded web app
+cd web/app
+npm ci
+npm test
+npm run test:ui
+npm run build
+cd ../..
 ```
 
 These checks are enforced in CI and will cause builds to fail if not passing.
