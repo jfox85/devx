@@ -1,6 +1,6 @@
 # Recent Session Activity and Pinning
 
-Status: proposed
+Status: implemented in `9426f98`, `78515e5`, and `5db7cf0`
 
 ## Goal
 

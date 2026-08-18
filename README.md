@@ -264,13 +264,17 @@ devx
 ```
 
 **TUI Features:**
-- **Session Browser**: Navigate sessions with arrow keys or vim bindings (j/k)
+- **Session Browser**: Navigate sessions with arrow keys or vim bindings (j/k); sessions default to recent activity order
+- **Pinned Sessions**: Press `*` to pin/unpin the selected session in a global section
+- **Session Views**: Press `Tab` to switch between recent activity and project-grouped ordering; the TUI preference is stored in user-local UI state
 - **Live Preview**: View tmux session content in real-time
 - **Attention Flags**: Visual indicators (🔔) for sessions needing attention
 - **Quick Actions**: 
   - `Enter`: Attach to selected session
   - `c`: Create new session
   - `r`: Remove selected session
+  - `*`: Pin or unpin selected session
+  - `Tab`: Switch Recent / Projects view
   - `?`: Toggle help
   - `q`: Quit
 
@@ -747,14 +751,16 @@ devx includes an optional web interface for managing sessions from any browser �
 </table>
 
 **Features:**
-- **Session list** — view all sessions grouped by project, with attention flag indicators (◆)
+- **Recent and Projects views** — globally sort sessions by last creation/open activity or retain project/status grouping; the selected view persists per browser
+- **Pinned sessions** — keep important sessions in a durable global section shared with the TUI
+- **Session list** — activity ages, project context, status indicators, search, and keyboard-stable navigation
 - **In-browser terminal** — full tmux access via ttyd, with tmux window tabs in the header
 - **Mobile-friendly** — responsive layout, soft key toolbar (Tab, Ctrl, arrows) for touchscreens
 - **Artifacts** — attach plans, reports, screenshots, logs, recordings, and docs to a session; view them next to the terminal and organize them into folders
 - **Image upload** — paste, drag-and-drop, or use the `[img]` button to inject an image path into the terminal
 - **Create & delete sessions** — from the browser, same as the CLI
 - **Service links** — tap "svc" on any session to open its Caddy routes in the browser
-- **Keyboard shortcuts** — `↑↓` navigate, `Enter` open, `/` filter, `Ctrl+Shift+C` new session
+- **Keyboard shortcuts** — `↑↓` navigate, `Enter` open, `/` filter, `Shift+P` pin outside form fields, `Ctrl+Shift+C` new session
 
 The web server has three layers:
 
