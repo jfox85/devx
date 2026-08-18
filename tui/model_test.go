@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // newTestModel returns a minimal model configured for a given terminal height
@@ -28,6 +33,128 @@ func newTestModel(height int, sessionCount int) *model {
 
 // TestEnsureCursorVisible_ScrollUp verifies that when the cursor is above the
 // current scroll window the offset snaps down to the cursor position.
+func TestSortSessionItemsRecentPinsFirstThenUsesActivity(t *testing.T) {
+	items := []sessionItem{
+		{name: "older", activityAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)},
+		{name: "newer", activityAt: time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)},
+		{name: "pinned", pinned: true, activityAt: time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)},
+	}
+	sortSessionItems(items, sessionViewRecent)
+	if got := []string{items[0].name, items[1].name, items[2].name}; !reflect.DeepEqual(got, []string{"pinned", "newer", "older"}) {
+		t.Fatalf("recent order = %v", got)
+	}
+}
+
+func TestSortSessionItemsProjectsKeepsGlobalPinsAndProjectOrder(t *testing.T) {
+	items := []sessionItem{
+		{name: "zeta", projectAlias: "beta"},
+		{name: "urgent", projectAlias: "beta", attentionFlag: true},
+		{name: "alpha", projectAlias: "alpha"},
+		{name: "pinned", projectAlias: "zeta", pinned: true},
+	}
+	sortSessionItems(items, sessionViewProjects)
+	if got := []string{items[0].name, items[1].name, items[2].name, items[3].name}; !reflect.DeepEqual(got, []string{"pinned", "alpha", "urgent", "zeta"}) {
+		t.Fatalf("projects order = %v", got)
+	}
+}
+
+func TestSessionsReloadPreservesCursorByName(t *testing.T) {
+	m := newTestModel(24, 0)
+	m.sessions = []sessionItem{{name: "alpha"}, {name: "selected"}, {name: "zeta"}}
+	m.cursor = 1
+	updated, _ := m.Update(sessionsLoadedMsg{sessions: []sessionItem{{name: "selected"}, {name: "alpha"}, {name: "zeta"}}})
+	got := updated.(*model)
+	if got.sessions[got.cursor].name != "selected" {
+		t.Fatalf("cursor moved to %q, want selected", got.sessions[got.cursor].name)
+	}
+}
+
+func TestFilteredReloadPreservesHighlightedSessionByName(t *testing.T) {
+	m := newTestModel(24, 0)
+	m.sessions = []sessionItem{{name: "alpha"}, {name: "selected"}, {name: "zeta"}}
+	m.filterActive = true
+	m.searchFilter = "e"
+	m.filteredIndices = []int{1, 2}
+	m.searchCursor = 0
+	updated, _ := m.Update(sessionsLoadedMsg{sessions: []sessionItem{{name: "zeta"}, {name: "selected"}, {name: "alpha"}}})
+	got := updated.(*model)
+	if got.sessions[got.filteredIndices[got.searchCursor]].name != "selected" {
+		t.Fatalf("filtered cursor moved to %q", got.sessions[got.filteredIndices[got.searchCursor]].name)
+	}
+}
+
+func TestFilteredRenderSuppressesSectionHeaders(t *testing.T) {
+	m := newTestModel(12, 0)
+	m.filterActive = true
+	m.searchFilter = "match"
+	m.sessions = []sessionItem{{name: "match-pinned", pinned: true}, {name: "match-other"}}
+	m.filteredIndices = []int{0, 1}
+	var out strings.Builder
+	m.renderSessionList(&out, m.buildFilteredEntries(), false, 5)
+	if strings.Contains(out.String(), "Pinned") || strings.Contains(out.String(), "Recent") {
+		t.Fatalf("filtered results contain section headers: %q", out.String())
+	}
+}
+
+func TestTruncateFooterFitsNarrowTerminal(t *testing.T) {
+	m := newTestModel(24, 0)
+	m.width = 40
+	got := m.renderFooter("view: recent • ↑/↓ navigate • enter attach • * pin • tab switch view")
+	if width := lipgloss.Width(got); width > 40 {
+		t.Fatalf("footer width = %d, want <= 40: %q", width, got)
+	}
+	if height := lipgloss.Height(got); height != 1 {
+		t.Fatalf("footer height = %d, want 1: %q", height, got)
+	}
+}
+
+type fakeTUIPersistence struct {
+	view       string
+	pinnedName string
+	pinned     bool
+}
+
+func (f *fakeTUIPersistence) LoadSessionView() (string, error)  { return f.view, nil }
+func (f *fakeTUIPersistence) SaveSessionView(view string) error { f.view = view; return nil }
+func (f *fakeTUIPersistence) SetPinned(name string, pinned bool) error {
+	f.pinnedName, f.pinned = name, pinned
+	return nil
+}
+
+func TestActiveSearchReservesSpaceInSessionBudgets(t *testing.T) {
+	m := newTestModel(24, 10)
+	withoutSearch := m.nonPreviewSessionBudget()
+	m.filterActive = true
+	withSearch := m.nonPreviewSessionBudget()
+	if withSearch >= withoutSearch {
+		t.Fatalf("search budget = %d, want less than %d", withSearch, withoutSearch)
+	}
+}
+
+func TestExpandedHelpReducesSessionBudgets(t *testing.T) {
+	m := newTestModel(24, 10)
+	compact := m.nonPreviewSessionBudget()
+	m.help.ShowAll = true
+	expanded := m.nonPreviewSessionBudget()
+	if expanded >= compact {
+		t.Fatalf("expanded help budget = %d, want less than compact %d", expanded, compact)
+	}
+}
+
+func TestTUIActionsUseInjectedPersistence(t *testing.T) {
+	persistence := &fakeTUIPersistence{view: "recent"}
+	m := initialModel(persistence)
+	m.sessions = []sessionItem{{name: "demo"}}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'*'}})
+	if persistence.pinnedName != "demo" || !persistence.pinned {
+		t.Fatalf("pin persistence = %q %v", persistence.pinnedName, persistence.pinned)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if persistence.view != "projects" {
+		t.Fatalf("view persistence = %q, want projects", persistence.view)
+	}
+}
+
 func TestEnsureCursorVisible_ScrollUp(t *testing.T) {
 	m := newTestModel(24, 20)
 	m.scrollOffset = 10
@@ -51,9 +178,11 @@ func TestEnsureCursorVisible_ScrollDown(t *testing.T) {
 
 	m.ensureCursorVisible()
 
-	// scrollOffset should be cursor - sessionLines + 1 = 19 - 18 + 1 = 2
-	if m.scrollOffset != 2 {
-		t.Errorf("scrollOffset = %d, want 2", m.scrollOffset)
+	if m.lastVisibleSession(m.scrollOffset) < m.cursor {
+		t.Errorf("cursor %d is not visible from scrollOffset %d", m.cursor, m.scrollOffset)
+	}
+	if m.scrollOffset > 0 && m.lastVisibleSession(m.scrollOffset-1) >= m.cursor {
+		t.Errorf("scrollOffset %d advanced farther than necessary", m.scrollOffset)
 	}
 }
 
@@ -93,20 +222,17 @@ func TestEnsureCursorVisible_BudgetFloor(t *testing.T) {
 	// So sessionLines is clamped to 5, visibleEnd = 0 + 5 - 1 = 4.
 	m := newTestModel(8, 10)
 	m.scrollOffset = 0
-	m.cursor = 4 // index 4 == visibleEnd with clamped budget of 5
-
+	m.cursor = 4
 	m.ensureCursorVisible()
-
-	if m.scrollOffset != 0 {
-		t.Errorf("cursor at visibleEnd: scrollOffset = %d, want 0", m.scrollOffset)
+	if m.lastVisibleSession(m.scrollOffset) < m.cursor {
+		t.Errorf("cursor %d is not visible from scrollOffset %d", m.cursor, m.scrollOffset)
 	}
 
-	// Moving cursor one further should cause a scroll.
+	previousOffset := m.scrollOffset
 	m.cursor = 5
 	m.ensureCursorVisible()
-
-	if m.scrollOffset != 1 {
-		t.Errorf("cursor past visibleEnd: scrollOffset = %d, want 1", m.scrollOffset)
+	if m.scrollOffset < previousOffset || m.lastVisibleSession(m.scrollOffset) < m.cursor {
+		t.Errorf("cursor %d is not visible after scrolling to %d", m.cursor, m.scrollOffset)
 	}
 }
 

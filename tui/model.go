@@ -49,6 +49,58 @@ type sessionItem struct {
 	gatepostBypass    bool
 	gatepostProviders []string
 	gatepostMode      string
+	pinned            bool
+	activityAt        time.Time
+}
+
+type sessionViewMode string
+
+const (
+	sessionViewRecent   sessionViewMode = "recent"
+	sessionViewProjects sessionViewMode = "projects"
+)
+
+func normalizedSessionView(value string) sessionViewMode {
+	if value == string(sessionViewProjects) {
+		return sessionViewProjects
+	}
+	return sessionViewRecent
+}
+
+func sortSessionItems(items []sessionItem, view sessionViewMode) {
+	compareRecent := func(a, b sessionItem) bool {
+		if !a.activityAt.Equal(b.activityAt) {
+			if a.activityAt.IsZero() {
+				return false
+			}
+			if b.activityAt.IsZero() {
+				return true
+			}
+			return a.activityAt.After(b.activityAt)
+		}
+		return a.name < b.name
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].pinned != items[j].pinned {
+			return items[i].pinned
+		}
+		if items[i].pinned || view == sessionViewRecent {
+			return compareRecent(items[i], items[j])
+		}
+		if items[i].projectAlias != items[j].projectAlias {
+			if items[i].projectAlias == "" {
+				return false
+			}
+			if items[j].projectAlias == "" {
+				return true
+			}
+			return items[i].projectAlias < items[j].projectAlias
+		}
+		if items[i].attentionFlag != items[j].attentionFlag {
+			return items[i].attentionFlag
+		}
+		return items[i].name < items[j].name
+	})
 }
 
 type projectItem struct {
@@ -134,6 +186,23 @@ type model struct {
 	searchFilter    string
 	filteredIndices []int // indices into m.sessions that match the filter
 	searchCursor    int   // cursor within filtered results
+	sessionView     sessionViewMode
+	persistence     tuiPersistence
+}
+
+func truncateFooter(text string, width int) string {
+	if width <= 0 || lipgloss.Width(text) <= width {
+		return text
+	}
+	result := make([]rune, 0, width)
+	for _, r := range text {
+		candidate := string(append(result, r))
+		if lipgloss.Width(candidate)+1 > width {
+			return string(result) + "…"
+		}
+		result = append(result, r)
+	}
+	return string(result)
 }
 
 // viewOverheadLines returns the estimated number of non-session lines rendered
@@ -155,6 +224,38 @@ func (m *model) viewOverheadLines() int {
 
 // previewSessionBudget returns the line budget passed to renderSessionList in
 // preview mode. Must stay in sync with the calculation in listView().
+func (m *model) footerHeight() int {
+	if m.help.ShowAll {
+		return lipgloss.Height(m.help.View(m.keys))
+	}
+	return 1
+}
+
+func (m *model) renderFooter(text string) string {
+	contentWidth := m.width - footerStyle.GetHorizontalFrameSize()
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	return footerStyle.Render(truncateFooter(text, contentWidth))
+}
+
+func (m *model) searchBoxHeight() int {
+	if !m.filterActive {
+		return 0
+	}
+	var box strings.Builder
+	m.renderSearchBox(&box, m.width)
+	return lipgloss.Height(box.String())
+}
+
+func (m *model) nonPreviewSessionBudget() int {
+	lines := (m.height - m.footerHeight() - 1) - m.viewOverheadLines() - m.searchBoxHeight()
+	if lines < 5 {
+		return 5
+	}
+	return lines
+}
+
 func (m *model) previewSessionBudget() int {
 	logoLineCount := 0
 	if m.height >= 35 {
@@ -169,7 +270,7 @@ func (m *model) previewSessionBudget() int {
 	if m.caddyWarning != "" {
 		overhead += 2
 	}
-	lines := paneHeight - paneChrome - overhead
+	lines := paneHeight - paneChrome - overhead - max(0, m.footerHeight()-1) - m.searchBoxHeight()
 	if lines < 5 {
 		return 5
 	}
@@ -185,16 +286,16 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 		return -1
 	}
 	sessionLines := m.previewSessionBudget()
+	if !m.showPreview {
+		sessionLines = m.nonPreviewSessionBudget()
+	}
 
 	linesRendered := 0
 	if scrollOffset > 0 {
 		linesRendered++ // "↑ more sessions..." indicator
 	}
 
-	// Use "" as the initial sentinel to match renderSessionList's var currentProject string
-	// initialisation. Using "\x00" would cause a spurious blank-separator line to be
-	// counted before the very first project header, making the visible range too short.
-	currentProject := ""
+	currentSection := ""
 	last := scrollOffset - 1
 
 	for i, sess := range m.sessions {
@@ -205,15 +306,21 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 			break
 		}
 
-		if sess.projectAlias != currentProject {
-			if currentProject != "" && linesRendered > 0 {
-				linesRendered++ // blank separator between project groups
+		section := "recent"
+		if sess.pinned {
+			section = "pinned"
+		} else if m.sessionView == sessionViewProjects {
+			section = "project:" + sess.projectAlias
+		}
+		if section != currentSection {
+			if currentSection != "" && linesRendered > 0 {
+				linesRendered++
 				if linesRendered >= sessionLines-1 {
 					break
 				}
 			}
-			currentProject = sess.projectAlias
-			linesRendered++ // project header
+			currentSection = section
+			linesRendered += lipgloss.Height(headerStyle.Render("section") + "\n")
 			if linesRendered >= sessionLines-1 {
 				break
 			}
@@ -227,39 +334,12 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 }
 
 func (m *model) ensureCursorVisible() {
-	if m.showPreview {
-		// Scroll up if cursor is above the window.
-		if m.cursor < m.scrollOffset {
-			m.scrollOffset = m.cursor
-			return
-		}
-		// Scroll down: increment scrollOffset until the cursor session is rendered.
-		// lastVisibleSession simulates the real render loop so project-header overhead
-		// is accounted for correctly.
-		for m.scrollOffset < len(m.sessions)-1 && m.cursor > m.lastVisibleSession(m.scrollOffset) {
-			m.scrollOffset++
-		}
-		return
-	}
-
-	// Non-preview mode: simple line-budget estimate (no per-session inline details).
-	sessionLines := (m.height - 2) - m.viewOverheadLines()
-	if sessionLines < 5 {
-		sessionLines = 5
-	}
-
-	// Scroll up if cursor is above the window
 	if m.cursor < m.scrollOffset {
 		m.scrollOffset = m.cursor
+		return
 	}
-
-	// Scroll down if cursor is below the visible area
-	visibleEnd := m.scrollOffset + sessionLines - 1
-	if m.cursor > visibleEnd {
-		m.scrollOffset = m.cursor - sessionLines + 1
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
-		}
+	for m.scrollOffset < len(m.sessions)-1 && m.cursor > m.lastVisibleSession(m.scrollOffset) {
+		m.scrollOffset++
 	}
 }
 
@@ -289,6 +369,8 @@ type keyMap struct {
 	Search      key.Binding
 	Rename      key.Binding
 	ColorCycle  key.Binding
+	Pin         key.Binding
+	SortView    key.Binding
 }
 
 var keys = keyMap{
@@ -364,6 +446,14 @@ var keys = keyMap{
 		key.WithKeys("K"),
 		key.WithHelp("K", "cycle color"),
 	),
+	Pin: key.NewBinding(
+		key.WithKeys("*"),
+		key.WithHelp("*", "pin session"),
+	),
+	SortView: key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "switch session view"),
+	),
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
@@ -374,11 +464,34 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter},
 		{k.Create, k.Delete, k.Open},
-		{k.Search, k.Preview, k.Help, k.Quit},
+		{k.Pin, k.SortView, k.Search, k.Preview},
+		{k.Help, k.Quit},
 	}
 }
 
+type tuiPersistence interface {
+	LoadSessionView() (string, error)
+	SaveSessionView(string) error
+	SetPinned(string, bool) error
+}
+
+type diskTUIPersistence struct{}
+
+func (diskTUIPersistence) LoadSessionView() (string, error)  { return config.LoadTUISessionView() }
+func (diskTUIPersistence) SaveSessionView(view string) error { return config.SetTUISessionView(view) }
+func (diskTUIPersistence) SetPinned(name string, pinned bool) error {
+	store, err := session.LoadSessions()
+	if err != nil {
+		return err
+	}
+	return store.SetPinned(name, pinned)
+}
+
 func InitialModel() *model {
+	return initialModel(diskTUIPersistence{})
+}
+
+func initialModel(persistence tuiPersistence) *model {
 	ti := textinput.New()
 	ti.Placeholder = "session-name"
 	ti.CharLimit = session.MaxSessionNameLen
@@ -413,6 +526,7 @@ func InitialModel() *model {
 
 	// Pre-compile regex for performance
 	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	initialView, _ := persistence.LoadSessionView()
 
 	m := model{
 		sessions:                []sessionItem{},
@@ -442,6 +556,8 @@ func InitialModel() *model {
 		baseBranchTTL:           time.Hour,
 		maxStatsUpdatesPerCycle: 5,
 		numberedSlots:           make(map[int]string),
+		sessionView:             normalizedSessionView(initialView),
+		persistence:             persistence,
 	}
 
 	if debugMode {
@@ -484,6 +600,7 @@ func (m *model) loadSessions() tea.Msg {
 
 		color := sess.EffectiveColor()
 
+		activityAt, _ := sess.ActivityAt()
 		sessions = append(sessions, sessionItem{
 			name:              name,
 			projectAlias:      sess.ProjectAlias,
@@ -504,33 +621,12 @@ func (m *model) loadSessions() tea.Msg {
 			gatepostBypass:    sess.Target.Gatepost.Bypass,
 			gatepostProviders: sess.Target.Gatepost.RegisteredProviders,
 			gatepostMode:      sess.Target.Gatepost.ProviderMode,
+			pinned:            sess.Pinned,
+			activityAt:        activityAt,
 		})
 	}
 
-	// Sort sessions: by project first, then flagged ones first, then by name
-	sort.Slice(sessions, func(i, j int) bool {
-		// First, group by project (sessions without project go last)
-		if sessions[i].projectAlias != sessions[j].projectAlias {
-			if sessions[i].projectAlias == "" {
-				return false // No project goes to end
-			}
-			if sessions[j].projectAlias == "" {
-				return true // No project goes to end
-			}
-			return sessions[i].projectAlias < sessions[j].projectAlias
-		}
-
-		// Within same project, prioritize flagged sessions
-		if sessions[i].attentionFlag && !sessions[j].attentionFlag {
-			return true
-		}
-		if !sessions[i].attentionFlag && sessions[j].attentionFlag {
-			return false
-		}
-
-		// Both have same flag status, sort by name
-		return sessions[i].name < sessions[j].name
-	})
+	sortSessionItems(sessions, m.sessionView)
 
 	return sessionsLoadedMsg{sessions: sessions, store: store}
 }
@@ -776,6 +872,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case key.Matches(msg, m.keys.Help):
 				m.help.ShowAll = !m.help.ShowAll
+				m.ensureCursorVisible()
 
 			case key.Matches(msg, m.keys.Rename):
 				if len(m.sessions) > 0 {
@@ -788,6 +885,46 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.SetValue(prefill)
 					m.textInput.Focus()
 				}
+
+			case key.Matches(msg, m.keys.Pin):
+				if len(m.sessions) > 0 {
+					name := m.sessions[m.cursor].name
+					pinned := !m.sessions[m.cursor].pinned
+					if err := m.persistence.SetPinned(name, pinned); err != nil {
+						m.statusMsg = fmt.Sprintf("pin: save failed: %v", err)
+					} else {
+						m.sessions[m.cursor].pinned = pinned
+						sortSessionItems(m.sessions, m.sessionView)
+						m.cursor = m.sessionIndexByName(name)
+						m.ensureCursorVisible()
+						if pinned {
+							m.statusMsg = "session pinned"
+						} else {
+							m.statusMsg = "session unpinned"
+						}
+					}
+				}
+
+			case key.Matches(msg, m.keys.SortView):
+				selectedName := ""
+				if len(m.sessions) > 0 {
+					selectedName = m.sessions[m.cursor].name
+				}
+				if m.sessionView == sessionViewRecent {
+					m.sessionView = sessionViewProjects
+				} else {
+					m.sessionView = sessionViewRecent
+				}
+				sortSessionItems(m.sessions, m.sessionView)
+				if selectedName != "" {
+					m.cursor = m.sessionIndexByName(selectedName)
+				}
+				if err := m.persistence.SaveSessionView(string(m.sessionView)); err != nil {
+					m.statusMsg = fmt.Sprintf("view: %s (preference save failed: %v)", m.sessionView, err)
+				} else {
+					m.statusMsg = fmt.Sprintf("view: %s", m.sessionView)
+				}
+				m.ensureCursorVisible()
 
 			case key.Matches(msg, m.keys.ColorCycle):
 				if len(m.sessions) > 0 {
@@ -1066,7 +1203,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case sessionsLoadedMsg:
+		preservedName := ""
+		if m.cursor >= 0 && m.cursor < len(m.sessions) {
+			preservedName = m.sessions[m.cursor].name
+		}
+		preservedFilterName := ""
+		if m.filterActive && m.searchCursor >= 0 && m.searchCursor < len(m.filteredIndices) {
+			index := m.filteredIndices[m.searchCursor]
+			if index >= 0 && index < len(m.sessions) {
+				preservedFilterName = m.sessions[index].name
+			}
+		}
 		m.sessions = msg.sessions
+		if preservedName != "" {
+			if selectedIndex := m.sessionIndexByName(preservedName); selectedIndex >= 0 {
+				m.cursor = selectedIndex
+			}
+		}
 		if m.cursor >= len(m.sessions) {
 			m.cursor = len(m.sessions) - 1
 		}
@@ -1099,6 +1252,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, sess := range m.sessions {
 				if strings.Contains(strings.ToLower(sess.name), m.searchFilter) {
 					m.filteredIndices = append(m.filteredIndices, i)
+				}
+			}
+			if preservedFilterName != "" {
+				for filterIndex, sessionIndex := range m.filteredIndices {
+					if m.sessions[sessionIndex].name == preservedFilterName {
+						m.searchCursor = filterIndex
+						break
+					}
 				}
 			}
 			if m.searchCursor >= len(m.filteredIndices) {
@@ -1355,24 +1516,25 @@ func (m *model) View() string {
 		switch m.state {
 		case stateList:
 			if m.filterActive {
-				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: jump to session • esc: cancel search")
+				footer = m.renderFooter("↑/↓: navigate • enter: jump to session • esc: cancel search")
 			} else {
-				footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump (MRU) • /: search • enter: attach • c: create • d: delete • r: rename • K: color • o: open routes • e: edit • h: hostnames • P: projects • p: preview • ?: help • q: quit")
+				text := fmt.Sprintf("view: %s • ↑/↓ navigate • enter attach • * pin • tab switch view • / search • c create • d delete • ? help • q quit", m.sessionView)
+				footer = m.renderFooter(text)
 			}
 		case stateCreating:
-			footer = footerStyle.Width(m.width).Render("enter: create session • esc: cancel")
+			footer = m.renderFooter("enter: create session • esc: cancel")
 		case stateProjectSelect:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • 1-9: jump • enter: select project • esc: back • q: quit")
+			footer = m.renderFooter("↑/↓: navigate • 1-9: jump • enter: select project • esc: back • q: quit")
 		case stateConfirm:
-			footer = footerStyle.Width(m.width).Render("y: confirm • n: cancel")
+			footer = m.renderFooter("y: confirm • n: cancel")
 		case stateHostnames:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • enter: open in browser • esc: back • q: quit")
+			footer = m.renderFooter("↑/↓: navigate • enter: open in browser • esc: back • q: quit")
 		case stateProjectManagement:
-			footer = footerStyle.Width(m.width).Render("↑/↓: navigate • c: add project • d: remove project • C: init Claude hooks • esc: back • q: quit")
+			footer = m.renderFooter("↑/↓: navigate • c: add project • d: remove project • C: init Claude hooks • esc: back • q: quit")
 		case stateProjectAdd:
-			footer = footerStyle.Width(m.width).Render("enter: add project • esc: cancel")
+			footer = m.renderFooter("enter: add project • esc: cancel")
 		case stateRenaming:
-			footer = footerStyle.Width(m.width).Render("enter: save rename • esc: cancel")
+			footer = m.renderFooter("enter: save rename • esc: cancel")
 		}
 	}
 
@@ -1449,7 +1611,8 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 		linesRendered++
 	}
 
-	var currentProject string
+	var currentSection string
+	showSections := !(m.filterActive && m.searchFilter != "")
 	for _, entry := range entries {
 		// Skip entries that are above the current scroll window.
 		if entry.filterIdx >= 0 {
@@ -1468,33 +1631,41 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 
 		sess := m.sessions[entry.sessIdx]
 
-		// Add project header if this is a new project
-		if sess.projectAlias != currentProject {
-			if currentProject != "" {
-				w.WriteString("\n")
-				linesRendered++
+		section := "recent"
+		header := "Recent"
+		if sess.pinned {
+			section = "pinned"
+			header = "* Pinned"
+		} else if m.sessionView == sessionViewProjects {
+			section = "project:" + sess.projectAlias
+			header = "No Project"
+			if sess.projectAlias != "" {
+				if sess.projectName != "" {
+					header = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
+				} else {
+					header = sess.projectAlias
+				}
+			}
+		}
+		if section != currentSection {
+			if showSections {
+				if currentSection != "" {
+					w.WriteString("\n")
+					linesRendered++
+					if budget > 0 && linesRendered >= budget-1 {
+						w.WriteString(dimStyle.Render("  ↓ more sessions...") + "\n")
+						return
+					}
+				}
+				renderedHeader := headerStyle.Render(header) + "\n"
+				w.WriteString(renderedHeader)
+				linesRendered += lipgloss.Height(renderedHeader)
 				if budget > 0 && linesRendered >= budget-1 {
 					w.WriteString(dimStyle.Render("  ↓ more sessions...") + "\n")
 					return
 				}
 			}
-			currentProject = sess.projectAlias
-
-			projectHeader := "No Project"
-			if sess.projectAlias != "" {
-				if sess.projectName != "" {
-					projectHeader = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
-				} else {
-					projectHeader = sess.projectAlias
-				}
-			}
-
-			w.WriteString(headerStyle.Render(projectHeader) + "\n")
-			linesRendered++
-			if budget > 0 && linesRendered >= budget-1 {
-				w.WriteString(dimStyle.Render("  ↓ more sessions...") + "\n")
-				return
-			}
+			currentSection = section
 		}
 
 		// Cursor logic: use searchCursor when filtering, else main cursor
@@ -1519,9 +1690,12 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			}
 		}
 
-		// Add attention indicator
+		// Add pin/attention indicators. The pin marker is ASCII-safe so terminal
+		// width calculations remain stable.
 		indicator := " "
-		if sess.attentionFlag {
+		if sess.pinned {
+			indicator = "*"
+		} else if sess.attentionFlag {
 			indicator = "🔔"
 		}
 
@@ -1624,7 +1798,7 @@ func (m *model) listView() string {
 		}
 
 		entries := m.buildFilteredEntries()
-		m.renderSessionList(&b, entries, true) // true = show inline details
+		m.renderSessionList(&b, entries, true, m.nonPreviewSessionBudget())
 		m.renderSearchBox(&b, m.width)
 
 		return b.String()
