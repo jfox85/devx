@@ -288,6 +288,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/terminal/prewarm", s.handleTerminalPrewarm)
 	mux.HandleFunc("GET /api/terminal/status", s.handleTerminalStatus)
 	mux.HandleFunc("POST /api/terminal/send-input", s.handleTerminalSendInput)
+	mux.HandleFunc("POST /api/terminal/activity-receipt", s.handleTerminalActivityReceipt)
 	mux.HandleFunc("POST /api/sessions/activity", s.handleSessionActivity)
 	// Remote show — uploads a file and broadcasts to all SSE clients.
 	mux.HandleFunc("POST /api/show", s.handleShow)
@@ -401,7 +402,7 @@ func validTerminalAttempt(attempt string) bool {
 	return true
 }
 
-func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTerminalActivityReceipt(w http.ResponseWriter, r *http.Request) {
 	if !terminalWriteGuard(w, r, 8<<10) {
 		return
 	}
@@ -412,8 +413,31 @@ func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
 	if !handleDecodeJSON(w, r, &req) {
 		return
 	}
-	if !validTerminalAttempt(req.Attempt) || !s.ttyd.attemptActive(req.Session, req.Attempt) {
+	if !validTerminalAttempt(req.Attempt) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal frame is not active"})
+		return
+	}
+	receipt, ok := s.ttyd.issueActivityReceipt(req.Session, req.Attempt, time.Now())
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal frame is not active"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"receipt": receipt})
+}
+
+func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
+	if !terminalWriteGuard(w, r, 8<<10) {
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Receipt string `json:"receipt"`
+	}
+	if !handleDecodeJSON(w, r, &req) {
+		return
+	}
+	if !s.ttyd.consumeActivityReceipt(req.Session, req.Receipt, time.Now()) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal activity receipt is invalid or expired"})
 		return
 	}
 	store, err := session.LoadSessions()

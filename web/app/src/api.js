@@ -115,6 +115,16 @@ export async function flagSession(name) {
   if (!res.ok) throw new Error(`Failed to flag session: ${res.status}`)
 }
 
+export async function pinSession(name) {
+  const res = await apiFetch('/sessions/pin?name=' + encodeURIComponent(name), { method: 'POST' })
+  await requireOK(res, 'Failed to pin session')
+}
+
+export async function unpinSession(name) {
+  const res = await apiFetch('/sessions/pin?name=' + encodeURIComponent(name), { method: 'DELETE' })
+  await requireOK(res, 'Failed to unpin session')
+}
+
 export async function unflagSession(name) {
   const res = await apiFetch('/sessions/flag?name=' + encodeURIComponent(name), { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to unflag session: ${res.status}`)
@@ -200,12 +210,20 @@ export async function prewarmTerminal(sessionName) {
   return res.json()
 }
 
-export async function recordSessionActivity(sessionName, attempt) {
-  const res = await apiFetch('/sessions/activity', {
+export async function recordSessionActivity(sessionName, attempt, stillCurrent = () => true) {
+  const receiptRes = await apiFetch('/terminal/activity-receipt', {
     method: 'POST',
     body: JSON.stringify({ session: sessionName, attempt }),
   })
+  await requireOK(receiptRes, 'Terminal frame is not ready')
+  const { receipt } = await receiptRes.json()
+  if (!stillCurrent()) return false
+  const res = await apiFetch('/sessions/activity', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName, receipt }),
+  })
   await requireOK(res, 'Failed to record session activity')
+  return true
 }
 
 export async function getTerminalStatus(sessionName) {

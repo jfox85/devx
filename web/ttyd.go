@@ -1,6 +1,8 @@
 package web
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os/exec"
@@ -21,16 +23,28 @@ type ttydInstance struct {
 	lastUsedAt    time.Time
 	prewarmed     bool
 	lastError     string
-	activeAttempt map[string]struct{}
+	activeAttempt map[string]int
 }
 
 type ttydManager struct {
-	mu       sync.Mutex
-	sessions map[string]*ttydInstance
+	mu               sync.Mutex
+	sessions         map[string]*ttydInstance
+	activityReceipts map[string]terminalActivityReceipt
 }
 
+type terminalActivityReceipt struct {
+	session string
+	attempt string
+	expires time.Time
+}
+
+const terminalActivityReceiptTTL = 15 * time.Second
+
 func newTtydManager() *ttydManager {
-	return &ttydManager{sessions: make(map[string]*ttydInstance)}
+	return &ttydManager{
+		sessions:         make(map[string]*ttydInstance),
+		activityReceipts: make(map[string]terminalActivityReceipt),
+	}
 }
 
 const ttydIdleTimeout = 10 * time.Minute
@@ -186,10 +200,10 @@ func (m *ttydManager) clientConnected(sessionName, attempt string) {
 		return
 	}
 	if inst.activeAttempt == nil {
-		inst.activeAttempt = make(map[string]struct{})
+		inst.activeAttempt = make(map[string]int)
 	}
-	inst.activeAttempt[attempt] = struct{}{}
-	inst.conns = len(inst.activeAttempt)
+	inst.activeAttempt[attempt]++
+	inst.conns++
 	inst.prewarmed = false
 	inst.lastUsedAt = time.Now()
 	if inst.timer != nil {
@@ -205,8 +219,19 @@ func (m *ttydManager) clientDisconnected(sessionName, attempt string) {
 	if !ok {
 		return
 	}
-	delete(inst.activeAttempt, attempt)
-	inst.conns = len(inst.activeAttempt)
+	if inst.activeAttempt[attempt] > 1 {
+		inst.activeAttempt[attempt]--
+	} else {
+		delete(inst.activeAttempt, attempt)
+		for receipt, issued := range m.activityReceipts {
+			if issued.session == sessionName && issued.attempt == attempt {
+				delete(m.activityReceipts, receipt)
+			}
+		}
+	}
+	if inst.conns > 0 {
+		inst.conns--
+	}
 	if inst.conns == 0 {
 		inst.timer = time.AfterFunc(ttydIdleTimeout, func() {
 			m.stopSession(sessionName)
@@ -214,15 +239,52 @@ func (m *ttydManager) clientDisconnected(sessionName, attempt string) {
 	}
 }
 
-func (m *ttydManager) attemptActive(sessionName, attempt string) bool {
+func (m *ttydManager) issueActivityReceipt(sessionName, attempt string, now time.Time) (string, bool) {
+	var random [24]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for receipt, issued := range m.activityReceipts {
+		if now.After(issued.expires) {
+			delete(m.activityReceipts, receipt)
+		}
+	}
 	inst, ok := m.sessions[sessionName]
 	if !ok || attempt == "" {
+		return "", false
+	}
+	if _, ok := inst.activeAttempt[attempt]; !ok {
+		return "", false
+	}
+	receipt := hex.EncodeToString(random[:])
+	m.activityReceipts[receipt] = terminalActivityReceipt{session: sessionName, attempt: attempt, expires: now.Add(terminalActivityReceiptTTL)}
+	return receipt, true
+}
+
+func (m *ttydManager) consumeActivityReceipt(sessionName, receipt string, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for token, issued := range m.activityReceipts {
+		if now.After(issued.expires) {
+			delete(m.activityReceipts, token)
+		}
+	}
+	issued, ok := m.activityReceipts[receipt]
+	if !ok {
 		return false
 	}
-	_, ok = inst.activeAttempt[attempt]
-	return ok
+	delete(m.activityReceipts, receipt)
+	if issued.session != sessionName || now.After(issued.expires) {
+		return false
+	}
+	inst, ok := m.sessions[sessionName]
+	if !ok {
+		return false
+	}
+	_, active := inst.activeAttempt[issued.attempt]
+	return active
 }
 
 // portForSession returns the port of a running ttyd instance, if one exists.

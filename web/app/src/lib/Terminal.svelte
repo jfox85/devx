@@ -152,7 +152,7 @@
         // Pooled switch: terminal is already connected. Record near-zero
         // switch timings (warm path) and resync size/focus.
         markIframeLoad(name)
-        recordSessionActivity(name, existing.attempt).catch(() => {})
+        recordSessionActivity(name, existing.attempt, () => session.name === name && pool[0]?.attempt === existing.attempt).catch(() => {})
         markTerminalReady(name)
         triggerFitAddon()
         await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
@@ -502,6 +502,27 @@
       await iframeEl.contentWindow.document.fonts.load('12px HackNerdFontMono')
     } catch { /* ignore cross-origin / not-yet-loaded */ }
 
+    // Validate the frame's websocket concurrently with DOM readiness. Desktop
+    // terminal frames are cross-origin, so they must not wait for inaccessible
+    // xterm DOM before recording a successful open.
+    const activityPromise = (async () => {
+      const activityDeadline = Date.now() + XTERM_POLL_DEADLINE_MS
+      while (Date.now() < activityDeadline) {
+        const activeFrame = pool.find(p => p.name === name)
+        if (session.name !== name || activeFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return false
+        try {
+          const recorded = await recordSessionActivity(name, attempt, () => {
+            const current = pool.find(p => p.name === name)
+            return session.name === name && current?.attempt === attempt && frameEls[name] === loadedFrame
+          })
+          if (recorded) return true
+          return false
+        } catch { /* websocket may still be establishing */ }
+        await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
+      }
+      return false
+    })()
+
     // Poll until xterm's helper textarea appears (signals full init).
     const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
     let xtermReady = false
@@ -511,18 +532,7 @@
       } catch { /* cross-origin / not-yet-loaded */ }
       await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
     }
-    let terminalConnected = false
-    const activityDeadline = Date.now() + XTERM_POLL_DEADLINE_MS
-    while (Date.now() < activityDeadline) {
-      const activeFrame = pool.find(p => p.name === name)
-      if (session.name !== name || activeFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return
-      try {
-        await recordSessionActivity(name, attempt)
-        terminalConnected = true
-        break
-      } catch { /* websocket may still be establishing */ }
-      await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
-    }
+    const terminalConnected = await activityPromise
     const currentFrame = pool.find(p => p.name === name)
     if (session.name !== name || currentFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return
     // Cross-origin desktop frames cannot expose xterm's helper textarea, so the
