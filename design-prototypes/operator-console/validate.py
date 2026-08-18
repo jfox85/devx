@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic browser checks for the Operator Console v2 static prototype."""
-from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 URL = "http://127.0.0.1:4181/"
-ROOT = Path(__file__).resolve().parent
 VIEWPORTS = [(1440,1000),(1024,768),(900,800),(768,1024),(700,800),(601,800),(390,844),(320,700)]
 
 
@@ -74,6 +72,9 @@ def run():
         expect(page.locator("#branch-label")).to_have_text("jf-unread-audit")
         expect(page.locator("#session-facts")).to_contain_text("clean worktree")
         expect(page.locator("#terminal-content")).to_contain_text("jf-unread-audit")
+        assert page.locator("#quick-dialog [data-branch='jf-unread-audit']").get_attribute("aria-current") == "true"
+        assert page.locator("#quick-dialog [data-branch='jf-unread-audit']").evaluate("el => el.classList.contains('selected')")
+        assert not page.locator("#quick-dialog [data-branch='jf-ui-refresh']").evaluate("el => el.classList.contains('selected')")
 
         # Validated composer and action transitions.
         page.keyboard.press("Control+k")
@@ -110,19 +111,32 @@ def run():
         expect(page.locator("#session-title")).to_have_text("Unread semantics verified")
         expect(page.locator(".session[data-branch='jf-unread-audit'] .session-name")).to_have_text("Unread semantics verified")
 
-        # Color and share-target actions provide selection/validation feedback.
+        # Color persists across dialog openings; share validation only accepts fixture matches.
         page.locator("#session-options").click()
         page.locator("#color-action").click()
         page.locator("#color-choices [aria-label='Blue']").click()
         assert page.locator("#color-choices [aria-label='Blue']").get_attribute("aria-pressed") == "true"
         page.locator("#generic-dialog [data-close-dialog]").last.click()
+        expect(page.locator("#session-options")).to_be_focused()
+        page.locator("#session-options").click()
+        page.locator("#color-action").click()
+        assert page.locator("#color-choices [aria-label='Blue']").get_attribute("aria-pressed") == "true"
+        assert page.locator("#color-choices [aria-label='Purple']").get_attribute("aria-pressed") == "false"
+        page.locator("#generic-dialog [data-close-dialog]").last.click()
         page.locator("#session-options").click()
         page.locator("#share-action").click()
         assert page.locator("#share-continue").is_disabled()
-        page.locator("#share-target").fill("gatepost-proxy")
+        page.locator("#share-target").fill("does-not-exist <script>alert(1)</script>")
         page.locator("#share-continue").click()
-        expect(page.locator("#share-result")).to_contain_text("Validated target: gatepost-proxy")
+        expect(page.locator("#share-result")).to_contain_text("No session fixture matches")
+        expect(page.locator("#share-result")).to_contain_text("Choose an available session name or branch")
+        assert page.locator("#share-target").get_attribute("aria-invalid") == "true"
+        expect(page.locator("#share-target")).to_be_focused()
+        page.locator("#share-target").fill("jf-gatepost-proxy")
+        page.locator("#share-continue").click()
+        expect(page.locator("#share-result")).to_contain_text("Validated target: Gatepost proxy consolidation (jf-gatepost-proxy)")
         page.locator("#generic-dialog [data-close-dialog]").last.click()
+        expect(page.locator("#session-options")).to_be_focused()
 
         # Upload CTA is explicitly disabled placement-study UI.
         page.locator("[data-action='image']").first.click()
@@ -162,7 +176,7 @@ def run():
         page.locator(".toast.flag [data-view-flag]").click()
         expect(page.locator("#session-title")).to_have_text("Gatepost proxy consolidation")
 
-        # Escape dismisses only the top custom layer and restores its trigger.
+        # Escape dismisses only the top custom layer and menu-launched surfaces restore visible owners.
         if page.locator("#status-panel").evaluate("el => el.classList.contains('open')"):
             page.locator("#status-toggle").click()
         page.locator("#status-toggle").click()
@@ -173,10 +187,15 @@ def run():
         page.keyboard.press("Escape")
         expect(page.locator("#status-toggle")).to_be_focused()
         assert not page.locator("#status-panel").evaluate("el => el.classList.contains('open')")
+        page.locator("#session-options").click()
+        page.get_by_role("button", name="Routes and status details").click()
+        page.keyboard.press("Escape")
+        expect(page.locator("#session-options")).to_be_focused()
+        assert not page.locator("#status-panel").evaluate("el => el.classList.contains('open')")
         all_errors += errors
         page.close()
 
-        # Tablet drawer is absent from tree when closed; open state traps/restores.
+        # Tablet drawer is absent from tree when closed; gallery toast closes it and receives focus.
         page, errors = new_page(browser, 768, 1024)
         assert page.locator("#navigator").get_attribute("aria-hidden") == "true"
         assert page.locator("#navigator").evaluate("el => el.inert")
@@ -189,9 +208,14 @@ def run():
         expect(page.locator("#no-results")).to_be_visible()
         page.locator("#clear-filter").click()
         expect(page.locator(".session").first).to_be_visible()
-        page.keyboard.press("Escape")
-        expect(page.locator("#open-nav")).to_be_focused()
+        page.locator("#state-gallery").click()
+        page.locator("#show-image-toast").click()
         assert page.locator("#navigator").evaluate("el => el.inert")
+        assert page.locator("#navigator").get_attribute("aria-hidden") == "true"
+        expect(page.locator(".toast [data-open-image]")).to_be_focused()
+        page.keyboard.press("Tab")
+        expect(page.locator(".toast [data-dismiss-toast]")).to_be_focused()
+        assert_shell(page, 768, 1024)
         all_errors += errors
         page.close()
 
@@ -199,6 +223,17 @@ def run():
         for width, height in [(390,844),(320,700)]:
             page, errors = new_page(browser, width, height)
             assert page.locator("#mobile-send").is_disabled()
+
+            # Gallery actions leave the modal navigator and enter the keyboard order at phone widths.
+            page.locator("#mobile-sessions").click()
+            page.locator("#state-gallery").click()
+            page.locator("#show-image-toast").click()
+            assert page.locator("#navigator").evaluate("el => el.inert")
+            expect(page.locator(".toast [data-open-image]")).to_be_focused()
+            page.keyboard.press("Tab")
+            expect(page.locator(".toast [data-dismiss-toast]")).to_be_focused()
+            page.locator(".toast [data-dismiss-toast]").click()
+
             page.locator("#mobile-status").click()
             expect(page.locator("#status-heading")).to_be_focused()
             assert page.locator("#stage").evaluate("el => el.inert")
@@ -214,6 +249,25 @@ def run():
             page.keyboard.press("Escape")
             expect(page.locator("#mobile-artifacts")).to_be_focused()
             assert not page.locator("#artifact-panel").evaluate("el => el.classList.contains('open')")
+
+            # Phone action is truthful, opens the synchronized Artifacts destination, and restores its owner.
+            page.locator("#mobile-actions").click()
+            expect(page.locator("#actions-menu [data-action='split']")).to_have_text("Show artifacts")
+            page.locator("#actions-menu [data-action='split']").click()
+            expect(page.locator("#artifact-heading")).to_be_focused()
+            assert page.locator("#artifact-panel").evaluate("el => el.classList.contains('open')")
+            assert page.locator("#mobile-artifacts").get_attribute("aria-current") == "page"
+            assert page.locator("#mobile-terminal").get_attribute("aria-current") is None
+            page.keyboard.press("Escape")
+            expect(page.locator("#mobile-actions")).to_be_focused()
+            assert page.locator("#mobile-terminal").get_attribute("aria-current") == "page"
+
+            # Menu-launched dialog returns focus to the visible mobile actions trigger.
+            page.locator("#mobile-actions").click()
+            page.locator("#actions-menu [data-action='view']").click()
+            page.keyboard.press("Escape")
+            expect(page.locator("#mobile-actions")).to_be_focused()
+
             page.locator("#mobile-text").fill("mobile valid")
             assert page.locator("#mobile-send").is_enabled()
             page.locator("#mobile-send").click()
@@ -222,16 +276,9 @@ def run():
             all_errors += errors
             page.close()
 
-        # Current screenshots after behavioral/layout changes.
-        for width, height, name in [(1440,1000,'desktop-1440x1000.png'),(768,1024,'tablet-768x1024.png'),(390,844,'mobile-390x844.png')]:
-            page, errors = new_page(browser, width, height)
-            page.screenshot(path=str(ROOT / name))
-            all_errors += errors
-            page.close()
-
         browser.close()
         assert not all_errors, all_errors
-        print("PASS: 8 viewports contained; fixture/actions/layers/mobile accessibility flows passed; 0 console/page errors")
+        print("PASS: 8 viewports contained; fixture validation, focus restoration, gallery toasts, synchronized phone artifacts, persisted color, quick selection, and 0 console/page errors")
 
 
 if __name__ == "__main__":

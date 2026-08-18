@@ -25,7 +25,7 @@ This inventory maps current production shell behavior to its proposed v2 locatio
 | Artifact pane | Facts link, toolbar, Status details, mobile navigation/actions | Session-scoped dock/full pane |
 | New artifact | Toolbar, artifact pane, mobile actions | Required text; adds and renders a scoped fixture artifact |
 | Insert artifact reference | Toolbar and mobile actions | Inserts the chosen scoped artifact into the active composer |
-| Split modes | Toolbar and mobile actions | terminal, vertical, horizontal, artifacts |
+| Split modes | Desktop/tablet toolbar and actions | terminal, vertical, horizontal, artifacts; phone action truthfully opens Artifacts as a synchronized destination |
 | Desktop compose | Toolbar; `Cmd/Ctrl+K` | Overlay multiline composer with send/paste-only |
 | Mobile compose | Docked below terminal | Multiline textarea, paste-only, send |
 | Image file attach | Toolbar and mobile actions | Simulated confirmation toast |
@@ -33,9 +33,9 @@ This inventory maps current production shell behavior to its proposed v2 locatio
 | Image drag/drop | Terminal stage | Blue drop target and confirmation toast |
 | Mobile action menu | Window bar | Output, image, artifact, and split actions |
 | Mobile soft-keybar | Below docked composer | Toggle plus representative existing keys |
-| App-level share target | Session overflow; state gallery | Validates target and labels token execution as production-only |
-| Remote image toast | App-level toast; state gallery | Reachable preview with open and dismiss actions |
-| Flag toast | App-level toast; state gallery | Reachable amber fallback with reason, navigation, and dismiss |
+| App-level share target | Session overflow; state gallery | Matches an available fixture by exact session name or branch, reports useful not-found feedback, and labels token execution as production-only |
+| Remote image toast | App-level toast; state gallery | Closes the compact navigator before focusing reachable preview and dismiss actions |
+| Flag toast | App-level toast; state gallery | Closes the compact navigator before focusing reachable navigation and dismiss actions |
 | Loading | State gallery | Stable shell/skeleton guidance |
 | API error | State gallery | Inline banner + retry guidance |
 | Empty fleet | State gallery | Create-first-session action |

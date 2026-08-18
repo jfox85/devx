@@ -23,7 +23,7 @@
   let nextCreated = 1;
 
   const fixtures = {
-    'jf-ui-refresh': {title:'Operator console refresh', project:'devx', branch:'jf-ui-refresh', status:'active', statusTone:'green', tmux:'active', target:'host', dirty:true, reason:'tmux is running; worktree has uncommitted changes', routes:[['ui','operator-console-ui.localhost'],['api','operator-console-api.localhost'],['docs','operator-console-docs.localhost']], artifacts:[['operator-console.png','image'],['ui-review.md','markdown'],['verification.txt','text']], gatepost:null},
+    'jf-ui-refresh': {title:'Operator console refresh', project:'devx', branch:'jf-ui-refresh', status:'active', statusTone:'green', tmux:'active', target:'host', dirty:true, reason:'tmux is running; worktree has uncommitted changes', routes:[['ui','operator-console-ui.localhost'],['api','operator-console-api.localhost'],['docs','operator-console-docs.localhost']], artifacts:[['operator-console.png','image'],['ui-review.md','markdown'],['verification.txt','text']], gatepost:null, color:'#a855f7'},
     'jf-gatepost-proxy': {title:'Gatepost proxy consolidation', project:'devx', branch:'jf-gatepost-proxy', status:'attention', statusTone:'amber', tmux:'stopped', target:'gatepost', dirty:false, reason:'flagged: proxy route needs operator review', routes:[['api','gatepost-proxy-api.localhost'],['logs','gatepost-proxy-logs.localhost']], artifacts:[['proxy-review.md','markdown']], gatepost:'https://gatepost-proxy-logs.localhost'},
     'jf-artifact-search': {title:'Artifact search indexing', project:'devx', branch:'jf-artifact-search', status:'dirty', statusTone:'amber', tmux:'active', target:'host', dirty:true, reason:'worktree has uncommitted, untracked, or unpushed work', routes:[['ui','artifact-search-ui.localhost']], artifacts:[['index-plan.md','markdown'],['sample-index.json','json'],['search-results.txt','text'],['artifact-grid.png','image'],['verification.md','markdown']], gatepost:null},
     'jf-reconnect': {title:'Terminal reconnect handling', project:'devx', branch:'jf-reconnect', status:'idle', statusTone:'muted', tmux:'stopped', target:'docker', dirty:false, reason:'no running tmux session or recent activity', routes:[], artifacts:[], gatepost:null},
@@ -73,6 +73,11 @@
       const selected = row.dataset.branch === branch;
       row.classList.toggle('selected', selected);
       selected ? row.setAttribute('aria-current','true') : row.removeAttribute('aria-current');
+    });
+    $$('#quick-dialog .switch-item').forEach((item) => {
+      const selected = item.dataset.branch === branch;
+      item.classList.toggle('selected', selected);
+      selected ? item.setAttribute('aria-current','true') : item.removeAttribute('aria-current');
     });
     renderSession();
     if (isPhone()) {
@@ -204,9 +209,14 @@
   }
 
   function cycleSplit() {
-    const modes = isCompact() ? ['terminal','vertical','horizontal','artifacts'] : ['terminal','vertical','horizontal','artifacts'];
+    const modes = ['terminal','vertical','horizontal','artifacts'];
     closeStatus(false);
     applySplit(modes[(modes.indexOf(split) + 1) % modes.length]);
+  }
+
+  function syncResponsiveActions() {
+    const splitAction = $('#actions-menu [data-action="split"]');
+    splitAction.textContent = isPhone() ? 'Show artifacts' : 'Change split mode';
   }
 
   function closePanelsToTerminal(restore = false) {
@@ -231,8 +241,14 @@
     else if (force === false && composerReturn && document.activeElement?.closest('#composer')) setTimeout(() => composerReturn.focus(), 0);
   }
 
+  function visibleOwnerTarget(target = document.activeElement) {
+    if (target?.closest?.('#session-menu')) return $('#session-options');
+    if (target?.closest?.('#actions-menu')) return $('#mobile-actions');
+    return target;
+  }
+
   function openDialog(dialog, returnTarget = document.activeElement) {
-    dialogReturns.set(dialog, returnTarget);
+    dialogReturns.set(dialog, visibleOwnerTarget(returnTarget));
     if (!dialog.open) dialog.showModal();
   }
 
@@ -262,6 +278,7 @@
     $('#toasts').append(item);
     $('[data-dismiss-toast]', item).onclick = () => item.remove();
     $('[data-open-image]', item).onclick = () => generic('Remote image preview', `<img src="${preview}" alt="Expanded remote CLI image preview" style="display:block;max-width:100%;margin:auto;border-radius:8px">`, null, $('[data-open-image]', item));
+    return item;
   }
 
   function showFlagToast() {
@@ -272,6 +289,13 @@
     $('#toasts').append(item);
     $('[data-dismiss-toast]', item).onclick = () => item.remove();
     $('[data-view-flag]', item).onclick = () => { selectSession('jf-gatepost-proxy', {feedback:true}); item.remove(); };
+    return item;
+  }
+
+  function presentGalleryToast(showToast) {
+    if (isCompact() && nav.classList.contains('open')) setNav(false, {restore:false});
+    const item = showToast();
+    setTimeout(() => $('.toast-actions button', item)?.focus(), 0);
   }
 
   function hideMenus({restore = false} = {}) {
@@ -336,14 +360,18 @@
   }
 
   function action(name, returnTarget = document.activeElement) {
+    const owner = visibleOwnerTarget(returnTarget);
     hideMenus();
-    if (name === 'view') generic('Terminal output view', `<p>Copy-friendly output for ${esc(current().title)}.</p><pre class="mono dim" style="white-space:pre-wrap">${esc($('#terminal-content').innerText)}</pre>`, null, returnTarget);
-    if (name === 'new-artifact') openNewArtifact(returnTarget);
-    if (name === 'insert') openInsert(returnTarget);
-    if (name === 'artifacts') artifactPanel.classList.contains('open') ? closeArtifacts(true) : openArtifacts({opener:returnTarget});
-    if (name === 'split') cycleSplit();
+    if (name === 'view') generic('Terminal output view', `<p>Copy-friendly output for ${esc(current().title)}.</p><pre class="mono dim" style="white-space:pre-wrap">${esc($('#terminal-content').innerText)}</pre>`, null, owner);
+    if (name === 'new-artifact') openNewArtifact(owner);
+    if (name === 'insert') openInsert(owner);
+    if (name === 'artifacts') artifactPanel.classList.contains('open') ? closeArtifacts(true) : openArtifacts({opener:owner});
+    if (name === 'split') {
+      if (isPhone()) openArtifacts({opener:owner});
+      else cycleSplit();
+    }
     if (name === 'compose') toggleCompose();
-    if (name === 'image') generic('Attach image', '<p>This static prototype validates placement only. File selection and upload require the production API.</p><button class="primary" disabled>Choose image — placement study only</button>', null, returnTarget);
+    if (name === 'image') generic('Attach image', '<p>This static prototype validates placement only. File selection and upload require the production API.</p><button class="primary" disabled>Choose image — placement study only</button>', null, owner);
   }
 
   function addCreatedSession(project, name, target) {
@@ -369,7 +397,11 @@
     if (sessionRow) selectSession(sessionRow.dataset.branch);
     const actionButton = event.target.closest('[data-action]');
     if (actionButton) action(actionButton.dataset.action, actionButton);
-    if (event.target.closest('[data-open-status]')) { hideMenus(); openStatus({opener:event.target.closest('button,a') || document.activeElement}); }
+    if (event.target.closest('[data-open-status]')) {
+      const owner = visibleOwnerTarget(event.target.closest('button,a') || document.activeElement);
+      hideMenus();
+      openStatus({opener:owner});
+    }
     if (event.target.closest('[data-open-artifacts]')) openArtifacts({opener:event.target.closest('button,a') || document.activeElement});
     if (event.target.closest('[data-status-legend]')) generic('Status legend','<p><span class="green">● active</span> — tmux/editor/recent activity</p><p><span class="amber">● flagged</span> — explicit attention reason</p><p><span class="amber">● dirty</span> — uncommitted, untracked, or unpushed</p><p style="color:var(--red)">● repair — missing/inaccessible worktree or unknown git state</p><p class="dim">● cleanup — full scan says safe to prune</p>', null, event.target.closest('button'));
     if (!event.target.closest('.popover,#session-options,#mobile-actions')) hideMenus();
@@ -492,10 +524,12 @@
   $('#color-action').onclick = () => {
     const returnTarget = $('#session-options');
     hideMenus();
-    generic('Session color','<p>Session color is a personal identifier, not status or selection.</p><div id="color-choices" style="display:flex;gap:12px"><button class="touch" data-color="#3b82f6" style="background:#3b82f6" aria-label="Blue" aria-pressed="false"></button><button class="touch" data-color="#a855f7" style="background:#a855f7" aria-label="Purple" aria-pressed="false"></button><button class="touch" data-color="#f97316" style="background:#f97316" aria-label="Orange" aria-pressed="false"></button><button class="touch" data-color="#ec4899" style="background:#ec4899" aria-label="Pink" aria-pressed="false"></button></div>', (body) => {
+    const colors = [['#3b82f6','Blue'],['#a855f7','Purple'],['#f97316','Orange'],['#ec4899','Pink']];
+    generic('Session color',`<p>Session color is a personal identifier, not status or selection.</p><div id="color-choices" style="display:flex;gap:12px">${colors.map(([value,label]) => `<button class="touch" data-color="${value}" style="background:${value}" aria-label="${label}" aria-pressed="${String(current().color === value)}"></button>`).join('')}</div>`, (body) => {
       $$('[data-color]', body).forEach((button) => button.onclick = () => {
         $$('[data-color]', body).forEach((choice) => choice.setAttribute('aria-pressed','false'));
         button.setAttribute('aria-pressed','true');
+        current().color = button.dataset.color;
         const row = $(`.session[data-branch="${CSS.escape(activeBranch)}"]`);
         let swatch = $('.swatch', row);
         if (!swatch) { swatch = document.createElement('i'); swatch.className = 'swatch'; row.append(swatch); }
@@ -509,10 +543,28 @@
   $('#share-action').onclick = () => {
     const returnTarget = $('#session-options');
     hideMenus();
-    generic('Share target','<p>Create a local preview of the existing target-selection step. Token execution remains production-only.</p><label class="field">Target session<input id="share-target" value=""></label><button class="primary" id="share-continue" disabled>Create share preview</button><p id="share-result" class="dim" aria-live="polite"></p>', (body) => {
+    const options = Object.values(fixtures).map((session) => `<option value="${esc(session.branch)}">${esc(session.title)}</option>`).join('');
+    generic('Share target',`<p>Create a local preview of the existing target-selection step. Token execution remains production-only.</p><label class="field">Target session<input id="share-target" value="" list="share-targets" aria-describedby="share-result" autocomplete="off"><datalist id="share-targets">${options}</datalist></label><button class="primary" id="share-continue" disabled>Create share preview</button><p id="share-result" class="dim" aria-live="polite"></p>`, (body) => {
       const input = $('#share-target', body), button = $('#share-continue', body), result = $('#share-result', body);
-      input.oninput = () => { button.disabled = !input.value.trim(); };
-      button.onclick = () => { result.textContent = `Validated target: ${input.value.trim()}. Production would create the share token next.`; button.disabled = true; toast('Share target validated', input.value.trim()); };
+      input.oninput = () => {
+        button.disabled = !input.value.trim();
+        input.removeAttribute('aria-invalid');
+        result.textContent = '';
+      };
+      button.onclick = () => {
+        const query = input.value.trim().toLowerCase();
+        const target = Object.values(fixtures).find((session) => session.branch.toLowerCase() === query || session.title.toLowerCase() === query);
+        if (!target) {
+          input.setAttribute('aria-invalid','true');
+          result.textContent = `No session fixture matches “${input.value.trim()}”. Choose an available session name or branch from the suggestions.`;
+          input.focus();
+          return;
+        }
+        input.removeAttribute('aria-invalid');
+        result.textContent = `Validated target: ${target.title} (${target.branch}). Production would create the share token next.`;
+        button.disabled = true;
+        toast('Share target validated', `${target.title} (${target.branch})`);
+      };
     }, returnTarget);
   };
 
@@ -556,8 +608,8 @@
 
   $('#stale-launch').onclick = () => openDialog($('#stale-dialog'), $('#stale-launch'));
   $('#state-gallery').onclick = () => openDialog($('#states-dialog'), $('#state-gallery'));
-  $('#show-image-toast').onclick = () => { $('#states-dialog').close(); showRemoteImageToast(); };
-  $('#show-flag-toast').onclick = () => { $('#states-dialog').close(); showFlagToast(); };
+  $('#show-image-toast').onclick = () => { $('#states-dialog').close(); presentGalleryToast(showRemoteImageToast); };
+  $('#show-flag-toast').onclick = () => { $('#states-dialog').close(); presentGalleryToast(showFlagToast); };
   $('#prune-action').onclick = (event) => {
     const confirming = event.currentTarget.textContent.startsWith('Confirm');
     event.currentTarget.textContent = confirming ? 'Pruning preview complete ✓' : 'Confirm prune 1 clean';
@@ -626,10 +678,11 @@
   addEventListener('resize', () => {
     if (innerWidth >= 1024 && nav.classList.contains('open')) setNav(false, {restore:false});
     if (isCompact() && statusPanel.classList.contains('open') && artifactPanel.classList.contains('open')) closeArtifacts(false);
-    syncNavigatorMode(); syncPanelIsolation();
+    syncNavigatorMode(); syncPanelIsolation(); syncResponsiveActions();
   });
 
   renderSession();
   syncNavigatorMode();
   syncPanelIsolation();
+  syncResponsiveActions();
 })();
