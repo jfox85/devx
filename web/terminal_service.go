@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 )
 
 const (
@@ -92,7 +93,7 @@ type terminalService struct {
 	mu         sync.Mutex
 	ttyd       *ttydManager
 	loadStore  func() (*session.SessionStore, error)
-	ensureTmux func(name, path string) error
+	ensureTmux func(name string, sess *session.Session) error
 	tmuxInput  func(bufferName, target, text string, submit bool) error
 }
 
@@ -100,7 +101,7 @@ func newTerminalService(ttyd *ttydManager) *terminalService {
 	return &terminalService{
 		ttyd:       ttyd,
 		loadStore:  session.LoadSessions,
-		ensureTmux: session.EnsureTmuxSession,
+		ensureTmux: target.EnsureTmuxSession,
 		tmuxInput:  pasteTmuxBuffer,
 	}
 }
@@ -138,7 +139,7 @@ func (s *terminalService) EnsureReady(sessionName string, reason terminalStartRe
 		return terminalStatus{Session: sessionName, Ready: false, Running: false, State: terminalStateCapped}, nil
 	}
 	if reason != terminalStartPrewarm {
-		if err := s.ensureTmux(sessionName, sess.Path); err != nil {
+		if err := s.ensureTmux(sessionName, sess); err != nil {
 			return terminalStatus{}, terminalHTTPError{status: http.StatusInternalServerError, message: fmt.Sprintf("failed to restore tmux session %q", sessionName), err: err}
 		}
 	}

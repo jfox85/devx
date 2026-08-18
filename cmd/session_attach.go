@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"time"
 
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/target"
@@ -20,6 +20,21 @@ var sessionAttachCmd = &cobra.Command{
 
 func init() {
 	sessionCmd.AddCommand(sessionAttachCmd)
+}
+
+var ensureTmuxForAttach = target.EnsureTmuxSession
+var attachReadyTmux = target.AttachReadyTmuxSession
+
+// readyAttach records activity only after the target session is known to be
+// ready, immediately before handing the terminal to the blocking attach path.
+func readyAttach(store *session.SessionStore, name string, sess *session.Session) error {
+	if err := ensureTmuxForAttach(name, sess); err != nil {
+		return err
+	}
+	if _, err := store.MarkActive(name, time.Now()); err != nil {
+		return fmt.Errorf("mark session active: %w", err)
+	}
+	return attachReadyTmux(name, sess)
 }
 
 func runSessionAttach(cmd *cobra.Command, args []string) error {
@@ -53,42 +68,5 @@ func runSessionAttach(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Record attach time and assign a numbered slot
-	if err := store.RecordAttach(name); err != nil {
-		fmt.Printf("Warning: Failed to record attach time: %v\n", err)
-	}
-	if _, err := store.AssignSlot(name); err != nil {
-		fmt.Printf("Warning: Failed to assign slot: %v\n", err)
-	}
-
-	if sess.IsContainerized() {
-		return attachContainerSession(name, sess)
-	}
-	return attachHostSession(name, sess)
-}
-
-func attachContainerSession(name string, sess *session.Session) error {
-	if !target.IsRunning(sess.Target) {
-		return fmt.Errorf("runtime for session '%s' is not running. Remove and recreate the session", name)
-	}
-	return target.AttachTmuxSession(name, sess)
-}
-
-func attachHostSession(name string, sess *session.Session) error {
-	if err := session.AttachTmuxSession(name); err != nil {
-		// Session doesn't exist, try to launch it
-		tmuxpPath := filepath.Join(sess.Path, ".tmuxp.yaml")
-		if _, err := os.Stat(tmuxpPath); err == nil {
-			fmt.Printf("Tmux session not found, launching new session...\n")
-			if err := session.LaunchTmuxSession(sess.Path, name); err != nil {
-				fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-				fmt.Printf("You can manually launch with: tmuxp load %s\n", tmuxpPath)
-			}
-		} else {
-			fmt.Printf("Note: tmuxp config not found at %s\n", tmuxpPath)
-		}
-	} else {
-		fmt.Printf("Attached to existing tmux session '%s'\n", name)
-	}
-	return nil
+	return readyAttach(store, name, sess)
 }

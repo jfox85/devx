@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,8 +43,10 @@ var upgrader = websocket.Upgrader{
 	Subprotocols: []string{"tty"},
 }
 
-// proxyWebSocket proxies a WebSocket connection to a backend ttyd instance at wsPath.
-func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsPath string) {
+// proxyWebSocket proxies a WebSocket connection to a backend ttyd instance at
+// wsPath. onEstablished runs only after both websocket handshakes succeed; its
+// returned cleanup runs when that exact proxied connection closes.
+func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsPath string, onEstablished func() func()) {
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -76,6 +79,13 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendPort int, wsP
 		return
 	}
 	defer backendConn.Close()
+	var onClosed func()
+	if onEstablished != nil {
+		onClosed = onEstablished()
+	}
+	if onClosed != nil {
+		defer onClosed()
+	}
 
 	errc := make(chan error, 2)
 
@@ -129,11 +139,18 @@ func proxyHTTP(w http.ResponseWriter, r *http.Request, backendPort int) {
 		// bytes as plain text.
 		req.Header.Del("Accept-Encoding")
 	}
-	proxy.ModifyResponse = injectTerminalCopyOnSelect
+	attempt := r.URL.Query().Get("devx_attempt")
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		return injectTerminalResponse(resp, attempt)
+	}
 	proxy.ServeHTTP(w, r)
 }
 
 func injectTerminalCopyOnSelect(resp *http.Response) error {
+	return injectTerminalResponse(resp, "")
+}
+
+func injectTerminalResponse(resp *http.Response, attempt string) error {
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
 	}
@@ -157,7 +174,24 @@ func injectTerminalCopyOnSelect(resp *http.Response) error {
 	if err != nil {
 		return err
 	}
-	body = bytes.Replace(body, []byte("</head>"), []byte(terminalHeadAddons+"</head>"), 1)
+	headAddons := terminalHeadAddons
+	if validTerminalAttempt(attempt) {
+		encodedAttempt, _ := json.Marshal(attempt)
+		headAddons += fmt.Sprintf(`<script>
+(() => {
+  const NativeWebSocket = window.WebSocket;
+  function DevxWebSocket(url, protocols) {
+    const scoped = new URL(url, window.location.href);
+    scoped.searchParams.set('devx_attempt', %s);
+    return protocols === undefined ? new NativeWebSocket(scoped) : new NativeWebSocket(scoped, protocols);
+  }
+  DevxWebSocket.prototype = NativeWebSocket.prototype;
+  Object.setPrototypeOf(DevxWebSocket, NativeWebSocket);
+  window.WebSocket = DevxWebSocket;
+})();
+</script>`, encodedAttempt)
+	}
+	body = bytes.Replace(body, []byte("</head>"), []byte(headAddons+"</head>"), 1)
 	body = bytes.Replace(body, []byte("</body>"), []byte(terminalCopyOnSelectScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))

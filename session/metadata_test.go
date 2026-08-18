@@ -155,6 +155,75 @@ func TestSessionLastAttached(t *testing.T) {
 	}
 }
 
+func TestSessionActivityAtUsesCreationUntilFirstAttach(t *testing.T) {
+	created := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	sess := Session{CreatedAt: created}
+
+	activity, ok := sess.ActivityAt()
+	if !ok {
+		t.Fatal("expected creation to count as activity")
+	}
+	if !activity.Equal(created) {
+		t.Fatalf("activity = %v, want creation %v", activity, created)
+	}
+	if !sess.LastAttached.IsZero() {
+		t.Fatal("computing activity must not mark a never-opened session as attached")
+	}
+
+	attached := created.Add(2 * time.Hour)
+	sess.LastAttached = attached
+	activity, ok = sess.ActivityAt()
+	if !ok || !activity.Equal(attached) {
+		t.Fatalf("activity = %v, %v; want attached %v, true", activity, ok, attached)
+	}
+}
+
+func TestSessionActivityAtReportsUnknownForLegacyZeroTimestamps(t *testing.T) {
+	activity, ok := (&Session{}).ActivityAt()
+	if ok || !activity.IsZero() {
+		t.Fatalf("activity = %v, %v; want zero, false", activity, ok)
+	}
+}
+
+func TestSetPinnedPersistsWithoutChangingActivityMetadata(t *testing.T) {
+	setupTempHome(t)
+	store, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddSession("pinned", "main", "/path", nil); err != nil {
+		t.Fatal(err)
+	}
+	attached := time.Date(2026, time.August, 18, 13, 0, 0, 0, time.UTC)
+	if err := store.UpdateSession("pinned", func(sess *Session) { sess.LastAttached = attached }); err != nil {
+		t.Fatal(err)
+	}
+	before := store.Sessions["pinned"]
+	updatedAt := before.UpdatedAt
+
+	if err := store.SetPinned("pinned", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPinned("pinned", true); err != nil {
+		t.Fatalf("idempotent pin failed: %v", err)
+	}
+
+	reloaded, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.Sessions["pinned"]
+	if !got.Pinned {
+		t.Fatal("pin did not persist")
+	}
+	if !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("pin changed UpdatedAt: got %v want %v", got.UpdatedAt, updatedAt)
+	}
+	if !got.LastAttached.Equal(attached) {
+		t.Fatalf("pin changed LastAttached: got %v want %v", got.LastAttached, attached)
+	}
+}
+
 func TestNumberedSlots_AssignSlot(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
 	if err != nil {

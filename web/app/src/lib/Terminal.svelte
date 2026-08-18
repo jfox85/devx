@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus } from '../api.js'
+  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus, recordSessionActivity } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
   import ArtifactPane from './artifacts/ArtifactPane.svelte'
@@ -10,6 +10,7 @@
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
   import PromptComposer from './composer/PromptComposer.svelte'
   import { getSessionChrome, setSessionChrome, markIframeLoad, markTerminalReady } from './stores/sessionUiState.js'
+  import { createTerminalAttempt, terminalFramePath } from './terminalActivity.js'
 
   export let session
   export let artifactEvent = null
@@ -78,21 +79,21 @@
   // valid and FitAddon has real geometry on re-show. pointer-events:none and
   // tabindex=-1 on hidden frames prevent focus/click stealing.
   //
-  // Pool entries: { name, key } — bumping key recreates that session's iframe
+  // Pool entries: { name, key, attempt } — bumping key recreates that session's iframe
   // (used for the long-absence reload path). Active session is always pool[0].
   // Mobile gets no pool (cap 1): keeping multiple xterm WebGL contexts alive
   // on a phone costs memory and background sockets die with the tab anyway.
   const IFRAME_POOL_MAX = (typeof window !== 'undefined' && window.innerWidth >= 1024) ? 3 : 1
-  let pool = [{ name: session.name, key: 0 }]
+  const createFrame = (name, key = 0) => ({ name, key, attempt: createTerminalAttempt() })
+  let pool = [createFrame(session.name)]
   let frameEls = {}
   // Frames whose xterm never initialised (e.g. backend returned an error page)
   // must not be served from the pool — promote forces a fresh reload instead.
   let frameHealthy = {}
   let hiddenAt = null
 
-  function frameURL(name) {
-    // Encode session names so slashes ("/") don't split the URL path.
-    const path = `/terminal/${encodeURIComponent(name)}/`
+  function frameURL(name, attempt) {
+    const path = terminalFramePath(name, attempt)
     const desktop = typeof window !== 'undefined' && window.__DEVX_DESKTOP
     if (!desktop?.terminalBase || !desktop?.terminalToken) return path
     const url = new URL(path, desktop.terminalBase)
@@ -101,7 +102,7 @@
   }
 
   function reloadActiveFrame() {
-    pool = pool.map(p => p.name === session.name ? { ...p, key: Date.now() } : p)
+    pool = pool.map(p => p.name === session.name ? createFrame(p.name, Date.now()) : p)
   }
 
   // Reset windows and iframe key when session changes (component reused with
@@ -141,7 +142,7 @@
     if (existing && frameHealthy[name] === false) {
       // Pooled frame holds an error page — recreate it instead of reusing.
       delete frameHealthy[name]
-      pool = [{ ...existing, key: Date.now() }, ...pool.filter(p => p !== existing)]
+      pool = [createFrame(existing.name, Date.now()), ...pool.filter(p => p !== existing)]
       return
     }
     if (existing) {
@@ -151,6 +152,7 @@
         // Pooled switch: terminal is already connected. Record near-zero
         // switch timings (warm path) and resync size/focus.
         markIframeLoad(name)
+        recordSessionActivity(name, existing.attempt).catch(() => {})
         markTerminalReady(name)
         triggerFitAddon()
         await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
@@ -164,7 +166,7 @@
         }
       })
     } else {
-      pool = [{ name, key: 0 }, ...pool].slice(0, IFRAME_POOL_MAX)
+      pool = [createFrame(name), ...pool].slice(0, IFRAME_POOL_MAX)
       // Drop element refs for evicted sessions so they can be GC'd.
       const live = new Set(pool.map(p => p.name))
       for (const k of Object.keys(frameEls)) {
@@ -465,8 +467,11 @@
   //   2. Call refreshTerminal which does refresh-client (forces display
   //      redraw) and resize-window to the current client's dimensions,
   //      working around the tmux grouped-session size-constraint bug.
-  async function handleIframeLoad() {
-    markIframeLoad(session.name)
+  async function handleIframeLoad(frame) {
+    const name = frame.name
+    const attempt = frame.attempt
+    const loadedFrame = frameEls[name]
+    markIframeLoad(name)
     // Inject Nerd Font into the iframe immediately so the font is available
     // before xterm.js initialises and measures character cell size.
     // The font file is already cached by the parent page's preload hint.
@@ -502,16 +507,33 @@
     let xtermReady = false
     while (Date.now() < deadline) {
       try {
-        if (iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')) { xtermReady = true; break }
+        if (loadedFrame?.contentDocument?.querySelector('.xterm-helper-textarea')) { xtermReady = true; break }
       } catch { /* cross-origin / not-yet-loaded */ }
       await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
     }
-    // Record health so the keep-alive pool never serves a cached error page.
-    frameHealthy[session.name] = xtermReady
+    let terminalConnected = false
+    const activityDeadline = Date.now() + XTERM_POLL_DEADLINE_MS
+    while (Date.now() < activityDeadline) {
+      const activeFrame = pool.find(p => p.name === name)
+      if (session.name !== name || activeFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return
+      try {
+        await recordSessionActivity(name, attempt)
+        terminalConnected = true
+        break
+      } catch { /* websocket may still be establishing */ }
+      await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
+    }
+    const currentFrame = pool.find(p => p.name === name)
+    if (session.name !== name || currentFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return
+    // Cross-origin desktop frames cannot expose xterm's helper textarea, so the
+    // server-validated websocket attempt is the authoritative readiness proof.
+    const desktopFrame = typeof window !== 'undefined' && !!window.__DEVX_DESKTOP?.terminalBase
+    frameHealthy[name] = terminalConnected && (desktopFrame || xtermReady)
+    if (!frameHealthy[name]) return
     // Re-trigger FitAddon so it sends the current browser viewport dimensions
     // to the PTY. Small wait after so ioctl has time to propagate before the
     // subsequent refresh-client call.
-    markTerminalReady(session.name)
+    markTerminalReady(name)
     triggerFitAddon()
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
@@ -995,13 +1017,13 @@
           {@const isActiveFrame = frame.name === session.name}
           <iframe
             bind:this={frameEls[frame.name]}
-            src={frameURL(frame.name)}
+            src={frameURL(frame.name, frame.attempt)}
             title="Terminal — {frame.name}"
             class="absolute inset-0 w-full h-full border-0"
             style="visibility: {isActiveFrame ? 'visible' : 'hidden'}; pointer-events: {isActiveFrame ? 'auto' : 'none'}; z-index: {isActiveFrame ? 1 : 0};"
             tabindex={isActiveFrame ? 0 : -1}
             allow="clipboard-read; clipboard-write"
-            on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad() } }}
+            on:load={() => { if (frame.name === session.name) { iframeEl = frameEls[frame.name]; handleIframeLoad(frame) } }}
           ></iframe>
         {/each}
       </div>

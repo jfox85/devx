@@ -200,6 +200,14 @@ export async function prewarmTerminal(sessionName) {
   return res.json()
 }
 
+export async function recordSessionActivity(sessionName, attempt) {
+  const res = await apiFetch('/sessions/activity', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName, attempt }),
+  })
+  await requireOK(res, 'Failed to record session activity')
+}
+
 export async function getTerminalStatus(sessionName) {
   const res = await apiFetch('/terminal/status?session=' + encodeURIComponent(sessionName))
   await requireOK(res, 'Failed to get terminal status')

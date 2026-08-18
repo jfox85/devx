@@ -486,47 +486,28 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 }
 
 func launchExistingSessionTmux(name string, sess *session.Session) {
-	if sess.IsContainerized() {
-		if err := target.EnsureTmuxSession(name, sess); err != nil {
-			fmt.Printf("Warning: Failed to launch target tmux session: %v\n", err)
-		}
-		return
-	}
-	if session.IsTmuxRunning() {
-		fmt.Printf("Note: Already inside tmux. Session exists but not launched.\n")
-		fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", sess.Path)
-		return
-	}
-	if err := session.LaunchTmuxSession(sess.Path, name); err != nil {
-		fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-	}
+	launchSessionTmuxHandoff(name, sess, "exists")
 }
 
 func launchCreatedSessionTmux(name string, sess *session.Session) {
-	if sess.IsContainerized() {
-		fmt.Println("Loading target tmux session...")
-		if err := target.EnsureTmuxSession(name, sess); err != nil {
-			fmt.Printf("Warning: Failed to load target tmux session: %v\n", err)
-		}
-		if !session.IsTmuxRunning() {
-			if err := target.AttachTmuxSession(name, sess); err != nil {
-				fmt.Printf("Note: Could not attach to target tmux session: %v\n", err)
-			}
-		} else {
-			fmt.Printf("Note: Already inside tmux. Session created but not attached.\n")
-			fmt.Printf("To attach: devx session attach %s\n", name)
-		}
-		return
-	}
+	launchSessionTmuxHandoff(name, sess, "created")
+}
+
+func launchSessionTmuxHandoff(name string, sess *session.Session, state string) {
 	if session.IsTmuxRunning() {
-		fmt.Printf("Note: Already inside tmux. Session created but not launched.\n")
-		fmt.Printf("To launch manually: tmuxp load %s/.tmuxp.yaml\n", sess.Path)
+		fmt.Printf("Note: Already inside tmux. Session %s but not attached.\n", state)
+		fmt.Printf("To attach: devx session attach %s\n", name)
 		return
 	}
-	fmt.Printf("Launching tmux session...\n")
-	if err := session.LaunchTmuxSession(sess.Path, name); err != nil {
-		fmt.Printf("Warning: Failed to launch tmux session: %v\n", err)
-		fmt.Printf("You can manually launch with: tmuxp load %s/.tmuxp.yaml\n", sess.Path)
+	store, err := session.LoadSessions()
+	if err != nil {
+		fmt.Printf("Warning: Failed to load sessions before tmux handoff: %v\n", err)
+		return
+	}
+	fmt.Printf("Opening tmux session...\n")
+	if err := readyAttach(store, name, sess); err != nil {
+		fmt.Printf("Warning: Failed to open tmux session: %v\n", err)
+		fmt.Printf("You can manually attach with: devx session attach %s\n", name)
 	}
 }
 

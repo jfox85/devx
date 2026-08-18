@@ -263,16 +263,18 @@ func AttachTmuxSession(sessionName string) error {
 		return fmt.Errorf("tmux session '%s' does not exist", sessionName)
 	}
 
-	// Attach to the session (switch-client when already inside tmux, attach otherwise)
-	cmd = attachOrSwitchCmd(sessionName)
+	return AttachReadyTmuxSession(sessionName)
+}
+
+// AttachReadyTmuxSession performs only the terminal handoff. Callers must have
+// already verified tmux availability and ensured the target session exists.
+func AttachReadyTmuxSession(sessionName string) error {
+	cmd := attachOrSwitchCmd(sessionName)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
-	// Run in the current terminal
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to attach to tmux session '%s': %w", sessionName, err)
 	}
-
 	return nil
 }

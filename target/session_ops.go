@@ -14,8 +14,10 @@ type SessionOperator interface {
 	IsRunning(meta session.TargetMeta) bool
 	// EnsureTmuxSession ensures the session's tmux environment exists.
 	EnsureTmuxSession(name string, sess *session.Session) error
-	// AttachTmuxSession attaches the current terminal to the session's tmux environment.
+	// AttachTmuxSession ensures readiness and attaches the current terminal.
 	AttachTmuxSession(name string, sess *session.Session) error
+	// AttachReadyTmuxSession attaches after readiness was already established.
+	AttachReadyTmuxSession(name string, sess *session.Session) error
 	// KillTmuxServer stops any target-owned tmux server; no-op when not applicable.
 	KillTmuxServer(meta session.TargetMeta) error
 }
@@ -55,7 +57,11 @@ func (op hostSessionOperator) AttachTmuxSession(name string, sess *session.Sessi
 	if err := op.EnsureTmuxSession(name, sess); err != nil {
 		return err
 	}
-	return session.AttachTmuxSession(name)
+	return op.AttachReadyTmuxSession(name, sess)
+}
+
+func (hostSessionOperator) AttachReadyTmuxSession(name string, _ *session.Session) error {
+	return session.AttachReadyTmuxSession(name)
 }
 
 func (hostSessionOperator) KillTmuxServer(_ session.TargetMeta) error { return nil }
@@ -73,7 +79,11 @@ func (op dockerSessionOperator) AttachTmuxSession(name string, sess *session.Ses
 	if err := op.EnsureTmuxSession(name, sess); err != nil {
 		return err
 	}
-	return session.AttachTmuxSession(name)
+	return op.AttachReadyTmuxSession(name, sess)
+}
+
+func (dockerSessionOperator) AttachReadyTmuxSession(name string, _ *session.Session) error {
+	return session.AttachReadyTmuxSession(name)
 }
 
 func (dockerSessionOperator) KillTmuxServer(meta session.TargetMeta) error {
@@ -96,7 +106,11 @@ func (op gatepostSessionOperator) AttachTmuxSession(name string, sess *session.S
 	if err := op.EnsureTmuxSession(name, sess); err != nil {
 		return err
 	}
-	return session.AttachTmuxSession(name)
+	return op.AttachReadyTmuxSession(name, sess)
+}
+
+func (gatepostSessionOperator) AttachReadyTmuxSession(name string, _ *session.Session) error {
+	return session.AttachReadyTmuxSession(name)
 }
 
 func (gatepostSessionOperator) KillTmuxServer(_ session.TargetMeta) error { return nil }
@@ -129,6 +143,18 @@ func AttachTmuxSession(name string, sess *session.Session) error {
 		return err
 	}
 	return op.AttachTmuxSession(name, sess)
+}
+
+// AttachReadyTmuxSession attaches without repeating target readiness checks.
+func AttachReadyTmuxSession(name string, sess *session.Session) error {
+	if sess == nil {
+		return fmt.Errorf("nil session")
+	}
+	op, err := ResolveSessionOperator(sess.Target)
+	if err != nil {
+		return err
+	}
+	return op.AttachReadyTmuxSession(name, sess)
 }
 
 // KillTmuxServer stops any target-owned tmux server; no-op when not applicable.

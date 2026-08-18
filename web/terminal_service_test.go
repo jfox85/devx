@@ -84,6 +84,34 @@ func TestTerminalStatusReturnsRedactedState(t *testing.T) {
 	}
 }
 
+func TestTerminalStatusDoesNotExposeConnectionProof(t *testing.T) {
+	s := newTestWebServer(t)
+	s.terminal.loadStore = func() (*session.SessionStore, error) {
+		return &session.SessionStore{Sessions: map[string]*session.Session{
+			"demo": {Name: "demo", Path: t.TempDir()},
+		}}, nil
+	}
+	if _, err := s.ttyd.startForSession("demo", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.ttyd.stopSession("demo") })
+	s.ttyd.clientConnected("demo", "attempt-private-1234")
+
+	resp := serveServerRequest(t, s, http.MethodGet, "/api/terminal/status?session=demo", nil, true)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.Code, resp.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"connection_id", "attempt", "receipt"} {
+		if _, exists := body[forbidden]; exists {
+			t.Fatalf("status leaked %s: %#v", forbidden, body)
+		}
+	}
+}
+
 func TestTerminalPrewarmRejectsCrossOrigin(t *testing.T) {
 	s := newTestWebServer(t)
 	body := bytes.NewBufferString(`{"session":"demo"}`)
@@ -191,6 +219,54 @@ func TestTerminalSendInputRejectsOversizedText(t *testing.T) {
 	resp := serveServerRequest(t, s, "POST", "/api/terminal/send-input", bytes.NewBuffer(payload), true)
 	if resp.Code != http.StatusRequestEntityTooLarge && resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected payload rejection, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestTerminalActivityRequiresLiveConnectionAndRecordsAttach(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddSession("demo", "main", t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestWebServer(t)
+	if _, err := s.ttyd.startForSession("demo", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.ttyd.stopSession("demo") })
+
+	postActivity := func(attempt string) *httptest.ResponseRecorder {
+		payload, _ := json.Marshal(map[string]any{"session": "demo", "attempt": attempt})
+		return serveServerRequest(t, s, http.MethodPost, "/api/sessions/activity", bytes.NewBuffer(payload), true)
+	}
+	if resp := postActivity("not-connected"); resp.Code != http.StatusConflict {
+		t.Fatalf("inactive attempt status = %d, want 409: %s", resp.Code, resp.Body.String())
+	}
+	s.ttyd.clientConnected("demo", "attempt-a-12345678")
+	if _, err := s.ttyd.startForSession("other", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.ttyd.stopSession("other") })
+	s.ttyd.clientConnected("other", "attempt-b-12345678")
+	if resp := postActivity("attempt-b-12345678"); resp.Code != http.StatusConflict {
+		t.Fatalf("cross-session attempt status = %d, want 409: %s", resp.Code, resp.Body.String())
+	}
+	if resp := postActivity("attempt-a-12345678"); resp.Code != http.StatusNoContent {
+		t.Fatalf("active attempt status = %d, want 204: %s", resp.Code, resp.Body.String())
+	}
+	reloaded, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Sessions["demo"].LastAttached.IsZero() {
+		t.Fatal("active terminal connection did not record activity")
+	}
+
+	s.ttyd.clientDisconnected("demo", "attempt-a-12345678")
+	if resp := postActivity("attempt-a-12345678"); resp.Code != http.StatusConflict {
+		t.Fatalf("disconnected attempt status = %d, want 409: %s", resp.Code, resp.Body.String())
 	}
 }
 

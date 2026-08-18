@@ -466,6 +466,108 @@ func TestGetSessionsIncludesStatusAndStaleSummary(t *testing.T) {
 	}
 }
 
+func TestGetSessionsExposesPinnedAndActivityWithoutYearOneTimestamp(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	created := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	attached := created.Add(time.Hour)
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"opened": {Name: "opened", Branch: "main", Path: t.TempDir(), CreatedAt: created, UpdatedAt: created, LastAttached: attached, Pinned: true},
+		"legacy": {Name: "legacy", Branch: "main", Path: t.TempDir()},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/sessions", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]map[string]any{}
+	for _, item := range body.Sessions {
+		byName[item["name"].(string)] = item
+	}
+	opened := byName["opened"]
+	if opened["pinned"] != true {
+		t.Fatalf("pinned = %#v, want true", opened["pinned"])
+	}
+	if opened["activity_at"] != attached.Format(time.RFC3339) {
+		t.Fatalf("activity_at = %#v, want %q", opened["activity_at"], attached.Format(time.RFC3339))
+	}
+	if opened["last_opened_at"] != attached.Format(time.RFC3339) {
+		t.Fatalf("last_opened_at = %#v, want %q", opened["last_opened_at"], attached.Format(time.RFC3339))
+	}
+	legacy := byName["legacy"]
+	if _, exists := legacy["activity_at"]; exists {
+		t.Fatalf("legacy activity_at should be omitted: %#v", legacy)
+	}
+}
+
+func TestPinSessionRoutesPersistWithoutChangingUpdatedAt(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	created := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"s1": {Name: "s1", Branch: "main", Path: t.TempDir(), CreatedAt: created, UpdatedAt: created},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	for _, tc := range []struct {
+		method string
+		want   bool
+	}{
+		{method: http.MethodPost, want: true},
+		{method: http.MethodDelete, want: false},
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(tc.method, "/api/sessions/pin?name=s1", nil))
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d: %s", tc.method, w.Code, w.Body.String())
+		}
+		reloaded, err := session.LoadSessions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := reloaded.Sessions["s1"]
+		if got.Pinned != tc.want {
+			t.Fatalf("%s pinned = %v, want %v", tc.method, got.Pinned, tc.want)
+		}
+		if !got.UpdatedAt.Equal(created) {
+			t.Fatalf("%s changed UpdatedAt: got %v want %v", tc.method, got.UpdatedAt, created)
+		}
+	}
+}
+
+func TestPinSessionRoutesValidateNameAndMissingSession(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{path: "/api/sessions/pin", want: http.StatusBadRequest},
+		{path: "/api/sessions/pin?name=missing", want: http.StatusNotFound},
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, tc.path, nil))
+		if w.Code != tc.want {
+			t.Fatalf("%s status = %d, want %d: %s", tc.path, w.Code, tc.want, w.Body.String())
+		}
+	}
+}
+
 func TestStaleEndpointsRejectInvalidDays(t *testing.T) {
 	setupEmptySessionStoreForTest(t)
 	mux := http.NewServeMux()
