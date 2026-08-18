@@ -143,7 +143,7 @@
       />
       <span class="text-[10px] font-mono text-gray-700 shrink-0">↵ open · esc close</span>
     </div>
-    <div bind:this={listEl} class="max-h-[50vh] overflow-y-auto">
+    <div bind:this={listEl} aria-label="session switcher results" class="max-h-[50vh] overflow-y-auto">
       {#each visible as s, i (s.name)}
         <button
           type="button"

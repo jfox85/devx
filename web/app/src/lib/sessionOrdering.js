@@ -24,7 +24,10 @@ export function activityMillis(value) {
 export function compareRecent(a, b) {
   const left = activityMillis(a.activity_at)
   const right = activityMillis(b.activity_at)
-  if (left !== null && right !== null && left !== right) return right - left
+  if (left !== null && right !== null) {
+    if (left !== right) return right - left
+    return a.name.localeCompare(b.name)
+  }
   if (left !== null) return -1
   if (right !== null) return 1
   return a.name.localeCompare(b.name)
@@ -83,12 +86,13 @@ export function buildSessionSections(sessions, query = '', view = 'recent') {
 
 export function relativeActivity(session, now = Date.now()) {
   const at = activityMillis(session.activity_at)
-  if (at === null) return { short: 'never', label: 'Never opened' }
+  if (at === null) return { short: 'never', display: 'Never opened', label: 'Never opened' }
   const seconds = Math.max(0, Math.floor((now - at) / 1000))
   let short = 'now'
   if (seconds >= 86400) short = `${Math.floor(seconds / 86400)}d`
   else if (seconds >= 3600) short = `${Math.floor(seconds / 3600)}h`
   else if (seconds >= 60) short = `${Math.floor(seconds / 60)}m`
   const prefix = session.last_opened_at ? 'Opened' : 'Created'
-  return { short, label: `${prefix} ${short === 'now' ? 'now' : `${short} ago`}` }
+  const display = `${prefix} ${short}`
+  return { short, display, label: `${prefix} ${short === 'now' ? 'now' : `${short} ago`}` }
 }

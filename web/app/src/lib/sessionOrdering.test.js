@@ -60,6 +60,16 @@ test('reserved section names cannot collide with project aliases', () => {
   assert.deepEqual(noProjectCollision.map(s => s.key), ['project:__no_project__', '__no_project__'])
 })
 
+test('equal valid activity timestamps use deterministic name ties', () => {
+  const values = [
+    session('beta', '2026-08-18T12:00:00Z', ''),
+    session('alpha', '2026-08-18T12:00:00Z', ''),
+  ]
+  assert.ok(compareRecent(values[0], values[1]) > 0)
+  assert.ok(compareRecent(values[1], values[0]) < 0)
+  assert.deepEqual(values.sort(compareRecent).map(s => s.name), ['alpha', 'beta'])
+})
+
 test('invalid activity sorts last with deterministic name ties', () => {
   const values = [session('zeta', null, ''), session('beta', 'bad', ''), session('alpha', '2026-08-18T12:00:00Z', '')]
   assert.deepEqual(values.sort(compareRecent).map(s => s.name), ['alpha', 'beta', 'zeta'])

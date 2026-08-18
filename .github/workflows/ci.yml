@@ -74,10 +74,36 @@ jobs:
         flags: unittests
         fail_ci_if_error: false
 
+  web:
+    name: Web tests and build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: web/app/package-lock.json
+    - name: Install web dependencies
+      working-directory: web/app
+      run: npm ci
+    - name: Run web unit tests
+      working-directory: web/app
+      run: npm test
+    - name: Install Playwright Chromium
+      working-directory: web/app
+      run: npx playwright install --with-deps chromium
+    - name: Run web interaction tests
+      working-directory: web/app
+      run: npm run test:ui
+    - name: Build embedded web app
+      working-directory: web/app
+      run: npm run build
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, web]
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-go@v5

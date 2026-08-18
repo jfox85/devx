@@ -491,9 +491,12 @@
 
   <!-- Error banner (shown above list, doesn't replace it) -->
   {#if error}
-    <div class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between shrink-0">
+    <div role="alert" class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between shrink-0">
       <span>{error}</span>
-      <button on:click={() => error = ''} class="text-red-600 hover:text-red-400 ml-2">×</button>
+      <span class="flex items-center gap-2 ml-2">
+        <button on:click={() => load({ background: sessions.length > 0 })} class="text-red-300 hover:text-white underline">Retry</button>
+        <button on:click={() => error = ''} class="text-red-600 hover:text-red-400">×</button>
+      </span>
     </div>
   {/if}
 
@@ -660,7 +663,7 @@
                 {/if}
                 {#if section.showActivity}
                   {@const activity = relativeActivity(session, activityNow)}
-                  <time datetime={session.activity_at || ''} title={activity.label} aria-label={activity.label} class="text-[9px] text-gray-700 shrink-0">{activity.short}</time>
+                  <time datetime={session.activity_at || ''} title={activity.label} aria-label={activity.label} class="text-[9px] text-gray-700 shrink-0">{activity.display}</time>
                 {/if}
                 <span
                   class="text-[9px] shrink-0 uppercase tracking-wide px-1 py-px border border-gray-800 text-gray-600 rounded-sm"
