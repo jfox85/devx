@@ -2,6 +2,10 @@
 
 Research covered Codex app/web, Claude Desktop and Claude Code, Conductor, Pi and community wrappers, OpenCode/Crush, Cursor Cloud Agents, GitHub Copilot coding agent, Jules, Vibe Kanban, and Aider. Observed product behavior is separated from recommendations below.
 
+## Status and sequencing
+
+The current priority is shell fidelity: preserve and clarify the production session, terminal, artifact, lifecycle, responsive, and notification capabilities before adding product scope. The enhancement ideas below remain a tracked post-shell backlog. They should advance only after their data, security, and interaction contracts are explicitly scoped.
+
 ## Observed convergence
 
 - **Project → isolated workspace/worktree → session/task** is the dominant hierarchy in Codex, Conductor, Cursor, and related tools.
