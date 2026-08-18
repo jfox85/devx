@@ -1,0 +1,891 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DevX Operator Console</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #080b0e;
+      --rail: #0b0f12;
+      --panel: #101519;
+      --panel-2: #131a1f;
+      --raised: #182025;
+      --line: #263138;
+      --line-soft: #1c252b;
+      --text: #e6edf0;
+      --muted: #88969d;
+      --faint: #59666c;
+      --green: #5ce3a1;
+      --cyan: #5fd3e5;
+      --amber: #f3ba63;
+      --red: #ff7a7a;
+      --violet: #a99cf7;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: var(--canvas);
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: 2px;
+    }
+    .icon {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+    .shell { display: grid; grid-template-columns: 52px 314px minmax(0, 1fr); height: 100dvh; }
+
+    /* Utility rail */
+    .rail {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      padding: 12px 7px 10px;
+      background: var(--rail);
+      border-right: 1px solid var(--line-soft);
+      z-index: 40;
+    }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #3c5149;
+      background: #11241c;
+      color: var(--green);
+      border-radius: 9px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: -1px;
+      margin-bottom: 11px;
+      box-shadow: inset 0 0 0 1px rgb(92 227 161 / 5%);
+    }
+    .rail-button {
+      position: relative;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #718087;
+      cursor: pointer;
+    }
+    .rail-button:hover { background: #151c20; color: #cad4d8; }
+    .rail-button.active { background: #1a2824; color: var(--green); }
+    .rail-button.active::before {
+      content: "";
+      position: absolute;
+      left: -7px;
+      width: 2px;
+      height: 18px;
+      border-radius: 0 2px 2px 0;
+      background: var(--green);
+    }
+    .rail-button .counter {
+      position: absolute;
+      right: 2px;
+      top: 2px;
+      min-width: 13px;
+      height: 13px;
+      padding: 0 3px;
+      border-radius: 7px;
+      border: 1px solid #6b4d23;
+      background: #2d2112;
+      color: var(--amber);
+      font: 700 8px/11px var(--mono);
+    }
+    .rail-spacer { flex: 1; }
+    .rail-avatar {
+      width: 29px;
+      height: 29px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #26333a;
+      border: 1px solid #41515a;
+      color: #c7d1d6;
+      font: 700 10px var(--mono);
+    }
+
+    /* Session navigator */
+    .navigator {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+      z-index: 30;
+    }
+    .nav-head {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 13px 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .nav-title { min-width: 0; flex: 1; }
+    .eyebrow {
+      color: var(--faint);
+      font: 700 9px/1 var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .16em;
+      margin-bottom: 6px;
+    }
+    .nav-title strong { display: block; font-size: 14px; letter-spacing: -.01em; }
+    .new-button {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      border: 1px solid #395448;
+      border-radius: 7px;
+      background: #15241e;
+      color: #b8f3d6;
+      font-size: 11px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .new-button:hover { border-color: var(--green); background: #193027; }
+    .search-wrap { padding: 10px 12px 8px; }
+    .search {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #0c1114;
+      color: var(--faint);
+    }
+    .search:focus-within { border-color: #3b6770; color: var(--cyan); }
+    .search input {
+      min-width: 0;
+      flex: 1;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font: 11px var(--mono);
+    }
+    .search input::placeholder { color: #657278; }
+    .keycap {
+      padding: 2px 5px;
+      border: 1px solid #303b40;
+      border-bottom-color: #404c52;
+      border-radius: 4px;
+      color: #6f7c82;
+      font: 9px var(--mono);
+    }
+    .queue-summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      margin: 0 12px 9px;
+      overflow: hidden;
+      border: 1px solid var(--line-soft);
+      border-radius: 7px;
+      background: var(--line-soft);
+    }
+    .queue-metric { padding: 8px 8px 7px; background: #12181c; }
+    .queue-metric b { display: block; margin-bottom: 3px; font: 700 13px var(--mono); }
+    .queue-metric span { color: var(--faint); font: 700 8px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .queue-metric.attention b { color: var(--amber); }
+    .queue-metric.active b { color: var(--green); }
+    .session-scroll { flex: 1; min-height: 0; overflow: auto; padding-bottom: 12px; scrollbar-width: thin; scrollbar-color: #344047 transparent; }
+    .project { margin-top: 4px; }
+    .project-toggle {
+      width: 100%;
+      height: 29px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 13px;
+      border: 0;
+      background: transparent;
+      color: #8e9ba1;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+    }
+    .project-toggle:hover { color: #c4ced2; }
+    .project-toggle .chevron { color: #536168; transition: transform .16s ease; }
+    .project.collapsed .chevron { transform: rotate(-90deg); }
+    .project-toggle .count { margin-left: auto; color: #515e64; font: 10px var(--mono); }
+    .project.collapsed .sessions { display: none; }
+    .session {
+      position: relative;
+      width: calc(100% - 12px);
+      min-height: 55px;
+      display: grid;
+      grid-template-columns: 9px minmax(0,1fr) auto;
+      gap: 9px;
+      align-items: start;
+      margin: 1px 6px;
+      padding: 9px 9px 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .session:hover { background: #141c20; }
+    .session.selected {
+      border-color: #30433c;
+      background: #18241f;
+      box-shadow: inset 2px 0 var(--green);
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      margin-top: 5px;
+      border-radius: 50%;
+      background: #526067;
+      box-shadow: 0 0 0 3px rgb(82 96 103 / 10%);
+    }
+    .status-dot.live { background: var(--green); box-shadow: 0 0 0 3px rgb(92 227 161 / 10%); }
+    .status-dot.attention { background: var(--amber); box-shadow: 0 0 0 3px rgb(243 186 99 / 12%); }
+    .status-dot.dirty { background: var(--cyan); box-shadow: 0 0 0 3px rgb(95 211 229 / 10%); }
+    .session-main { min-width: 0; }
+    .session-name-row { display: flex; min-width: 0; align-items: baseline; gap: 6px; }
+    .session-name { overflow: hidden; color: #c9d3d7; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+    .selected .session-name { color: #f0f6f3; }
+    .branch { margin-top: 5px; overflow: hidden; color: #67757c; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .session-meta { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      min-height: 16px;
+      padding: 0 5px;
+      border: 1px solid #2b373d;
+      border-radius: 4px;
+      color: #75838a;
+      font: 8px var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+    .badge.warn { border-color: #554329; color: var(--amber); background: #241d13; }
+    .badge.good { border-color: #29483a; color: #79d8a7; background: #13231c; }
+    .badge.change { border-color: #29454b; color: #74c9d7; background: #122126; }
+    .age { padding-top: 2px; color: #536168; font: 9px var(--mono); white-space: nowrap; }
+    .nav-footer {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 13px;
+      border-top: 1px solid var(--line);
+      color: #68757b;
+      font: 9px var(--mono);
+    }
+    .sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+    .nav-footer span:last-child { margin-left: auto; }
+
+    /* Workspace chrome */
+    .workspace { min-width: 0; display: flex; flex-direction: column; background: var(--canvas); }
+    .topbar {
+      height: 58px;
+      display: flex;
+      align-items: stretch;
+      background: #0d1215;
+      border-bottom: 1px solid var(--line);
+    }
+    .mobile-menu { display: none; }
+    .session-context {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 0 17px;
+    }
+    .context-icon {
+      width: 28px; height: 28px; display: grid; place-items: center;
+      border: 1px solid #3b484e; border-radius: 7px; color: #8c9ba1; background: #141a1e;
+    }
+    .context-copy { min-width: 0; }
+    .crumbs { display: flex; gap: 6px; align-items: center; min-width: 0; color: #6d7a80; font-size: 10px; }
+    .crumbs span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .crumbs span:last-child { color: #a7b2b7; }
+    .context-title { display: flex; align-items: center; gap: 8px; margin-top: 4px; min-width: 0; }
+    .context-title h1 { margin: 0; overflow: hidden; font-size: 14px; font-weight: 680; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
+    .live-pill { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font: 700 8px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .live-pill::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .global-actions { display: flex; align-items: center; gap: 5px; padding: 0 12px; border-left: 1px solid var(--line-soft); }
+    .ghost-button, .icon-button {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: #819096;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .ghost-button { padding: 0 9px; }
+    .icon-button { width: 31px; }
+    .ghost-button:hover, .icon-button:hover, .ghost-button.active { border-color: #334047; background: #171e22; color: #d2dcdf; }
+    .ghost-button.active { color: var(--cyan); border-color: #31535b; }
+    .status-ribbon {
+      min-height: 39px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      border-bottom: 1px solid var(--line);
+      background: #0b1013;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .ribbon-item {
+      min-width: max-content;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 14px;
+      border-right: 1px solid var(--line-soft);
+      color: #718087;
+      font: 9px var(--mono);
+    }
+    .ribbon-item b { color: #b8c4c8; font-weight: 600; }
+    .ribbon-item .mini-dot { width: 5px; height: 5px; border-radius: 50%; background: #66747a; }
+    .ribbon-item .mini-dot.good { background: var(--green); }
+    .ribbon-item .mini-dot.warn { background: var(--amber); }
+    .ribbon-spacer { flex: 1; }
+    .runtime { color: var(--green); }
+
+    .windowbar {
+      height: 39px;
+      display: flex;
+      align-items: stretch;
+      background: #0e1316;
+      border-bottom: 1px solid #202a30;
+    }
+    .window-tabs { min-width: 0; flex: 1; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+    .window-tab {
+      min-width: max-content;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 13px;
+      border: 0;
+      border-right: 1px solid #1f292e;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: #68767c;
+      cursor: pointer;
+      font: 10px var(--mono);
+    }
+    .window-tab:hover { color: #a8b4b9; background: #12191d; }
+    .window-tab.active { color: #dce5e8; border-bottom-color: var(--green); background: #131b18; }
+    .window-tab .index { color: #526068; }
+    .chrome-controls { display: flex; align-items: center; padding: 0 8px; gap: 4px; border-left: 1px solid var(--line-soft); }
+    .control {
+      height: 27px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: #748188;
+      cursor: pointer;
+      font: 9px var(--mono);
+    }
+    .control:hover, .control.active { background: #182126; border-color: #2d3b42; color: #d2dcdf; }
+    .control.active { color: var(--cyan); border-color: #31535b; }
+
+    /* Terminal canvas + HUD */
+    .stage { position: relative; min-height: 0; flex: 1; display: flex; overflow: hidden; background: #07090b; }
+    .terminal { min-width: 0; flex: 1; padding: 18px 24px 72px; overflow: hidden; font: 12px/1.72 var(--mono); color: #bdc7cb; }
+    .term-row { white-space: pre-wrap; }
+    .term-muted { color: #526066; }
+    .term-dim { color: #6a777d; }
+    .term-green { color: var(--green); }
+    .term-cyan { color: var(--cyan); }
+    .term-amber { color: var(--amber); }
+    .prompt { color: #7d8a90; }
+    .prompt b { color: #c7d1d5; font-weight: 600; }
+    .command { color: #edf2f4; }
+    .cursor { display: inline-block; width: 7px; height: 14px; margin-left: 1px; vertical-align: -2px; background: var(--green); opacity: .86; animation: blink 1.2s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: .18; } }
+    @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+
+    .hud {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      width: 282px;
+      overflow: hidden;
+      border: 1px solid #334047;
+      border-radius: 10px;
+      background: rgb(18 24 28 / 96%);
+      box-shadow: 0 18px 50px rgb(0 0 0 / 34%);
+      backdrop-filter: blur(12px);
+      transition: opacity .16s ease, transform .16s ease;
+    }
+    .hud.hidden { opacity: 0; transform: translateY(-6px); pointer-events: none; }
+    .hud-head { height: 39px; display: flex; align-items: center; gap: 8px; padding: 0 11px 0 13px; border-bottom: 1px solid #2a353b; }
+    .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgb(92 227 161 / 10%); }
+    .hud-head strong { font-size: 11px; letter-spacing: .02em; }
+    .hud-head span { margin-left: auto; color: #6b797f; font: 9px var(--mono); }
+    .hud-close { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #657278; cursor: pointer; }
+    .hud-close:hover { color: #c6d0d4; }
+    .hud-grid { display: grid; grid-template-columns: 1fr 1fr; }
+    .hud-cell { min-height: 63px; padding: 10px 12px; border-right: 1px solid #273239; border-bottom: 1px solid #273239; }
+    .hud-cell:nth-child(even) { border-right: 0; }
+    .hud-cell small { display: block; margin-bottom: 8px; color: #68767c; font: 8px var(--mono); text-transform: uppercase; letter-spacing: .1em; }
+    .hud-value { display: flex; align-items: center; gap: 6px; color: #d8e1e4; font: 10px var(--mono); }
+    .hud-value .good { color: var(--green); }
+    .hud-value .warn { color: var(--amber); }
+    .hud-value .change { color: var(--cyan); }
+    .hud-routes { padding: 10px 12px 11px; }
+    .hud-routes-label { display: flex; align-items: center; margin-bottom: 8px; color: #68767c; font: 8px var(--mono); text-transform: uppercase; letter-spacing: .1em; }
+    .hud-routes-label span { margin-left: auto; color: #536168; text-transform: none; letter-spacing: 0; }
+    .route { display: grid; grid-template-columns: 55px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px 0; color: #718087; font: 9px var(--mono); }
+    .route b { color: #aebabe; font-weight: 500; }
+    .route .route-live { color: var(--green); }
+
+    .composer {
+      position: absolute;
+      left: 22px;
+      right: 22px;
+      bottom: 16px;
+      min-height: 43px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 8px 7px 13px;
+      border: 1px solid #334147;
+      border-radius: 9px;
+      background: #11171a;
+      box-shadow: 0 10px 30px rgb(0 0 0 / 34%);
+      transform: translateY(70px);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform .18s ease, opacity .18s ease;
+    }
+    .composer.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+    .composer span { color: #67757b; font: 10px var(--mono); }
+    .composer input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: #d8e0e3; font: 11px var(--mono); }
+    .send { height: 28px; padding: 0 10px; border: 1px solid #3d5c4e; border-radius: 6px; background: #183025; color: var(--green); cursor: pointer; font: 10px var(--mono); }
+    .artifact-panel { width: 0; overflow: hidden; border-left: 0 solid var(--line); background: #0e1316; transition: width .2s ease; }
+    .artifact-panel.open { width: 310px; border-left-width: 1px; }
+    .artifact-inner { width: 310px; padding: 14px; }
+    .artifact-head { display: flex; align-items: center; margin-bottom: 14px; }
+    .artifact-head strong { font-size: 12px; }
+    .artifact-head span { margin-left: auto; color: #5f6c72; font: 9px var(--mono); }
+    .artifact-file { padding: 10px; margin-bottom: 7px; border: 1px solid #263138; border-radius: 7px; background: #12191d; }
+    .artifact-file b { display: block; color: #bdc8cc; font: 10px var(--mono); }
+    .artifact-file span { display: block; margin-top: 6px; color: #5f6c72; font: 9px var(--mono); }
+
+    .mobile-bottom { display: none; }
+    .scrim { display: none; }
+
+    @media (max-width: 1130px) {
+      .shell { grid-template-columns: 52px 284px minmax(0, 1fr); }
+      .chrome-controls .control span, .global-actions .ghost-button span { display: none; }
+      .chrome-controls .control { width: 29px; justify-content: center; padding: 0; }
+      .global-actions .ghost-button { width: 31px; padding: 0; }
+      .ribbon-item { padding-inline: 10px; }
+      .hud { width: 260px; }
+    }
+
+    @media (max-width: 720px) {
+      body { min-width: 0; }
+      .shell { display: block; height: 100dvh; }
+      .rail { display: none; }
+      .navigator {
+        position: fixed;
+        inset: 0 38px 0 0;
+        z-index: 100;
+        width: auto;
+        border-right: 1px solid #3a474d;
+        box-shadow: 22px 0 60px rgb(0 0 0 / 46%);
+        transform: translateX(-105%);
+        transition: transform .2s ease;
+      }
+      .navigator.open { transform: translateX(0); }
+      .scrim { position: fixed; inset: 0; z-index: 90; display: block; background: rgb(0 0 0 / 54%); opacity: 0; pointer-events: none; transition: opacity .2s; }
+      .scrim.open { opacity: 1; pointer-events: auto; }
+      .workspace { height: 100dvh; padding-bottom: 55px; }
+      .topbar { height: 52px; }
+      .mobile-menu { width: 45px; display: grid; place-items: center; flex: 0 0 45px; padding: 0; border: 0; border-right: 1px solid var(--line-soft); background: transparent; color: #99a6ab; }
+      .session-context { padding: 0 11px; gap: 8px; }
+      .context-icon { display: none; }
+      .crumbs { font-size: 8px; }
+      .context-title { margin-top: 3px; }
+      .context-title h1 { font-size: 12px; }
+      .live-pill { font-size: 7px; }
+      .global-actions { padding: 0 6px; border-left: 0; }
+      .global-actions .ghost-button { display: none; }
+      .global-actions .icon-button { width: 32px; }
+      .status-ribbon { min-height: 38px; }
+      .ribbon-item { padding: 0 10px; font-size: 8px; }
+      .ribbon-item:nth-of-type(2), .ribbon-item:nth-of-type(4), .ribbon-spacer { display: none; }
+      .windowbar { height: 37px; }
+      .window-tab { padding: 0 11px; font-size: 9px; }
+      .chrome-controls { padding: 0 4px; }
+      .chrome-controls .control { display: none; }
+      .chrome-controls .control[data-mobile="true"] { display: inline-flex; }
+      .stage { padding-bottom: 0; }
+      .terminal { padding: 14px 14px 86px; font-size: 10px; line-height: 1.62; }
+      .terminal .desktop-only { display: none; }
+      .hud {
+        top: auto;
+        right: 10px;
+        bottom: 10px;
+        width: calc(100% - 20px);
+        border-radius: 9px;
+      }
+      .hud-head { height: 35px; }
+      .hud-grid { grid-template-columns: repeat(4, 1fr); }
+      .hud-cell { min-height: 49px; padding: 8px; border-right: 1px solid #273239; border-bottom: 0; }
+      .hud-cell:nth-child(even) { border-right: 1px solid #273239; }
+      .hud-cell:last-child { border-right: 0; }
+      .hud-cell small { margin-bottom: 6px; font-size: 7px; }
+      .hud-value { gap: 4px; font-size: 8px; white-space: nowrap; }
+      .hud-routes { display: none; }
+      .artifact-panel { position: absolute; inset: 0; z-index: 20; width: auto; border: 0; transform: translateX(100%); transition: transform .2s; }
+      .artifact-panel.open { width: auto; transform: translateX(0); border: 0; }
+      .artifact-inner { width: auto; }
+      .composer { left: 9px; right: 9px; bottom: 9px; }
+      .mobile-bottom {
+        position: fixed;
+        z-index: 80;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 55px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        padding-bottom: env(safe-area-inset-bottom);
+        border-top: 1px solid #2b363c;
+        background: rgb(13 18 21 / 98%);
+      }
+      .mobile-tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 0; border: 0; background: transparent; color: #65737a; font: 8px var(--mono); }
+      .mobile-tab.active { color: var(--green); }
+      .mobile-tab .icon { width: 16px; height: 16px; }
+      .mobile-tab .dot-badge { position: absolute; width: 6px; height: 6px; margin: -21px 0 0 17px; border-radius: 50%; background: var(--amber); }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 16h4"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="m4 7 8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h3a3 3 0 0 0 3-3V9a3 3 0 0 1 3-3"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-git" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M8 17c5-1 4-8 8-9"/></symbol>
+    <symbol id="i-columns" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4"/></symbol>
+    <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6"/></symbol>
+  </svg>
+
+  <main class="shell">
+    <aside class="rail" aria-label="Utility navigation">
+      <div class="brand-mark" title="DevX">d/x</div>
+      <button class="rail-button active" aria-label="Sessions" title="Sessions"><svg class="icon"><use href="#i-grid"/></svg></button>
+      <button class="rail-button" aria-label="Terminal" title="Terminal"><svg class="icon"><use href="#i-terminal"/></svg></button>
+      <button class="rail-button" aria-label="Attention queue" title="Attention queue"><svg class="icon"><use href="#i-bell"/></svg><span class="counter">2</span></button>
+      <button class="rail-button" aria-label="Artifacts" title="Artifacts"><svg class="icon"><use href="#i-box"/></svg></button>
+      <button class="rail-button" aria-label="Routes" title="Routes"><svg class="icon"><use href="#i-route"/></svg></button>
+      <div class="rail-spacer"></div>
+      <button class="rail-button" aria-label="Settings" title="Settings"><svg class="icon"><use href="#i-settings"/></svg></button>
+      <div class="rail-avatar" aria-label="Signed in as JF">JF</div>
+    </aside>
+
+    <div class="scrim" id="scrim"></div>
+    <nav class="navigator" id="navigator" aria-label="Projects and sessions">
+      <div class="nav-head">
+        <div class="nav-title"><div class="eyebrow">Operator console</div><strong>Sessions</strong></div>
+        <button class="new-button" type="button"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg> New</button>
+      </div>
+      <div class="search-wrap">
+        <label class="search">
+          <svg class="icon" style="width:14px;height:14px"><use href="#i-search"/></svg>
+          <input id="session-search" type="search" placeholder="Filter sessions or branches" aria-label="Filter sessions or branches" />
+          <span class="keycap">/</span>
+        </label>
+      </div>
+      <div class="queue-summary" aria-label="Session summary">
+        <div class="queue-metric active"><b>4</b><span>running</span></div>
+        <div class="queue-metric attention"><b>2</b><span>attention</span></div>
+        <div class="queue-metric"><b>9</b><span>total</span></div>
+      </div>
+      <div class="session-scroll" id="session-list">
+        <section class="project" data-project="devx">
+          <button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span> devx <span class="count">4</span></button>
+          <div class="sessions">
+            <button class="session selected" data-session="operator-console" data-title="Operator console refresh" data-project="devx" data-branch="jf-ui-refresh" data-status="live">
+              <span class="status-dot live"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Operator console refresh</span></span><span class="branch">jf-ui-refresh</span><span class="session-meta"><span class="badge change">± 8</span><span class="badge good">host</span><span class="badge">◆ 12</span></span></span><span class="age">now</span>
+            </button>
+            <button class="session" data-session="gatepost-proxy" data-title="Gatepost proxy consolidation" data-project="devx" data-branch="jf-gatepost-proxy" data-status="attention">
+              <span class="status-dot attention"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Gatepost proxy consolidation</span></span><span class="branch">jf-gatepost-proxy</span><span class="session-meta"><span class="badge warn">! attention</span><span class="badge">gatepost</span></span></span><span class="age">4m</span>
+            </button>
+            <button class="session" data-session="artifact-search" data-title="Artifact search indexing" data-project="devx" data-branch="jf-artifact-search" data-status="dirty">
+              <span class="status-dot dirty"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Artifact search indexing</span></span><span class="branch">jf-artifact-search</span><span class="session-meta"><span class="badge change">± 3</span><span class="badge">◆ 5</span></span></span><span class="age">18m</span>
+            </button>
+            <button class="session" data-session="mobile-composer" data-title="Mobile composer polish" data-project="devx" data-branch="jf-mobile-compose" data-status="idle">
+              <span class="status-dot"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Mobile composer polish</span></span><span class="branch">jf-mobile-compose</span><span class="session-meta"><span class="badge">host</span><span class="badge">idle</span></span></span><span class="age">2h</span>
+            </button>
+          </div>
+        </section>
+        <section class="project" data-project="media-memory">
+          <button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span> media-memory <span class="count">3</span></button>
+          <div class="sessions">
+            <button class="session" data-session="unread-semantics" data-title="Unread semantics audit" data-project="media-memory" data-branch="jf-unread-audit" data-status="live">
+              <span class="status-dot live"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Unread semantics audit</span></span><span class="branch">jf-unread-audit</span><span class="session-meta"><span class="badge good">host</span><span class="badge">◆ 3</span></span></span><span class="age">7m</span>
+            </button>
+            <button class="session" data-session="mcp-logging" data-title="Privacy-safe MCP logging" data-project="media-memory" data-branch="jf-mcp-audit" data-status="attention">
+              <span class="status-dot attention"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Privacy-safe MCP logging</span></span><span class="branch">jf-mcp-audit</span><span class="session-meta"><span class="badge warn">! review</span><span class="badge change">± 6</span></span></span><span class="age">32m</span>
+            </button>
+            <button class="session" data-session="recommendations" data-title="Recommendation reranking" data-project="media-memory" data-branch="jf-rerank" data-status="idle">
+              <span class="status-dot"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Recommendation reranking</span></span><span class="branch">jf-rerank</span><span class="session-meta"><span class="badge">docker</span><span class="badge">idle</span></span></span><span class="age">1d</span>
+            </button>
+          </div>
+        </section>
+        <section class="project" data-project="nibit">
+          <button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span> nibit <span class="count">2</span></button>
+          <div class="sessions">
+            <button class="session" data-session="dashboard" data-title="Dashboard response states" data-project="nibit" data-branch="jf-dashboard-states" data-status="live">
+              <span class="status-dot live"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Dashboard response states</span></span><span class="branch">jf-dashboard-states</span><span class="session-meta"><span class="badge change">± 2</span><span class="badge good">host</span></span></span><span class="age">11m</span>
+            </button>
+            <button class="session" data-session="billing" data-title="Billing event recovery" data-project="nibit" data-branch="jf-billing-recovery" data-status="idle">
+              <span class="status-dot"></span><span class="session-main"><span class="session-name-row"><span class="session-name">Billing event recovery</span></span><span class="branch">jf-billing-recovery</span><span class="session-meta"><span class="badge">docker</span><span class="badge">idle</span></span></span><span class="age">3d</span>
+            </button>
+          </div>
+        </section>
+      </div>
+      <div class="nav-footer"><span class="sync-dot"></span><span>synced 2s ago</span><span>⌘P switch</span></div>
+    </nav>
+
+    <section class="workspace" aria-label="Active session workspace">
+      <header class="topbar">
+        <button class="mobile-menu" id="open-nav" aria-label="Open sessions"><svg class="icon"><use href="#i-menu"/></svg></button>
+        <div class="session-context">
+          <div class="context-icon"><svg class="icon"><use href="#i-terminal"/></svg></div>
+          <div class="context-copy">
+            <div class="crumbs"><span id="project-label">devx</span><span>/</span><span id="branch-label">jf-ui-refresh</span></div>
+            <div class="context-title"><h1 id="session-title">Operator console refresh</h1><span class="live-pill" id="live-label">live</span></div>
+          </div>
+        </div>
+        <div class="global-actions">
+          <button class="ghost-button" id="hud-toggle"><svg class="icon" style="width:14px;height:14px"><use href="#i-activity"/></svg><span>Operations</span></button>
+          <button class="icon-button" aria-label="Session options"><svg class="icon"><use href="#i-more"/></svg></button>
+        </div>
+      </header>
+
+      <div class="status-ribbon" aria-label="Active session status">
+        <div class="ribbon-item"><span class="mini-dot good"></span><b>tmux active</b><span class="runtime">03:42:18</span></div>
+        <div class="ribbon-item"><svg class="icon" style="width:12px;height:12px"><use href="#i-git"/></svg><b>jf-ui-refresh</b><span>ahead 2</span></div>
+        <div class="ribbon-item"><span class="mini-dot warn"></span><b>8 changes</b><span>5M · 3?</span></div>
+        <div class="ribbon-item"><b>target</b><span>host</span></div>
+        <div class="ribbon-spacer"></div>
+        <div class="ribbon-item"><span>routes</span><b>3 healthy</b></div>
+        <div class="ribbon-item"><span>artifacts</span><b>12</b></div>
+      </div>
+
+      <div class="windowbar">
+        <div class="window-tabs" role="tablist" aria-label="Terminal windows">
+          <button class="window-tab active" role="tab" aria-selected="true"><span class="index">1</span> agent</button>
+          <button class="window-tab" role="tab" aria-selected="false"><span class="index">2</span> web</button>
+          <button class="window-tab" role="tab" aria-selected="false"><span class="index">3</span> server</button>
+          <button class="window-tab" role="tab" aria-selected="false"><span class="index">4</span> tests</button>
+        </div>
+        <div class="chrome-controls">
+          <button class="control" id="artifact-toggle" title="Toggle artifacts"><svg class="icon" style="width:14px;height:14px"><use href="#i-file"/></svg><span>Artifacts</span></button>
+          <button class="control" id="split-toggle" title="Cycle split" data-mobile="true"><svg class="icon" style="width:14px;height:14px"><use href="#i-columns"/></svg><span>Split</span></button>
+          <button class="control" id="compose-toggle" title="Compose" data-mobile="true"><svg class="icon" style="width:14px;height:14px"><use href="#i-compose"/></svg><span>Compose</span></button>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="terminal" aria-label="Terminal preview">
+          <div class="term-row term-muted">Last login: Tue Mar 11 09:14:22 on ttys004</div>
+          <div class="term-row prompt"><span class="term-green">devx</span> <b>jf-ui-refresh</b> <span class="term-cyan">git:(jf-ui-refresh)</span> <span class="term-amber">±</span></div>
+          <div class="term-row command">❯ go test ./web/... ./session/...</div>
+          <div class="term-row term-dim">?   github.com/jfox/devx/web       [no test files]</div>
+          <div class="term-row term-green">ok  github.com/jfox/devx/session   2.486s</div>
+          <div class="term-row"> </div>
+          <div class="term-row prompt"><span class="term-green">devx</span> <b>jf-ui-refresh</b> <span class="term-cyan">git:(jf-ui-refresh)</span> <span class="term-amber">±</span></div>
+          <div class="term-row command">❯ devx status --routes</div>
+          <div class="term-row desktop-only"><span class="term-dim">SESSION</span>              <span class="term-dim">TARGET</span>   <span class="term-dim">STATE</span>      <span class="term-dim">ROUTES</span></div>
+          <div class="term-row desktop-only">operator-console     host     <span class="term-green">running</span>    ui, api, docs</div>
+          <div class="term-row desktop-only">gatepost-proxy       gatepost <span class="term-amber">attention</span>  api, logs</div>
+          <div class="term-row desktop-only">artifact-search      host     <span class="term-cyan">dirty</span>      ui</div>
+          <div class="term-row"> </div>
+          <div class="term-row prompt"><span class="term-green">devx</span> <b>jf-ui-refresh</b> <span class="term-cyan">git:(jf-ui-refresh)</span> <span class="term-amber">±</span></div>
+          <div class="term-row command">❯ <span class="cursor"></span></div>
+        </div>
+
+        <aside class="artifact-panel" id="artifact-panel" aria-label="Artifacts panel">
+          <div class="artifact-inner">
+            <div class="artifact-head"><strong>Artifacts</strong><span>12 in session</span></div>
+            <div class="artifact-file"><b>operator-console.png</b><span>image · just now · 1.8 MB</span></div>
+            <div class="artifact-file"><b>ui-review.md</b><span>markdown · 4 min ago</span></div>
+            <div class="artifact-file"><b>route-health.json</b><span>json · 11 min ago</span></div>
+          </div>
+        </aside>
+
+        <aside class="hud" id="hud" aria-label="Live operations HUD">
+          <div class="hud-head"><span class="pulse"></span><strong>Live operations</strong><span>updated now</span><button class="hud-close" id="hud-close" aria-label="Close operations HUD">×</button></div>
+          <div class="hud-grid">
+            <div class="hud-cell"><small>runtime</small><div class="hud-value"><span class="good">●</span> 03:42:18</div></div>
+            <div class="hud-cell"><small>worktree</small><div class="hud-value"><span class="change">±</span> 8 changes</div></div>
+            <div class="hud-cell"><small>target</small><div class="hud-value"><span class="good">●</span> host</div></div>
+            <div class="hud-cell"><small>attention</small><div class="hud-value"><span class="warn">!</span> 2 queued</div></div>
+          </div>
+          <div class="hud-routes">
+            <div class="hud-routes-label">Routes <span>3 / 3 healthy</span></div>
+            <div class="route"><b>ui</b><span>operator-console-ui.localhost</span><span class="route-live">●</span></div>
+            <div class="route"><b>api</b><span>operator-console-api.localhost</span><span class="route-live">●</span></div>
+            <div class="route"><b>docs</b><span>operator-console-docs.localhost</span><span class="route-live">●</span></div>
+          </div>
+        </aside>
+
+        <form class="composer" id="composer">
+          <span>⌘K</span><input type="text" placeholder="Compose a command or prompt…" aria-label="Compose a command or prompt"/><button class="send" type="submit">Send ↵</button>
+        </form>
+      </div>
+    </section>
+
+    <nav class="mobile-bottom" aria-label="Mobile navigation">
+      <button class="mobile-tab active" id="mobile-sessions"><svg class="icon"><use href="#i-grid"/></svg>Sessions</button>
+      <button class="mobile-tab"><svg class="icon"><use href="#i-terminal"/></svg>Terminal</button>
+      <button class="mobile-tab" id="mobile-attention"><span class="dot-badge"></span><svg class="icon"><use href="#i-bell"/></svg>Attention</button>
+      <button class="mobile-tab" id="mobile-artifacts"><svg class="icon"><use href="#i-box"/></svg>Artifacts</button>
+    </nav>
+  </main>
+
+  <script>
+    const navigator = document.querySelector('#navigator');
+    const scrim = document.querySelector('#scrim');
+    const hud = document.querySelector('#hud');
+    const hudToggle = document.querySelector('#hud-toggle');
+    const artifactPanel = document.querySelector('#artifact-panel');
+    const artifactToggle = document.querySelector('#artifact-toggle');
+    const composer = document.querySelector('#composer');
+    const composeToggle = document.querySelector('#compose-toggle');
+
+    function setNav(open) {
+      navigator.classList.toggle('open', open);
+      scrim.classList.toggle('open', open);
+      document.querySelector('#open-nav').setAttribute('aria-expanded', String(open));
+    }
+    document.querySelector('#open-nav').addEventListener('click', () => setNav(true));
+    document.querySelector('#mobile-sessions').addEventListener('click', () => setNav(true));
+    scrim.addEventListener('click', () => setNav(false));
+
+    document.querySelectorAll('.project-toggle').forEach(button => {
+      button.addEventListener('click', () => {
+        const project = button.closest('.project');
+        const collapsed = project.classList.toggle('collapsed');
+        button.setAttribute('aria-expanded', String(!collapsed));
+      });
+    });
+
+    function selectSession(button) {
+      document.querySelectorAll('.session').forEach(row => row.classList.remove('selected'));
+      button.classList.add('selected');
+      document.querySelector('#session-title').textContent = button.dataset.title;
+      document.querySelector('#project-label').textContent = button.dataset.project;
+      document.querySelector('#branch-label').textContent = button.dataset.branch;
+      const live = button.dataset.status === 'live';
+      document.querySelector('#live-label').textContent = live ? 'live' : button.dataset.status;
+      document.querySelector('#live-label').style.color = live ? 'var(--green)' : button.dataset.status === 'attention' ? 'var(--amber)' : 'var(--cyan)';
+      if (window.innerWidth <= 720) setNav(false);
+    }
+    document.querySelectorAll('.session').forEach(button => button.addEventListener('click', () => selectSession(button)));
+
+    const search = document.querySelector('#session-search');
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      document.querySelectorAll('.session').forEach(row => {
+        row.hidden = q && !`${row.dataset.title} ${row.dataset.branch} ${row.dataset.project}`.toLowerCase().includes(q);
+      });
+      document.querySelectorAll('.project').forEach(project => {
+        project.hidden = ![...project.querySelectorAll('.session')].some(row => !row.hidden);
+      });
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === '/' && document.activeElement !== search) { event.preventDefault(); search.focus(); if (window.innerWidth <= 720) setNav(true); }
+      if (event.key === 'Escape') { setNav(false); hud.classList.add('hidden'); composer.classList.remove('open'); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); toggleComposer(); }
+    });
+
+    function toggleHud(force) {
+      const show = force ?? hud.classList.contains('hidden');
+      hud.classList.toggle('hidden', !show);
+      hudToggle.classList.toggle('active', show);
+    }
+    hudToggle.addEventListener('click', () => toggleHud());
+    document.querySelector('#hud-close').addEventListener('click', () => toggleHud(false));
+
+    function toggleArtifacts() {
+      artifactPanel.classList.toggle('open');
+      artifactToggle.classList.toggle('active');
+    }
+    artifactToggle.addEventListener('click', toggleArtifacts);
+    document.querySelector('#mobile-artifacts').addEventListener('click', toggleArtifacts);
+
+    function toggleComposer() {
+      const open = composer.classList.toggle('open');
+      composeToggle.classList.toggle('active', open);
+      if (open) composer.querySelector('input').focus();
+    }
+    composeToggle.addEventListener('click', toggleComposer);
+    composer.addEventListener('submit', event => { event.preventDefault(); composer.querySelector('input').value = ''; toggleComposer(); });
+
+    document.querySelectorAll('.window-tab').forEach(tab => tab.addEventListener('click', () => {
+      document.querySelectorAll('.window-tab').forEach(item => { item.classList.remove('active'); item.setAttribute('aria-selected', 'false'); });
+      tab.classList.add('active'); tab.setAttribute('aria-selected', 'true');
+    }));
+
+    document.querySelectorAll('.rail-button').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.rail-button').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    }));
+  </script>
+</body>
+</html>
