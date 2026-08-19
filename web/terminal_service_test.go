@@ -61,7 +61,7 @@ func TestTerminalStatusReturnsRedactedState(t *testing.T) {
 			"demo": {Name: "demo", Path: t.TempDir()},
 		}}, nil
 	}
-	if _, err := s.ttyd.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := s.ttyd.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatalf("startForSession returned error: %v", err)
 	}
 	t.Cleanup(func() { s.ttyd.stopSession("demo") })
@@ -91,7 +91,7 @@ func TestTerminalStatusDoesNotExposeConnectionProof(t *testing.T) {
 			"demo": {Name: "demo", Path: t.TempDir()},
 		}}, nil
 	}
-	if _, err := s.ttyd.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := s.ttyd.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.ttyd.stopSession("demo") })
@@ -262,7 +262,7 @@ func TestTerminalActivityRequiresLiveConnectionAndRecordsAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newTestWebServer(t)
-	if _, err := s.ttyd.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := s.ttyd.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.ttyd.stopSession("demo") })
@@ -284,7 +284,7 @@ func TestTerminalActivityRequiresLiveConnectionAndRecordsAttach(t *testing.T) {
 		t.Fatalf("inactive attempt status = %d, want 409: %s", resp.Code, resp.Body.String())
 	}
 	s.ttyd.clientConnected("demo", "attempt-a-12345678")
-	if _, err := s.ttyd.startForSession("other", "sleep", "1"); err != nil {
+	if _, err := s.ttyd.startForSession("other", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.ttyd.stopSession("other") })
@@ -318,7 +318,7 @@ func TestTerminalActivityRequiresLiveConnectionAndRecordsAttach(t *testing.T) {
 
 func TestTerminalAttemptRemainsActiveAcrossOverlappingReconnect(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("demo") })
@@ -337,7 +337,7 @@ func TestTerminalAttemptRemainsActiveAcrossOverlappingReconnect(t *testing.T) {
 
 func TestReservedActivityReceiptCanBeRestoredForRetry(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("demo") })
@@ -360,7 +360,7 @@ func TestReservedActivityReceiptCanBeRestoredForRetry(t *testing.T) {
 
 func TestWrongSessionCannotConsumeAnotherSessionsReceipt(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("demo") })
@@ -381,7 +381,7 @@ func TestWrongSessionCannotConsumeAnotherSessionsReceipt(t *testing.T) {
 
 func TestExpiredTerminalActivityReceiptsAreRejectedAndSwept(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("demo") })
@@ -402,7 +402,7 @@ func TestExpiredTerminalActivityReceiptsAreRejectedAndSwept(t *testing.T) {
 
 func TestTtydPrewarmCountAndIdleCleanup(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("demo", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatalf("startForSession returned error: %v", err)
 	}
 	m.markPrewarmed("demo", 20*time.Millisecond)

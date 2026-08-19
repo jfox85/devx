@@ -74,7 +74,7 @@ exit 0
 
 func TestAttemptlessWebsocketStillCountsAsActiveConnection(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("legacy", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("legacy", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("legacy") })
@@ -90,7 +90,7 @@ func TestAttemptlessWebsocketStillCountsAsActiveConnection(t *testing.T) {
 
 func TestPortForSessionCancelsPendingIdleStopDuringReconnect(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("reconnect", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("reconnect", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("reconnect") })
@@ -111,7 +111,7 @@ func TestPortForSessionCancelsPendingIdleStopDuringReconnect(t *testing.T) {
 
 func TestStaleStopGenerationCannotKillRenewedLease(t *testing.T) {
 	m := newTtydManager()
-	if _, err := m.startForSession("generation", "sleep", "1"); err != nil {
+	if _, err := m.startForSession("generation", testSleepCommand(t, time.Second)...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.stopSession("generation") })
@@ -125,11 +125,31 @@ func TestStaleStopGenerationCannotKillRenewedLease(t *testing.T) {
 	}
 }
 
+func TestStartForSessionInvalidatesQueuedStop(t *testing.T) {
+	m := newTtydManager()
+	command := testSleepCommand(t, time.Second)
+	if _, err := m.startForSession("reuse", command...); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("reuse") })
+	inst := m.sessions["reuse"]
+	m.scheduleStopLocked("reuse", inst, time.Hour)
+	staleGeneration := inst.stopGeneration
+	if _, err := m.startForSession("reuse", command...); err != nil {
+		t.Fatal(err)
+	}
+	m.stopSessionGeneration("reuse", inst, staleGeneration)
+	if _, ok := m.sessions["reuse"]; !ok {
+		t.Fatal("queued stop killed reused ttyd instance")
+	}
+}
+
 func TestTtydManagerStartStop(t *testing.T) {
 	m := newTtydManager()
 
 	// Use a stub command that stays alive briefly instead of real ttyd
-	port, err := m.startForSession("test-session", "sleep", "0.1")
+	command := testSleepCommand(t, 100*time.Millisecond)
+	port, err := m.startForSession("test-session", command...)
 	if err != nil {
 		t.Fatalf("startForSession returned error: %v", err)
 	}
@@ -138,7 +158,7 @@ func TestTtydManagerStartStop(t *testing.T) {
 	}
 
 	// Should return same port on second call (already running)
-	port2, err := m.startForSession("test-session", "sleep", "0.1")
+	port2, err := m.startForSession("test-session", command...)
 	if err != nil {
 		t.Fatalf("second startForSession returned error: %v", err)
 	}

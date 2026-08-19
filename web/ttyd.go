@@ -77,6 +77,7 @@ func (m *ttydManager) startForSession(sessionName string, cmdAndArgs ...string) 
 			inst.timer.Stop()
 			inst.timer = nil
 		}
+		inst.stopGeneration++
 		port := inst.port
 		m.mu.Unlock()
 		return port, nil
