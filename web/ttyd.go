@@ -283,7 +283,6 @@ func (m *ttydManager) reserveActivityReceipt(sessionName, receipt string, now ti
 	if !ok {
 		return terminalActivityReceipt{}, false
 	}
-	delete(m.activityReceipts, receipt)
 	if issued.session != sessionName || now.After(issued.expires) {
 		return terminalActivityReceipt{}, false
 	}
@@ -294,6 +293,7 @@ func (m *ttydManager) reserveActivityReceipt(sessionName, receipt string, now ti
 	if _, active := inst.activeAttempt[issued.attempt]; !active {
 		return terminalActivityReceipt{}, false
 	}
+	delete(m.activityReceipts, receipt)
 	return issued, true
 }
 

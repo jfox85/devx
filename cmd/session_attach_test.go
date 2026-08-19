@@ -12,7 +12,10 @@ func setupAttachTestStore(t *testing.T) (*session.SessionStore, *session.Session
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	store, err := session.LoadSessions()
 	if err != nil {
 		t.Fatal(err)

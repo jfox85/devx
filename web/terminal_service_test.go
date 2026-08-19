@@ -358,6 +358,27 @@ func TestReservedActivityReceiptCanBeRestoredForRetry(t *testing.T) {
 	}
 }
 
+func TestWrongSessionCannotConsumeAnotherSessionsReceipt(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("demo") })
+	attempt := "attempt-owner-12345"
+	m.clientConnected("demo", attempt)
+	now := time.Now()
+	receipt, ok := m.issueActivityReceipt("demo", attempt, now)
+	if !ok {
+		t.Fatal("failed to issue receipt")
+	}
+	if _, ok := m.reserveActivityReceipt("other", receipt, now); ok {
+		t.Fatal("wrong session consumed receipt")
+	}
+	if _, ok := m.reserveActivityReceipt("demo", receipt, now); !ok {
+		t.Fatal("legitimate session lost receipt after wrong-session attempt")
+	}
+}
+
 func TestExpiredTerminalActivityReceiptsAreRejectedAndSwept(t *testing.T) {
 	m := newTtydManager()
 	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {

@@ -110,11 +110,12 @@ In `web/api.go`, add to `sessionResponse`:
 - `LastOpenedAt *time.Time` with JSON tag `last_opened_at,omitempty`;
 - `pinned`.
 
-Map zero values explicitly to `nil`; do not serialize Go's year-1 timestamp. Register the following stateless routes in `web/api.go:registerAPIRoutes` (not `Server.registerRoutes`, which is for handlers requiring server state):
+Map zero values explicitly to `nil`; do not serialize Go's year-1 timestamp. Register the stateless pin routes in `web/api.go:registerAPIRoutes`:
 
 - `POST /api/sessions/pin?name=...`;
-- `DELETE /api/sessions/pin?name=...`;
-- `POST /api/sessions/activity?name=...`, requiring a short-lived server-issued terminal-ready receipt for web callers.
+- `DELETE /api/sessions/pin?name=...`.
+
+Register `POST /api/sessions/activity` in `Server.registerRoutes` because it requires the server-held ttyd receipt state. Web callers must provide a short-lived terminal-ready receipt.
 
 The activity route validates that the receipt belongs to the named session and a successfully connected terminal frame before calling the corrected `RecordAttach`. A name alone or an ordinary ttyd process-ready status is insufficient. The operation is idempotent in meaning even though the timestamp advances. Unknown sessions return 404; malformed/invalid receipts return 400 or 409; persistence failures return 500.
 

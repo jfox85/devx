@@ -10,6 +10,10 @@ import (
 func TestTUISessionViewPreservesUnknownStateKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	path := filepath.Join(home, ".config", "devx", "ui-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -36,6 +40,10 @@ func TestTUISessionViewPreservesUnknownStateKeys(t *testing.T) {
 func TestTUISessionViewRecoversNullState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	path := filepath.Join(home, ".config", "devx", "ui-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -54,6 +62,10 @@ func TestTUISessionViewRecoversNullState(t *testing.T) {
 func TestTUISessionViewDoesNotQuarantineReadErrors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	path := filepath.Join(home, ".config", "devx", "ui-state.json")
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
@@ -69,6 +81,10 @@ func TestTUISessionViewDoesNotQuarantineReadErrors(t *testing.T) {
 func TestTUISessionViewRecoversCorruptState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	path := filepath.Join(home, ".config", "devx", "ui-state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -91,6 +107,10 @@ func TestTUISessionViewRecoversCorruptState(t *testing.T) {
 func TestTUISessionViewUsesDedicatedUserScopedState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	project := t.TempDir()
 	projectConfig := filepath.Join(project, ".devx")
 	if err := os.MkdirAll(projectConfig, 0o755); err != nil {

@@ -810,10 +810,11 @@ func handlePinSession(w http.ResponseWriter, r *http.Request) {
 	}
 	store, err := session.LoadSessions()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Errorf("load sessions: %w", err).Error()})
 		return
 	}
 	if err := store.SetPinned(name, r.Method == http.MethodPost); err != nil {
+		err = fmt.Errorf("set pinned state: %w", err)
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return

@@ -95,8 +95,12 @@ jobs:
   web:
     name: Web tests and build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
     - uses: actions/setup-node@v4
       with:
         node-version: '22'
@@ -118,7 +122,10 @@ jobs:
       working-directory: web/app
       run: npm run build
     - name: Verify committed embedded assets are current
-      run: git diff --exit-code -- web/dist
+      run: |
+        git diff --exit-code -- web/dist
+        untracked=$(git ls-files --others web/dist)
+        test -z "$untracked" || { echo "$untracked"; exit 1; }
 
   build:
     name: Build

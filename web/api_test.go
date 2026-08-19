@@ -605,6 +605,9 @@ func TestGetSessionsExposesPinnedAndActivityWithoutYearOneTimestamp(t *testing.T
 	if _, exists := legacy["activity_at"]; exists {
 		t.Fatalf("legacy activity_at should be omitted: %#v", legacy)
 	}
+	if _, exists := legacy["last_opened_at"]; exists {
+		t.Fatalf("legacy last_opened_at should be omitted: %#v", legacy)
+	}
 }
 
 func TestPinSessionRoutesPersistWithoutChangingUpdatedAt(t *testing.T) {
