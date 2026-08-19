@@ -1,45 +1,46 @@
-# DevX Operator Console v2
+# DevX Operator Console v3
 
-A static, interactive shell study for operating multiple DevX sessions without replacing the terminal. V2 keeps the original Operator Console lane, but aligns it with the current app’s real capabilities and data model.
+A static, interactive shell study for operating a high-density DevX session fleet without replacing the terminal. V3 responds directly to fleet-density, output-reader, action-hierarchy, and ArtifactPane feedback while retaining the existing blue/cyan product action system and green semantic state.
 
-## V2 rationale
+## V3 rationale
 
-- **Blue/cyan is the product action and selection system.** It identifies the DevX mark, selected session, selected tab, focus, buttons, mobile navigation, and composer actions. Green is reserved for active/running/success. Amber and red retain warning/repair meaning.
-- **The session navigator is the primary index.** It supports project grouping, collapse, filter, New session, status/target/artifact metadata, stale review, and session actions without introducing global destinations that do not exist.
-- **Terminal remains the dominant surface.** The status disclosure is closed by default and docks beside the terminal when open. It only reports current concepts: derived status/reasons, target, route addresses, Gatepost log availability, and artifact count.
-- **Capability completeness uses progressive disclosure.** Lifecycle actions live in session/stale dialogs; terminal and artifact actions live in the window toolbar and mobile action menu; rare shell states live in a state gallery.
-- **The structural breakpoint follows production.** Below 1024px the navigator becomes a focus-managed modal sheet. Below 1181px Status and Artifacts cannot compete for width; Status overlays the workspace and opening either surface closes the other. At phone widths they become mutually exclusive full destinations with focus entry and isolated background controls.
+- **The navigator is designed for a large fleet.** Desktop session rows are one-line and 32px high, closely matching production density. The 25 complete fixtures demonstrate four project groups and allow roughly 20 sessions to remain visible in a 1000px viewport. Every row keeps separate status and user-color indicators, name, target, artifact count or status signal. Branch and detailed status reasons move to the row tooltip, selected-session header/facts, and Status panel rather than making every row two lines.
+- **Touch density remains safe.** Coarse-pointer and phone rows become 44px high. Project grouping, collapse, filtering, arrow/Enter navigation, stale review, and quick switching continue to work.
+- **Branding is literal.** The top-left wordmark is the full lowercase `devx`, never an abbreviated glyph.
+- **Output is a reader, not a small dialog.** Output opens a true full-viewport surface modeled after production `PaneViewerModal`, with session identity, Open Tab, Close, readable scrolling output, focus entry/trapping/restoration, and Escape dismissal.
+- **Actions are named and stable.** Desktop shows the fixed sequence **Output · Artifacts · Split: current mode · Compose · More**. Tablet and mobile replace that set with one clearly labeled **Actions** control and descriptive menu. New Artifact and Insert Reference live inside the artifact workspace rather than appearing as mystery glyphs.
+- **ArtifactPane parity is restored.** The session-scoped pane provides newest/oldest/title sorting; show/hide list; draggable list resizing; Preview and JSX code modes; Full Screen/Exit Full; upload; new; refresh; close; inline selection; and Insert/Edit/Archive/Remove actions. Tablet/mobile use a descriptive artifact action menu when labels no longer fit.
+- **Terminal remains dominant.** Status stays closed by default. Below 1181px Status and Artifacts are mutually exclusive; phone layouts keep them as focus-managed destinations.
 
 ## Interactions to try
 
-- Filter sessions; `/` focuses filtering only when focus is not in an editable control.
-- Press `Cmd/Ctrl+P` for the quick switcher and `Cmd/Ctrl+K` for compose.
-- Collapse projects, select a session, switch terminal tabs, and use arrow keys within the tablist.
-- Open the closed-by-default **Status** panel to inspect status reasons, target, route addresses, Gatepost log placement, and artifacts.
+- Filter the 25 sessions; use `/` to focus filtering and arrow keys/Enter to navigate.
+- Press `Cmd/Ctrl+P` for the complete quick switcher and `Cmd/Ctrl+K` for compose.
+- Hover or focus the selected compact row to disclose branch/reason details, or open **Status** for the full explanation.
+- Open **Output**, scroll its full-viewport transcript, use **Open Tab**, and press Escape to restore focus.
+- Open **Artifacts**, change sort order, collapse/resize the list, select an image/text/JSX item, switch JSX between **Preview** and **Code**, and exercise Insert/Edit/Archive/Remove.
+- Use **Full Screen** inside Artifacts, then Exit Full or Escape. Switch sessions to see scoped artifacts update together with identity, facts, terminal, routes, and status.
 - Cycle Split through **terminal → vertical → horizontal → artifacts → terminal**.
-- Open session actions to exercise validated rename, color selection, routes/status, share-target validation, and two-step delete/progress placement.
-- Open stale review for mark reviewed, repair-session selection, and confirm/prune preview states. The unavailable fixture row is explicitly disabled.
-- Use terminal actions for scoped output, validated artifact creation, reference insertion, artifact panes, disabled upload-placement guidance, split, and validated compose.
-- At phone width, open the sessions sheet, action menu, docked multiline composer, paste-only/send actions, and soft-keybar.
-- Open **View UI states** at the navigator footer. The remote-image and flag cards launch the real app-level toast placements, including preview/open/dismiss and flagged-session navigation.
-- Drag/drop or paste an image to exercise the simulated image confirmation toast.
+- At tablet/mobile widths, open the labeled **Actions** control. In the artifact destination, use its own labeled action menu.
+- Use mobile compose, paste-only/send, and the soft-keybar. Open stale review and the UI state gallery for retained regression states.
 
 ## Accessibility and responsive notes
 
-- Operational text is 11–13px with raised muted contrast; meaningful state is never color-only.
-- Controls expose `aria-expanded`, `aria-current`, `aria-selected`, or `aria-modal` where applicable.
-- Terminal windows use tab semantics and left/right arrow navigation.
-- The closed mobile session sheet is inert and accessibility-hidden. Open state moves focus into filtering, traps Tab, makes the workspace and mobile dock inert, and restores the invoking control on close.
-- Mobile Status and Artifacts move focus to their headings, isolate obscured controls, remain mutually exclusive, and restore their trigger on Escape.
-- Dialogs use native modal focus behavior. Popovers dismiss one top layer at a time and restore their trigger. Coarse pointers receive 44px targets.
-- The shell is viewport-bound with internal navigator, terminal, panel, and dialog scrolling. Automated coverage includes 1440×1000, 1024×768, 900×800, 768×1024, 700×800, 601×800, 390×844, and 320×700 with no document overflow.
+- Operational text remains compact while muted contrast is raised; meaningful state is never color-only.
+- Controls expose `aria-expanded`, `aria-current`, `aria-selected`, `aria-modal`, descriptive labels, and native selection semantics where applicable.
+- The full-screen Output reader moves focus to its heading, makes the shell inert, traps Tab, supports Escape, and restores the invoking control.
+- The closed compact navigator is inert and accessibility-hidden. Open state focuses search, traps Tab, isolates the workspace, and restores its trigger.
+- Status, Artifacts, and their full-screen states preserve panel exclusivity and focus restoration. Coarse pointers receive 44px session rows and controls.
+- The shell is viewport-bound with internal navigator, terminal, panel, preview, reader, and dialog scrolling.
 
 ## Truthfulness boundaries
 
-This prototype does **not** claim session runtime or session age, ahead/behind count, exact changed-file breakdown, or route health. It does not add global Attention, Artifacts, Routes, Settings, or profile destinations. Route presence is explicitly shown as an address, not a health check. Session color remains a user-assigned identifier, distinct from status and selection.
+This prototype does **not** claim live session runtime, age, ahead/behind count, exact changed-file breakdown, or route health. Route presence is an address, not a health check. User color remains an identifier distinct from semantic status and selection.
 
-No production files are changed. Session fixtures are complete and selection re-renders identity, facts, terminal, status, routes, artifacts, and Gatepost placement together. Validated local transitions update the prototype fixture; unavailable upload/delete/share execution is explicitly described as placement or preview behavior. API calls, SSE, ttyd iframe behavior, upload, cleanup, and token execution remain production responsibilities.
+All 25 initial rows have complete fixture objects. Session selection re-renders identity, facts, terminal, status, routes, artifacts, Gatepost placement, and artifact preview together. Local create/rename/color/artifact transitions update the fixture; unavailable backend execution remains explicitly described as prototype placement.
 
-Run `python3 design-prototypes/operator-console/validate.py` while serving this directory on `http://127.0.0.1:4181/` to exercise the viewport, fixture, action, layer, and mobile accessibility regression suite.
+No production files are changed. API calls, SSE, ttyd iframe behavior, persisted upload, cleanup, and token execution remain production responsibilities.
 
-See [UI-INVENTORY.md](./UI-INVENTORY.md) for the production capability mapping and [../HARNESS-RESEARCH.md](../HARNESS-RESEARCH.md) for explicitly sequenced post-shell research.
+Run `python3 design-prototypes/operator-console/validate.py` while serving this directory at `http://127.0.0.1:4181/`. Coverage includes 1440×1000, 1280×900, 1100×800, 1024×768, 900×800, 768×1024, 700×800, 601×800, 540×760, 390×844, 360×780, and 320×700 with no document overflow or console/page errors.
+
+See [UI-INVENTORY.md](./UI-INVENTORY.md) for the production capability mapping.
