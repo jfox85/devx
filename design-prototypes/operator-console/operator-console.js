@@ -29,11 +29,19 @@
   let outputReturn = null;
   let artifactFullReturn = null;
   let nextCreated = 1;
+  let outputBlobURL = null;
 
   const colors = ['#a855f7','#22c55e','#f97316','#06b6d4','#ef4444','#3b82f6','#eab308','#ec4899'];
   const svgPreview = (label, color = '#0ea5e9') => 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520"><rect width="900" height="520" fill="#07101c"/><rect x="55" y="55" width="790" height="410" rx="24" fill="#0d1b2b" stroke="${color}" stroke-width="3"/><circle cx="112" cy="110" r="18" fill="#4ade80"/><path d="M95 372l160-142 126 92 104-83 222 133" fill="none" stroke="${color}" stroke-width="18"/><text x="95" y="160" fill="#eef5ff" font-family="monospace" font-size="34">${label}</text></svg>`);
-  const artifact = (id, title, type, age, content = '') => ({id, title, type, created: Date.now() - age * 3600000, content});
-  const jsxSample = `export default function FleetSummary() {\n  return (\n    <section className="rounded-xl bg-slate-900 p-8">\n      <h2>Fleet is ready</h2>\n      <p>24 complete session fixtures · compact navigation</p>\n    </section>\n  )\n}`;
+  const artifact = (id, title, type, age, content = '', options = {}) => ({
+    id, title, type, created: Date.now() - age * 3600000, content,
+    path: options.path || `.artifacts/${title}`,
+    summary: options.summary || '',
+    tags: options.tags || [],
+    retention: options.retention || 'keep',
+    ...options
+  });
+  const jsxSample = `export default function FleetSummary() {\n  return (\n    <section className="rounded-xl bg-slate-900 p-8">\n      <h2>Fleet is ready</h2>\n      <p>25 complete session fixtures · compact navigation</p>\n    </section>\n  )\n}`;
   const fixture = (title, project, branch, status, target, index, options = {}) => ({
     title, project, branch, status, target,
     statusTone: status === 'active' ? 'green' : status === 'attention' || status === 'dirty' ? 'amber' : status === 'repair' ? 'red' : 'muted',
@@ -47,7 +55,7 @@
   });
 
   const fleet = [
-    fixture('Operator console refresh','devx','jf-ui-refresh','active','host',0,{reason:'tmux is running; prototype worktree has local changes',routes:[['ui','operator-console-ui.localhost'],['api','operator-console-api.localhost'],['docs','operator-console-docs.localhost']],artifacts:[artifact('console-shot','operator-console.png','image',1,svgPreview('Operator Console')),artifact('review','ui-review.md','markdown',3,'# UI review\n\nCompact rows preserve status and personal color.\n\nOutput uses the full viewport.\n\nArtifact tools match the production surface.'),artifact('component','FleetSummary.jsx','jsx',5,jsxSample),artifact('verify','verification.txt','text',8,'PASS 1440×1000\nPASS 1024×768\nPASS 768×1024\nPASS 390×844\nPASS 320×700')]}),
+    fixture('Operator console refresh','devx','jf-ui-refresh','active','host',0,{reason:'tmux is running; worktree scan is clean',routes:[['ui','operator-console-ui.localhost'],['api','operator-console-api.localhost'],['docs','operator-console-docs.localhost']],artifacts:[artifact('console-shot','operator-console.png','image',1,svgPreview('Operator Console'),{summary:'Desktop console proof',tags:['ui','proof']}),artifact('review','ui-review.md','markdown',3,'# UI review\n\nCompact rows preserve status and personal color.\n\nOutput uses the full viewport.\n\nArtifact tools match the production surface.',{path:'.artifacts/reports/ui-review.md',summary:'Review handoff',tags:['review']}),artifact('component','FleetSummary.jsx','jsx',5,jsxSample,{path:'.artifacts/components/FleetSummary.jsx',retention:'30 days'}),artifact('verify','verification.txt','text',8,'PASS 1440×1000\nPASS 1024×768\nPASS 768×1024\nPASS 390×844\nPASS 320×700'),artifact('walkthrough','walkthrough.mp4','video',9,'',{path:'.artifacts/media/walkthrough.mp4'}),artifact('report','report.html','html',10,'<main style="font:16px system-ui;padding:24px"><h1>Operator report</h1><p>Static HTML artifact preview.</p></main>',{path:'.artifacts/reports/report.html'}),artifact('brief','brief.pdf','pdf',11,'',{path:'.artifacts/reports/brief.pdf'}),artifact('bundle','fixtures.zip','binary',12,'',{path:'.artifacts/archive/fixtures.zip'})]}),
     fixture('Gatepost proxy consolidation','devx','jf-gatepost-proxy','attention','gatepost',1,{routes:[['api','gatepost-proxy-api.localhost'],['logs','gatepost-proxy-logs.localhost']],artifacts:[artifact('proxy-review','proxy-review.md','markdown',4,'# Proxy review\n\nOperator attention is required before route cleanup.')]}),
     fixture('Artifact search indexing','devx','jf-artifact-search','dirty','host',2),
     fixture('Terminal reconnect handling','devx','jf-reconnect','idle','docker',3),
@@ -84,19 +92,21 @@
   const dotClass = (status) => ({active:'live',attention:'attention',dirty:'dirty',repair:'broken'}[status] || '');
 
   function renderFleet() {
-    const projects = [...new Set(fleet.map((session) => session.project))];
+    const priority = {repair:0, attention:1, dirty:2, active:3, idle:4};
+    const projects = [...new Set(fleet.map((session) => session.project))].sort((a,b) => a.localeCompare(b));
     $('#fleet-groups').innerHTML = projects.map((project) => {
-      const sessions = fleet.filter((session) => session.project === project);
-      return `<section class="project"><button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span>${esc(project)}<span class="count">${sessions.length}</span></button><div class="sessions">${sessions.map((session) => {
+      const sessions = fleet.filter((session) => session.project === project).sort((a,b) => (priority[a.status] ?? 99) - (priority[b.status] ?? 99) || a.title.localeCompare(b.title));
+      return `<section class="project" data-project="${esc(project)}"><button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span>${esc(project)}<span class="count">${sessions.length}</span></button><div class="sessions">${sessions.map((session) => {
         const artifactCount = session.artifacts.filter((item) => !item.removed).length;
-        const detail = `${session.branch} · ${session.reason} · ${artifactCount} artifacts`;
-        return `<button class="session${session.branch === activeBranch ? ' selected' : ''}" data-title="${esc(session.title)}" data-project="${esc(session.project)}" data-branch="${esc(session.branch)}" data-status="${esc(session.status)}" data-detail="${esc(detail)}" title="${esc(`${session.title} — ${detail}`)}"${session.branch === activeBranch ? ' aria-current="true"' : ''}><span class="status-dot ${dotClass(session.status)}" aria-hidden="true"></span><i class="swatch" style="background:${esc(session.color)}" title="Session color identifier"></i><span class="session-main"><span class="session-name">${esc(session.title)}</span><span class="branch">${esc(session.branch)}</span></span><span class="badge">${esc(session.target)}</span>${artifactCount ? `<span class="badge blue" title="${artifactCount} artifacts">◆ ${artifactCount}</span>` : `<span class="session-state ${esc(session.status)}" title="${esc(session.status)}">${statusGlyph(session.status)}</span>`}</button>`;
+        const detail = `${session.branch} · ${session.reason} · status ${session.status} · ${artifactCount} artifacts`;
+        return `<button class="session${session.branch === activeBranch ? ' selected' : ''}" data-title="${esc(session.title)}" data-project="${esc(session.project)}" data-branch="${esc(session.branch)}" data-status="${esc(session.status)}" data-detail="${esc(detail)}" title="${esc(`${session.title} — ${detail}`)}" aria-label="${esc(`${session.title}, ${session.status}, ${session.target} target, ${artifactCount} artifacts`)}"${session.branch === activeBranch ? ' aria-current="true"' : ''}><span class="status-dot ${dotClass(session.status)}" aria-hidden="true"></span><span class="swatch" style="background:${esc(session.color)}" title="Session color identifier" aria-hidden="true"></span><span class="session-main"><span class="session-name">${esc(session.title)}</span><span class="branch">${esc(session.branch)}</span></span><span class="badge">${esc(session.target)}</span><span class="session-state ${esc(session.status)}" title="Status: ${esc(session.status)}" aria-label="Status: ${esc(session.status)}"><span aria-hidden="true">${statusGlyph(session.status)}</span></span>${artifactCount ? `<span class="badge blue" title="${artifactCount} artifacts" aria-label="${artifactCount} artifacts">◆ ${artifactCount}</span>` : '<span class="badge blue" aria-label="0 artifacts">◆ 0</span>'}</button>`;
       }).join('')}</div></section>`;
     }).join('');
     $('#active-count').textContent = fleet.filter((s) => s.status === 'active').length;
     $('#flagged-count').textContent = fleet.filter((s) => s.status === 'attention').length;
     $('#total-count').textContent = fleet.length;
     bindProjectToggles();
+    $$('.session').forEach((row) => row.onkeydown = navigateFleet);
   }
 
   function bindProjectToggles() {
@@ -123,17 +133,29 @@
     $('#artifact-resizer').hidden = listCollapsed || !items.length;
     $('#artifact-list-toggle').textContent = listCollapsed ? 'Show list' : 'Hide list';
     $('#artifact-sort').value = artifactSort;
-    $('#artifact-list').innerHTML = items.length ? items.map((item) => `<button class="artifact-list-item${item.id === selectedArtifactID ? ' selected' : ''}" data-artifact-id="${esc(item.id)}" aria-current="${item.id === selectedArtifactID}"><b>${esc(item.title)}${item.archived ? ' · archived' : ''}</b><span>${esc(item.type)} · ${Math.max(1,Math.round((Date.now() - item.created)/3600000))}h ago</span></button>`).join('') : '<div class="detail"><p class="dim">No artifacts — upload files or create a text artifact.</p></div>';
+    const groups = new Map();
+    items.forEach((item) => {
+      const relative = item.path.replace(/^\.artifacts\/?/, '');
+      const folder = relative.includes('/') ? `.artifacts/${relative.slice(0, relative.lastIndexOf('/'))}` : '.artifacts';
+      if (!groups.has(folder)) groups.set(folder, []);
+      groups.get(folder).push(item);
+    });
+    $('#artifact-list').innerHTML = items.length ? [...groups].map(([folder, folderItems]) => `<div class="artifact-folder">${esc(folder)}</div>${folderItems.map((item) => `<button class="artifact-list-item${item.id === selectedArtifactID ? ' selected' : ''}" data-artifact-id="${esc(item.id)}" aria-current="${item.id === selectedArtifactID}"><b>${esc(item.title)}${item.archived ? ' · archived' : ''}</b><span>${esc(item.type)} · ${Math.max(1,Math.round((Date.now() - item.created)/3600000))}h ago · ${esc(item.retention)}</span></button>`).join('')}`).join('') : '<div class="detail"><p class="dim">No artifacts — upload files, paste, drop, or create an artifact.</p></div>';
     const selected = items.find((item) => item.id === selectedArtifactID);
     if (!selected) {
-      $('#artifact-preview-head').innerHTML = '<div class="preview-title"><b>No artifact selected</b><small>Create or upload to begin</small></div>';
+      $('#artifact-preview-head').innerHTML = '<div class="preview-title"><b>No artifact selected</b><small>Create, upload, paste, or drop to begin</small></div>';
       $('#artifact-preview').innerHTML = '<p class="dim">Preview appears here.</p>';
       return;
     }
     const toggle = selected.type === 'jsx' ? `<button class="artifact-tool" data-artifact-command="jsx">${jsxMode === 'preview' ? 'Code' : 'Preview'}</button>` : '';
-    $('#artifact-preview-head').innerHTML = `<div class="preview-title"><b>${esc(selected.title)}</b><small>${esc(selected.type)} · session scoped</small></div>${toggle}<button class="artifact-tool" data-artifact-command="insert">Insert</button><button class="artifact-tool" data-artifact-command="edit">Edit</button><button class="artifact-tool" data-artifact-command="archive">Archive</button><button class="artifact-tool" data-artifact-command="remove" style="color:var(--red)">Remove</button>`;
+    const metadata = [selected.path, selected.summary, selected.tags.length ? `#${selected.tags.join(' #')}` : '', selected.retention].filter(Boolean).join(' · ');
+    $('#artifact-preview-head').innerHTML = `<div class="preview-title"><b>${esc(selected.title)}</b><small>${esc(metadata)}</small></div>${toggle}<button class="artifact-tool" data-artifact-command="insert">Insert</button><button class="artifact-tool" data-artifact-command="edit">Edit</button><button class="artifact-tool" data-artifact-command="archive">Archive</button><button class="artifact-tool" data-artifact-command="remove" style="color:var(--red)">Remove</button>`;
     if (selected.type === 'image') $('#artifact-preview').innerHTML = `<img src="${selected.content}" alt="Preview of ${esc(selected.title)}" style="display:block;max-width:100%;max-height:100%;margin:auto;object-fit:contain">`;
-    else if (selected.type === 'jsx' && jsxMode === 'preview') $('#artifact-preview').innerHTML = '<div class="jsx-card"><h2>Fleet is ready</h2><p>24 complete session fixtures use compact one-line navigation. The JSX preview/code toggle is functional.</p><button class="primary">Review sessions</button></div>';
+    else if (selected.type === 'jsx' && jsxMode === 'preview') $('#artifact-preview').innerHTML = '<div class="jsx-card"><h2>Fleet is ready</h2><p>25 complete session fixtures use compact one-line navigation. The JSX preview/code toggle is functional.</p><button class="primary">Review sessions</button></div>';
+    else if (selected.type === 'video') $('#artifact-preview').innerHTML = `<video controls aria-label="Video preview for ${esc(selected.title)}"></video><p class="dim">Video player state · static fixture has no encoded media payload.</p>`;
+    else if (selected.type === 'html') $('#artifact-preview').innerHTML = `<iframe title="HTML preview for ${esc(selected.title)}" sandbox srcdoc="${esc(selected.content)}"></iframe>`;
+    else if (selected.type === 'pdf') $('#artifact-preview').innerHTML = `<iframe title="PDF preview for ${esc(selected.title)}" srcdoc="${esc('<p style=\"font:16px system-ui;padding:24px\">PDF/iframe preview state for '+selected.title+'</p>')}"></iframe>`;
+    else if (selected.type === 'binary') $('#artifact-preview').innerHTML = `<div class="detail"><h2>No inline preview</h2><p>${esc(selected.title)} cannot be previewed here. Download or open it with a compatible application.</p></div>`;
     else $('#artifact-preview').innerHTML = `<pre>${esc(selected.content || `${selected.title}\n\nStatic preview content for ${current().branch}.`)}</pre>`;
     const full = artifactPanel.classList.contains('fullscreen');
     $('#artifact-fullscreen').textContent = full ? 'Exit Full' : 'Full Screen';
@@ -160,7 +182,7 @@
     const routes = session.routes.length ? session.routes.map(([name,address]) => `<a class="route-link" href="https://${esc(address)}" target="_blank" rel="noreferrer">↗ ${esc(name)} · ${esc(address)}</a>`).join('') : '<p class="dim">No route addresses in this fixture.</p>';
     const gatepost = session.gatepost ? `<p>Enabled for this session.</p><a class="route-link" href="${esc(session.gatepost)}" target="_blank" rel="noreferrer">↗ Open external Gatepost logs</a>` : '<p>Not enabled for this session.</p>';
     $('#status-content').innerHTML = `<div class="detail"><h2>Status</h2><p><span style="color:${toneColor(session.statusTone)}">● ${esc(session.status)}</span> — ${esc(session.reason)}.</p><button class="small-btn" data-status-legend>Status legend</button></div><div class="detail"><h2>Branch and target</h2><p><b>${esc(session.branch)}</b></p><p>${esc(session.target)} target</p></div><div class="detail"><h2>Routes · addresses only</h2>${routes}<p class="dim">No health claim is inferred from route presence.</p></div><div class="detail"><h2>Gatepost</h2>${gatepost}</div><div class="detail"><h2>Artifacts</h2><p>${artifactItems().length} session artifacts</p><button class="small-btn" data-open-artifacts>Open artifact pane</button></div>`;
-    const lines = Array.from({length:18},(_,i) => `<div class="term-row"><span class="dim">${String(i+1).padStart(2,'0')}</span> ${i % 4 === 0 ? '<span class="green">PASS</span>' : '<span class="cyan">INFO</span>'} ${esc(session.branch)} ${i % 3 === 0 ? 'verified session fixture and viewport containment' : 'operator output remains available for review'}</div>`).join('');
+    const lines = Array.from({length:64},(_,i) => `<div class="term-row"><span class="dim">${String(i+1).padStart(2,'0')}</span> ${i % 4 === 0 ? '<span class="green">PASS</span>' : '<span class="cyan">INFO</span>'} ${esc(session.branch)} ${i % 3 === 0 ? 'verified session fixture and viewport containment' : 'operator output remains available for review'}</div>`).join('');
     $('#terminal-content').innerHTML = `<div class="term-row dim">Session fixture loaded for ${esc(session.project)}</div><div class="term-row"><span class="cyan">${esc(session.project)}</span> <b>${esc(session.branch)}</b> <span class="cyan">git:(${esc(session.branch)})</span>${session.dirty ? ' <span class="amber">±</span>' : ''}</div><div class="term-row command">❯ devx status --session ${esc(session.branch)}</div><div class="term-row"><span class="dim">STATUS</span>  <span style="color:${toneColor(session.statusTone)}">${esc(session.status)}</span></div><div class="term-row"><span class="dim">TARGET</span>  ${esc(session.target)}</div><div class="term-row"><span class="dim">TMUX</span>    ${esc(session.tmux)}</div>${lines}<div class="term-row command">❯ <span class="cursor"></span></div>`;
     renderArtifacts();
     renderQuick();
@@ -214,7 +236,9 @@
   function syncPanelIsolation() {
     const statusOpen = statusPanel.classList.contains('open');
     const artifactOpen = artifactPanel.classList.contains('open');
-    if (!isPhone()) { ['.topbar','.facts','.windowbar','#stage','.mobile-composer','.terminal-pane','#composer'].forEach((selector) => { const element = $(selector); if (element) element.inert = false; }); return; }
+    workspace.classList.toggle('panel-destination', isPhone() && (statusOpen || artifactOpen));
+    if (artifactPanel.classList.contains('fullscreen')) { setArtifactIsolation(true); return; }
+    if (!isPhone()) { ['.topbar','.facts','.windowbar','.mobile-composer','.terminal-pane','#composer','#navigator','.mobile-bottom','#status-panel'].forEach((selector) => { const element = $(selector); if (element) element.inert = false; }); return; }
     $('.topbar').inert = statusOpen || artifactOpen; $('.facts').inert = statusOpen || artifactOpen; $('.windowbar').inert = statusOpen || artifactOpen; $('.mobile-composer').inert = statusOpen || artifactOpen; $('#stage').inert = statusOpen; $('.terminal-pane').inert = artifactOpen; composer.inert = statusOpen || artifactOpen;
   }
   function openStatus({focus = isPhone(), opener = document.activeElement} = {}) { panelReturn = opener; if (isCompact()) closeArtifacts(false); statusPanel.classList.add('open'); $('#status-toggle').setAttribute('aria-expanded','true'); if (isPhone()) setMobileActive('status'); syncPanelIsolation(); if (focus) setTimeout(() => $('#status-heading').focus(),0); }
@@ -227,10 +251,28 @@
   function cycleSplit() { const modes = ['terminal','vertical','horizontal','artifacts']; closeStatus(false); applySplit(modes[(modes.indexOf(split)+1)%modes.length]); }
   function closePanelsToTerminal(restore = false) { closeStatus(false); closeArtifacts(false); setMobileActive('terminal'); syncPanelIsolation(); if (restore) setTimeout(() => $('#mobile-terminal').focus(),0); }
 
+  function setArtifactIsolation(full) {
+    $('.shell').inert = full;
+    ['#navigator','.topbar','.facts','.windowbar','.terminal-pane','#composer','#status-panel','.mobile-composer','.mobile-bottom'].forEach((selector) => { const element = $(selector); if (element) element.inert = full; });
+  }
   function toggleArtifactFull(force) {
     const full = force ?? !artifactPanel.classList.contains('fullscreen');
-    if (full) { artifactFullReturn = document.activeElement; artifactPanel.classList.add('fullscreen'); listCollapsed = true; }
-    else { artifactPanel.classList.remove('fullscreen'); }
+    if (full) {
+      artifactFullReturn = visibleOwnerTarget(document.activeElement);
+      document.body.appendChild(artifactPanel);
+      artifactPanel.classList.add('fullscreen');
+      artifactPanel.setAttribute('role','dialog');
+      artifactPanel.setAttribute('aria-modal','true');
+      listCollapsed = true;
+      setArtifactIsolation(true);
+    } else {
+      artifactPanel.classList.remove('fullscreen');
+      artifactPanel.removeAttribute('role');
+      artifactPanel.removeAttribute('aria-modal');
+      pane.appendChild(artifactPanel);
+      setArtifactIsolation(false);
+      syncPanelIsolation();
+    }
     renderArtifacts();
     if (full) setTimeout(() => $('#artifact-heading').focus(),0); else setTimeout(() => artifactFullReturn?.focus(),0);
   }
@@ -244,10 +286,10 @@
     if (command === 'close') closeArtifacts(true);
     if (command === 'sort') { artifactSort = artifactSort === 'newest' ? 'oldest' : artifactSort === 'oldest' ? 'title' : 'newest'; renderArtifacts(); }
     if (command === 'jsx') { jsxMode = jsxMode === 'preview' ? 'code' : 'preview'; renderArtifacts(); }
-    if (command === 'insert' && selected) insertReference(selected.title, owner);
-    if (command === 'edit' && selected) generic('Edit artifact', `<label class="field">Title<input id="edit-artifact-title" value="${esc(selected.title)}"></label><button class="primary" id="save-artifact">Save changes</button>`, (body) => { $('#save-artifact',body).onclick = () => { const title = $('#edit-artifact-title',body).value.trim(); if (!title) return; selected.title = title; $('#generic-dialog').close(); renderArtifacts(); renderFleet(); toast('Artifact updated', title); }; }, owner);
+    if (command === 'insert' && selected) insertReference(selected.path, owner);
+    if (command === 'edit' && selected) generic('Edit artifact', `<label class="field">Title<input id="edit-artifact-title" value="${esc(selected.title)}"></label><label class="field">Summary<input id="edit-artifact-summary" value="${esc(selected.summary)}"></label><label class="field">Tags<input id="edit-artifact-tags" value="${esc(selected.tags.join(', '))}" placeholder="ui, review"></label><label class="field">Retention<select id="edit-artifact-retention"><option value="keep">Keep</option><option value="7 days">7 days</option><option value="30 days">30 days</option></select></label><button class="primary" id="save-artifact">Save changes</button>`, (body) => { $('#edit-artifact-retention',body).value = selected.retention; $('#save-artifact',body).onclick = () => { const title = $('#edit-artifact-title',body).value.trim(); if (!title) return; selected.title = title; selected.summary = $('#edit-artifact-summary',body).value.trim(); selected.tags = $('#edit-artifact-tags',body).value.split(',').map((tag) => tag.trim()).filter(Boolean); selected.retention = $('#edit-artifact-retention',body).value; $('#generic-dialog').close(); renderArtifacts(); renderFleet(); toast('Artifact updated', title); }; }, owner);
     if (command === 'archive' && selected) { selected.archived = true; renderArtifacts(); toast('Artifact archived', selected.title); }
-    if (command === 'remove' && selected) { selected.removed = true; selectedArtifactID = null; renderArtifacts(); renderSession(); renderFleet(); toast('Artifact removed', `${selected.title} was removed from this fixture.`); }
+    if (command === 'remove' && selected) generic('Remove artifact?', `<p>Remove <b>${esc(selected.title)}</b> from this session? This destructive action requires confirmation.</p><button class="danger-btn" id="confirm-remove-artifact">Confirm remove</button>`, (body) => { $('#confirm-remove-artifact',body).onclick = () => { selected.removed = true; selectedArtifactID = null; $('#generic-dialog').close(); renderSession(); renderFleet(); toast('Artifact removed', `${selected.title} was removed from this fixture.`); }; }, owner);
   }
 
   function updateComposerButtons(textarea, send, paste) { const hasText = textarea.value.trim().length > 0; send.disabled = !hasText; paste.disabled = !hasText; }
@@ -270,32 +312,35 @@
     const text = $('#terminal-content').innerText;
     $('#output-reader-session').textContent = `${current().project} / ${current().branch} · readable terminal transcript`;
     $('#output-reader-body pre').textContent = text;
-    $('#output-open-tab').href = `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`;
+    $('#output-reader-body').scrollTop = 0;
+    if (outputBlobURL) URL.revokeObjectURL(outputBlobURL);
+    outputBlobURL = URL.createObjectURL(new Blob([text], {type:'text/plain;charset=utf-8'}));
+    $('#output-open-tab').href = outputBlobURL;
     outputReader.hidden = false;
     $('.shell').inert = true;
     setTimeout(() => $('#output-reader-heading').focus(),0);
   }
   function closeOutput() { if(outputReader.hidden)return; outputReader.hidden=true; $('.shell').inert=false; setTimeout(() => outputReturn?.focus(),0); }
   function openNewArtifact(returnTarget) {
-    generic('New artifact','<label class="field">Title<input id="artifact-title" placeholder="Review notes"></label><label class="field">Artifact text<textarea id="artifact-text" rows="8" placeholder="Paste notes, logs, JSX, or a handoff…"></textarea></label><button class="primary" id="create-artifact" disabled>Create artifact</button>',(body)=>{
+    generic('New artifact','<label class="field">Title<input id="artifact-title" placeholder="review-notes.md"></label><label class="field">Format<select id="artifact-format"><option value="markdown">Markdown</option><option value="text">Text</option><option value="html">HTML</option><option value="jsx">JSX</option></select></label><label class="field">Retention<select id="artifact-retention"><option value="keep">Keep</option><option value="7 days">7 days</option><option value="30 days">30 days</option></select></label><label class="field">Tags<input id="artifact-tags" placeholder="review, ui"></label><label class="field">Artifact text<textarea id="artifact-text" rows="8" placeholder="Paste notes, logs, JSX, or a handoff…"></textarea></label><button class="primary" id="create-artifact" disabled>Create artifact</button>',(body)=>{
       const title=$('#artifact-title',body), input=$('#artifact-text',body), create=$('#create-artifact',body); const validate=()=>{create.disabled=!input.value.trim();}; input.oninput=validate;
-      create.onclick=()=>{const name=title.value.trim()||`note-${artifactItems().length+1}.md`; const type=/export\s+default|className=/.test(input.value)?'jsx':'markdown'; const item=artifact(`${current().branch}-${Date.now()}`,name,type,0,input.value); current().artifacts.push(item); selectedArtifactID=item.id; $('#generic-dialog').close(); renderSession(); renderFleet(); openArtifacts({opener:returnTarget}); toast('Artifact created',`${name} was added to ${current().title}.`);};
+      create.onclick=()=>{const format=$('#artifact-format',body).value; const extension={markdown:'md',text:'txt',html:'html',jsx:'jsx'}[format]; const name=title.value.trim()||`note-${artifactItems().length+1}.${extension}`; const item=artifact(`${current().branch}-${Date.now()}`,name,format,0,input.value,{retention:$('#artifact-retention',body).value,tags:$('#artifact-tags',body).value.split(',').map((tag)=>tag.trim()).filter(Boolean),summary:'Created in Operator Console'}); current().artifacts.push(item); selectedArtifactID=item.id; $('#generic-dialog').close(); renderSession(); renderFleet(); openArtifacts({opener:returnTarget}); toast('Artifact created',`${name} was added to ${current().title}.`);};
     },returnTarget);
   }
-  function insertReference(name, returnTarget) {
-    const reference=`[artifact:${name}]`;
+  function insertReference(path, returnTarget) {
+    const reference=path.startsWith('.artifacts/') ? path : `.artifacts/${path}`;
     if(isPhone()){ $('#mobile-text').value=reference; updateComposerButtons($('#mobile-text'),$('#mobile-send'),$('#mobile-paste')); if(artifactPanel.classList.contains('open'))closeArtifacts(false); setMobileActive('terminal'); $('#mobile-text').focus(); }
     else { $('textarea',composer).value=reference; updateComposerButtons($('textarea',composer),$('button[type="submit"]',composer),$('#paste-only')); if(artifactPanel.classList.contains('fullscreen'))toggleArtifactFull(false); toggleCompose(true); }
-    toast('Reference inserted',`${name} is ready to send.`);
+    toast('Reference inserted',`${reference} is ready to send.`);
   }
-  function openInsert(returnTarget) { const items=artifactItems(); if(!items.length){generic('Insert artifact reference','<p class="dim">No artifacts are available. Create an artifact first.</p>',null,returnTarget);return;} generic('Insert artifact reference',`<div class="switch-list">${items.map(item=>`<button class="switch-item" data-insert-artifact="${esc(item.title)}"><b>${esc(item.title)}</b><span>Insert path into terminal composer</span></button>`).join('')}</div>`,body=>$$('[data-insert-artifact]',body).forEach(button=>button.onclick=()=>{$('#generic-dialog').close();insertReference(button.dataset.insertArtifact,returnTarget);}),returnTarget); }
+  function openInsert(returnTarget) { const items=artifactItems(); if(!items.length){generic('Insert artifact reference','<p class="dim">No artifacts are available. Create an artifact first.</p>',null,returnTarget);return;} generic('Insert artifact reference',`<div class="switch-list">${items.map(item=>`<button class="switch-item" data-insert-artifact="${esc(item.path)}"><b>${esc(item.title)}</b><span>${esc(item.path)}</span></button>`).join('')}</div>`,body=>$$('[data-insert-artifact]',body).forEach(button=>button.onclick=()=>{$('#generic-dialog').close();insertReference(button.dataset.insertArtifact,returnTarget);}),returnTarget); }
   function action(name,returnTarget=document.activeElement) {
     const owner=visibleOwnerTarget(returnTarget); hideMenus();
     if(name==='view')openOutput(owner);
     if(name==='new-artifact')openNewArtifact(owner);
     if(name==='insert')openInsert(owner);
     if(name==='artifacts')artifactPanel.classList.contains('open')?closeArtifacts(true):openArtifacts({opener:owner});
-    if(name==='split'){ if(innerWidth<1024)openArtifacts({opener:owner}); else cycleSplit(); }
+    if(name==='split')cycleSplit();
     if(name==='compose')toggleCompose();
     if(name==='image')generic('Attach image','<p>Selecting files is represented by the artifact Upload control. Terminal image upload remains a production API boundary.</p><button class="primary" disabled>Choose image — placement study only</button>',null,owner);
   }
@@ -330,7 +375,17 @@
   $('#artifact-list-toggle').onclick=()=>artifactCommand('list',$('#artifact-list-toggle'));
   $('#artifact-fullscreen').onclick=()=>artifactCommand('fullscreen',$('#artifact-fullscreen'));
   $('#artifact-sort').onchange=(event)=>{artifactSort=event.target.value;renderArtifacts();};
-  $('#artifact-upload').onchange=(event)=>{const files=[...event.target.files];files.forEach((file,index)=>current().artifacts.push(artifact(`${current().branch}-upload-${Date.now()}-${index}`,file.name,/\.(png|jpe?g|gif|webp)$/i.test(file.name)?'image':'text',0,/\.(png|jpe?g|gif|webp)$/i.test(file.name)?svgPreview(file.name):`Uploaded fixture: ${file.name}`)));event.target.value='';renderSession();renderFleet();toast('Upload added',`${files.length} file${files.length===1?'':'s'} added to ${current().title}.`);};
+  async function intakeArtifactFiles(files, source='Upload') {
+    const list=[...files];
+    for (const [index,file] of list.entries()) {
+      const image=/\.(png|jpe?g|gif|webp)$/i.test(file.name);
+      const type=image?'image':/\.(mp4|webm|mov)$/i.test(file.name)?'video':/\.html?$/i.test(file.name)?'html':/\.pdf$/i.test(file.name)?'pdf':/\.jsx?$/i.test(file.name)?'jsx':/\.md$/i.test(file.name)?'markdown':/\.(txt|log|json|csv)$/i.test(file.name)?'text':'binary';
+      const content = await new Promise((resolve) => { const reader=new FileReader(); reader.onload=()=>resolve(reader.result||''); reader.onerror=()=>resolve(''); if(image)reader.readAsDataURL(file); else if(type==='text'||type==='markdown'||type==='jsx'||type==='html')reader.readAsText(file); else resolve(''); });
+      current().artifacts.push(artifact(`${current().branch}-upload-${Date.now()}-${index}`,file.name,type,0,content,{summary:`${source} intake`,tags:['intake']}));
+    }
+    renderSession(); renderFleet(); toast(`${source} added`,`${list.length} file${list.length===1?'':'s'} added to ${current().title}.`);
+  }
+  $('#artifact-upload').onchange=async(event)=>{const files=[...event.target.files];event.target.value='';await intakeArtifactFiles(files);};
 
   let resizing=false,startY=0,startHeight=0;
   $('#artifact-resizer').addEventListener('pointerdown',(event)=>{resizing=true;startY=event.clientY;startHeight=$('#artifact-list').getBoundingClientRect().height;event.currentTarget.setPointerCapture(event.pointerId);});
@@ -338,7 +393,23 @@
   $('#artifact-resizer').addEventListener('pointerup',()=>{resizing=false;});
 
   search.oninput=filterSessions; $('#clear-filter').onclick=()=>{search.value='';filterSessions();search.focus();};
-  search.onkeydown=(event)=>{if(!['ArrowDown','ArrowUp','Enter'].includes(event.key))return;const rows=$$('.session:not([hidden])');let index=rows.indexOf(document.activeElement);if(event.key==='Enter'&&index<0)index=0;else if(event.key!=='Enter')index=event.key==='ArrowDown'?Math.min(rows.length-1,index+1):Math.max(0,index<0?rows.length-1:index-1);if(rows[index]){event.preventDefault();event.key==='Enter'?selectSession(rows[index].dataset.branch):rows[index].focus();}};
+  function navigateFleet(event) {
+    if (!['ArrowDown','ArrowUp','Enter'].includes(event.key)) return;
+    const rows = $$('.session').filter((row) => !row.hidden && row.offsetParent !== null);
+    if (!rows.length) return;
+    let index = rows.indexOf(document.activeElement);
+    if (event.key === 'Enter') {
+      const row = index >= 0 ? rows[index] : rows[0];
+      event.preventDefault();
+      selectSession(row.dataset.branch, {closeNavigator:false});
+      row.focus();
+      return;
+    }
+    event.preventDefault();
+    index = event.key === 'ArrowDown' ? (index < 0 ? 0 : (index + 1) % rows.length) : (index < 0 ? rows.length - 1 : (index - 1 + rows.length) % rows.length);
+    rows[index].focus();
+  }
+  search.onkeydown=navigateFleet;
 
   $$('.tab').forEach((tab,index)=>{tab.tabIndex=index===0?0:-1;tab.onclick=()=>selectTab(tab);tab.onkeydown=event=>{if(!['ArrowRight','ArrowLeft'].includes(event.key))return;event.preventDefault();const tabs=$$('.tab');const next=(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;selectTab(tabs[next]);tabs[next].focus();};});
   function selectTab(tab){$$('.tab').forEach(item=>{item.classList.remove('active');item.setAttribute('aria-selected','false');item.tabIndex=-1;});tab.classList.add('active');tab.setAttribute('aria-selected','true');tab.tabIndex=0;}
@@ -370,14 +441,42 @@
   $('#show-image-toast').onclick=()=>{$('#states-dialog').close();presentGalleryToast(showRemoteImageToast);}; $('#show-flag-toast').onclick=()=>{$('#states-dialog').close();presentGalleryToast(showFlagToast);};
   $('#prune-action').onclick=event=>{const confirming=event.currentTarget.textContent.startsWith('Confirm');event.currentTarget.textContent=confirming?'Pruning preview complete ✓':'Confirm prune 1 clean';if(confirming)event.currentTarget.disabled=true;};
   $('#repair-action').onclick=()=>{$('#stale-dialog').close();selectSession('jf-mcp-audit',{feedback:true});}; $('#reviewed-action').onclick=event=>{event.currentTarget.textContent='Reviewed ✓';event.currentTarget.disabled=true;};
-  $('#quick-input').oninput=event=>$$('#quick-dialog .switch-item').forEach(item=>item.hidden=!item.textContent.toLowerCase().includes(event.target.value.toLowerCase()));
+  $('#quick-input').oninput=event=>{const items=$$('#quick-dialog .switch-item');items.forEach(item=>{item.hidden=!item.textContent.toLowerCase().includes(event.target.value.toLowerCase());item.classList.remove('selected');});items.find((item)=>!item.hidden)?.classList.add('selected');};
+  $('#quick-dialog').onkeydown=event=>{if(!['ArrowDown','ArrowUp','Enter'].includes(event.key))return;const items=$$('#quick-dialog .switch-item').filter((item)=>!item.hidden);if(!items.length)return;let index=items.findIndex((item)=>item.classList.contains('selected'));if(event.key==='Enter'){event.preventDefault();const item=items[Math.max(0,index)];$('#quick-dialog').close();selectSession(item.dataset.branch,{feedback:true});return;}event.preventDefault();items.forEach((item)=>item.classList.remove('selected'));index=event.key==='ArrowDown'?(index+1)%items.length:(index<=0?items.length-1:index-1);items[index].classList.add('selected');items[index].scrollIntoView({block:'nearest'});};
   function openQuick(){renderQuick();$('#quick-input').value='';openDialog($('#quick-dialog'),document.activeElement);setTimeout(()=>$('#quick-input').focus(),0);}
   $('#quick-dialog').addEventListener('click',event=>{const item=event.target.closest('.switch-item');if(item){$('#quick-dialog').close();selectSession(item.dataset.branch,{feedback:true});}});
 
+  artifactPanel.addEventListener('paste',event=>{
+    if(!artifactPanel.classList.contains('open'))return;
+    const files=[...event.clipboardData.files];
+    if(files.length){event.preventDefault();intakeArtifactFiles(files,'Paste');return;}
+    const text=event.clipboardData.getData('text/plain').trim();
+    if(text&&!isEditable(event.target)){event.preventDefault();const name=`pasted-note-${artifactItems().length+1}.md`;const item=artifact(`${current().branch}-paste-${Date.now()}`,name,'markdown',0,text,{summary:'Pasted into ArtifactPane',tags:['paste']});current().artifacts.push(item);selectedArtifactID=item.id;renderSession();renderFleet();toast('Paste added',`${name} was added to ${current().title}.`);}
+  });
+  artifactPanel.addEventListener('dragover',event=>{event.preventDefault();event.stopPropagation();$('#artifact-preview').classList.add('dragging');});
+  artifactPanel.addEventListener('dragleave',event=>{if(!artifactPanel.contains(event.relatedTarget))$('#artifact-preview').classList.remove('dragging');});
+  artifactPanel.addEventListener('drop',event=>{event.preventDefault();event.stopPropagation();$('#artifact-preview').classList.remove('dragging');intakeArtifactFiles(event.dataTransfer.files,'Drop');});
   $('#stage').addEventListener('dragenter',event=>{event.preventDefault();$('#stage').classList.add('dragging');}); $('#stage').addEventListener('dragover',event=>event.preventDefault()); $('#stage').addEventListener('dragleave',event=>{if(!$('#stage').contains(event.relatedTarget))$('#stage').classList.remove('dragging');}); $('#stage').addEventListener('drop',event=>{event.preventDefault();$('#stage').classList.remove('dragging');const file=[...event.dataTransfer.files].find(item=>item.type.startsWith('image/'));toast(file?'Image accepted':'Image not accepted',file?`${file.name} reached static confirmation.`:'Drop a PNG, JPG, GIF, or WebP image.');});
 
   document.addEventListener('keydown',event=>{
-    if(!outputReader.hidden){if(event.key==='Escape'){event.preventDefault();closeOutput();return;}if(event.key==='Tab'){const items=focusables(outputReader),first=items[0],last=items[items.length-1];if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}return;}
+    if(!outputReader.hidden){
+      if(event.key==='Escape'){event.preventDefault();closeOutput();return;}
+      if(event.key==='Tab'){
+        const items=[$('#output-reader-heading'),...focusables(outputReader)],first=items[0],last=items[items.length-1];
+        if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+        else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+      }
+      return;
+    }
+    if(artifactPanel.classList.contains('fullscreen')&&!$$('dialog[open]').length){
+      if(event.key==='Escape'){event.preventDefault();toggleArtifactFull(false);return;}
+      if(event.key==='Tab'){
+        const items=[$('#artifact-heading'),...focusables(artifactPanel)],first=items[0],last=items[items.length-1];
+        if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+        else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+      }
+      return;
+    }
     if((event.metaKey||event.ctrlKey)&&!event.shiftKey&&event.key.toLowerCase()==='p'){event.preventDefault();$('#quick-dialog').open?$('#quick-dialog').close():openQuick();return;}
     if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();toggleCompose();return;}
     if(event.key==='/'&&!isEditable(event.target)&&!$$('dialog[open]').length){event.preventDefault();innerWidth<1024?setNav(true):search.focus();return;}

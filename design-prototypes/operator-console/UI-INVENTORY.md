@@ -9,7 +9,7 @@ This inventory maps current production shell behavior and direct user feedback t
 | Desktop row density | Navigator rows | One-line 32px rows; about 20 visible in a 1000px viewport |
 | Touch row density | Navigator rows | 44px on coarse pointers/mobile |
 | Status + user color | Every row | Separate semantic dot and personal-color square |
-| Name, target, artifacts/attention/status | Every row | Compact name and target plus artifact count or textual status glyph |
+| Name, target, artifacts, status | Every row | Compact name and target plus textual/accessibility status and artifact count, including zero |
 | Branch and reasons | Hover/focus tooltip, header/facts, Status | Progressive disclosure; no permanently two-line rows |
 | New session | Navigator header | Validated project, name, and target modal; creates a complete local fixture |
 | Search/filter | Navigator search | Name, project, and branch; `/` ignores editable fields; arrow/Enter navigation |
@@ -28,20 +28,21 @@ This inventory maps current production shell behavior and direct user feedback t
 | Artifact sorting | Artifact header/menu | Newest, oldest, and title options |
 | Artifact list visibility | Artifact header/menu | Show/hide list; selected item remains previewed |
 | Artifact list sizing | List divider | Pointer-draggable height concept with bounded range |
-| Artifact selection | Artifact list | Selection state and synchronized inline preview |
+| Artifact grouping/selection | Artifact list | `.artifacts` folder grouping, selection state, and synchronized inline preview |
 | Image preview | Preview surface | Large contained image with descriptive alt text |
 | Text/Markdown preview | Preview surface | Readable, internally scrolling monospace content |
 | JSX preview/code | Selected JSX toolbar | Obvious **Preview** / **Code** toggle |
+| Extended preview states | Preview surface | Video player, sandboxed HTML, PDF/iframe, and explicit no-inline-preview states |
 | Artifact full screen | Artifact header/menu | True full viewport with **Exit Full** and Escape |
-| Upload | Artifact header/menu | Local fixture file intake; adds scoped preview items |
-| New artifact | Artifact header/menu | Required text, optional title, JSX detection, scoped fixture update |
+| Upload/paste/drop | Artifact header/menu and pane | Browser `FileReader` intake plus text paste and file drop; adds scoped in-memory items |
+| New artifact | Artifact header/menu | Required text, optional title, format, retention, tags, and scoped fixture update |
 | Refresh | Artifact header/menu | Re-renders scoped list and provides feedback |
 | Close | Artifact header/menu | Returns to terminal layout and restores focus |
-| Insert selected item | Selected-item toolbar | Inserts artifact reference into desktop/mobile composer |
-| Edit selected item | Selected-item toolbar | Validated title edit |
+| Insert selected item | Selected-item toolbar | Inserts the production-like `.artifacts/<file>` path into desktop/mobile composer |
+| Edit selected item | Selected-item toolbar | Validated title plus summary, tags, and retention edit |
 | Archive selected item | Selected-item toolbar | Visible archived state |
-| Remove selected item | Selected-item toolbar | Removes the local fixture and selects the next available item |
-| Split modes | Desktop labeled action | Terminal, vertical, horizontal, artifacts; current mode always named |
+| Remove selected item | Selected-item toolbar | Requires a titled confirmation, then removes the local fixture and selects the next available item |
+| Split modes | Desktop action and compact Actions menu | Terminal, vertical, horizontal, artifacts; every width cycles and names the current mode truthfully |
 | Compose | Desktop labeled action; compact menu; `Cmd/Ctrl+K` | Desktop overlay plus mobile docked composer |
 | Image input | More/Actions; paste/drop | Explicit static confirmation boundary |
 | Mobile soft keys | Below docked composer | Toggle and representative production keys |
@@ -52,13 +53,13 @@ This inventory maps current production shell behavior and direct user feedback t
 
 ## Compact fleet contract
 
-Desktop rows are intentionally 32px and one line. Each row retains the minimum scan set: semantic state, user color, display name, target, and either artifact count or status signal. Full branch and status reason are available in the row title/selected-row hover or focus disclosure and in persistent selected-session surfaces. This mirrors the real high-density operating pattern rather than optimizing for a small demo list.
+Desktop rows are intentionally 32px and one line. Each row retains the minimum scan set: semantic textual/accessibility state, user color, display name, target, and artifact count. Full branch and status reason are available in the row title/selected-row hover or focus disclosure and in persistent selected-session surfaces. This mirrors the real high-density operating pattern rather than optimizing for a small demo list.
 
 The initial fleet contains 25 complete objects. Selecting any row updates all dependent surfaces, including scoped artifacts. The validation suite checks total fixture count, row height, visible fleet density, search, keyboard navigation, grouping, and selection.
 
 ## Output and action contract
 
-Output is not a centered modal. It is fixed to all four viewport edges and contains a clear heading, session context, Open Tab, Close, readable scrolling transcript, focus isolation, Tab trapping, Escape close, and focus restoration.
+Output is not a centered modal. It is fixed to all four viewport edges and contains a clear heading, session context, a tested Blob-backed Open Tab, Close, demonstrably scrolling transcript, heading-inclusive forward/reverse focus trapping, Escape close, and focus restoration.
 
 Desktop actions are words, not ambiguous symbols. Tablet/mobile intentionally collapse to one labeled Actions control. Artifact creation and insertion are owned by the Artifacts surface, where their context is clear.
 
@@ -72,4 +73,4 @@ Desktop actions are words, not ambiguous symbols. Tablet/mobile intentionally co
 
 ## Validation matrix
 
-`validate.py` covers 12 viewports from 1440×1000 through 320×700, including requested 1440×1000, 1024×768, 768×1024, 390×844, and 320×700 sizes plus intermediate widths. It asserts containment, 32/44px density, complete fleet selection, labeled action modes, full-viewport Output geometry/focus, ArtifactPane sorting/list/preview/JSX/full-screen and item actions, responsive menus, panel exclusivity, mobile composer/soft keys, and zero console/page errors.
+`validate.py` covers 12 viewports from 1440×1000 through 320×700, including requested 1440×1000, 1024×768, 768×1024, 390×844, and 320×700 sizes plus intermediate widths. It asserts containment, 32/44px density, status-plus-artifact row semantics, fixture counts/order/truthfulness, repeated fleet/quick navigation, Blob popup creation, Output scrolling/reverse focus, isolated modal Artifact fullscreen focus, production artifact paths and removal confirmation, folder/preview/intake/metadata parity, the full compact Split cycle, mobile terminal-chrome hiding, and zero console/page errors.

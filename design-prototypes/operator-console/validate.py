@@ -44,16 +44,56 @@ def output_reader_check(page, width, height, trigger):
     trigger.click()
     reader = page.locator("#output-reader")
     expect(reader).to_be_visible()
-    box = reader.bounding_box()
-    assert box == {"x": 0, "y": 0, "width": width, "height": height}, box
+    assert reader.bounding_box() == {"x": 0, "y": 0, "width": width, "height": height}
     expect(page.locator("#output-reader-heading")).to_be_focused()
     assert page.locator(".shell").evaluate("el => el.inert")
-    expect(page.locator("#output-reader-body")).to_contain_text("operator output remains available")
-    expect(page.locator("#output-open-tab")).to_be_visible()
+    body = page.locator("#output-reader-body")
+    expect(body).to_contain_text("operator output remains available")
+    scroll = body.evaluate("el => ({scrollHeight:el.scrollHeight, clientHeight:el.clientHeight})")
+    assert scroll["scrollHeight"] > scroll["clientHeight"], scroll
+
+    # The heading is the reverse boundary, and Close wraps forward to it.
+    page.keyboard.press("Shift+Tab")
+    expect(page.locator("#output-reader-body")).to_be_focused()
+    page.keyboard.press("Tab")
+    expect(page.locator("#output-reader-heading")).to_be_focused()
+
+    # Blob navigation must create a real popup containing the transcript.
+    with page.expect_popup() as popup_info:
+        page.locator("#output-open-tab").click()
+    popup = popup_info.value
+    popup.wait_for_load_state()
+    assert popup.url.startswith("blob:"), popup.url
+    expect(popup.locator("body")).to_contain_text("devx status --session jf-ui-refresh")
+    popup.close()
+
     page.keyboard.press("Escape")
     expect(reader).to_be_hidden()
     expect(trigger).to_be_focused()
     assert not page.locator(".shell").evaluate("el => el.inert")
+
+
+def assert_fleet_contract(page):
+    expect(page.locator("#total-count")).to_have_text("25")
+    rows = page.locator(".session")
+    assert rows.count() == 25
+    semantics = rows.evaluate_all("""els => els.map(el => ({
+      text: el.innerText, label: el.getAttribute('aria-label'), status: el.dataset.status,
+      state: el.querySelector('.session-state')?.getAttribute('aria-label'),
+      artifacts: el.querySelector('.badge.blue')?.getAttribute('aria-label')
+    }))""")
+    assert all(item["status"] in item["state"] for item in semantics), semantics
+    assert all("artifacts" in item["artifacts"] for item in semantics), semantics
+    assert all(item["status"] in item["label"] and "artifacts" in item["label"] for item in semantics), semantics
+
+    # Production grouping: projects by name, sessions by status priority then title.
+    projects = page.locator(".project").evaluate_all("els => els.map(el => el.dataset.project)")
+    assert projects == sorted(projects), projects
+    priority = {"repair": 0, "attention": 1, "dirty": 2, "active": 3, "idle": 4}
+    groups = page.locator(".project").evaluate_all("""els => els.map(el => [...el.querySelectorAll('.session')].map(row => ({status:row.dataset.status,title:row.dataset.title})))""")
+    for group in groups:
+        expected = sorted(group, key=lambda item: (priority[item["status"]], item["title"]))
+        assert group == expected, (group, expected)
 
 
 def run():
@@ -61,12 +101,12 @@ def run():
         browser = p.chromium.launch()
         all_errors = []
 
-        # Containment, responsive action hierarchy, compact/touch density.
+        # Twelve-viewport containment, density, action hierarchy, and semantic rows.
         for width, height in VIEWPORTS:
             page, errors = new_page(browser, width, height, touch=width <= 600)
             assert_shell(page, width, height)
-            assert page.locator(".brand").text_content() == "devx", (width, height)
-            assert page.locator(".session").count() >= 25
+            assert page.locator(".brand").text_content() == "devx"
+            assert_fleet_contract(page)
             row_height = page.locator(".session").first.bounding_box()["height"]
             assert row_height == (44 if width <= 600 else 32), (width, row_height)
             if width >= 1024:
@@ -79,156 +119,190 @@ def run():
             all_errors += errors
             page.close()
 
-        # Desktop fleet/search/keyboard, complete fixture selection, and full-screen output.
+        # Desktop: repeated ordered fleet navigation, truthfulness, and Output popup/focus/scroll.
         page, errors = new_page(browser, 1440, 1000)
         assert page.locator(".session").first.bounding_box()["height"] == 32
         visible_rows = page.locator(".session").evaluate_all("els => els.filter(el => { const r=el.getBoundingClientRect(); return r.bottom>0 && r.top<innerHeight }).length")
         assert visible_rows >= 18, visible_rows
-        expect(page.locator("#total-count")).to_have_text("25")
-        page.locator("#session-search").fill("reconnect")
-        expect(page.locator(".session:not([hidden])")).to_have_count(1)
-        page.locator("#session-search").press("ArrowDown")
+        search = page.locator("#session-search")
+        search.focus()
+        ordered = page.locator(".session").evaluate_all("els => els.filter(el => el.offsetParent !== null).map(el => el.dataset.branch)")
+        for expected in ordered[:4]:
+            page.keyboard.press("ArrowDown")
+            expect(page.locator(f".session[data-branch='{expected}']")).to_be_focused()
+        page.keyboard.press("ArrowUp")
+        expect(page.locator(f".session[data-branch='{ordered[2]}']")).to_be_focused()
+        page.keyboard.press("Enter")
+        expect(page.locator("#branch-label")).to_have_text(ordered[2])
+        search.fill("reconnect")
+        search.press("ArrowDown")
         expect(page.locator(".session[data-branch='jf-reconnect']")).to_be_focused()
-        page.locator("#session-search").fill("")
-        page.locator(".session[data-branch='jf-gatepost-proxy']").click()
-        expect(page.locator("#session-title")).to_have_text("Gatepost proxy consolidation")
-        expect(page.locator("#session-facts")).to_contain_text("gatepost target")
-        expect(page.locator("#status-content")).to_contain_text("flagged for explicit operator review")
-        expect(page.locator("#status-content")).to_contain_text("gatepost-proxy-api.localhost")
-        expect(page.locator("#artifact-list")).to_contain_text("proxy-review.md")
+        page.keyboard.press("Enter")
+        expect(page.locator("#session-title")).to_have_text("Terminal reconnect handling")
+        search.fill("")
         page.locator(".session[data-branch='jf-ui-refresh']").click()
+        expect(page.locator("#session-facts")).to_contain_text("clean worktree")
         output_reader_check(page, 1440, 1000, page.get_by_role("button", name="Output", exact=True))
 
-        # Desktop labels stay grouped; More is descriptive and keyboard-dismissable.
-        page.locator("#more-actions").click()
-        expect(page.locator("#actions-menu")).to_be_visible()
-        expect(page.locator("#actions-menu")).to_contain_text("Attach image to terminal")
-        page.keyboard.press("Escape")
-        expect(page.locator("#more-actions")).to_be_focused()
+        # Quick switcher has repeated arrow navigation and Enter selection.
+        page.keyboard.press("Control+p")
+        expect(page.locator("#quick-input")).to_be_focused()
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        selected_branch = page.locator("#quick-dialog .switch-item.selected").get_attribute("data-branch")
+        page.keyboard.press("Enter")
+        expect(page.locator("#branch-label")).to_have_text(selected_branch)
+        page.locator(".session[data-branch='jf-ui-refresh']").click()
 
-        # ArtifactPane parity: sort, list, preview, JSX mode, selected actions, full-screen.
+        # Artifact parity: folders, formats, metadata, intake, paths, confirmation, and isolation.
         page.get_by_role("button", name="Artifacts", exact=True).click()
         panel = page.locator("#artifact-panel")
         expect(panel).to_have_class("artifact-panel open")
-        for label in ["Hide list", "Full Screen", "Upload", "New", "Refresh", "Close"]:
-            expect(panel.get_by_role("button", name=label, exact=True)).to_be_visible()
-        titles_newest = page.locator(".artifact-list-item b").all_inner_texts()
+        expect(page.locator(".artifact-folder")).to_contain_text([".artifacts"])
+        assert page.locator(".artifact-folder").count() >= 4
+        newest_first = page.locator(".artifact-list-item b").first.inner_text()
         page.locator("#artifact-sort").select_option("oldest")
-        titles_oldest = page.locator(".artifact-list-item b").all_inner_texts()
-        assert titles_newest == list(reversed(titles_oldest))
+        assert page.locator(".artifact-list-item b").first.inner_text() != newest_first
         page.locator("#artifact-sort").select_option("title")
-        titles_title = page.locator(".artifact-list-item b").all_inner_texts()
-        assert titles_title == sorted(titles_title)
-        page.get_by_role("button", name="Hide list", exact=True).click()
-        expect(page.locator("#artifact-list")).to_have_class("artifact-list-wrap collapsed")
-        page.get_by_role("button", name="Show list", exact=True).click()
+
+        for title, expected in [
+            ("walkthrough.mp4", "Video player state"),
+            ("fixtures.zip", "No inline preview"),
+        ]:
+            page.locator(".artifact-list-item", has_text=title).click()
+            expect(page.locator("#artifact-preview")).to_contain_text(expected)
+        page.locator(".artifact-list-item", has_text="report.html").click()
+        expect(page.locator("#artifact-preview iframe[title^='HTML preview']")).to_be_visible()
+        page.locator(".artifact-list-item", has_text="brief.pdf").click()
+        expect(page.locator("#artifact-preview iframe[title^='PDF preview']")).to_be_visible()
         page.locator(".artifact-list-item", has_text="FleetSummary.jsx").click()
-        expect(page.locator("#artifact-preview")).to_contain_text("Fleet is ready")
+        expect(page.locator("#artifact-preview")).to_contain_text("25 complete session fixtures")
         page.get_by_role("button", name="Code", exact=True).click()
         expect(page.locator("#artifact-preview")).to_contain_text("export default function FleetSummary")
         page.get_by_role("button", name="Preview", exact=True).click()
-        page.get_by_role("button", name="Archive", exact=True).click()
-        expect(page.locator(".artifact-list-item", has_text="FleetSummary.jsx")).to_contain_text("archived")
+
+        # Insert uses the production path syntax.
         page.get_by_role("button", name="Insert", exact=True).click()
-        expect(page.locator("#composer")).to_have_class("composer open")
-        expect(page.locator("#composer textarea")).to_have_value("[artifact:FleetSummary.jsx]")
+        expect(page.locator("#composer textarea")).to_have_value(".artifacts/components/FleetSummary.jsx")
         page.keyboard.press("Escape")
-        page.get_by_role("button", name="Full Screen", exact=True).click()
-        expect(panel).to_have_class("artifact-panel open fullscreen")
-        assert panel.bounding_box() == {"x": 0, "y": 0, "width": 1440, "height": 1000}
-        expect(page.get_by_role("button", name="Exit Full", exact=True)).to_be_visible()
-        page.keyboard.press("Escape")
-        assert "fullscreen" not in panel.get_attribute("class")
+
+        # Remove is non-destructive until titled confirmation is accepted.
+        page.get_by_role("button", name="Remove", exact=True).click()
+        expect(page.locator("#generic-title")).to_have_text("Remove artifact?")
+        expect(page.locator("#generic-dialog")).to_contain_text("requires confirmation")
+        page.locator("#generic-dialog [data-close-dialog]").last.click()
+        expect(page.locator(".artifact-list-item", has_text="FleetSummary.jsx")).to_have_count(1)
+        page.get_by_role("button", name="Remove", exact=True).click()
+        page.locator("#confirm-remove-artifact").click()
+        expect(page.locator(".artifact-list-item", has_text="FleetSummary.jsx")).to_have_count(0)
+
+        # Text paste and file drop intake occur in ArtifactPane.
+        page.locator("#artifact-panel").evaluate("""panel => { const dt=new DataTransfer(); dt.setData('text/plain','# pasted review'); panel.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true})); }""")
+        expect(page.locator(".artifact-list-item", has_text="pasted-note-")).to_have_count(1)
+        page.locator("#artifact-panel").evaluate("""panel => { const dt=new DataTransfer(); dt.items.add(new File(['drop body'],'dropped.txt',{type:'text/plain'})); panel.dispatchEvent(new DragEvent('drop',{dataTransfer:dt,bubbles:true})); }""")
+        expect(page.locator(".artifact-list-item", has_text="dropped.txt")).to_have_count(1)
+
+        # New artifact exposes format, retention and tags; Edit exposes summary/tags/retention.
         page.get_by_role("button", name="New", exact=True).click()
-        assert page.locator("#create-artifact").is_disabled()
-        page.locator("#artifact-title").fill("density-notes.md")
-        page.locator("#artifact-text").fill("Density validation notes")
+        expect(page.locator("#artifact-format")).to_be_visible()
+        expect(page.locator("#artifact-retention")).to_be_visible()
+        expect(page.locator("#artifact-tags")).to_be_visible()
+        page.locator("#artifact-title").fill("density-notes.html")
+        page.locator("#artifact-format").select_option("html")
+        page.locator("#artifact-retention").select_option("30 days")
+        page.locator("#artifact-tags").fill("density, ui")
+        page.locator("#artifact-text").fill("<h1>Density notes</h1>")
         page.locator("#create-artifact").click()
-        expect(page.locator("#artifact-list")).to_contain_text("density-notes.md")
-        page.get_by_role("button", name="Refresh", exact=True).click()
-        expect(page.locator(".toast").last).to_contain_text("Artifacts refreshed")
+        page.get_by_role("button", name="Edit", exact=True).click()
+        for selector in ["#edit-artifact-summary", "#edit-artifact-tags", "#edit-artifact-retention"]:
+            expect(page.locator(selector)).to_be_visible()
+        page.locator("#edit-artifact-summary").fill("Viewport density evidence")
+        page.locator("#edit-artifact-tags").fill("density, evidence")
+        page.locator("#edit-artifact-retention").select_option("7 days")
+        page.locator("#save-artifact").click()
+        expect(page.locator("#artifact-preview-head")).to_contain_text("Viewport density evidence")
+        expect(page.locator("#artifact-preview-head")).to_contain_text("#density #evidence")
+        expect(page.locator("#artifact-preview-head")).to_contain_text("7 days")
+
+        # Fullscreen is modal-like, excludes the shell, traps both directions, and restores focus.
+        fullscreen_trigger = page.get_by_role("button", name="Full Screen", exact=True)
+        fullscreen_trigger.click()
+        expect(panel).to_have_attribute("role", "dialog")
+        expect(panel).to_have_attribute("aria-modal", "true")
+        assert panel.bounding_box() == {"x": 0, "y": 0, "width": 1440, "height": 1000}
+        assert page.locator(".shell").evaluate("el => el.inert")
+        for selector in ["#navigator", ".topbar", ".facts", ".windowbar", ".terminal-pane", "#status-panel", ".mobile-bottom"]:
+            assert page.locator(selector).evaluate("el => el.inert"), selector
+        expect(page.locator("#artifact-heading")).to_be_focused()
+        page.keyboard.press("Shift+Tab")
+        expect(page.get_by_role("button", name="Remove", exact=True)).to_be_focused()
+        page.keyboard.press("Tab")
+        expect(page.locator("#artifact-heading")).to_be_focused()
+        for _ in range(20):
+            page.keyboard.press("Tab")
+            assert page.locator(":focus").evaluate("el => !!el.closest('#artifact-panel')")
+        page.keyboard.press("Escape")
+        expect(fullscreen_trigger).to_be_focused()
+        expect(panel).not_to_have_attribute("role", "dialog")
+        assert not page.locator(".shell").evaluate("el => el.inert")
         page.get_by_role("button", name="Close", exact=True).click()
-        expect(panel).not_to_have_class("artifact-panel open")
 
-        # Quick switcher and session-scoped artifact replacement.
-        page.keyboard.press("Control+p")
-        page.locator("#quick-input").fill("Unread semantics")
-        page.locator("#quick-dialog .switch-item:not([hidden])").click()
-        expect(page.locator("#session-title")).to_have_text("Unread semantics audit")
-        expect(page.locator("#artifact-list")).to_contain_text("audit-notes.md")
-        assert page.locator("#artifact-list").get_by_text("operator-console.png").count() == 0
-
-        # Status/artifact exclusivity at compact widths is covered separately below.
         page.locator("#toasts").evaluate("el => el.replaceChildren()")
+        assert_shell(page, 1440, 1000)
         all_errors += errors
         page.screenshot(path=str(SHOT_DIR / "desktop-1440x1000.png"))
         page.close()
 
-        # Tablet drawer inertness, one labeled Actions control, output, and panel exclusivity.
+        # Tablet: compact Split truthfully cycles all four modes and returns to terminal.
         page, errors = new_page(browser, 768, 1024)
-        assert page.locator("#navigator").get_attribute("aria-hidden") == "true"
-        assert page.locator("#navigator").evaluate("el => el.inert")
-        page.locator("#open-nav").click()
-        expect(page.locator("#session-search")).to_be_focused()
-        assert page.locator("#navigator").get_attribute("role") == "dialog"
-        page.keyboard.press("Escape")
-        expect(page.locator("#open-nav")).to_be_focused()
-        page.locator("#mobile-actions").click()
-        expect(page.locator("#actions-menu")).to_contain_text("Output — full-screen terminal reader")
-        expect(page.locator("#actions-menu")).to_contain_text("Artifacts — browse and preview")
-        page.locator("#actions-menu [data-action='view']").click()
-        expect(page.locator("#output-reader")).to_be_visible()
-        assert page.locator("#output-reader").bounding_box() == {"x": 0, "y": 0, "width": 768, "height": 1024}
-        page.keyboard.press("Escape")
-        expect(page.locator("#mobile-actions")).to_be_focused()
-        page.locator("#status-toggle").click()
-        page.locator("#mobile-actions").click()
-        page.locator("#actions-menu [data-action='artifacts']").click()
-        assert not page.locator("#status-panel").evaluate("el => el.classList.contains('open')")
-        assert page.locator("#artifact-panel").evaluate("el => el.classList.contains('open')")
+        expected_modes = [
+            ("vertical", "pane-wrap", True),
+            ("horizontal", "pane-wrap horizontal", True),
+            ("artifacts", "pane-wrap artifacts-only", True),
+            ("terminal", "pane-wrap", False),
+        ]
+        for mode, class_name, panel_open in expected_modes:
+            page.locator("#mobile-actions").click()
+            page.locator("#actions-menu [data-action='split']").click()
+            expect(page.locator("#actions-menu [data-action='split']")).to_have_text(f"Split — current mode: {mode}")
+            expect(page.locator("#pane-wrap")).to_have_class(class_name)
+            assert page.locator("#artifact-panel").evaluate("el => el.classList.contains('open')") == panel_open
         assert_shell(page, 768, 1024)
         all_errors += errors
         page.screenshot(path=str(SHOT_DIR / "tablet-768x1024.png"))
         page.close()
 
-        # Mobile artifact action menu, preview/full-screen, output/focus, composer and soft keys.
+        # Mobile Artifact/Status destinations remove dead terminal chrome and retain distinct actions.
         for width, height in [(390, 844), (320, 700)]:
             page, errors = new_page(browser, width, height, touch=True)
-            assert page.locator(".session").first.bounding_box()["height"] == 44
-            page.locator("#mobile-actions").click()
-            expect(page.locator("#actions-menu [data-action='split']")).to_contain_text("current mode: terminal")
-            page.locator("#actions-menu [data-action='view']").click()
-            assert page.locator("#output-reader").bounding_box() == {"x": 0, "y": 0, "width": width, "height": height}
-            expect(page.locator("#output-reader-heading")).to_be_focused()
-            page.keyboard.press("Escape")
-            expect(page.locator("#mobile-actions")).to_be_focused()
             page.locator("#mobile-artifacts").click()
             expect(page.locator("#artifact-heading")).to_be_focused()
-            expect(page.locator("#artifact-menu-trigger")).to_be_visible()
+            expect(page.locator("#artifact-menu-trigger")).to_have_text("Artifact actions")
+            expect(page.locator("#artifact-menu-trigger")).to_have_attribute("aria-label", "Open artifact actions")
+            expect(page.locator(".windowbar")).to_be_hidden()
+            expect(page.locator(".mobile-composer")).to_be_hidden()
+            expect(page.locator("#composer")).to_be_hidden()
             page.locator("#artifact-menu-trigger").click()
-            for copy in ["Sort: newest", "Hide artifact list", "Full Screen preview", "Upload files", "New text artifact", "Refresh list", "Close artifacts"]:
-                expect(page.locator("#artifact-actions-menu")).to_contain_text(copy)
-            page.locator("#artifact-actions-menu [data-artifact-command='fullscreen']").click()
-            assert page.locator("#artifact-panel").bounding_box() == {"x": 0, "y": 0, "width": width, "height": height}
+            expect(page.locator("#artifact-actions-menu")).to_contain_text("Full Screen preview")
             page.keyboard.press("Escape")
-            page.keyboard.press("Escape")
-            expect(page.locator("#mobile-artifacts")).to_be_focused()
-            page.locator("#mobile-text").fill("mobile valid")
-            assert page.locator("#mobile-send").is_enabled()
-            page.locator("#keys-toggle").click()
-            expect(page.locator("#softkeys")).to_have_class("softkeys open")
-            page.locator("#mobile-send").click()
-            expect(page.locator("#terminal-content")).to_contain_text("mobile valid")
+            page.locator("#mobile-status").click()
+            expect(page.locator("#status-heading")).to_be_focused()
+            expect(page.locator(".windowbar")).to_be_hidden()
+            expect(page.locator(".mobile-composer")).to_be_hidden()
+            expect(page.locator("#composer")).to_be_hidden()
+            page.locator("#mobile-terminal").click()
+            expect(page.locator(".windowbar")).to_be_visible()
+            expect(page.locator(".mobile-composer")).to_be_visible()
             assert_shell(page, width, height)
             if width == 390:
-                page.locator("#toasts").evaluate("el => el.replaceChildren()")
+                page.locator("#mobile-artifacts").click()
                 page.screenshot(path=str(SHOT_DIR / "mobile-390x844.png"))
             all_errors += errors
             page.close()
 
         browser.close()
         assert not all_errors, all_errors
-        print("PASS: 12 contained viewports; 25 complete fleet fixtures; compact/touch density; full-screen Output; labeled responsive actions; ArtifactPane sort/list/preview/JSX/full-screen/upload/new/refresh/close/insert/archive; focus and panel regressions; 0 console/page errors")
+        print("PASS: 12 viewports; no overflow/errors; semantic status+artifact counts; production fleet order; repeated fleet/quick navigation; Blob popup; Output scroll/reverse trap; modal Artifact fullscreen isolation/traps; production artifact path+confirmation; folder/preview/intake/metadata parity; compact split cycle; mobile chrome hiding")
 
 
 if __name__ == "__main__":
