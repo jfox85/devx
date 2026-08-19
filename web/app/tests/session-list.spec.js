@@ -35,6 +35,7 @@ async function mockSessionAPI(page) {
     pinWrites++
     await route.fulfill({ status: 204 })
   })
+  await page.route('**/api/asks/pending', route => route.fulfill({ json: { requests: [] } }))
   await page.route('**/api/events', route => route.abort())
   return {
     pinWrites: () => pinWrites,

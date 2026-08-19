@@ -168,3 +168,28 @@ func GetProjectConfig(projectPath string) (*Config, error) {
 
 	return &cfg, nil
 }
+
+// ResolveProjectTarget returns the effective default session target for a
+// project: the project's .devx/config.yaml "target" if set, otherwise the
+// provided global default, otherwise "host". It is the canonical statement of
+// the project-or-global target precedence used by the web new-session form
+// (web/api.go).
+//
+// cmd/session_create.go applies the same precedence inline rather than calling
+// this helper: it already holds the loaded *Config (so it avoids a second
+// config read), layers the --target flag on top, and validates via
+// target.Resolve. The two implementations must stay in agreement; this helper
+// is the reference. It deliberately performs no flag handling and no target
+// validation, so callers that need either must do it themselves.
+func ResolveProjectTarget(projectPath, globalTarget string) string {
+	target := globalTarget
+	if target == "" {
+		target = "host"
+	}
+	if projectPath != "" {
+		if cfg, err := GetProjectConfig(projectPath); err == nil && cfg != nil && cfg.Target != "" {
+			target = cfg.Target
+		}
+	}
+	return target
+}

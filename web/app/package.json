@@ -7,15 +7,19 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/*.test.js src/lib/*.test.js",
+    "test": "npm run test:node && npm run test:unit",
+    "test:node": "node --test src/*.test.js src/lib/*.test.js",
+    "test:unit": "vitest run --config vitest.config.js",
     "test:ui": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
     "@tailwindcss/vite": "^4.2.1",
+    "happy-dom": "^20.10.6",
     "svelte": "^5.45.2",
     "tailwindcss": "^4.2.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^2.1.9"
   }
 }

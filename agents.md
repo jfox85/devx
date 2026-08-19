@@ -11,22 +11,25 @@ This file provides guidance to AI agents when working with code in this reposito
 **ALWAYS run these checks before committing any changes:**
 
 ```bash
-# 1. Format all Go code
+# 1. Build frontend assets when web/app changed
+cd web/app && npm ci && npm run build && cd ../..
+
+# 2. Format all Go code
 gofmt -w .
 
-# 2. Run static analysis
+# 3. Run static analysis
 go vet ./...
 
-# 3. Check for common issues with golangci-lint (if available)
+# 4. Check for common issues with golangci-lint (if available)
 golangci-lint run --timeout=5m
 
-# 4. Run all tests with race detection
+# 5. Run all tests with race detection
 go test -v -race ./...
 
-# 5. Ensure go.mod is tidy
+# 6. Ensure go.mod is tidy
 go mod tidy
 
-# 6. Validate the embedded web app
+# 7. Validate the embedded web app
 cd web/app
 npm ci
 npx playwright install chromium
@@ -34,6 +37,11 @@ npm test
 npm run test:ui
 npm run build
 cd ../..
+
+# 8. Ensure generated frontend assets are committed when changed
+git diff --exit-code web/dist
+untracked=$(git ls-files --others web/dist)
+test -z "$untracked" || { echo "$untracked"; exit 1; }
 ```
 
 These checks are enforced in CI and will cause builds to fail if not passing.

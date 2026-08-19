@@ -232,7 +232,10 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// If no explicit --target flag, let project config override the global default.
+	// If no explicit --target flag, let project config override the global
+	// default. This mirrors config.ResolveProjectTarget (the canonical rule);
+	// kept inline here because cfg is already loaded and we additionally
+	// validate. Keep both in sync.
 	if targetFlag == "" && cfg.Target != "" {
 		targetType = cfg.Target
 		if _, err := target.Resolve(targetType); err != nil {

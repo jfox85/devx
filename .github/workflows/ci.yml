@@ -19,6 +19,24 @@ jobs:
       with:
         go-version: ${{ env.GO_VERSION }}
         cache: true
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: web/app/package-lock.json
+    - name: Check frontend build assets
+      run: |
+        cd web/app
+        npm ci
+        npm run build
+        cd ../..
+        git diff --exit-code web/dist
+        untracked=$(git ls-files --others web/dist)
+        if [ -n "$untracked" ]; then
+          echo "Untracked generated web/dist files:"
+          echo "$untracked"
+          exit 1
+        fi
     - name: Check formatting
       run: |
         unformatted=$(gofmt -l .)
