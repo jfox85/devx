@@ -93,14 +93,28 @@ test('failed initial load offers a working retry', async ({ page }) => {
   await expect(page.getByRole('listitem')).toHaveCount(2)
 })
 
-test('mobile view and pin controls meet 44px touch targets', async ({ page }) => {
+test('mobile rows preserve session names and 44px touch targets', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockSessionAPI(page)
   await page.goto('/')
   const viewButton = page.getByRole('button', { name: 'Recent' })
   const pinButton = page.getByRole('button', { name: 'Pin Newer beta' })
-  const [viewBox, pinBox] = await Promise.all([viewButton.boundingBox(), pinButton.boundingBox()])
+  const nameButton = page.getByRole('button', { name: /^Newer beta/ })
+  const projectChip = page.getByText('beta', { exact: true })
+  const targetChip = page.getByTitle('Target: host').first()
+  const colorButton = page.getByRole('button', { name: 'change color for newer-beta' })
+  const [viewBox, pinBox, nameBox, projectBox] = await Promise.all([
+    viewButton.boundingBox(),
+    pinButton.boundingBox(),
+    nameButton.boundingBox(),
+    projectChip.boundingBox(),
+  ])
   expect(viewBox.height).toBeGreaterThanOrEqual(44)
   expect(pinBox.height).toBeGreaterThanOrEqual(44)
   expect(pinBox.width).toBeGreaterThanOrEqual(44)
+  expect(nameBox.width).toBeGreaterThanOrEqual(128)
+  expect(nameBox.height).toBeGreaterThanOrEqual(44)
+  expect(projectBox.y).toBeGreaterThan(nameBox.y)
+  await expect(targetChip).toBeHidden()
+  await expect(colorButton).toBeHidden()
 })
