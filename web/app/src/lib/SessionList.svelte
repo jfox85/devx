@@ -609,15 +609,17 @@
               <!-- Name row: color dot + name/rename + attention flag -->
               <div
                 class="
-                  flex-1 flex flex-col gap-1 lg:flex-row lg:items-center lg:gap-2
-                  pl-4 pr-1 py-0 lg:pr-2 lg:py-2
+                  flex-1 flex flex-col gap-1 lg:gap-0.5
+                  pl-4 pr-1 py-0 lg:py-1.5
                   font-mono text-sm lg:text-xs
                   min-w-0
                   {isActive ? 'text-cyan-300' : kbHighlight ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
-                <!-- On mobile, keep identity on the first line and move metadata below it. -->
-                <div class="flex items-center gap-2 min-h-11 min-w-0 lg:contents lg:min-h-0">
+                <!-- Identity on the first line, metadata below it. The sidebar is always
+                     narrow (~288-320px on desktop, full width on mobile), so a stacked
+                     layout is required at every breakpoint to keep names readable. -->
+                <div class="flex items-center gap-2 min-h-11 min-w-0 lg:min-h-0">
                 <!-- Status dot -->
                 <span
                   class="shrink-0 text-[10px]"
@@ -664,9 +666,9 @@
                   </button>
                 {/if}
                 </div>
-                <div class="flex items-center gap-2 min-w-0 overflow-hidden pl-7 lg:contents lg:overflow-visible lg:pl-0">
+                <div class="flex items-center gap-2 min-w-0 overflow-hidden pl-7 lg:pl-6">
                 {#if section.showProject && session.project_alias}
-                  <span class="text-[9px] shrink-0 text-gray-600 border border-gray-800 px-1 rounded-sm">{session.project_alias}</span>
+                  <span class="text-[9px] min-w-0 truncate text-gray-600 border border-gray-800 px-1 rounded-sm" title={session.project_alias}>{session.project_alias}</span>
                 {/if}
                 {#if section.showActivity}
                   {@const activity = relativeActivity(session, activityNow)}
