@@ -321,10 +321,10 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		attempt := r.URL.Query().Get("devx_attempt")
+		if !validTerminalAttempt(attempt) {
+			attempt = ""
+		}
 		proxyWebSocket(w, r, port, r.URL.Path, func() func() {
-			if !validTerminalAttempt(attempt) {
-				return nil
-			}
 			s.ttyd.clientConnected(sessionName, attempt)
 			return func() { s.ttyd.clientDisconnected(sessionName, attempt) }
 		})
@@ -436,21 +436,27 @@ func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
 	if !handleDecodeJSON(w, r, &req) {
 		return
 	}
-	if !s.ttyd.consumeActivityReceipt(req.Session, req.Receipt, time.Now()) {
+	now := time.Now()
+	issued, ok := s.ttyd.reserveActivityReceipt(req.Session, req.Receipt, now)
+	if !ok {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal activity receipt is invalid or expired"})
 		return
 	}
 	store, err := session.LoadSessions()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.ttyd.restoreActivityReceipt(req.Receipt, issued, time.Now())
+		logWebError("load sessions for activity: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load sessions"})
 		return
 	}
 	if _, err := store.MarkActive(req.Session, time.Now()); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.ttyd.restoreActivityReceipt(req.Receipt, issued, time.Now())
+		logWebError("mark session %q active: %v", req.Session, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record activity"})
 		return
 	}
 	invalidateSessionListCache()

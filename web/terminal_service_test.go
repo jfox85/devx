@@ -305,6 +305,29 @@ func TestTerminalAttemptRemainsActiveAcrossOverlappingReconnect(t *testing.T) {
 	}
 }
 
+func TestReservedActivityReceiptCanBeRestoredForRetry(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("demo") })
+	attempt := "attempt-restore-1234"
+	m.clientConnected("demo", attempt)
+	now := time.Now()
+	receipt, ok := m.issueActivityReceipt("demo", attempt, now)
+	if !ok {
+		t.Fatal("failed to issue receipt")
+	}
+	issued, ok := m.reserveActivityReceipt("demo", receipt, now)
+	if !ok {
+		t.Fatal("failed to reserve receipt")
+	}
+	m.restoreActivityReceipt(receipt, issued, now)
+	if _, ok := m.reserveActivityReceipt("demo", receipt, now); !ok {
+		t.Fatal("restored receipt was not retryable")
+	}
+}
+
 func TestExpiredTerminalActivityReceiptsAreRejectedAndSwept(t *testing.T) {
 	m := newTtydManager()
 	if _, err := m.startForSession("demo", "sleep", "1"); err != nil {

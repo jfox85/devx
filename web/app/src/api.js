@@ -215,14 +215,24 @@ export async function recordSessionActivity(sessionName, attempt, stillCurrent =
     method: 'POST',
     body: JSON.stringify({ session: sessionName, attempt }),
   })
-  await requireOK(receiptRes, 'Terminal frame is not ready')
+  try {
+    await requireOK(receiptRes, 'Terminal frame is not ready')
+  } catch (error) {
+    error.stage = 'receipt'
+    throw error
+  }
   const { receipt } = await receiptRes.json()
   if (!stillCurrent()) return false
   const res = await apiFetch('/sessions/activity', {
     method: 'POST',
     body: JSON.stringify({ session: sessionName, receipt }),
   })
-  await requireOK(res, 'Failed to record session activity')
+  try {
+    await requireOK(res, 'Failed to record session activity')
+  } catch (error) {
+    error.stage = 'activity'
+    throw error
+  }
   return true
 }
 
@@ -243,7 +253,9 @@ export async function sendInput(sessionName, text, { submit = false, mode = 'pas
 async function requireOK(res, fallbackMessage) {
   if (res.ok) return
   const e = await res.json().catch(() => ({}))
-  throw new Error(e.error || fallbackMessage || `Request failed: ${res.status}`)
+  const error = new Error(e.error || fallbackMessage || `Request failed: ${res.status}`)
+  error.status = res.status
+  throw error
 }
 
 export async function sendKeys(sessionName, keys) {

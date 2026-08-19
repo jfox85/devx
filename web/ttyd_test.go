@@ -72,6 +72,59 @@ exit 0
 	}
 }
 
+func TestAttemptlessWebsocketStillCountsAsActiveConnection(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("legacy", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("legacy") })
+	m.clientConnected("legacy", "")
+	if got := m.sessions["legacy"].conns; got != 1 {
+		t.Fatalf("connections = %d, want 1", got)
+	}
+	m.clientDisconnected("legacy", "")
+	if got := m.sessions["legacy"].conns; got != 0 {
+		t.Fatalf("connections after disconnect = %d, want 0", got)
+	}
+}
+
+func TestPortForSessionCancelsPendingIdleStopDuringReconnect(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("reconnect", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("reconnect") })
+	m.clientConnected("reconnect", "attempt-reconnect-1234")
+	m.clientDisconnected("reconnect", "attempt-reconnect-1234")
+	oldTimer := m.sessions["reconnect"].timer
+	if oldTimer == nil {
+		t.Fatal("expected pending idle timer")
+	}
+	if _, ok := m.portForSession("reconnect"); !ok {
+		t.Fatal("expected running ttyd")
+	}
+	newTimer := m.sessions["reconnect"].timer
+	if newTimer == nil || newTimer == oldTimer {
+		t.Fatal("reconnect lookup did not replace idle timer with handshake lease")
+	}
+}
+
+func TestStaleStopGenerationCannotKillRenewedLease(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("generation", "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("generation") })
+	inst := m.sessions["generation"]
+	m.scheduleStopLocked("generation", inst, time.Hour)
+	staleGeneration := inst.stopGeneration
+	m.scheduleStopLocked("generation", inst, time.Hour)
+	m.stopSessionGeneration("generation", inst, staleGeneration)
+	if _, ok := m.sessions["generation"]; !ok {
+		t.Fatal("stale stop callback killed renewed ttyd lease")
+	}
+}
+
 func TestTtydManagerStartStop(t *testing.T) {
 	m := newTtydManager()
 

@@ -266,7 +266,7 @@ devx
 **TUI Features:**
 - **Session Browser**: Navigate sessions with arrow keys or vim bindings (j/k); sessions default to recent activity order
 - **Pinned Sessions**: Press `*` to pin/unpin the selected session in a global section
-- **Session Views**: Press `Tab` to switch between recent activity and project-grouped ordering; the TUI preference is stored in user-local UI state
+- **Session Views**: Press `v` to switch between recent activity and project-grouped ordering; the TUI preference is stored in user-local UI state
 - **Live Preview**: View tmux session content in real-time
 - **Attention Flags**: Visual indicators (🔔) for sessions needing attention
 - **Quick Actions**: 
@@ -274,7 +274,7 @@ devx
   - `c`: Create new session
   - `r`: Remove selected session
   - `*`: Pin or unpin selected session
-  - `Tab`: Switch Recent / Projects view
+  - `v`: Switch Recent / Projects view
   - `?`: Toggle help
   - `q`: Quit
 

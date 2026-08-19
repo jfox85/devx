@@ -93,6 +93,6 @@ export function relativeActivity(session, now = Date.now()) {
   else if (seconds >= 3600) short = `${Math.floor(seconds / 3600)}h`
   else if (seconds >= 60) short = `${Math.floor(seconds / 60)}m`
   const prefix = session.last_opened_at ? 'Opened' : 'Created'
-  const display = `${prefix} ${short}`
+  const display = `${prefix} ${short === 'now' ? 'now' : `${short} ago`}`
   return { short, display, label: `${prefix} ${short === 'now' ? 'now' : `${short} ago`}` }
 }

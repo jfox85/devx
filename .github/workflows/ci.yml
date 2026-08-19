@@ -99,6 +99,8 @@ jobs:
     - name: Build embedded web app
       working-directory: web/app
       run: npm run build
+    - name: Verify committed embedded assets are current
+      run: git diff --exit-code -- web/dist
 
   build:
     name: Build

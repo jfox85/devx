@@ -220,9 +220,9 @@ Update `web/app/src/lib/QuickSwitcher.svelte`:
 
 This keeps the fastest navigation path consistent with the sidebar.
 
-## Deferred Milestone: TUI Parity
+## TUI Parity (Implemented)
 
-This is not part of the first web release. Implement it only after the web behavior and activity semantics are validated.
+The TUI parity milestone shipped after the web behavior and activity semantics were validated.
 
 In `tui/model.go`:
 
@@ -236,7 +236,7 @@ In `tui/model.go`:
 - render a terminal-width-safe ASCII pin marker rather than relying on emoji width;
 - place new bindings in extended help if the normal footer becomes crowded.
 
-Persist the TUI view preference under an explicit DevX config key such as `tui_session_view`, defaulting to `recent`, independently of the browser-local preference. Update `lastVisibleSession`, `renderSessionList`, and scroll-budget tests in `tui/model_test.go`, plus sorting, pin mutation, and cursor-retention tests.
+Persist the TUI view preference in user-scoped `~/.config/devx/ui-state.json`, defaulting to `recent`, independently of project config and the browser-local preference. `v` switches views and `*` toggles pinning. `lastVisibleSession`, `renderSessionList`, scroll budgets, sorting, pin mutation, and cursor retention are covered in `tui/model_test.go` and `config/ui_state_test.go`.
 
 Do not silently change `devx session list` ordering. A later CLI enhancement may add explicit `--sort recent|name` and a pin marker.
 

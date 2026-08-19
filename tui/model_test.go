@@ -96,6 +96,52 @@ func TestFilteredRenderSuppressesSectionHeaders(t *testing.T) {
 	}
 }
 
+func TestGroupedPreviewScrollKeepsPinnedAndProjectRowsReachable(t *testing.T) {
+	m := newTestModel(14, 0)
+	m.showPreview = true
+	m.sessionView = sessionViewProjects
+	m.sessions = []sessionItem{
+		{name: "pinned", pinned: true, projectAlias: "zeta"},
+		{name: "alpha-1", projectAlias: "alpha", projectName: "A very long alpha project name"},
+		{name: "alpha-2", projectAlias: "alpha", projectName: "A very long alpha project name"},
+		{name: "beta-1", projectAlias: "beta"},
+		{name: "loose"},
+	}
+	m.cursor = len(m.sessions) - 1
+	m.ensureCursorVisible()
+	if m.lastVisibleSession(m.scrollOffset) < m.cursor {
+		t.Fatalf("cursor %d not visible from offset %d", m.cursor, m.scrollOffset)
+	}
+}
+
+func TestNonPreviewScrollAccountsForSelectedDetails(t *testing.T) {
+	m := newTestModel(14, 0)
+	m.showPreview = false
+	m.sessions = []sessionItem{{name: "one"}, {name: "two"}, {name: "three"}, {name: "four"}, {name: "five"}}
+	m.cursor = len(m.sessions) - 1
+	m.ensureCursorVisible()
+	if m.lastVisibleSession(m.scrollOffset) < m.cursor {
+		t.Fatalf("selected detailed row %d not visible from offset %d", m.cursor, m.scrollOffset)
+	}
+}
+
+func TestNonPreviewDetailsStayWithinRenderBudget(t *testing.T) {
+	m := newTestModel(14, 0)
+	m.showPreview = false
+	m.sessions = []sessionItem{{
+		name:   "selected",
+		ports:  map[string]int{"one": 1, "two": 2, "three": 3, "four": 4, "five": 5},
+		routes: map[string]string{"one": "one.local", "two": "two.local", "three": "three.local"},
+	}}
+	m.cursor = 0
+	budget := m.nonPreviewSessionBudget()
+	var output strings.Builder
+	m.renderSessionList(&output, m.buildFilteredEntries(), true, budget)
+	if height := lipgloss.Height(output.String()); height > budget {
+		t.Fatalf("rendered height = %d, budget = %d\n%s", height, budget, output.String())
+	}
+}
+
 func TestTruncateFooterFitsNarrowTerminal(t *testing.T) {
 	m := newTestModel(24, 0)
 	m.width = 40
@@ -149,7 +195,7 @@ func TestTUIActionsUseInjectedPersistence(t *testing.T) {
 	if persistence.pinnedName != "demo" || !persistence.pinned {
 		t.Fatalf("pin persistence = %q %v", persistence.pinnedName, persistence.pinned)
 	}
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	if persistence.view != "projects" {
 		t.Fatalf("view persistence = %q, want projects", persistence.view)
 	}

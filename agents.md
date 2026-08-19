@@ -29,6 +29,7 @@ go mod tidy
 # 6. Validate the embedded web app
 cd web/app
 npm ci
+npx playwright install chromium
 npm test
 npm run test:ui
 npm run build

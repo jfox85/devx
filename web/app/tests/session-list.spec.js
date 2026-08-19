@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 const fixtures = [
   { name: 'older-alpha', display_name: 'Older alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-08-18T10:00:00Z', last_opened_at: '2026-08-18T10:00:00Z', target_type: 'host', color: 'blue', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
-  { name: 'newer-beta', display_name: 'Newer beta', project_alias: 'beta', branch: 'main', pinned: false, activity_at: '2026-08-18T12:00:00Z', last_opened_at: '2026-08-18T12:00:00Z', target_type: 'host', color: 'cyan', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
+  { name: 'newer-beta', display_name: 'Newer beta', project_alias: 'beta', branch: 'main', pinned: false, activity_at: '2026-08-18T12:00:00Z', last_opened_at: '2026-08-18T12:00:00Z', target_type: 'host', color: 'cyan', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: { api: 'api.localhost' } },
 ]
 
 async function mockSessionAPI(page) {
@@ -23,7 +23,7 @@ async function mockSessionAPI(page) {
     }
     await route.continue()
   })
-  await page.route('**/api/sessions/pin?name=*', async route => {
+  await page.route(/\/api\/sessions\/pin\?name=.+$/, async route => {
     const name = new URL(route.request().url()).searchParams.get('name')
     if (failNextPin) {
       failNextPin = false
@@ -47,10 +47,14 @@ test('recent/projects preference and pinning remain deterministic', async ({ pag
   const state = await mockSessionAPI(page)
   await page.goto('/')
 
+  await expect(page.getByRole('group', { name: 'Session view' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Recent' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('list', { name: 'Recent' })).toBeVisible()
   const rows = page.getByRole('listitem')
   await expect(rows.nth(0)).toContainText('Newer beta')
   await expect(rows.nth(1)).toContainText('Older alpha')
+  await page.getByTitle('services').first().click()
+  await expect(page.getByRole('listitem', { name: 'Services for Newer beta' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Projects' }).click()
   await page.reload()

@@ -1,6 +1,10 @@
 export function createTerminalAttempt(cryptoImpl = globalThis.crypto) {
-  if (!cryptoImpl?.randomUUID) throw new Error('secure random UUID support is required')
-  return cryptoImpl.randomUUID()
+  if (cryptoImpl?.randomUUID) return cryptoImpl.randomUUID()
+  if (cryptoImpl?.getRandomValues) {
+    const bytes = cryptoImpl.getRandomValues(new Uint8Array(16))
+    return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  }
+  throw new Error('secure random support is required')
 }
 
 export function terminalFramePath(name, attempt) {

@@ -5,7 +5,7 @@
   import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
   import StaleReviewPanel from './StaleReviewPanel.svelte'
-  import { buildSessionSections, filterSessions, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
+  import { buildSessionSections, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
@@ -165,7 +165,6 @@
     searchInputEl?.select()
   }
 
-  $: filtered = filterSessions(sessions, searchQuery)
   $: sections = buildSessionSections(sessions, searchQuery, sessionView)
   $: displayOrdered = sections.flatMap(section => section.sessions)
   $: selectedIndex = Math.max(0, displayOrdered.findIndex(s => s.name === selectedSessionName))
@@ -212,7 +211,7 @@
       if (displayOrdered[selectedIndex]) selectSession(displayOrdered[selectedIndex])
     } else if (e.shiftKey && (e.key === 'p' || e.key === 'P') && !inOtherInput && !inOtherControl && document.activeElement !== searchInputEl && document.activeElement?.tagName !== 'SELECT') {
       e.preventDefault()
-      if (displayOrdered[selectedIndex]) handlePin(displayOrdered[selectedIndex], false)
+      if (displayOrdered[selectedIndex]) handlePin(displayOrdered[selectedIndex], true)
     } else if (e.key === 'Escape') {
       searchQuery = ''
       searchInputEl?.blur()
@@ -466,13 +465,14 @@
     {#if searchQuery}
       <button
         on:click={() => { searchQuery = ''; searchInputEl?.focus() }}
+        aria-label="Clear search"
         class="text-gray-600 hover:text-gray-400 text-xs font-mono ml-1"
       >×</button>
     {/if}
   </div>
 
   <!-- Session organization -->
-  <div class="flex items-center gap-1 px-3 h-12 lg:h-8 border-b border-[#1e2d4a] shrink-0" aria-label="Session view">
+  <div role="group" class="flex items-center gap-1 px-3 h-12 lg:h-8 border-b border-[#1e2d4a] shrink-0" aria-label="Session view">
     <span class="text-[10px] font-mono text-gray-700 mr-1">view</span>
     {#each [['recent', 'Recent'], ['projects', 'Projects']] as [value, label]}
       <button
@@ -547,7 +547,7 @@
   {/if}
 
   <!-- Session list -->
-  <div class="flex-1 overflow-y-auto" role="list" aria-busy={loading}>
+  <div class="flex-1 overflow-y-auto" aria-busy={loading}>
     {#if loading}
       <div class="px-3 py-8 text-gray-700 text-xs font-mono">loading...</div>
 
@@ -568,7 +568,7 @@
         {/if}
       </div>
 
-    {:else if filtered.length === 0}
+    {:else if displayOrdered.length === 0}
       <div class="px-3 py-4 text-gray-700 text-xs font-mono">
         <p>No sessions match “{searchQuery}”</p>
         <button on:click={() => searchQuery = ''} class="mt-2 text-cyan-600 hover:text-cyan-300">Clear search</button>
@@ -576,8 +576,8 @@
 
     {:else}
       {#each sections as section (section.key)}
-        <div class="pt-3 pb-1">
-          <div class="px-4 pb-1 text-[10px] font-mono font-bold uppercase tracking-[0.18em] select-none {section.kind === 'pinned' ? 'text-cyan-400' : 'text-cyan-700/60'}">
+        <div role="list" aria-label={section.label} class="pt-3 pb-1">
+          <div aria-hidden="true" class="px-4 pb-1 text-[10px] font-mono font-bold uppercase tracking-[0.18em] select-none {section.kind === 'pinned' ? 'text-cyan-400' : 'text-cyan-700/60'}">
             {section.kind === 'pinned' ? '● ' : ''}{section.label}
           </div>
 
@@ -743,7 +743,7 @@
 
             <!-- Routes inline expansion -->
             {#if expandedRoutes === session.name}
-              <div class="bg-[#0d1117] border-b border-[#1e2d4a] pl-6 pr-3 py-2 space-y-1.5">
+              <div role="listitem" aria-label={`Services for ${session.display_name || session.name}`} class="bg-[#0d1117] border-b border-[#1e2d4a] pl-6 pr-3 py-2 space-y-1.5">
                 {#each Object.entries(routes) as [svc, url]}
                   <a
                     href={url}

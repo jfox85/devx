@@ -248,10 +248,14 @@ func (m *model) searchBoxHeight() int {
 	return lipgloss.Height(box.String())
 }
 
+func minimumSessionBudget() int {
+	return lipgloss.Height(headerStyle.Render("* Pinned")+"\n") + 3
+}
+
 func (m *model) nonPreviewSessionBudget() int {
 	lines := (m.height - m.footerHeight() - 1) - m.viewOverheadLines() - m.searchBoxHeight()
-	if lines < 5 {
-		return 5
+	if lines < minimumSessionBudget() {
+		return minimumSessionBudget()
 	}
 	return lines
 }
@@ -271,10 +275,28 @@ func (m *model) previewSessionBudget() int {
 		overhead += 2
 	}
 	lines := paneHeight - paneChrome - overhead - max(0, m.footerHeight()-1) - m.searchBoxHeight()
-	if lines < 5 {
-		return 5
+	if lines < minimumSessionBudget() {
+		return minimumSessionBudget()
 	}
 	return lines
+}
+
+func (m *model) sessionSection(sess sessionItem) (key, header string) {
+	if sess.pinned {
+		return "pinned", "* Pinned"
+	}
+	if m.sessionView == sessionViewProjects {
+		header = "No Project"
+		if sess.projectAlias != "" {
+			if sess.projectName != "" {
+				header = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
+			} else {
+				header = sess.projectAlias
+			}
+		}
+		return "project:" + sess.projectAlias, header
+	}
+	return "recent", "Recent"
 }
 
 // lastVisibleSession simulates the session rendering loop to find the index of
@@ -306,12 +328,7 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 			break
 		}
 
-		section := "recent"
-		if sess.pinned {
-			section = "pinned"
-		} else if m.sessionView == sessionViewProjects {
-			section = "project:" + sess.projectAlias
-		}
+		section, header := m.sessionSection(sess)
 		if section != currentSection {
 			if currentSection != "" && linesRendered > 0 {
 				linesRendered++
@@ -320,7 +337,7 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 				}
 			}
 			currentSection = section
-			linesRendered += lipgloss.Height(headerStyle.Render("section") + "\n")
+			linesRendered += lipgloss.Height(headerStyle.Render(header) + "\n")
 			if linesRendered >= sessionLines-1 {
 				break
 			}
@@ -328,6 +345,12 @@ func (m *model) lastVisibleSession(scrollOffset int) int {
 
 		last = i
 		linesRendered++
+		if !m.showPreview && i == m.cursor {
+			details := strings.TrimSuffix(m.getSessionDetails(sess), "\n")
+			if details != "" {
+				linesRendered += lipgloss.Height(details)
+			}
+		}
 	}
 
 	return last
@@ -451,8 +474,8 @@ var keys = keyMap{
 		key.WithHelp("*", "pin session"),
 	),
 	SortView: key.NewBinding(
-		key.WithKeys("tab"),
-		key.WithHelp("tab", "switch session view"),
+		key.WithKeys("v"),
+		key.WithHelp("v", "switch session view"),
 	),
 }
 
@@ -1518,7 +1541,7 @@ func (m *model) View() string {
 			if m.filterActive {
 				footer = m.renderFooter("↑/↓: navigate • enter: jump to session • esc: cancel search")
 			} else {
-				text := fmt.Sprintf("view: %s • ↑/↓ navigate • enter attach • * pin • tab switch view • / search • c create • d delete • ? help • q quit", m.sessionView)
+				text := fmt.Sprintf("view: %s • ↑/↓ navigate • enter attach • * pin • v switch view • / search • c create • d delete • ? help • q quit", m.sessionView)
 				footer = m.renderFooter(text)
 			}
 		case stateCreating:
@@ -1631,22 +1654,7 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 
 		sess := m.sessions[entry.sessIdx]
 
-		section := "recent"
-		header := "Recent"
-		if sess.pinned {
-			section = "pinned"
-			header = "* Pinned"
-		} else if m.sessionView == sessionViewProjects {
-			section = "project:" + sess.projectAlias
-			header = "No Project"
-			if sess.projectAlias != "" {
-				if sess.projectName != "" {
-					header = fmt.Sprintf("%s (%s)", sess.projectName, sess.projectAlias)
-				} else {
-					header = sess.projectAlias
-				}
-			}
-		}
+		section, header := m.sessionSection(sess)
 		if section != currentSection {
 			if showSections {
 				if currentSection != "" {
@@ -1724,6 +1732,9 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			details := m.getSessionDetails(sess)
 			lines := strings.Split(strings.TrimSuffix(details, "\n"), "\n")
 			for _, line := range lines {
+				if budget > 0 && linesRendered >= budget-1 {
+					break
+				}
 				w.WriteString(dimStyle.Render(line) + "\n")
 				linesRendered++
 			}

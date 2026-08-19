@@ -365,7 +365,7 @@ func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error
 // SetPinned updates durable presentation state without treating the change as
 // session activity or changing UpdatedAt.
 func (s *SessionStore) SetPinned(name string, pinned bool) error {
-	return withSessionsLock(func() error {
+	err := withSessionsLock(func() error {
 		fresh, err := loadSessionsUnlocked()
 		if err != nil {
 			return err
@@ -381,6 +381,10 @@ func (s *SessionStore) SetPinned(name string, pinned bool) error {
 		s.adoptFrom(fresh)
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("set pinned state for session %q: %w", name, err)
+	}
+	return nil
 }
 
 // MarkReviewed records an explicit stale-review/snooze marker without treating
@@ -644,13 +648,20 @@ func (s *SessionStore) MarkActive(name string, at time.Time) (int, error) {
 		if !exists {
 			return fmt.Errorf("%w: %s", ErrSessionNotFound, name)
 		}
-		sess.LastAttached = at
-		sess.UpdatedAt = at
+		if at.After(sess.LastAttached) {
+			sess.LastAttached = at
+		}
+		if at.After(sess.UpdatedAt) {
+			sess.UpdatedAt = at
+		}
 		var err error
 		assigned, err = fresh.assignSlot(name)
 		return err
 	})
-	return assigned, err
+	if err != nil {
+		return 0, fmt.Errorf("mark session %q active: %w", name, err)
+	}
+	return assigned, nil
 }
 
 // assignSlot mutates an already lock-owned store.

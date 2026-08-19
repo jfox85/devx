@@ -224,6 +224,32 @@ func TestSetPinnedPersistsWithoutChangingActivityMetadata(t *testing.T) {
 	}
 }
 
+func TestMarkActiveNeverMovesActivityBackward(t *testing.T) {
+	setupTempHome(t)
+	store, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddSession("active", "main", "/path", nil); err != nil {
+		t.Fatal(err)
+	}
+	newer := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
+	older := newer.Add(-time.Hour)
+	if _, err := store.MarkActive("active", newer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkActive("active", older); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Sessions["active"].LastAttached; !got.Equal(newer) {
+		t.Fatalf("activity moved backward: got %v want %v", got, newer)
+	}
+}
+
 func TestNumberedSlots_AssignSlot(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "devx-session-test-*")
 	if err != nil {

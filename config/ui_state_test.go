@@ -1,10 +1,92 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestTUISessionViewPreservesUnknownStateKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "devx", "ui-state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"future":{"enabled":true},"tui_session_view":"recent"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTUISessionView("projects"); err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]json.RawMessage
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state["future"]; !ok {
+		t.Fatalf("unknown state key was lost: %s", data)
+	}
+}
+
+func TestTUISessionViewRecoversNullState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "devx", "ui-state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`null`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTUISessionView("projects"); err != nil {
+		t.Fatalf("null state was not recovered: %v", err)
+	}
+	if view, err := LoadTUISessionView(); err != nil || view != "projects" {
+		t.Fatalf("recovered view=%q err=%v", view, err)
+	}
+}
+
+func TestTUISessionViewDoesNotQuarantineReadErrors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "devx", "ui-state.json")
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTUISessionView("projects"); err == nil {
+		t.Fatal("expected read error")
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("read-error path was quarantined: info=%v err=%v", info, err)
+	}
+}
+
+func TestTUISessionViewRecoversCorruptState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "devx", "ui-state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"broken"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetTUISessionView("projects"); err != nil {
+		t.Fatalf("corrupt state was not recovered: %v", err)
+	}
+	matches, err := filepath.Glob(path + ".corrupt.*")
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("corrupt state was not quarantined: matches=%v err=%v", matches, err)
+	}
+	if view, err := LoadTUISessionView(); err != nil || view != "projects" {
+		t.Fatalf("recovered view=%q err=%v", view, err)
+	}
+}
 
 func TestTUISessionViewUsesDedicatedUserScopedState(t *testing.T) {
 	home := t.TempDir()

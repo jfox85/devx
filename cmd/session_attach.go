@@ -23,18 +23,25 @@ func init() {
 }
 
 var ensureTmuxForAttach = target.EnsureTmuxSession
-var attachReadyTmux = target.AttachReadyTmuxSession
+var startReadyTmux = target.StartReadyTmuxSession
 
 // readyAttach records activity only after the target session is known to be
 // ready, immediately before handing the terminal to the blocking attach path.
 func readyAttach(store *session.SessionStore, name string, sess *session.Session) error {
 	if err := ensureTmuxForAttach(name, sess); err != nil {
-		return err
+		return fmt.Errorf("ensure tmux session is ready: %w", err)
+	}
+	wait, err := startReadyTmux(name, sess)
+	if err != nil {
+		return fmt.Errorf("start tmux attach: %w", err)
 	}
 	if _, err := store.MarkActive(name, time.Now()); err != nil {
-		return fmt.Errorf("mark session active: %w", err)
+		fmt.Printf("Warning: Failed to record session activity: %v\n", err)
 	}
-	return attachReadyTmux(name, sess)
+	if err := wait(); err != nil {
+		return fmt.Errorf("attach tmux session: %w", err)
+	}
+	return nil
 }
 
 func runSessionAttach(cmd *cobra.Command, args []string) error {

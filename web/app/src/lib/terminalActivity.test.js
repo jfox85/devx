@@ -11,6 +11,16 @@ test('terminal attempts are opaque and frame URLs carry them', () => {
   )
 })
 
+test('terminal attempts fall back to secure random bytes without randomUUID', () => {
+  const attempt = createTerminalAttempt({
+    getRandomValues: bytes => {
+      bytes.fill(0xab)
+      return bytes
+    },
+  })
+  assert.equal(attempt, 'ab'.repeat(16))
+})
+
 test('recreated frames receive distinct attempts', () => {
   let n = 0
   const crypto = { randomUUID: () => `00000000-0000-0000-0000-${String(++n).padStart(12, '0')}` }

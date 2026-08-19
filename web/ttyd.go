@@ -15,15 +15,16 @@ import (
 )
 
 type ttydInstance struct {
-	port          int
-	cmd           *exec.Cmd
-	conns         int
-	timer         *time.Timer
-	startedAt     time.Time
-	lastUsedAt    time.Time
-	prewarmed     bool
-	lastError     string
-	activeAttempt map[string]int
+	port           int
+	cmd            *exec.Cmd
+	conns          int
+	timer          *time.Timer
+	startedAt      time.Time
+	lastUsedAt     time.Time
+	prewarmed      bool
+	lastError      string
+	activeAttempt  map[string]int
+	stopGeneration uint64
 }
 
 type ttydManager struct {
@@ -48,6 +49,7 @@ func newTtydManager() *ttydManager {
 }
 
 const ttydIdleTimeout = 10 * time.Minute
+const ttydHandshakeTimeout = 10 * time.Second
 const ttydScrollbackLines = 5000
 
 func ttydArgs(sessionName string, port int) []string {
@@ -196,13 +198,15 @@ func (m *ttydManager) clientConnected(sessionName, attempt string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst, ok := m.sessions[sessionName]
-	if !ok || attempt == "" {
+	if !ok {
 		return
 	}
-	if inst.activeAttempt == nil {
-		inst.activeAttempt = make(map[string]int)
+	if attempt != "" {
+		if inst.activeAttempt == nil {
+			inst.activeAttempt = make(map[string]int)
+		}
+		inst.activeAttempt[attempt]++
 	}
-	inst.activeAttempt[attempt]++
 	inst.conns++
 	inst.prewarmed = false
 	inst.lastUsedAt = time.Now()
@@ -210,6 +214,7 @@ func (m *ttydManager) clientConnected(sessionName, attempt string) {
 		inst.timer.Stop()
 		inst.timer = nil
 	}
+	inst.stopGeneration++
 }
 
 func (m *ttydManager) clientDisconnected(sessionName, attempt string) {
@@ -219,13 +224,15 @@ func (m *ttydManager) clientDisconnected(sessionName, attempt string) {
 	if !ok {
 		return
 	}
-	if inst.activeAttempt[attempt] > 1 {
-		inst.activeAttempt[attempt]--
-	} else {
-		delete(inst.activeAttempt, attempt)
-		for receipt, issued := range m.activityReceipts {
-			if issued.session == sessionName && issued.attempt == attempt {
-				delete(m.activityReceipts, receipt)
+	if attempt != "" {
+		if inst.activeAttempt[attempt] > 1 {
+			inst.activeAttempt[attempt]--
+		} else {
+			delete(inst.activeAttempt, attempt)
+			for receipt, issued := range m.activityReceipts {
+				if issued.session == sessionName && issued.attempt == attempt {
+					delete(m.activityReceipts, receipt)
+				}
 			}
 		}
 	}
@@ -233,9 +240,7 @@ func (m *ttydManager) clientDisconnected(sessionName, attempt string) {
 		inst.conns--
 	}
 	if inst.conns == 0 {
-		inst.timer = time.AfterFunc(ttydIdleTimeout, func() {
-			m.stopSession(sessionName)
-		})
+		m.scheduleStopLocked(sessionName, inst, ttydIdleTimeout)
 	}
 }
 
@@ -263,7 +268,7 @@ func (m *ttydManager) issueActivityReceipt(sessionName, attempt string, now time
 	return receipt, true
 }
 
-func (m *ttydManager) consumeActivityReceipt(sessionName, receipt string, now time.Time) bool {
+func (m *ttydManager) reserveActivityReceipt(sessionName, receipt string, now time.Time) (terminalActivityReceipt, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for token, issued := range m.activityReceipts {
@@ -273,18 +278,40 @@ func (m *ttydManager) consumeActivityReceipt(sessionName, receipt string, now ti
 	}
 	issued, ok := m.activityReceipts[receipt]
 	if !ok {
-		return false
+		return terminalActivityReceipt{}, false
 	}
 	delete(m.activityReceipts, receipt)
 	if issued.session != sessionName || now.After(issued.expires) {
-		return false
+		return terminalActivityReceipt{}, false
 	}
 	inst, ok := m.sessions[sessionName]
 	if !ok {
-		return false
+		return terminalActivityReceipt{}, false
 	}
-	_, active := inst.activeAttempt[issued.attempt]
-	return active
+	if _, active := inst.activeAttempt[issued.attempt]; !active {
+		return terminalActivityReceipt{}, false
+	}
+	return issued, true
+}
+
+func (m *ttydManager) restoreActivityReceipt(receipt string, issued terminalActivityReceipt, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if now.After(issued.expires) {
+		return
+	}
+	inst, ok := m.sessions[issued.session]
+	if !ok {
+		return
+	}
+	if _, active := inst.activeAttempt[issued.attempt]; active {
+		m.activityReceipts[receipt] = issued
+	}
+}
+
+func (m *ttydManager) consumeActivityReceipt(sessionName, receipt string, now time.Time) bool {
+	_, ok := m.reserveActivityReceipt(sessionName, receipt, now)
+	return ok
 }
 
 // portForSession returns the port of a running ttyd instance, if one exists.
@@ -295,6 +322,15 @@ func (m *ttydManager) portForSession(name string) (int, bool) {
 	defer m.mu.Unlock()
 	if inst, ok := m.sessions[name]; ok {
 		inst.lastUsedAt = time.Now()
+		if inst.conns == 0 {
+			m.scheduleStopLocked(name, inst, ttydHandshakeTimeout)
+		} else {
+			if inst.timer != nil {
+				inst.timer.Stop()
+				inst.timer = nil
+			}
+			inst.stopGeneration++
+		}
 		return inst.port, true
 	}
 	return 0, false
@@ -343,12 +379,7 @@ func (m *ttydManager) markPrewarmed(name string, idleTimeout time.Duration) {
 	}
 	inst.prewarmed = true
 	inst.lastUsedAt = time.Now()
-	if inst.timer != nil {
-		inst.timer.Stop()
-	}
-	inst.timer = time.AfterFunc(idleTimeout, func() {
-		m.stopSession(name)
-	})
+	m.scheduleStopLocked(name, inst, idleTimeout)
 }
 
 // findSessionByPathPrefix finds the running session whose name is the longest prefix
@@ -359,12 +390,42 @@ func (m *ttydManager) findSessionByPathPrefix(path string) (name string, port in
 	for n, inst := range m.sessions {
 		if (strings.HasPrefix(path, n+"/") || path == n) && len(n) > len(name) {
 			inst.lastUsedAt = time.Now()
+			if inst.conns == 0 {
+				m.scheduleStopLocked(n, inst, ttydHandshakeTimeout)
+			} else {
+				if inst.timer != nil {
+					inst.timer.Stop()
+					inst.timer = nil
+				}
+				inst.stopGeneration++
+			}
 			name = n
 			port = inst.port
 			found = true
 		}
 	}
 	return
+}
+
+func (m *ttydManager) scheduleStopLocked(sessionName string, inst *ttydInstance, delay time.Duration) {
+	if inst.timer != nil {
+		inst.timer.Stop()
+	}
+	inst.stopGeneration++
+	generation := inst.stopGeneration
+	inst.timer = time.AfterFunc(delay, func() {
+		m.stopSessionGeneration(sessionName, inst, generation)
+	})
+}
+
+func (m *ttydManager) stopSessionGeneration(sessionName string, expected *ttydInstance, generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.sessions[sessionName]
+	if !ok || inst != expected || inst.stopGeneration != generation || inst.conns > 0 {
+		return
+	}
+	m.stopSessionLocked(sessionName, inst)
 }
 
 // stopSession kills the ttyd process for a session and cleans up the grouped
@@ -381,6 +442,15 @@ func (m *ttydManager) stopSession(sessionName string) {
 	// instance that is actively in use.
 	if inst.conns > 0 {
 		return
+	}
+	m.stopSessionLocked(sessionName, inst)
+}
+
+func (m *ttydManager) stopSessionLocked(sessionName string, inst *ttydInstance) {
+	inst.stopGeneration++
+	if inst.timer != nil {
+		inst.timer.Stop()
+		inst.timer = nil
 	}
 	if inst.cmd != nil && inst.cmd.Process != nil {
 		inst.cmd.Process.Kill() //nolint:errcheck

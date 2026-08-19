@@ -152,7 +152,24 @@
         // Pooled switch: terminal is already connected. Record near-zero
         // switch timings (warm path) and resync size/focus.
         markIframeLoad(name)
-        recordSessionActivity(name, existing.attempt, () => session.name === name && pool[0]?.attempt === existing.attempt).catch(() => {})
+        let recorded = false
+        try {
+          recorded = await recordSessionActivity(
+            name,
+            existing.attempt,
+            () => session.name === name && pool[0]?.attempt === existing.attempt
+          )
+        } catch (error) {
+          if (error?.status === 404 || error?.status === 409) {
+            delete frameHealthy[name]
+            pool = [createFrame(name, Date.now()), ...pool.filter(p => p !== existing)]
+            return
+          }
+          // Activity bookkeeping is non-blocking for a known-live pooled frame.
+          console.warn('[devx] could not record pooled session activity', error)
+          recorded = true
+        }
+        if (!recorded) return
         markTerminalReady(name)
         triggerFitAddon()
         await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
@@ -331,7 +348,8 @@
 
   // Timing constants for xterm.js / FitAddon initialisation.
   const XTERM_POLL_DEADLINE_MS = 5000  // max time to wait for xterm.js init
-  const XTERM_POLL_INTERVAL_MS = 100   // polling interval while waiting
+  const XTERM_POLL_INTERVAL_MS = 100   // polling interval while waiting for xterm DOM
+  const ACTIVITY_POLL_INTERVAL_MS = 250 // stays below terminal write rate limits
   const FITADDON_SETTLE_MS     = 200   // time for FitAddon → ioctl to propagate
 
   function pushModalHistory(type) {
@@ -507,6 +525,7 @@
     // xterm DOM before recording a successful open.
     const activityPromise = (async () => {
       const activityDeadline = Date.now() + XTERM_POLL_DEADLINE_MS
+      let retryDelay = ACTIVITY_POLL_INTERVAL_MS
       while (Date.now() < activityDeadline) {
         const activeFrame = pool.find(p => p.name === name)
         if (session.name !== name || activeFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return false
@@ -517,12 +536,20 @@
           })
           if (recorded) return true
           return false
-        } catch { /* websocket may still be establishing */ }
-        await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
+        } catch (error) {
+          if (error?.stage === 'activity') {
+            console.warn('[devx] terminal opened but activity was not persisted', error)
+            return true
+          }
+          // The websocket/receipt may still be establishing.
+        }
+        await new Promise(r => setTimeout(r, retryDelay))
+        retryDelay = Math.min(retryDelay * 2, 1000)
       }
       return false
     })()
 
+    const desktopFrame = typeof window !== 'undefined' && !!window.__DEVX_DESKTOP?.terminalBase
     // Poll until xterm's helper textarea appears (signals full init).
     const deadline = Date.now() + XTERM_POLL_DEADLINE_MS
     let xtermReady = false
@@ -532,19 +559,23 @@
       } catch { /* cross-origin / not-yet-loaded */ }
       await new Promise(r => setTimeout(r, XTERM_POLL_INTERVAL_MS))
     }
+    let fitTriggered = false
+    if (xtermReady && !desktopFrame) {
+      triggerFitAddon()
+      fitTriggered = true
+    }
     const terminalConnected = await activityPromise
     const currentFrame = pool.find(p => p.name === name)
     if (session.name !== name || currentFrame?.attempt !== attempt || frameEls[name] !== loadedFrame) return
     // Cross-origin desktop frames cannot expose xterm's helper textarea, so the
     // server-validated websocket attempt is the authoritative readiness proof.
-    const desktopFrame = typeof window !== 'undefined' && !!window.__DEVX_DESKTOP?.terminalBase
     frameHealthy[name] = terminalConnected && (desktopFrame || xtermReady)
     if (!frameHealthy[name]) return
     // Re-trigger FitAddon so it sends the current browser viewport dimensions
     // to the PTY. Small wait after so ioctl has time to propagate before the
     // subsequent refresh-client call.
     markTerminalReady(name)
-    triggerFitAddon()
+    if (!fitTriggered) triggerFitAddon()
     await new Promise(r => setTimeout(r, FITADDON_SETTLE_MS))
     try { await refreshTerminal(session.name) } catch { /* ignore */ }
     focusTerminalSoon()
@@ -916,11 +947,12 @@
     <button
       on:click={onBack}
       class="px-3 text-gray-400 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
+      aria-label="Back to session list"
       title="back to session list"
     >←</button>
 
     {#if windows.length > 0}
-      <div role="tablist" class="flex items-center gap-1 px-2 overflow-x-auto flex-1 min-w-0">
+      <div role="tablist" aria-label="tmux windows" class="flex items-center gap-1 px-2 overflow-x-auto flex-1 min-w-0">
         {#each windows as win}
           <button
             role="tab"
@@ -1023,7 +1055,7 @@
           for xterm, plus pointer-events:none and tabindex=-1 so they can't
           steal clicks or keyboard focus.
         -->
-        {#each pool as frame (frame.name + '::' + frame.key)}
+        {#each pool as frame (frame.name + '::' + frame.key + '::' + frame.attempt)}
           {@const isActiveFrame = frame.name === session.name}
           <iframe
             bind:this={frameEls[frame.name]}

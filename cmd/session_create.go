@@ -495,6 +495,11 @@ func launchCreatedSessionTmux(name string, sess *session.Session) {
 
 func launchSessionTmuxHandoff(name string, sess *session.Session, state string) {
 	if session.IsTmuxRunning() {
+		if sess.IsContainerized() {
+			if err := target.EnsureTmuxSession(name, sess); err != nil {
+				fmt.Printf("Warning: Failed to launch target tmux session: %v\n", err)
+			}
+		}
 		fmt.Printf("Note: Already inside tmux. Session %s but not attached.\n", state)
 		fmt.Printf("To attach: devx session attach %s\n", name)
 		return

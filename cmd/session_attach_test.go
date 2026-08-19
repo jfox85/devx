@@ -25,26 +25,28 @@ func setupAttachTestStore(t *testing.T) (*session.SessionStore, *session.Session
 
 func TestReadyAttachRecordsActivityAfterEnsureAndBeforeHandoff(t *testing.T) {
 	store, sess := setupAttachTestStore(t)
-	originalEnsure, originalAttach := ensureTmuxForAttach, attachReadyTmux
-	t.Cleanup(func() { ensureTmuxForAttach, attachReadyTmux = originalEnsure, originalAttach })
+	originalEnsure, originalAttach := ensureTmuxForAttach, startReadyTmux
+	t.Cleanup(func() { ensureTmuxForAttach, startReadyTmux = originalEnsure, originalAttach })
 
 	ensureCalled := false
 	ensureTmuxForAttach = func(name string, got *session.Session) error {
 		ensureCalled = true
 		return nil
 	}
-	attachReadyTmux = func(name string, got *session.Session) error {
+	startReadyTmux = func(name string, got *session.Session) (func() error, error) {
 		if !ensureCalled {
-			t.Fatal("attach ran before ensure")
+			t.Fatal("attach started before ensure")
 		}
-		reloaded, err := session.LoadSessions()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if reloaded.Sessions[name].LastAttached.IsZero() {
-			t.Fatal("attach handoff ran before activity was recorded")
-		}
-		return nil
+		return func() error {
+			reloaded, err := session.LoadSessions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reloaded.Sessions[name].LastAttached.IsZero() {
+				t.Fatal("attach wait ran before activity was recorded")
+			}
+			return nil
+		}, nil
 	}
 
 	if err := readyAttach(store, "demo", sess); err != nil {
@@ -60,10 +62,12 @@ func TestCreatedSessionHandoffRecordsActivityForHostAndContainer(t *testing.T) {
 			if err := store.UpdateSession("demo", func(stored *session.Session) { stored.Target.Type = targetType }); err != nil {
 				t.Fatal(err)
 			}
-			originalEnsure, originalAttach := ensureTmuxForAttach, attachReadyTmux
-			t.Cleanup(func() { ensureTmuxForAttach, attachReadyTmux = originalEnsure, originalAttach })
+			originalEnsure, originalAttach := ensureTmuxForAttach, startReadyTmux
+			t.Cleanup(func() { ensureTmuxForAttach, startReadyTmux = originalEnsure, originalAttach })
 			ensureTmuxForAttach = func(string, *session.Session) error { return nil }
-			attachReadyTmux = func(string, *session.Session) error { return nil }
+			startReadyTmux = func(string, *session.Session) (func() error, error) {
+				return func() error { return nil }, nil
+			}
 			t.Setenv("TMUX", "")
 
 			launchCreatedSessionTmux("demo", sess)
@@ -79,15 +83,34 @@ func TestCreatedSessionHandoffRecordsActivityForHostAndContainer(t *testing.T) {
 	}
 }
 
+func TestReadyAttachDoesNotRecordActivityWhenHandoffFailsToStart(t *testing.T) {
+	store, sess := setupAttachTestStore(t)
+	originalEnsure, originalAttach := ensureTmuxForAttach, startReadyTmux
+	t.Cleanup(func() { ensureTmuxForAttach, startReadyTmux = originalEnsure, originalAttach })
+	ensureTmuxForAttach = func(string, *session.Session) error { return nil }
+	startReadyTmux = func(string, *session.Session) (func() error, error) { return nil, errors.New("attach start failed") }
+
+	if err := readyAttach(store, "demo", sess); err == nil {
+		t.Fatal("expected attach failure")
+	}
+	reloaded, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.Sessions["demo"].LastAttached.IsZero() {
+		t.Fatal("failed handoff recorded activity")
+	}
+}
+
 func TestReadyAttachDoesNotRecordActivityWhenEnsureFails(t *testing.T) {
 	store, sess := setupAttachTestStore(t)
-	originalEnsure, originalAttach := ensureTmuxForAttach, attachReadyTmux
-	t.Cleanup(func() { ensureTmuxForAttach, attachReadyTmux = originalEnsure, originalAttach })
+	originalEnsure, originalAttach := ensureTmuxForAttach, startReadyTmux
+	t.Cleanup(func() { ensureTmuxForAttach, startReadyTmux = originalEnsure, originalAttach })
 
 	ensureTmuxForAttach = func(string, *session.Session) error { return errors.New("runtime unavailable") }
-	attachReadyTmux = func(string, *session.Session) error {
+	startReadyTmux = func(string, *session.Session) (func() error, error) {
 		t.Fatal("attach should not run")
-		return nil
+		return nil, nil
 	}
 
 	if err := readyAttach(store, "demo", sess); err == nil {
