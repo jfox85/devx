@@ -594,6 +594,7 @@
             <!-- Session row: flex container so name and actions sit side by side -->
             {@const kbHighlight = showKbCursor && isKbSelected}
             {@const isFlashing = session.name === flashSession}
+            {@const stacked = section.showProject || section.showActivity}
             <div
               class="
                 group flex items-stretch border-l-2 transition-colors
@@ -609,17 +610,17 @@
               <!-- Name row: color dot + name/rename + attention flag -->
               <div
                 class="
-                  flex-1 flex flex-col gap-1 lg:gap-0.5
-                  pl-4 pr-1 py-0 lg:py-1.5
+                  flex-1 flex min-w-0
+                  {stacked ? 'flex-col gap-1 lg:gap-0.5 pl-4 pr-1 py-0 lg:py-1.5' : 'items-center gap-2 min-h-11 lg:min-h-0 pl-4 pr-1 py-0 lg:pr-2 lg:py-2'}
                   font-mono text-sm lg:text-xs
-                  min-w-0
                   {isActive ? 'text-cyan-300' : kbHighlight ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
-                <!-- Identity on the first line, metadata below it. The sidebar is always
-                     narrow (~288-320px on desktop, full width on mobile), so a stacked
-                     layout is required at every breakpoint to keep names readable. -->
-                <div class="flex items-center gap-2 min-h-11 min-w-0 lg:min-h-0">
+                <!-- Recent/pinned rows stack identity above metadata because the sidebar
+                     is always narrow (~288-320px on desktop, full width on mobile) and
+                     those rows carry project + activity chips. Project-view rows have
+                     little metadata, so they keep the compact single-line layout. -->
+                <div class="{stacked ? 'flex items-center gap-2 min-h-11 min-w-0 lg:min-h-0' : 'contents'}">
                 <!-- Status dot -->
                 <span
                   class="shrink-0 text-[10px]"
@@ -666,7 +667,7 @@
                   </button>
                 {/if}
                 </div>
-                <div class="flex items-center gap-2 min-w-0 overflow-hidden pl-7 lg:pl-6">
+                <div class="{stacked ? 'flex items-center gap-2 min-w-0 overflow-hidden pl-7 lg:pl-6' : 'contents'}">
                 {#if section.showProject && session.project_alias}
                   <span class="text-[9px] min-w-0 truncate text-gray-600 border border-gray-800 px-1 rounded-sm" title={session.project_alias}>{session.project_alias}</span>
                 {/if}
@@ -692,7 +693,7 @@
                    Desktop (≥ lg): invisible by default, fade in on group hover -->
               <div class="
                 flex items-center gap-px pr-1
-                {session.pinned ? 'lg:opacity-100' : 'lg:opacity-0'} lg:group-hover:opacity-100 lg:group-focus-within:opacity-100 lg:transition-opacity
+                lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100 lg:transition-opacity
               ">
                 <button
                   type="button"

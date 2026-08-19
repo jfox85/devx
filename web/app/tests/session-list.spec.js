@@ -142,3 +142,39 @@ test('desktop sidebar rows keep session names readable on two lines', async ({ p
   await expect(targetChip).toBeVisible()
   await expect(colorButton).toBeVisible()
 })
+
+test('projects view keeps single-line rows without metadata lines', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await mockSessionAPI(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Projects' }).click()
+  const row = page.getByRole('listitem').filter({ hasText: 'Newer beta' })
+  const nameButton = row.getByRole('button', { name: /^Newer beta/ })
+  await expect(nameButton).toBeVisible()
+  const targetChip = row.getByTitle('Target: host')
+  const [nameBox, targetBox] = await Promise.all([
+    nameButton.boundingBox(),
+    targetChip.boundingBox(),
+  ])
+  // Without project/activity metadata the target chip stays inline with the name.
+  expect(targetBox.y).toBeLessThan(nameBox.y + nameBox.height)
+  expect(targetBox.y + targetBox.height).toBeGreaterThan(nameBox.y)
+})
+
+test('desktop action buttons are hover-revealed uniformly for pinned and unpinned rows', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await mockSessionAPI(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Pin Newer beta' }).click()
+  await expect(page.getByText('● Pinned', { exact: true })).toBeVisible()
+  // Move focus/hover away from the freshly pinned row.
+  await page.getByLabel('filter sessions').click()
+  const pinnedRow = page.getByRole('listitem').filter({ hasText: 'Newer beta' })
+  const unpinnedRow = page.getByRole('listitem').filter({ hasText: 'Older alpha' })
+  const actionsIn = (row) => row.locator('div').filter({ has: page.getByRole('button', { name: /Pin|Unpin/ }) }).last()
+  for (const row of [pinnedRow, unpinnedRow]) {
+    await expect.poll(async () => actionsIn(row).evaluate(el => getComputedStyle(el).opacity)).toBe('0')
+  }
+  await unpinnedRow.hover()
+  await expect.poll(async () => actionsIn(unpinnedRow).evaluate(el => getComputedStyle(el).opacity)).toBe('1')
+})
