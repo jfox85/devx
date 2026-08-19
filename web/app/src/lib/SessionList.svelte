@@ -609,13 +609,15 @@
               <!-- Name row: color dot + name/rename + attention flag -->
               <div
                 class="
-                  flex-1 flex items-center gap-2
-                  pl-4 pr-2 py-3 lg:py-2
+                  flex-1 flex flex-col gap-1 lg:flex-row lg:items-center lg:gap-2
+                  pl-4 pr-1 py-0 lg:pr-2 lg:py-2
                   font-mono text-sm lg:text-xs
                   min-w-0
                   {isActive ? 'text-cyan-300' : kbHighlight ? 'text-gray-200' : 'text-gray-500 hover:text-gray-200'}
                 "
               >
+                <!-- On mobile, keep identity on the first line and move metadata below it. -->
+                <div class="flex items-center gap-2 min-h-11 min-w-0 lg:contents lg:min-h-0">
                 <!-- Status dot -->
                 <span
                   class="shrink-0 text-[10px]"
@@ -624,7 +626,7 @@
                 >●</span>
                 <button
                   on:click={(e) => cycleSessionColor(e, session)}
-                  class="shrink-0 w-2.5 h-2.5 rounded-sm border border-black/40"
+                  class="hidden lg:block shrink-0 w-2.5 h-2.5 rounded-sm border border-black/40"
                   style="background-color: {colorMap[session.color] || colorMap.blue}"
                   title={`Session color: ${session.color || 'blue'} (click to change)`}
                   aria-label={`change color for ${session.name}`}
@@ -647,7 +649,7 @@
                 {:else}
                   <button
                     type="button"
-                    class="flex-1 min-w-0 truncate leading-none cursor-pointer text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+                    class="self-stretch flex flex-1 items-center min-w-0 truncate leading-none cursor-pointer text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                     on:pointerenter={() => schedulePrewarm(session.name)}
                     on:pointerleave={cancelPrewarm}
                     on:pointerdown={() => firePrewarm(session.name)}
@@ -661,6 +663,8 @@
                     {/if}
                   </button>
                 {/if}
+                </div>
+                <div class="flex items-center gap-2 min-w-0 overflow-hidden pl-7 lg:contents lg:overflow-visible lg:pl-0">
                 {#if section.showProject && session.project_alias}
                   <span class="text-[9px] shrink-0 text-gray-600 border border-gray-800 px-1 rounded-sm">{session.project_alias}</span>
                 {/if}
@@ -669,7 +673,7 @@
                   <time datetime={session.activity_at || ''} title={activity.label} aria-label={activity.label} class="text-[9px] text-gray-700 shrink-0">{activity.display}</time>
                 {/if}
                 <span
-                  class="text-[9px] shrink-0 uppercase tracking-wide px-1 py-px border border-gray-800 text-gray-600 rounded-sm"
+                  class="hidden lg:inline text-[9px] shrink-0 uppercase tracking-wide px-1 py-px border border-gray-800 text-gray-600 rounded-sm"
                   title={`Target: ${targetLabel(session)}`}
                 >{targetLabel(session)}</span>
                 {#if session.artifact_count > 0}
@@ -678,6 +682,7 @@
                 {#each session.status?.badges || [] as badge}
                   <span class="text-[10px] shrink-0" style="color: {colorMap[session.status?.color] || colorMap.gray}" title={statusTitle(session)}>{badge}</span>
                 {/each}
+                </div>
               </div>
 
               <!-- Action buttons:
