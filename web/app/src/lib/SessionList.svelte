@@ -668,7 +668,7 @@
                 </div>
                 <div class="flex items-center gap-2 min-w-0 overflow-hidden pl-7 lg:pl-6">
                 {#if section.showProject && session.project_alias}
-                  <span class="text-[9px] shrink-0 text-gray-600 border border-gray-800 px-1 rounded-sm">{session.project_alias}</span>
+                  <span class="text-[9px] min-w-0 truncate text-gray-600 border border-gray-800 px-1 rounded-sm" title={session.project_alias}>{session.project_alias}</span>
                 {/if}
                 {#if section.showActivity}
                   {@const activity = relativeActivity(session, activityNow)}

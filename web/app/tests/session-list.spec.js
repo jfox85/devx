@@ -98,11 +98,12 @@ test('mobile rows preserve session names and 44px touch targets', async ({ page 
   await mockSessionAPI(page)
   await page.goto('/')
   const viewButton = page.getByRole('button', { name: 'Recent' })
-  const pinButton = page.getByRole('button', { name: 'Pin Newer beta' })
-  const nameButton = page.getByRole('button', { name: /^Newer beta/ })
-  const projectChip = page.getByText('beta', { exact: true })
-  const targetChip = page.getByTitle('Target: host').first()
-  const colorButton = page.getByRole('button', { name: 'change color for newer-beta' })
+  const row = page.getByRole('listitem').filter({ hasText: 'Newer beta' })
+  const pinButton = row.getByRole('button', { name: 'Pin Newer beta' })
+  const nameButton = row.getByRole('button', { name: /^Newer beta/ })
+  const projectChip = row.getByText('beta', { exact: true })
+  const targetChip = row.getByTitle('Target: host')
+  const colorButton = row.getByRole('button', { name: 'change color for newer-beta' })
   const [viewBox, pinBox, nameBox, projectBox] = await Promise.all([
     viewButton.boundingBox(),
     pinButton.boundingBox(),
@@ -123,11 +124,12 @@ test('desktop sidebar rows keep session names readable on two lines', async ({ p
   await page.setViewportSize({ width: 1280, height: 720 })
   await mockSessionAPI(page)
   await page.goto('/')
-  const nameButton = page.getByRole('button', { name: /^Newer beta/ })
+  const row = page.getByRole('listitem').filter({ hasText: 'Newer beta' })
+  const nameButton = row.getByRole('button', { name: /^Newer beta/ })
   await expect(nameButton).toBeVisible()
-  const projectChip = page.getByText('beta', { exact: true })
-  const targetChip = page.getByTitle('Target: host').first()
-  const colorButton = page.getByRole('button', { name: 'change color for newer-beta' })
+  const projectChip = row.getByText('beta', { exact: true })
+  const targetChip = row.getByTitle('Target: host')
+  const colorButton = row.getByRole('button', { name: 'change color for newer-beta' })
   const [nameBox, projectBox] = await Promise.all([
     nameButton.boundingBox(),
     projectChip.boundingBox(),
