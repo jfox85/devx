@@ -13,8 +13,12 @@ This inventory maps current production shell behavior and direct user feedback t
 | Branch and reasons | Hover/focus tooltip, header/facts, Status | Progressive disclosure; no permanently two-line rows |
 | New session | Navigator header | Validated project, name, and target modal; creates a complete local fixture |
 | Search/filter | Navigator search | Name, project, and branch; `/` ignores editable fields; arrow/Enter navigation |
-| Quick switcher | `Cmd/Ctrl+P` | All complete fixture sessions; uses the same selection path |
-| Project grouping/collapse | Navigator | Collapsible sections with counts and `aria-expanded` |
+| Quick switcher | `Cmd/Ctrl+P` | All complete fixture sessions, pinned first then activity; uses the same selection path |
+| Recent/Projects views | Navigator view toggle | Persisted segmented control (`devx_session_list_view_v1`, default Recent) |
+| Global Pinned section | Top of both views | Pinned sessions appear once, activity-ordered, with project chips |
+| Recent ordering | Recent view | Unpinned sessions globally by activity descending, never-opened last; inline project chip and relative activity time with Opened/Created semantics |
+| Pin/unpin | Row pin toggle, `Shift+P` | `aria-pressed` circle toggle; hover/focus reveal on desktop, always visible when pinned or on touch; live-region announcement |
+| Project grouping/collapse | Navigator (Projects view) | Collapsible sections with counts and `aria-expanded`; status-priority ordering |
 | Rename/session color | Session More | Validated rename and persistent identifier-color selection |
 | Derived status/reasons | Row, facts, Status | Text and color; no invented telemetry |
 | Target type | Row chip, facts, Status | Host/docker/gatepost |

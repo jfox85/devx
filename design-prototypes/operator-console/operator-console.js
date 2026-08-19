@@ -30,6 +30,9 @@
   let artifactFullReturn = null;
   let nextCreated = 1;
   let outputBlobURL = null;
+  const SESSION_VIEW_KEY = 'devx_session_list_view_v1';
+  let sessionView = (() => { try { const value = localStorage.getItem(SESSION_VIEW_KEY); return value === 'projects' || value === 'recent' ? value : 'recent'; } catch { return 'recent'; } })();
+  function setView(view) { sessionView = view; try { localStorage.setItem(SESSION_VIEW_KEY, view); } catch { /* storage may be disabled */ } renderFleet(); }
 
   const colors = ['#a855f7','#22c55e','#f97316','#06b6d4','#ef4444','#3b82f6','#eab308','#ec4899'];
   const svgPreview = (label, color = '#0ea5e9') => 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520"><rect width="900" height="520" fill="#07101c"/><rect x="55" y="55" width="790" height="410" rx="24" fill="#0d1b2b" stroke="${color}" stroke-width="3"/><circle cx="112" cy="110" r="18" fill="#4ade80"/><path d="M95 372l160-142 126 92 104-83 222 133" fill="none" stroke="${color}" stroke-width="18"/><text x="95" y="160" fill="#eef5ff" font-family="monospace" font-size="34">${label}</text></svg>`);
@@ -42,8 +45,27 @@
     ...options
   });
   const jsxSample = `export default function FleetSummary() {\n  return (\n    <section className="rounded-xl bg-slate-900 p-8">\n      <h2>Fleet is ready</h2>\n      <p>25 complete session fixtures · compact navigation</p>\n    </section>\n  )\n}`;
+  const NOW = Date.now();
+  const activityMinutes = [6,34,95,210,480,null,52,150,12,760,340,610,45,980,26,130,300,540,75,420,1600,18,240,2900,65];
+  const activityFor = (index) => { const minutes = activityMinutes[index % activityMinutes.length]; return minutes == null ? null : NOW - minutes * 60000; };
+  const relativeActivity = (session, now = Date.now()) => {
+    if (session.activityAt == null) return {short:'never', label:'Never opened'};
+    const seconds = Math.max(0, Math.floor((now - session.activityAt) / 1000));
+    const short = seconds >= 86400 ? `${Math.floor(seconds/86400)}d` : seconds >= 3600 ? `${Math.floor(seconds/3600)}h` : seconds >= 60 ? `${Math.floor(seconds/60)}m` : 'now';
+    const prefix = session.lastOpenedAt ? 'Opened' : 'Created';
+    return {short, label:`${prefix} ${short === 'now' ? 'now' : `${short} ago`}`};
+  };
+  const compareRecent = (a, b) => {
+    if (a.activityAt != null && b.activityAt != null) return b.activityAt - a.activityAt || a.title.localeCompare(b.title);
+    if (a.activityAt != null) return -1;
+    if (b.activityAt != null) return 1;
+    return a.title.localeCompare(b.title);
+  };
   const fixture = (title, project, branch, status, target, index, options = {}) => ({
     title, project, branch, status, target,
+    pinned: Boolean(options.pinned),
+    activityAt: options.activityAt !== undefined ? options.activityAt : activityFor(index),
+    lastOpenedAt: options.lastOpenedAt !== undefined ? options.lastOpenedAt : (index % 4 === 3 ? null : activityFor(index)),
     statusTone: status === 'active' ? 'green' : status === 'attention' || status === 'dirty' ? 'amber' : status === 'repair' ? 'red' : 'muted',
     tmux: status === 'active' || status === 'dirty' ? 'active' : status === 'repair' ? 'unknown' : 'stopped',
     dirty: status === 'dirty' ? true : status === 'repair' ? null : false,
@@ -56,7 +78,7 @@
 
   const fleet = [
     fixture('Operator console refresh','devx','jf-ui-refresh','active','host',0,{reason:'tmux is running; worktree scan is clean',routes:[['ui','operator-console-ui.localhost'],['api','operator-console-api.localhost'],['docs','operator-console-docs.localhost']],artifacts:[artifact('console-shot','operator-console.png','image',1,svgPreview('Operator Console'),{summary:'Desktop console proof',tags:['ui','proof']}),artifact('review','ui-review.md','markdown',3,'# UI review\n\nCompact rows preserve status and personal color.\n\nOutput uses the full viewport.\n\nArtifact tools match the production surface.',{path:'.artifacts/reports/ui-review.md',summary:'Review handoff',tags:['review']}),artifact('component','FleetSummary.jsx','jsx',5,jsxSample,{path:'.artifacts/components/FleetSummary.jsx',retention:'30 days'}),artifact('verify','verification.txt','text',8,'PASS 1440×1000\nPASS 1024×768\nPASS 768×1024\nPASS 390×844\nPASS 320×700'),artifact('walkthrough','walkthrough.mp4','video',9,'',{path:'.artifacts/media/walkthrough.mp4'}),artifact('report','report.html','html',10,'<main style="font:16px system-ui;padding:24px"><h1>Operator report</h1><p>Static HTML artifact preview.</p></main>',{path:'.artifacts/reports/report.html'}),artifact('brief','brief.pdf','pdf',11,'',{path:'.artifacts/reports/brief.pdf'}),artifact('bundle','fixtures.zip','binary',12,'',{path:'.artifacts/archive/fixtures.zip'})]}),
-    fixture('Gatepost proxy consolidation','devx','jf-gatepost-proxy','attention','gatepost',1,{routes:[['api','gatepost-proxy-api.localhost'],['logs','gatepost-proxy-logs.localhost']],artifacts:[artifact('proxy-review','proxy-review.md','markdown',4,'# Proxy review\n\nOperator attention is required before route cleanup.')]}),
+    fixture('Gatepost proxy consolidation','devx','jf-gatepost-proxy','attention','gatepost',1,{pinned:true,routes:[['api','gatepost-proxy-api.localhost'],['logs','gatepost-proxy-logs.localhost']],artifacts:[artifact('proxy-review','proxy-review.md','markdown',4,'# Proxy review\n\nOperator attention is required before route cleanup.')]}),
     fixture('Artifact search indexing','devx','jf-artifact-search','dirty','host',2),
     fixture('Terminal reconnect handling','devx','jf-reconnect','idle','docker',3),
     fixture('Recent activity model','devx','jf-recent-activity','active','host',4),
@@ -67,7 +89,7 @@
     fixture('Privacy-safe MCP logging','media-memory','jf-mcp-audit','repair','host',9,{routes:[],artifacts:[]}),
     fixture('Dark mode tokens','media-memory','jf-dark-mode','attention','host',10),
     fixture('Fixing ingest retry','media-memory','jf-mm-fix-ingest','attention','docker',11),
-    fixture('Reaction event stream','media-memory','jf-reactions','active','host',12),
+    fixture('Reaction event stream','media-memory','jf-reactions','active','host',12,{pinned:true}),
     fixture('Search relevance pass','media-memory','jf-search-relevance','idle','host',13),
     fixture('Dashboard response states','nibit','jf-dashboard-states','active','docker',14,{artifacts:[artifact('response-grid','response-grid.png','image',2,svgPreview('Response Grid','#4ade80')),artifact('edge-cases','edge-cases.md','markdown',7,'# Edge cases\n\nEmpty, loading, reconnecting, and error states.')]}),
     fixture('Cross-device review','nibit','jf-review-cross-device','attention','host',15),
@@ -76,7 +98,7 @@
     fixture('Mobile command dock','nibit','jf-mobile-dock','active','host',18),
     fixture('Approval state copy','nibit','jf-approval-copy','dirty','host',19),
     fixture('Landing page system','gatepost','jf-landing-page','idle','gatepost',20),
-    fixture('Metrics console','gatepost','jf-metrics-console','active','gatepost',21),
+    fixture('Metrics console','gatepost','jf-metrics-console','active','gatepost',21,{pinned:true}),
     fixture('Tunnel health wording','gatepost','jf-tunnel-wording','attention','gatepost',22),
     fixture('Route retention policy','gatepost','jf-route-retention','idle','gatepost',23),
     fixture('Log viewer density','gatepost','jf-log-density','active','gatepost',24)
@@ -91,22 +113,46 @@
   const statusGlyph = (status) => ({active:'▶',attention:'!',dirty:'±',repair:'⚠',idle:'scan'}[status] || '·');
   const dotClass = (status) => ({active:'live',attention:'attention',dirty:'dirty',repair:'broken'}[status] || '');
 
+  const sessionRow = (session, {chip = false, activity = false} = {}) => {
+    const artifactCount = session.artifacts.filter((item) => !item.removed).length;
+    const act = relativeActivity(session);
+    const detail = `${session.branch} · ${session.reason} · status ${session.status} · ${artifactCount} artifacts · ${act.label.toLowerCase()}`;
+    const selected = session.branch === activeBranch;
+    return `<div class="session${selected ? ' selected' : ''}" data-title="${esc(session.title)}" data-project="${esc(session.project)}" data-branch="${esc(session.branch)}" data-status="${esc(session.status)}" data-activity="${session.activityAt ?? ''}" data-pinned="${String(!!session.pinned)}" data-detail="${esc(detail)}"><button class="session-select" title="${esc(`${session.title} — ${detail}`)}" aria-label="${esc(`${session.title}, ${session.status}, ${session.target} target, ${artifactCount} artifacts, ${session.project} project, ${act.label}`)}"${selected ? ' aria-current="true"' : ''}><span class="status-dot ${dotClass(session.status)}" aria-hidden="true"></span><span class="swatch" style="background:${esc(session.color)}" title="Session color identifier" aria-hidden="true"></span><span class="session-main"><span class="session-name">${esc(session.title)}</span></span>${chip ? `<span class="badge chip" title="Project: ${esc(session.project)}">${esc(session.project)}</span>` : `<span class="badge">${esc(session.target)}</span>`}<span class="session-state ${esc(session.status)}" title="Status: ${esc(session.status)}" aria-label="Status: ${esc(session.status)}"><span aria-hidden="true">${statusGlyph(session.status)}</span></span><span class="badge blue" title="${artifactCount} artifacts" aria-label="${artifactCount} artifacts">◆ ${artifactCount}</span>${activity ? `<span class="activity" title="${esc(act.label)}" aria-hidden="true">${esc(act.short)}</span>` : ''}</button><button class="session-pin" data-pin-branch="${esc(session.branch)}" aria-pressed="${String(!!session.pinned)}" aria-label="${esc(`${session.pinned ? 'Unpin' : 'Pin'} ${session.title}`)}" title="${session.pinned ? 'unpin session' : 'pin session'}"><span aria-hidden="true">${session.pinned ? '●' : '○'}</span></button></div>`;
+  };
+
   function renderFleet() {
     const priority = {repair:0, attention:1, dirty:2, active:3, idle:4};
-    const projects = [...new Set(fleet.map((session) => session.project))].sort((a,b) => a.localeCompare(b));
-    $('#fleet-groups').innerHTML = projects.map((project) => {
-      const sessions = fleet.filter((session) => session.project === project).sort((a,b) => (priority[a.status] ?? 99) - (priority[b.status] ?? 99) || a.title.localeCompare(b.title));
-      return `<section class="project" data-project="${esc(project)}"><button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span>${esc(project)}<span class="count">${sessions.length}</span></button><div class="sessions">${sessions.map((session) => {
-        const artifactCount = session.artifacts.filter((item) => !item.removed).length;
-        const detail = `${session.branch} · ${session.reason} · status ${session.status} · ${artifactCount} artifacts`;
-        return `<button class="session${session.branch === activeBranch ? ' selected' : ''}" data-title="${esc(session.title)}" data-project="${esc(session.project)}" data-branch="${esc(session.branch)}" data-status="${esc(session.status)}" data-detail="${esc(detail)}" title="${esc(`${session.title} — ${detail}`)}" aria-label="${esc(`${session.title}, ${session.status}, ${session.target} target, ${artifactCount} artifacts`)}"${session.branch === activeBranch ? ' aria-current="true"' : ''}><span class="status-dot ${dotClass(session.status)}" aria-hidden="true"></span><span class="swatch" style="background:${esc(session.color)}" title="Session color identifier" aria-hidden="true"></span><span class="session-main"><span class="session-name">${esc(session.title)}</span><span class="branch">${esc(session.branch)}</span></span><span class="badge">${esc(session.target)}</span><span class="session-state ${esc(session.status)}" title="Status: ${esc(session.status)}" aria-label="Status: ${esc(session.status)}"><span aria-hidden="true">${statusGlyph(session.status)}</span></span>${artifactCount ? `<span class="badge blue" title="${artifactCount} artifacts" aria-label="${artifactCount} artifacts">◆ ${artifactCount}</span>` : '<span class="badge blue" aria-label="0 artifacts">◆ 0</span>'}</button>`;
-      }).join('')}</div></section>`;
-    }).join('');
+    const pinned = fleet.filter((session) => session.pinned).sort(compareRecent);
+    const unpinned = fleet.filter((session) => !session.pinned);
+    const sections = [];
+    if (pinned.length) sections.push({key:'__pinned__', label:'Pinned', kind:'pinned', chip:true, activity:true, sessions:pinned});
+    if (sessionView === 'projects') {
+      [...new Set(unpinned.map((session) => session.project))].sort((a,b) => a.localeCompare(b)).forEach((project) => {
+        sections.push({key:project, label:project, kind:'project', chip:false, activity:false, sessions:unpinned.filter((session) => session.project === project).sort((a,b) => (priority[a.status] ?? 99) - (priority[b.status] ?? 99) || a.title.localeCompare(b.title))});
+      });
+    } else {
+      sections.push({key:'__recent__', label:'Recent', kind:'recent', chip:true, activity:true, sessions:[...unpinned].sort(compareRecent)});
+    }
+    $('#fleet-groups').innerHTML = sections.map((section) => `<section class="project${section.kind === 'pinned' ? ' pinned-section' : ''}" data-project="${esc(section.key)}"><button class="project-toggle" aria-expanded="true"><span class="chevron">⌄</span>${esc(section.label)}<span class="count">${section.sessions.length}</span></button><div class="sessions">${section.sessions.map((session) => sessionRow(session, section)).join('')}</div></section>`).join('');
     $('#active-count').textContent = fleet.filter((s) => s.status === 'active').length;
     $('#flagged-count').textContent = fleet.filter((s) => s.status === 'attention').length;
     $('#total-count').textContent = fleet.length;
+    $('#view-recent').setAttribute('aria-pressed', String(sessionView === 'recent'));
+    $('#view-projects').setAttribute('aria-pressed', String(sessionView === 'projects'));
     bindProjectToggles();
-    $$('.session').forEach((row) => row.onkeydown = navigateFleet);
+    $$('.session-select').forEach((row) => row.onkeydown = navigateFleet);
+    filterSessions();
+  }
+
+  function togglePin(branch, {focusPin = true} = {}) {
+    const session = fixtures[branch];
+    if (!session) return;
+    session.pinned = !session.pinned;
+    renderFleet();
+    $('#live-region').textContent = `${session.pinned ? 'Pinned' : 'Unpinned'} ${session.title}`;
+    toast(session.pinned ? 'Session pinned' : 'Session unpinned', `${session.title} ${session.pinned ? 'appears once in the global Pinned section.' : 'returned to its regular list position.'}`);
+    if (focusPin) setTimeout(() => $(`.session-pin[data-pin-branch="${branch}"]`)?.focus(),0);
   }
 
   function bindProjectToggles() {
@@ -189,7 +235,8 @@
   }
 
   function renderQuick() {
-    $('#quick-dialog .switch-list').innerHTML = fleet.map((session) => `<button class="switch-item${session.branch === activeBranch ? ' selected' : ''}" data-branch="${esc(session.branch)}"${session.branch === activeBranch ? ' aria-current="true"' : ''}><b>${esc(session.title)}</b><span>${esc(session.project)} · ${esc(session.branch)}${session.status === 'attention' ? ' · flagged' : ''}</span></button>`).join('');
+    const ordered = [...fleet].sort((a,b) => Number(!!b.pinned) - Number(!!a.pinned) || compareRecent(a,b));
+    $('#quick-dialog .switch-list').innerHTML = ordered.map((session) => `<button class="switch-item${session.branch === activeBranch ? ' selected' : ''}" data-branch="${esc(session.branch)}"${session.branch === activeBranch ? ' aria-current="true"' : ''}><b>${session.pinned ? '● ' : ''}${esc(session.title)}</b><span>${esc(session.project)} · ${esc(session.branch)}${session.pinned ? ' · pinned' : ''}${session.status === 'attention' ? ' · flagged' : ''}</span></button>`).join('');
   }
 
   function selectSession(branch, {closeNavigator = true, feedback = false} = {}) {
@@ -199,7 +246,8 @@
     $$('.session').forEach((row) => {
       const selected = row.dataset.branch === branch;
       row.classList.toggle('selected', selected);
-      selected ? row.setAttribute('aria-current','true') : row.removeAttribute('aria-current');
+      const button = $('.session-select', row);
+      selected ? button.setAttribute('aria-current','true') : button.removeAttribute('aria-current');
     });
     renderSession();
     if (isPhone()) { closeStatus(false); closeArtifacts(false); setMobileActive('terminal'); }
@@ -352,7 +400,8 @@
   }
 
   document.addEventListener('click',(event)=>{
-    const row=event.target.closest('.session'); if(row)selectSession(row.dataset.branch);
+    const pin=event.target.closest('.session-pin'); if(pin){hideMenus();togglePin(pin.dataset.pinBranch);return;}
+    const row=event.target.closest('.session-select'); if(row)selectSession(row.closest('.session').dataset.branch);
     const actionButton=event.target.closest('[data-action]'); if(actionButton)action(actionButton.dataset.action,actionButton);
     const artifactButton=event.target.closest('[data-artifact-command]'); if(artifactButton)artifactCommand(artifactButton.dataset.artifactCommand,artifactButton);
     const artifactItem=event.target.closest('[data-artifact-id]'); if(artifactItem){selectedArtifactID=artifactItem.dataset.artifactId;renderArtifacts();}
@@ -394,15 +443,16 @@
   $('#artifact-resizer').addEventListener('pointerup',()=>{resizing=false;});
 
   search.oninput=filterSessions; $('#clear-filter').onclick=()=>{search.value='';filterSessions();search.focus();};
+  $('#view-recent').onclick=()=>setView('recent'); $('#view-projects').onclick=()=>setView('projects');
   function navigateFleet(event) {
     if (!['ArrowDown','ArrowUp','Enter'].includes(event.key)) return;
-    const rows = $$('.session').filter((row) => !row.hidden && row.offsetParent !== null);
+    const rows = $$('.session-select').filter((row) => !row.closest('.session').hidden && row.offsetParent !== null);
     if (!rows.length) return;
     let index = rows.indexOf(document.activeElement);
     if (event.key === 'Enter') {
       const row = index >= 0 ? rows[index] : rows[0];
       event.preventDefault();
-      selectSession(row.dataset.branch, {closeNavigator:false});
+      selectSession(row.closest('.session').dataset.branch, {closeNavigator:false});
       row.focus();
       return;
     }
@@ -433,7 +483,7 @@
   $$('dialog').forEach(dialog=>dialog.addEventListener('close',()=>setTimeout(()=>{const target=dialogReturns.get(dialog);if(target?.isConnected&&!target.closest('[inert]')&&target.offsetParent!==null)target.focus();},0)));
   $('#new-session').onclick=()=>{$('#new-name').value='';$('#create-session').disabled=true;openDialog($('#new-dialog'),$('#new-session'));};
   const validateNew=()=>{$('#create-session').disabled=!($('#new-project').value.trim()&&$('#new-name').value.trim());}; $('#new-project').oninput=validateNew;$('#new-name').oninput=validateNew;
-  $('#new-form').onsubmit=event=>{event.preventDefault();validateNew();if($('#create-session').disabled)return;const name=$('#new-name').value.trim(),project=$('#new-project').value.trim(),target=$('#new-target').value;let branch=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||`session-${nextCreated}`;while(fixtures[branch])branch=`${branch}-${++nextCreated}`;const item=fixture(name,project,branch,'idle',target,fleet.length,{routes:[],artifacts:[],reason:'new fixture created; no running tmux session yet'});fleet.push(item);fixtures[branch]=item;$('#new-dialog').close();activeBranch=branch;renderFleet();renderSession();toast('Session fixture created',`${name} was added and selected.`);};
+  $('#new-form').onsubmit=event=>{event.preventDefault();validateNew();if($('#create-session').disabled)return;const name=$('#new-name').value.trim(),project=$('#new-project').value.trim(),target=$('#new-target').value;let branch=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||`session-${nextCreated}`;while(fixtures[branch])branch=`${branch}-${++nextCreated}`;const item=fixture(name,project,branch,'idle',target,fleet.length,{routes:[],artifacts:[],reason:'new fixture created; no running tmux session yet',activityAt:Date.now(),lastOpenedAt:null});fleet.push(item);fixtures[branch]=item;$('#new-dialog').close();activeBranch=branch;renderFleet();renderSession();toast('Session fixture created',`${name} was added and selected.`);};
 
   function showRemoteImageToast(){const item=toast('Remote image received','operator-console-preview.png from the CLI fixture',{duration:0});item.innerHTML=`<div class="toast-media"><img alt="Remote CLI image preview" src="${svgPreview('Remote image')}"><div><b>Remote image received</b><span>operator-console-preview.png</span></div></div><div class="toast-actions"><button data-open-image>Open preview</button><button data-dismiss-toast>Dismiss</button></div>`;$('[data-dismiss-toast]',item).onclick=()=>item.remove();$('[data-open-image]',item).onclick=()=>generic('Remote image preview',`<img src="${svgPreview('Remote image')}" alt="Expanded remote CLI image preview" style="max-width:100%">`,null,$('[data-open-image]',item));return item;}
   function showFlagToast(){const item=toast('Session flagged','Gatepost proxy consolidation — proxy route needs operator review.',{flag:true,duration:0});item.innerHTML='<b>Session flagged</b><span>Gatepost proxy consolidation — proxy route needs operator review.</span><div class="toast-actions"><button data-view-flag>View session</button><button data-dismiss-toast>Dismiss</button></div>';$('[data-dismiss-toast]',item).onclick=()=>item.remove();$('[data-view-flag]',item).onclick=()=>{selectSession('jf-gatepost-proxy',{feedback:true});item.remove();};return item;}
@@ -484,6 +534,7 @@
     }
     if((event.metaKey||event.ctrlKey)&&!event.shiftKey&&event.key.toLowerCase()==='p'){event.preventDefault();$('#quick-dialog').open?$('#quick-dialog').close():openQuick();return;}
     if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();toggleCompose();return;}
+    if(event.shiftKey&&!event.metaKey&&!event.ctrlKey&&event.key==='P'&&!isEditable(event.target)&&!$$('dialog[open]').length){event.preventDefault();togglePin(activeBranch,{focusPin:false});return;}
     if(event.key==='/'&&!isEditable(event.target)&&!$$('dialog[open]').length){event.preventDefault();innerWidth<1024?setNav(true):search.focus();return;}
     if(event.key==='Escape'){
       if($$('dialog[open]').length)return;

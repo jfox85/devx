@@ -78,22 +78,88 @@ def assert_fleet_contract(page):
     rows = page.locator(".session")
     assert rows.count() == 25
     semantics = rows.evaluate_all("""els => els.map(el => ({
-      text: el.innerText, label: el.getAttribute('aria-label'), status: el.dataset.status,
+      text: el.innerText, status: el.dataset.status, pinned: el.dataset.pinned,
+      label: el.querySelector('.session-select')?.getAttribute('aria-label'),
       state: el.querySelector('.session-state')?.getAttribute('aria-label'),
-      artifacts: el.querySelector('.badge.blue')?.getAttribute('aria-label')
+      artifacts: el.querySelector('.badge.blue')?.getAttribute('aria-label'),
+      pin: el.querySelector('.session-pin')?.getAttribute('aria-pressed')
     }))""")
     assert all(item["status"] in item["state"] for item in semantics), semantics
     assert all("artifacts" in item["artifacts"] for item in semantics), semantics
     assert all(item["status"] in item["label"] and "artifacts" in item["label"] for item in semantics), semantics
+    assert all(item["pin"] == item["pinned"] for item in semantics), semantics
 
-    # Production grouping: projects by name, sessions by status priority then title.
-    projects = page.locator(".project").evaluate_all("els => els.map(el => el.dataset.project)")
-    assert projects == sorted(projects), projects
-    priority = {"repair": 0, "attention": 1, "dirty": 2, "active": 3, "idle": 4}
-    groups = page.locator(".project").evaluate_all("""els => els.map(el => [...el.querySelectorAll('.session')].map(row => ({status:row.dataset.status,title:row.dataset.title})))""")
-    for group in groups:
-        expected = sorted(group, key=lambda item: (priority[item["status"]], item["title"]))
+    # Default Recent view: global Pinned section first (activity desc), then Recent (activity desc, never-opened last).
+    sections = page.locator(".project").evaluate_all("""els => els.map(el => ({
+      key: el.dataset.project,
+      rows: [...el.querySelectorAll('.session')].map(row => ({status:row.dataset.status,title:row.dataset.title,activity:row.dataset.activity,pinned:row.dataset.pinned}))
+    }))""")
+    assert [s["key"] for s in sections] == ["__pinned__", "__recent__"], sections
+    pinned_rows, recent_rows = sections[0]["rows"], sections[1]["rows"]
+    assert len(pinned_rows) == 3 and all(r["pinned"] == "true" for r in pinned_rows), pinned_rows
+    assert all(r["pinned"] == "false" for r in recent_rows), recent_rows
+    for group in (pinned_rows, recent_rows):
+        expected = sorted(group, key=lambda r: (r["activity"] == "", -int(r["activity"] or 0), r["title"]))
         assert group == expected, (group, expected)
+    # Pinned and Recent rows carry a project chip and activity time inline.
+    assert page.locator(".session .badge.chip").count() == 25
+    assert page.locator(".session .activity").count() == 25
+
+
+def assert_projects_view(page):
+    page.locator("#view-projects").click()
+    expect(page.locator("#view-projects")).to_have_attribute("aria-pressed", "true")
+    sections = page.locator(".project").evaluate_all("""els => els.map(el => ({
+      key: el.dataset.project,
+      rows: [...el.querySelectorAll('.session')].map(row => ({status:row.dataset.status,title:row.dataset.title,pinned:row.dataset.pinned}))
+    }))""")
+    # Pinned stays a single global section, then projects alphabetically with status-priority ordering.
+    assert sections[0]["key"] == "__pinned__" and len(sections[0]["rows"]) == 3, sections
+    project_keys = [s["key"] for s in sections[1:]]
+    assert project_keys == sorted(project_keys), project_keys
+    priority = {"repair": 0, "attention": 1, "dirty": 2, "active": 3, "idle": 4}
+    for section in sections[1:]:
+        assert all(r["pinned"] == "false" for r in section["rows"]), section
+        expected = sorted(section["rows"], key=lambda item: (priority[item["status"]], item["title"]))
+        assert section["rows"] == expected, (section["rows"], expected)
+    assert page.locator(".session").count() == 25
+    # The view persists across reloads.
+    page.reload()
+    expect(page.locator("#view-projects")).to_have_attribute("aria-pressed", "true")
+    assert page.locator(".project").first.get_attribute("data-project") == "__pinned__"
+    page.locator("#view-recent").click()
+    expect(page.locator("#view-recent")).to_have_attribute("aria-pressed", "true")
+
+
+def assert_pinning(page):
+    # Mouse pin: an unpinned recent row moves once into the global Pinned section.
+    target = page.locator(".project[data-project='__recent__'] .session").first
+    branch = target.get_attribute("data-branch")
+    target.locator(".session-pin").click()
+    pinned_section = page.locator(".project[data-project='__pinned__']")
+    expect(pinned_section.locator(f".session[data-branch='{branch}']")).to_have_count(1)
+    assert page.locator(f".session[data-branch='{branch}']").count() == 1
+    expect(page.locator(f".session-pin[data-pin-branch='{branch}']")).to_have_attribute("aria-pressed", "true")
+    expect(page.locator(f".session-pin[data-pin-branch='{branch}']")).to_be_focused()
+    expect(page.locator("#live-region")).to_contain_text("Pinned")
+    page.locator(f".session-pin[data-pin-branch='{branch}']").click()
+    expect(page.locator(f".session-pin[data-pin-branch='{branch}']")).to_have_attribute("aria-pressed", "false")
+    expect(pinned_section.locator(f".session[data-branch='{branch}']")).to_have_count(0)
+
+    # Shift+P toggles the active session's pin.
+    page.locator(".session[data-branch='jf-ui-refresh'] .session-select").click()
+    page.locator("#terminal-content").click()
+    page.keyboard.press("Shift+P")
+    expect(page.locator(".session-pin[data-pin-branch='jf-ui-refresh']")).to_have_attribute("aria-pressed", "true")
+    expect(page.locator(".project[data-project='__pinned__'] .session[data-branch='jf-ui-refresh']")).to_have_count(1)
+    page.keyboard.press("Shift+P")
+    expect(page.locator(".session-pin[data-pin-branch='jf-ui-refresh']")).to_have_attribute("aria-pressed", "false")
+
+    # Quick switcher orders pinned first, then activity.
+    page.keyboard.press("Control+p")
+    quick = page.locator("#quick-dialog .switch-item").evaluate_all("els => els.map(el => el.innerText)")
+    assert all("pinned" in item for item in quick[:3]), quick[:3]
+    page.keyboard.press("Escape")
 
 
 def compact_artifact_fullscreen_check(page, width, height):
@@ -186,23 +252,25 @@ def run():
         assert page.locator(".session").first.bounding_box()["height"] == 32
         visible_rows = page.locator(".session").evaluate_all("els => els.filter(el => { const r=el.getBoundingClientRect(); return r.bottom>0 && r.top<innerHeight }).length")
         assert visible_rows >= 18, visible_rows
+        assert_projects_view(page)
+        assert_pinning(page)
         search = page.locator("#session-search")
         search.focus()
         ordered = page.locator(".session").evaluate_all("els => els.filter(el => el.offsetParent !== null).map(el => el.dataset.branch)")
         for expected in ordered[:4]:
             page.keyboard.press("ArrowDown")
-            expect(page.locator(f".session[data-branch='{expected}']")).to_be_focused()
+            expect(page.locator(f".session[data-branch='{expected}'] .session-select")).to_be_focused()
         page.keyboard.press("ArrowUp")
-        expect(page.locator(f".session[data-branch='{ordered[2]}']")).to_be_focused()
+        expect(page.locator(f".session[data-branch='{ordered[2]}'] .session-select")).to_be_focused()
         page.keyboard.press("Enter")
         expect(page.locator("#branch-label")).to_have_text(ordered[2])
         search.fill("reconnect")
         search.press("ArrowDown")
-        expect(page.locator(".session[data-branch='jf-reconnect']")).to_be_focused()
+        expect(page.locator(".session[data-branch='jf-reconnect'] .session-select")).to_be_focused()
         page.keyboard.press("Enter")
         expect(page.locator("#session-title")).to_have_text("Terminal reconnect handling")
         search.fill("")
-        page.locator(".session[data-branch='jf-ui-refresh']").click()
+        page.locator(".session[data-branch='jf-ui-refresh'] .session-select").click()
         expect(page.locator("#session-facts")).to_contain_text("clean worktree")
         output_reader_check(page, 1440, 1000, page.get_by_role("button", name="Output", exact=True))
 
@@ -214,7 +282,7 @@ def run():
         selected_branch = page.locator("#quick-dialog .switch-item.selected").get_attribute("data-branch")
         page.keyboard.press("Enter")
         expect(page.locator("#branch-label")).to_have_text(selected_branch)
-        page.locator(".session[data-branch='jf-ui-refresh']").click()
+        page.locator(".session[data-branch='jf-ui-refresh'] .session-select").click()
 
         # Artifact parity: folders, formats, metadata, intake, paths, confirmation, and isolation.
         page.get_by_role("button", name="Artifacts", exact=True).click()
@@ -375,7 +443,7 @@ def run():
 
         browser.close()
         assert not all_errors, all_errors
-        print("PASS: 12 viewports; no overflow/errors; semantic status+artifact counts; production fleet order; repeated fleet/quick navigation; Blob popup; Output scroll/reverse trap; modal Artifact fullscreen isolation/traps; production artifact path+confirmation; folder/preview/intake/metadata parity; compact split cycle; mobile chrome hiding")
+        print("PASS: 12 viewports; no overflow/errors; semantic status+artifact counts; recent/pinned views with persistence, chips, and activity; pin toggle via mouse and Shift+P; production project ordering; repeated fleet/quick navigation; Blob popup; Output scroll/reverse trap; modal Artifact fullscreen isolation/traps; production artifact path+confirmation; folder/preview/intake/metadata parity; compact split cycle; mobile chrome hiding")
 
 
 if __name__ == "__main__":

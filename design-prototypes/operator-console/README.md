@@ -11,11 +11,13 @@ A static, interactive shell study for operating a high-density DevX session flee
 - **Actions are named and stable.** Desktop shows the fixed sequence **Output · Artifacts · Split: current mode · Compose · More**. Tablet and mobile replace that set with one clearly labeled **Actions** control and descriptive menu. New Artifact and Insert Reference live inside the artifact workspace rather than appearing as mystery glyphs.
 - **ArtifactPane parity is restored within a static prototype.** The session-scoped pane provides folder grouping; newest/oldest/title sorting; show/hide list; draggable list resizing; image, text, JSX, video, HTML, PDF/iframe, and no-preview states; paste/drop/upload intake; new format/retention/tags; edit summary/tags/retention; Full Screen/Exit Full; refresh; close; and production-like Insert/Edit/Archive/confirmed Remove actions. Tablet/mobile use a distinctly labeled **Artifact actions** menu when labels no longer fit.
 - **Terminal remains dominant.** Status stays closed by default. Below 1181px Status and Artifacts are mutually exclusive; phone layouts keep them as focus-managed destinations.
+- **Recent and pinned session views match production.** A persisted **Recent | Projects** toggle (localStorage `devx_session_list_view_v1`, default Recent) sits under the filter. A global **Pinned** section renders first in both views — each pinned session appears exactly once, ordered by activity then name, with a project chip for context. Recent orders unpinned sessions globally by activity descending (never-opened last) with inline project chips and compact relative activity times (Opened/Created semantics in the tooltip and accessible label). Projects view keeps alphabetical project groups with status-priority ordering. Every row has a pin toggle (`aria-pressed`, hover/focus reveal on desktop, always visible when pinned or on touch), `Shift+P` pins the active session, and pin changes are announced via a live region. Rows stay one line at 32px/44px.
 
 ## Interactions to try
 
 - Filter the 25 sessions; use `/` to focus filtering and arrow keys/Enter to navigate.
-- Press `Cmd/Ctrl+P` for the complete quick switcher and `Cmd/Ctrl+K` for compose.
+- Switch between **Recent** and **Projects** views; reload to confirm the choice persists. Pin/unpin rows with the circle toggle or `Shift+P` and watch them move into the single global Pinned section.
+- Press `Cmd/Ctrl+P` for the complete quick switcher (pinned first, then recent activity) and `Cmd/Ctrl+K` for compose.
 - Hover or focus the selected compact row to disclose branch/reason details, or open **Status** for the full explanation.
 - Open **Output**, scroll its full-viewport transcript, use **Open Tab**, and press Escape to restore focus.
 - Open **Artifacts**, change sort order, collapse/resize the list, select an image/text/JSX item, switch JSX between **Preview** and **Code**, and exercise Insert/Edit/Archive/Remove.
