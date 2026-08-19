@@ -255,10 +255,10 @@
     $('.shell').inert = full;
     ['#navigator','.topbar','.facts','.windowbar','.terminal-pane','#composer','#status-panel','.mobile-composer','.mobile-bottom'].forEach((selector) => { const element = $(selector); if (element) element.inert = full; });
   }
-  function toggleArtifactFull(force) {
+  function toggleArtifactFull(force, returnTarget = document.activeElement) {
     const full = force ?? !artifactPanel.classList.contains('fullscreen');
     if (full) {
-      artifactFullReturn = visibleOwnerTarget(document.activeElement);
+      artifactFullReturn = visibleOwnerTarget(returnTarget);
       document.body.appendChild(artifactPanel);
       artifactPanel.classList.add('fullscreen');
       artifactPanel.setAttribute('role','dialog');
@@ -277,10 +277,11 @@
     if (full) setTimeout(() => $('#artifact-heading').focus(),0); else setTimeout(() => artifactFullReturn?.focus(),0);
   }
   function artifactCommand(command, owner = document.activeElement) {
+    const returnTarget = visibleOwnerTarget(owner);
     hideMenus();
     const selected = artifactItems().find((item) => item.id === selectedArtifactID);
     if (command === 'list') { listCollapsed = !listCollapsed; renderArtifacts(); }
-    if (command === 'fullscreen') toggleArtifactFull();
+    if (command === 'fullscreen') toggleArtifactFull(undefined, returnTarget);
     if (command === 'upload') $('#artifact-upload').click();
     if (command === 'refresh') { renderArtifacts(); toast('Artifacts refreshed', `${artifactItems().length} session-scoped artifacts loaded.`); }
     if (command === 'close') closeArtifacts(true);
@@ -469,11 +470,15 @@
       return;
     }
     if(artifactPanel.classList.contains('fullscreen')&&!$$('dialog[open]').length){
-      if(event.key==='Escape'){event.preventDefault();toggleArtifactFull(false);return;}
+      if(event.key==='Escape'){
+        event.preventDefault();
+        if(!artifactMenu.hidden){hideMenus({restore:true});return;}
+        toggleArtifactFull(false);return;
+      }
       if(event.key==='Tab'){
-        const items=[$('#artifact-heading'),...focusables(artifactPanel)],first=items[0],last=items[items.length-1];
-        if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
-        else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+        const heading=$('#artifact-heading'),tabItems=focusables(artifactPanel),first=tabItems[0],last=tabItems[tabItems.length-1];
+        if(event.shiftKey&&(document.activeElement===heading||document.activeElement===first)){event.preventDefault();last.focus();}
+        else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();heading.focus();}
       }
       return;
     }

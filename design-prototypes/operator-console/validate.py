@@ -96,6 +96,60 @@ def assert_fleet_contract(page):
         assert group == expected, (group, expected)
 
 
+def compact_artifact_fullscreen_check(page, width, height):
+    if width <= 600:
+        page.locator("#mobile-artifacts").click()
+    else:
+        page.locator("#mobile-actions").click()
+        page.locator("#actions-menu [data-action='artifacts']").click()
+
+    panel = page.locator("#artifact-panel")
+    trigger = page.locator("#artifact-menu-trigger")
+    menu = page.locator("#artifact-actions-menu")
+    expect(panel).to_have_class("artifact-panel open")
+    expect(trigger).to_have_attribute("aria-controls", "artifact-actions-menu")
+    expect(menu).to_have_attribute("aria-labelledby", "artifact-menu-trigger")
+
+    trigger.click()
+    expect(trigger).to_have_attribute("aria-expanded", "true")
+    expect(menu).to_be_visible()
+    expect(menu.locator("[role='menuitem']").first).to_be_focused()
+    menu.locator("[data-artifact-command='fullscreen']").click()
+
+    expect(panel).to_have_attribute("role", "dialog")
+    expect(panel).to_have_attribute("aria-modal", "true")
+    assert panel.bounding_box() == {"x": 0, "y": 0, "width": width, "height": height}
+    assert page.locator(".shell").evaluate("el => el.inert")
+    for selector in ["#navigator", ".topbar", ".facts", ".windowbar", ".terminal-pane", "#status-panel", ".mobile-bottom"]:
+        assert page.locator(selector).evaluate("el => el.inert"), (width, height, selector)
+    assert menu.evaluate("menu => menu.parentElement === document.querySelector('#artifact-panel')")
+    assert menu.evaluate("menu => menu.closest('[role=dialog][aria-modal=true]') === document.querySelector('#artifact-panel')")
+    assert not menu.evaluate("menu => menu.parentElement === document.body")
+    expect(page.locator("#artifact-heading")).to_be_focused()
+
+    # The compact menu participates in the fullscreen dialog's focus scope in both directions.
+    trigger.click()
+    expect(trigger).to_have_attribute("aria-expanded", "true")
+    expect(menu).to_be_visible()
+    expect(menu.locator("[role='menuitem']").first).to_be_focused()
+    for key in (["Tab"] * 24) + (["Shift+Tab"] * 24):
+        page.keyboard.press(key)
+        assert page.locator(":focus").evaluate("el => !!el.closest('#artifact-panel')"), (width, height, key)
+
+    # Escape closes only the topmost menu first, updates its trigger, then exits fullscreen.
+    page.keyboard.press("Escape")
+    expect(menu).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
+    expect(trigger).to_be_focused()
+    expect(panel).to_have_attribute("role", "dialog")
+    assert page.locator(".shell").evaluate("el => el.inert")
+    page.keyboard.press("Escape")
+    expect(panel).not_to_have_attribute("role", "dialog")
+    expect(trigger).to_be_focused()
+    assert not page.locator(".shell").evaluate("el => el.inert")
+    assert menu.evaluate("menu => menu.parentElement === document.querySelector('#artifact-panel')")
+
+
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -116,6 +170,14 @@ def run():
             else:
                 expect(page.locator("#mobile-actions")).to_be_visible()
                 expect(page.locator(".terminal-actions .action").first).to_be_hidden()
+            all_errors += errors
+            page.close()
+
+        # Explicit compact fullscreen ownership, focus, inertness, and Escape ordering regressions.
+        for width, height in [(768, 1024), (390, 844), (320, 700)]:
+            page, errors = new_page(browser, width, height, touch=width <= 600)
+            compact_artifact_fullscreen_check(page, width, height)
+            assert_shell(page, width, height)
             all_errors += errors
             page.close()
 
@@ -250,7 +312,6 @@ def run():
         page.locator("#toasts").evaluate("el => el.replaceChildren()")
         assert_shell(page, 1440, 1000)
         all_errors += errors
-        page.screenshot(path=str(SHOT_DIR / "desktop-1440x1000.png"))
         page.close()
 
         # Tablet: compact Split truthfully cycles all four modes and returns to terminal.
@@ -269,7 +330,6 @@ def run():
             assert page.locator("#artifact-panel").evaluate("el => el.classList.contains('open')") == panel_open
         assert_shell(page, 768, 1024)
         all_errors += errors
-        page.screenshot(path=str(SHOT_DIR / "tablet-768x1024.png"))
         page.close()
 
         # Mobile Artifact/Status destinations remove dead terminal chrome and retain distinct actions.
@@ -294,9 +354,22 @@ def run():
             expect(page.locator(".windowbar")).to_be_visible()
             expect(page.locator(".mobile-composer")).to_be_visible()
             assert_shell(page, width, height)
-            if width == 390:
+            all_errors += errors
+            page.close()
+
+        # Every committed proof starts from a new page and the initial eight-artifact fixture.
+        for width, height, filename, destination in [
+            (1440, 1000, "desktop-1440x1000.png", "terminal"),
+            (768, 1024, "tablet-768x1024.png", "terminal"),
+            (390, 844, "mobile-390x844.png", "artifacts"),
+        ]:
+            page, errors = new_page(browser, width, height, touch=width <= 600)
+            expect(page.locator("#session-facts")).to_contain_text("8 artifacts")
+            if destination == "artifacts":
                 page.locator("#mobile-artifacts").click()
-                page.screenshot(path=str(SHOT_DIR / "mobile-390x844.png"))
+                expect(page.locator(".artifact-list-item")).to_have_count(8)
+            assert_shell(page, width, height)
+            page.screenshot(path=str(SHOT_DIR / filename))
             all_errors += errors
             page.close()
 
