@@ -5,6 +5,7 @@
   import { onMount } from 'svelte'
   import { listSessions, prewarmTerminal } from '../api.js'
   import { markPrewarmed } from './stores/sessionUiState.js'
+  import { comparePinnedRecent } from './sessionOrdering.js'
 
   export let onSelect   // (session) => void
   export let onClose    // () => void
@@ -64,9 +65,9 @@
     ? sessions
         .map(s => ({ s, score: sessionScore(s, query.trim()) }))
         .filter(x => x.score >= 0)
-        .sort((a, b) => b.score - a.score || a.s.name.localeCompare(b.s.name))
+        .sort((a, b) => b.score - a.score || comparePinnedRecent(a.s, b.s))
         .map(x => x.s)
-    : sessions
+    : [...sessions].sort(comparePinnedRecent)
 
   // Keyboard nav and rendering must share the same truncated list — otherwise
   // Enter could open a selection that scrolled past the render cap.
@@ -142,7 +143,7 @@
       />
       <span class="text-[10px] font-mono text-gray-700 shrink-0">↵ open · esc close</span>
     </div>
-    <div bind:this={listEl} class="max-h-[50vh] overflow-y-auto">
+    <div bind:this={listEl} aria-label="session switcher results" class="max-h-[50vh] overflow-y-auto">
       {#each visible as s, i (s.name)}
         <button
           type="button"
@@ -156,6 +157,9 @@
           <span class="truncate">{s.display_name || s.name}</span>
           {#if s.display_name && s.display_name !== s.name}
             <span class="text-gray-700 text-[10px] truncate">({s.name})</span>
+          {/if}
+          {#if s.pinned}
+            <span class="text-cyan-400 text-[10px] shrink-0" title="pinned">●</span>
           {/if}
           {#if s.attention_flag}
             <span class="text-yellow-500 text-[10px] shrink-0">◆</span>

@@ -134,6 +134,16 @@ export async function flagSession(name) {
   if (!res.ok) throw new Error(`Failed to flag session: ${res.status}`)
 }
 
+export async function pinSession(name) {
+  const res = await apiFetch('/sessions/pin?name=' + encodeURIComponent(name), { method: 'POST' })
+  await requireOK(res, 'Failed to pin session')
+}
+
+export async function unpinSession(name) {
+  const res = await apiFetch('/sessions/pin?name=' + encodeURIComponent(name), { method: 'DELETE' })
+  await requireOK(res, 'Failed to unpin session')
+}
+
 export async function unflagSession(name) {
   const res = await apiFetch('/sessions/flag?name=' + encodeURIComponent(name), { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to unflag session: ${res.status}`)
@@ -219,6 +229,32 @@ export async function prewarmTerminal(sessionName) {
   return res.json()
 }
 
+export async function recordSessionActivity(sessionName, attempt, stillCurrent = () => true) {
+  const receiptRes = await apiFetch('/terminal/activity-receipt', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName, attempt }),
+  })
+  try {
+    await requireOK(receiptRes, 'Terminal frame is not ready')
+  } catch (error) {
+    error.stage = 'receipt'
+    throw error
+  }
+  const { receipt } = await receiptRes.json()
+  if (!stillCurrent()) return false
+  const res = await apiFetch('/sessions/activity', {
+    method: 'POST',
+    body: JSON.stringify({ session: sessionName, receipt }),
+  })
+  try {
+    await requireOK(res, 'Failed to record session activity')
+  } catch (error) {
+    error.stage = 'activity'
+    throw error
+  }
+  return true
+}
+
 export async function getTerminalStatus(sessionName) {
   const res = await apiFetch('/terminal/status?session=' + encodeURIComponent(sessionName))
   await requireOK(res, 'Failed to get terminal status')
@@ -236,7 +272,9 @@ export async function sendInput(sessionName, text, { submit = false, mode = 'pas
 async function requireOK(res, fallbackMessage) {
   if (res.ok) return
   const e = await res.json().catch(() => ({}))
-  throw new Error(e.error || fallbackMessage || `Request failed: ${res.status}`)
+  const error = new Error(e.error || fallbackMessage || `Request failed: ${res.status}`)
+  error.status = res.status
+  throw error
 }
 
 export async function sendKeys(sessionName, keys) {

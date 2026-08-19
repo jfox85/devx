@@ -29,7 +29,16 @@ go test -v -race ./...
 # 6. Ensure go.mod is tidy
 go mod tidy
 
-# 7. Ensure generated frontend assets are committed when changed
+# 7. Validate the embedded web app
+cd web/app
+npm ci
+npx playwright install chromium
+npm test
+npm run test:ui
+npm run build
+cd ../..
+
+# 8. Ensure generated frontend assets are committed when changed
 git diff --exit-code web/dist
 untracked=$(git ls-files --others web/dist)
 test -z "$untracked" || { echo "$untracked"; exit 1; }

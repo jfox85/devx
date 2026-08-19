@@ -1,10 +1,11 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
-  import { onMount } from 'svelte'
-  import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, colorSession } from '../api.js'
+  import { onMount, tick } from 'svelte'
+  import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, colorSession, pinSession, unpinSession } from '../api.js'
   import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
   import StaleReviewPanel from './StaleReviewPanel.svelte'
+  import { buildSessionSections, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
   import { openExternal as openExternalDesktop } from './desktopBridge.js'
 
   export let onOpenTerminal
@@ -20,7 +21,7 @@
   let showNewSession = false
   let error = ''
   let searchQuery = ''
-  let selectedIndex = 0
+  let selectedSessionName = null
   let searchFocused = false   // true while the filter input has focus
   let searchInputEl
   let expandedRoutes = null  // session.name whose routes are shown
@@ -34,6 +35,10 @@
   let pruningStale = false
   let pendingPruneStale = false
   let showStatusHelp = false
+  let sessionView = loadSessionView()
+  let pendingPins = {}
+  let liveMessage = ''
+  let activityNow = Date.now()
 
   // Hover/focus prewarm with a short debounce so list scanning doesn't fire a
   // request per row. Prewarm is read-only with respect to tmux (it only starts
@@ -105,17 +110,20 @@
     editingName = null
   }
 
+  let loadRequestID = 0
   async function load({ background = false } = {}) {
+    const requestID = ++loadRequestID
     if (!background) loading = true
     error = ''
     try {
       const data = await listSessionsWithSummary()
+      if (requestID !== loadRequestID) return
       sessions = data.sessions || []
       staleSummary = data.stale_summary || null
       if (!showStaleReview) staleReviewSummary = null
     }
-    catch (e) { error = e.message }
-    finally { if (!background) loading = false }
+    catch (e) { if (requestID === loadRequestID) error = e.message }
+    finally { if (requestID === loadRequestID) loading = false }
   }
 
   function openNewSession() { showNewSession = true }
@@ -129,6 +137,7 @@
     // Background polls skip the loading spinner to avoid flickering the list.
     // Pauses when the tab is hidden to avoid unnecessary requests.
     let pollTimer = null
+    const activityTimer = setInterval(() => { activityNow = Date.now() }, 60_000)
     function startPolling() {
       pollTimer = setInterval(() => { if (!document.hidden) load({ background: true }) }, POLL_INTERVAL)
     }
@@ -142,6 +151,7 @@
     window.addEventListener('devx:newSession', openNewSession)
     return () => {
       clearInterval(pollTimer)
+      clearInterval(activityTimer)
       clearTimeout(prewarmTimer)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('devx:focusSessionList', focusSearch)
@@ -151,45 +161,23 @@
 
   function focusSearch() {
     // Start nav cursor at the active session so arrows move from a known position
-    const activeIdx = displayOrdered.findIndex(s => s.name === activeSessionName)
-    if (activeIdx >= 0) selectedIndex = activeIdx
+    if (displayOrdered.some(s => s.name === activeSessionName)) selectedSessionName = activeSessionName
     searchInputEl?.focus()
     searchInputEl?.select()
   }
 
-  // Flat filtered list for keyboard navigation
-  $: filtered = sessions.filter(s =>
-    !searchQuery || s.name.toLowerCase().includes(searchQuery.toLowerCase())
-      || (s.display_name && s.display_name.toLowerCase().includes(searchQuery.toLowerCase()))
-  )
-
-  // Grouped for display
-  $: groups = (() => {
-    const map = {}
-    for (const s of filtered) {
-      const key = s.project_alias || ''
-      if (!map[key]) map[key] = []
-      map[key].push(s)
-      map[key].sort((a, b) => (a.status?.priority || 99) - (b.status?.priority || 99) || a.name.localeCompare(b.name))
-    }
-    return Object.entries(map).sort(([a], [b]) => {
-      if (a === '') return 1
-      if (b === '') return -1
-      return a.localeCompare(b)
-    })
-  })()
-
-  // displayOrdered matches the visual top-to-bottom order (projects sorted
-  // alphabetically, sessions in original API order within each project).
-  // Use this for keyboard nav so ArrowDown moves to the visually next item.
-  $: displayOrdered = groups.flatMap(([, sessions]) => sessions)
+  $: sections = buildSessionSections(sessions, searchQuery, sessionView)
+  $: displayOrdered = sections.flatMap(section => section.sessions)
+  $: selectedIndex = Math.max(0, displayOrdered.findIndex(s => s.name === selectedSessionName))
 
   // Immediate background reload when parent bumps refreshTrigger (e.g. on SSE flag event)
   let _prevTrigger = refreshTrigger
   $: if (refreshTrigger !== _prevTrigger) { _prevTrigger = refreshTrigger; load({ background: true }) }
 
-  // Reset keyboard selection when search changes
-  $: { searchQuery; selectedIndex = 0 }
+  // Keep keyboard selection keyed by session identity as filtering/reordering occurs.
+  $: if (displayOrdered.length && !displayOrdered.some(s => s.name === selectedSessionName)) {
+    selectedSessionName = displayOrdered[0].name
+  }
 
   // Only show the keyboard cursor highlight while the search box is in use.
   // When idle, only the cyan activeSession highlight shows — no competing states.
@@ -199,7 +187,7 @@
     markSwitchStart(sess.name)
     // Clear the filter so the full list reappears after switching
     searchQuery = ''
-    selectedIndex = 0
+    selectedSessionName = sess.name
     onOpenTerminal(sess)
   }
 
@@ -208,18 +196,23 @@
     const inOtherInput = (document.activeElement?.tagName === 'INPUT'
       || document.activeElement?.tagName === 'TEXTAREA')
       && document.activeElement !== searchInputEl
+    const inOtherControl = !!e.target?.closest?.('button, a, select, [contenteditable="true"]')
 
-    // Arrow keys and Enter work even while search is focused (combobox pattern)
-    if (e.key === 'ArrowDown' && !inOtherInput) {
+    // Arrow keys and Enter work even while search is focused (combobox pattern),
+    // but never override a focused row/view/action control.
+    if (e.key === 'ArrowDown' && !inOtherInput && !inOtherControl) {
       e.preventDefault()
-      selectedIndex = Math.min(selectedIndex + 1, displayOrdered.length - 1)
-      if (displayOrdered[selectedIndex]) schedulePrewarm(displayOrdered[selectedIndex].name)
-    } else if (e.key === 'ArrowUp' && !inOtherInput) {
+      const next = displayOrdered[Math.min(selectedIndex + 1, displayOrdered.length - 1)]
+      if (next) { selectedSessionName = next.name; schedulePrewarm(next.name) }
+    } else if (e.key === 'ArrowUp' && !inOtherInput && !inOtherControl) {
       e.preventDefault()
-      selectedIndex = Math.max(selectedIndex - 1, 0)
-      if (displayOrdered[selectedIndex]) schedulePrewarm(displayOrdered[selectedIndex].name)
-    } else if (e.key === 'Enter' && !inOtherInput) {
+      const next = displayOrdered[Math.max(selectedIndex - 1, 0)]
+      if (next) { selectedSessionName = next.name; schedulePrewarm(next.name) }
+    } else if (e.key === 'Enter' && !inOtherInput && !inOtherControl) {
       if (displayOrdered[selectedIndex]) selectSession(displayOrdered[selectedIndex])
+    } else if (e.shiftKey && (e.key === 'p' || e.key === 'P') && !inOtherInput && !inOtherControl && document.activeElement !== searchInputEl && document.activeElement?.tagName !== 'SELECT') {
+      e.preventDefault()
+      if (displayOrdered[selectedIndex]) handlePin(displayOrdered[selectedIndex], true)
     } else if (e.key === 'Escape') {
       searchQuery = ''
       searchInputEl?.blur()
@@ -232,6 +225,42 @@
     } else if (e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault()
       if (!showNewSession) showNewSession = true
+    }
+  }
+
+  function setSessionView(value) {
+    sessionView = value
+    saveSessionView(localStorage, value)
+  }
+
+  async function handlePin(session, restorePinFocus = false) {
+    if (pendingPins[session.name]) return
+    liveMessage = ''
+    await tick()
+    const nextPinned = !session.pinned
+    // Supersede any poll that started before this mutation so stale server data
+    // cannot overwrite the optimistic state.
+    loadRequestID++
+    selectedSessionName = session.name
+    pendingPins = { ...pendingPins, [session.name]: true }
+    sessions = sessions.map(item => item.name === session.name ? { ...item, pinned: nextPinned } : item)
+    try {
+      if (nextPinned) await pinSession(session.name)
+      else await unpinSession(session.name)
+      liveMessage = `${nextPinned ? 'Pinned' : 'Unpinned'} ${session.display_name || session.name}`
+      await load({ background: true })
+    } catch (e) {
+      sessions = sessions.map(item => item.name === session.name ? { ...item, pinned: !nextPinned } : item)
+      error = e.message || `Couldn't ${nextPinned ? 'pin' : 'unpin'} session`
+    } finally {
+      const next = { ...pendingPins }
+      delete next[session.name]
+      pendingPins = next
+      if (restorePinFocus) {
+        await tick()
+        const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(session.name) : session.name
+        document.querySelector(`[data-pin-session="${escaped}"]`)?.focus()
+      }
     }
   }
 
@@ -285,11 +314,17 @@
     error = ''
     cleanupMessage = `Removing ${session.display_name || session.name}…`
     deletingSessions = { ...deletingSessions, [session.name]: true }
+    const deletedIndex = displayOrdered.findIndex(item => item.name === session.name)
+    const wasSelected = selectedSessionName === session.name
     try {
       await deleteSession(session.name)
       cleanupMessage = `Removed ${session.display_name || session.name}; refreshing…`
       if (session.name === activeSessionName) onDeleteSession?.()
       await load()
+      await tick()
+      if (wasSelected && displayOrdered.length) {
+        selectedSessionName = displayOrdered[Math.min(Math.max(deletedIndex, 0), displayOrdered.length - 1)].name
+      }
       cleanupMessage = ''
       return true
     } catch (e) {
@@ -433,16 +468,38 @@
     {#if searchQuery}
       <button
         on:click={() => { searchQuery = ''; searchInputEl?.focus() }}
+        aria-label="Clear search"
         class="text-gray-600 hover:text-gray-400 text-xs font-mono ml-1"
       >×</button>
     {/if}
   </div>
 
+  <!-- Session organization -->
+  <div role="group" class="flex items-center gap-1 px-3 h-12 lg:h-8 border-b border-[#1e2d4a] shrink-0" aria-label="Session view">
+    <span class="text-[10px] font-mono text-gray-700 mr-1">view</span>
+    {#each [['recent', 'Recent'], ['projects', 'Projects']] as [value, label]}
+      <button
+        type="button"
+        on:click={() => setSessionView(value)}
+        aria-pressed={sessionView === value}
+        disabled={loading}
+        class="px-3 lg:px-2 min-h-11 lg:min-h-0 lg:h-6 text-[11px] lg:text-[10px] font-mono rounded-sm border transition-colors
+          {sessionView === value ? 'text-cyan-300 border-cyan-800 bg-cyan-950/30' : 'text-gray-600 border-transparent hover:text-gray-300 hover:border-gray-800'}"
+      >{label}</button>
+    {/each}
+    <span class="ml-auto text-[9px] font-mono text-gray-700">{sessionView === 'recent' ? 'across projects' : 'grouped'}</span>
+  </div>
+
+  <div class="sr-only" aria-live="polite">{liveMessage}</div>
+
   <!-- Error banner (shown above list, doesn't replace it) -->
   {#if error}
-    <div class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between shrink-0">
+    <div role="alert" class="px-3 py-1.5 bg-red-950/40 border-b border-red-900/50 text-red-400 text-[11px] font-mono flex items-center justify-between shrink-0">
       <span>{error}</span>
-      <button on:click={() => error = ''} class="text-red-600 hover:text-red-400 ml-2">×</button>
+      <span class="flex items-center gap-2 ml-2">
+        <button on:click={() => load({ background: sessions.length > 0 })} class="text-red-300 hover:text-white underline">Retry</button>
+        <button on:click={() => error = ''} class="text-red-600 hover:text-red-400">×</button>
+      </span>
     </div>
   {/if}
 
@@ -493,7 +550,7 @@
   {/if}
 
   <!-- Session list -->
-  <div class="flex-1 overflow-y-auto">
+  <div class="flex-1 overflow-y-auto" aria-busy={loading}>
     {#if loading}
       <div class="px-3 py-8 text-gray-700 text-xs font-mono">loading...</div>
 
@@ -514,19 +571,20 @@
         {/if}
       </div>
 
-    {:else if filtered.length === 0}
-      <div class="px-3 py-4 text-gray-700 text-xs font-mono">no matches</div>
+    {:else if displayOrdered.length === 0}
+      <div class="px-3 py-4 text-gray-700 text-xs font-mono">
+        <p>No sessions match “{searchQuery}”</p>
+        <button on:click={() => searchQuery = ''} class="mt-2 text-cyan-600 hover:text-cyan-300">Clear search</button>
+      </div>
 
     {:else}
-      {#each groups as [project, projectSessions]}
-        <div class="pt-3 pb-1">
-          {#if project}
-            <div class="px-4 pb-1 text-[10px] font-mono font-bold uppercase tracking-[0.18em] text-cyan-700/60 select-none">
-              {project}
-            </div>
-          {/if}
+      {#each sections as section (section.key)}
+        <div role="list" aria-label={section.label} class="pt-3 pb-1">
+          <div aria-hidden="true" class="px-4 pb-1 text-[10px] font-mono font-bold uppercase tracking-[0.18em] select-none {section.kind === 'pinned' ? 'text-cyan-400' : 'text-cyan-700/60'}">
+            {section.kind === 'pinned' ? '● ' : ''}{section.label}
+          </div>
 
-          {#each projectSessions as session (session.name)}
+          {#each section.sessions as session (session.name)}
             {@const isActive = session.name === activeSessionName}
             {@const flatIdx = displayOrdered.indexOf(session)}
             {@const isKbSelected = flatIdx === selectedIndex}
@@ -587,22 +645,28 @@
                     autofocus
                   />
                 {:else}
-                  <span
-                    class="flex-1 truncate leading-none cursor-pointer"
+                  <button
+                    type="button"
+                    class="flex-1 min-w-0 truncate leading-none cursor-pointer text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
                     on:pointerenter={() => schedulePrewarm(session.name)}
                     on:pointerleave={cancelPrewarm}
                     on:pointerdown={() => firePrewarm(session.name)}
                     on:click={() => selectSession(session)}
                     on:dblclick|stopPropagation={() => startRename(session)}
                     title="click to open, double-click to rename"
-                    role="button"
-                    tabindex="-1"
                   >
                     {session.display_name || session.name}
                     {#if session.display_name && session.display_name !== session.name}
                       <span class="text-gray-700 text-[10px] ml-1">({session.name})</span>
                     {/if}
-                  </span>
+                  </button>
+                {/if}
+                {#if section.showProject && session.project_alias}
+                  <span class="text-[9px] shrink-0 text-gray-600 border border-gray-800 px-1 rounded-sm">{session.project_alias}</span>
+                {/if}
+                {#if section.showActivity}
+                  {@const activity = relativeActivity(session, activityNow)}
+                  <time datetime={session.activity_at || ''} title={activity.label} aria-label={activity.label} class="text-[9px] text-gray-700 shrink-0">{activity.display}</time>
                 {/if}
                 <span
                   class="text-[9px] shrink-0 uppercase tracking-wide px-1 py-px border border-gray-800 text-gray-600 rounded-sm"
@@ -621,8 +685,18 @@
                    Desktop (≥ lg): invisible by default, fade in on group hover -->
               <div class="
                 flex items-center gap-px pr-1
-                lg:opacity-0 lg:group-hover:opacity-100 lg:transition-opacity
+                {session.pinned ? 'lg:opacity-100' : 'lg:opacity-0'} lg:group-hover:opacity-100 lg:group-focus-within:opacity-100 lg:transition-opacity
               ">
+                <button
+                  type="button"
+                  data-pin-session={session.name}
+                  on:click={() => handlePin(session, true)}
+                  disabled={!!pendingPins[session.name]}
+                  aria-pressed={!!session.pinned}
+                  aria-label={`${session.pinned ? 'Unpin' : 'Pin'} ${session.display_name || session.name}`}
+                  class="font-mono text-base lg:text-[11px] min-w-11 min-h-11 lg:min-w-7 lg:min-h-7 px-2 lg:px-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500 {session.pinned ? 'text-cyan-300 lg:opacity-100' : 'text-gray-700 hover:text-cyan-400'}"
+                  title={session.pinned ? 'unpin session' : 'pin session'}
+                ><span aria-hidden="true">{pendingPins[session.name] ? '…' : session.pinned ? '●' : '○'}</span></button>
                 {#if session.gatepost?.logs_url}
                   <a
                     href={session.gatepost.logs_url}
@@ -672,7 +746,7 @@
 
             <!-- Routes inline expansion -->
             {#if expandedRoutes === session.name}
-              <div class="bg-[#0d1117] border-b border-[#1e2d4a] pl-6 pr-3 py-2 space-y-1.5">
+              <div role="listitem" aria-label={`Services for ${session.display_name || session.name}`} class="bg-[#0d1117] border-b border-[#1e2d4a] pl-6 pr-3 py-2 space-y-1.5">
                 {#each Object.entries(routes) as [svc, url]}
                   <a
                     href={url}
@@ -726,6 +800,7 @@
     <span>↑↓ nav</span>
     <span>⏎ open</span>
     <span>/ search</span>
+    <span>⇧P pin</span>
     <span class="ml-auto">^⇧C new</span>
     <span>^⇧S focus</span>
   </div>

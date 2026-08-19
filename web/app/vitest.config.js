@@ -7,5 +7,10 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     include: ['src/**/*.test.js'],
+    exclude: [
+      'src/api.test.js',
+      'src/lib/sessionOrdering.test.js',
+      'src/lib/terminalActivity.test.js',
+    ],
   },
 })

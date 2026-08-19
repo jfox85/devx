@@ -61,6 +61,8 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/review", handleGetSessionReview)
 	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
 	mux.HandleFunc("POST /api/sessions/reviewed", handleMarkSessionReviewed)
+	mux.HandleFunc("POST /api/sessions/pin", handlePinSession)
+	mux.HandleFunc("DELETE /api/sessions/pin", handlePinSession)
 	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
 	// Reverse-proxy the per-session Gatepost Logs UI so it is reachable wherever
 	// the devx web UI is (Caddy / Cloudflare tunnel), with the token injected
@@ -335,6 +337,9 @@ type sessionResponse struct {
 	ExternalRoutes      map[string]string            `json:"external_routes,omitempty"`
 	TargetType          string                       `json:"target_type"`
 	AttentionFlag       bool                         `json:"attention_flag"`
+	Pinned              bool                         `json:"pinned"`
+	ActivityAt          *time.Time                   `json:"activity_at,omitempty"`
+	LastOpenedAt        *time.Time                   `json:"last_opened_at,omitempty"`
 	ArtifactCount       int                          `json:"artifact_count"`
 	FocusedArtifactID   string                       `json:"focused_artifact_id,omitempty"`
 	UnseenArtifactCount int                          `json:"unseen_artifact_count,omitempty"`
@@ -364,6 +369,15 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		}
 	}
 	artifactCount, focusedArtifactID, unseenArtifactCount := artifactCountAndFocus(sess)
+	var activityAt *time.Time
+	if activity, ok := sess.ActivityAt(); ok {
+		activityAt = &activity
+	}
+	var lastOpenedAt *time.Time
+	if !sess.LastAttached.IsZero() {
+		lastOpened := sess.LastAttached
+		lastOpenedAt = &lastOpened
+	}
 	var gatepost *gatepostResponse
 	if sess.Target.Gatepost.Enabled {
 		logsURL := ""
@@ -385,6 +399,9 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		ExternalRoutes:      externalRoutes,
 		TargetType:          sess.TargetType(),
 		AttentionFlag:       sess.AttentionFlag,
+		Pinned:              sess.Pinned,
+		ActivityAt:          activityAt,
+		LastOpenedAt:        lastOpenedAt,
 		ArtifactCount:       artifactCount,
 		FocusedArtifactID:   focusedArtifactID,
 		UnseenArtifactCount: unseenArtifactCount,
@@ -780,6 +797,33 @@ func handleMarkSessionReviewed(w http.ResponseWriter, r *http.Request) {
 	}
 	invalidateSessionListCache()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
+}
+
+func handlePinSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Errorf("load sessions: %w", err).Error()})
+		return
+	}
+	if err := store.SetPinned(name, r.Method == http.MethodPost); err != nil {
+		err = fmt.Errorf("set pinned state: %w", err)
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	invalidateSessionListCache()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleColorSession(w http.ResponseWriter, r *http.Request) {

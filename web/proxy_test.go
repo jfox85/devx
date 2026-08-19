@@ -53,6 +53,21 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	}
 }
 
+func TestInjectTerminalAttemptScopesWebSocket(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/html"}},
+		Body:   io.NopCloser(strings.NewReader("<html><head></head><body>tty</body></html>")),
+	}
+	if err := injectTerminalResponse(resp, "attempt-1234567890"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+	if !strings.Contains(got, "devx_attempt") || !strings.Contains(got, "attempt-1234567890") || !strings.Contains(got, "window.WebSocket") {
+		t.Fatalf("attempt websocket wrapper missing: %s", got)
+	}
+}
+
 func TestInjectTerminalCopyOnSelectDecodesGzip(t *testing.T) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
