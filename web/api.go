@@ -23,9 +23,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jfox85/devx/ask"
 	"github.com/jfox85/devx/caddy"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/web/imagepolicy"
 	"github.com/spf13/viper"
 )
 
@@ -47,6 +49,9 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/pane-content/view", handlePaneContentView)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
 	mux.HandleFunc("GET /api/settings", handleSettings)
+	mux.HandleFunc("GET /api/asks/pending", handleAskPending)
+	mux.HandleFunc("POST /api/asks/approve", handleAskApprove)
+	mux.HandleFunc("POST /api/asks/deny", handleAskDeny)
 	mux.HandleFunc("POST /api/switch-window", handleSwitchWindow)
 	mux.HandleFunc("POST /api/send-keys", handleSendKeys)
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
@@ -56,6 +61,8 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/review", handleGetSessionReview)
 	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
 	mux.HandleFunc("POST /api/sessions/reviewed", handleMarkSessionReviewed)
+	mux.HandleFunc("POST /api/sessions/pin", handlePinSession)
+	mux.HandleFunc("DELETE /api/sessions/pin", handlePinSession)
 	mux.HandleFunc("GET /api/gatepost/logs", handleGatepostLogsRedirect)
 	// Reverse-proxy the per-session Gatepost Logs UI so it is reachable wherever
 	// the devx web UI is (Caddy / Cloudflare tunnel), with the token injected
@@ -197,6 +204,56 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleAskPending(w http.ResponseWriter, r *http.Request) {
+	reqs, err := ask.NewStore().Pending()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": reqs})
+}
+
+type askActionRequest struct {
+	ID     string `json:"id"`
+	Always bool   `json:"always"`
+}
+
+func handleAskApprove(w http.ResponseWriter, r *http.Request) {
+	var body askActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	store := ask.NewStore()
+	var req *ask.Request
+	var err error
+	if body.Always {
+		req, err = store.ApproveAlwaysAndExecute(context.Background(), body.ID, ask.Policy{})
+	} else {
+		req, err = store.ApproveAndExecute(context.Background(), body.ID, ask.Policy{})
+	}
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, req)
+}
+
+func handleAskDeny(w http.ResponseWriter, r *http.Request) {
+	var body askActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	store := ask.NewStore()
+	req, err := store.Deny(body.ID)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, req)
+}
+
 func defaultStaleDays() int {
 	days := viper.GetInt("stale_sessions.threshold_days")
 	if days <= 0 || days > session.MaxStaleThresholdDays {
@@ -280,6 +337,9 @@ type sessionResponse struct {
 	ExternalRoutes      map[string]string            `json:"external_routes,omitempty"`
 	TargetType          string                       `json:"target_type"`
 	AttentionFlag       bool                         `json:"attention_flag"`
+	Pinned              bool                         `json:"pinned"`
+	ActivityAt          *time.Time                   `json:"activity_at,omitempty"`
+	LastOpenedAt        *time.Time                   `json:"last_opened_at,omitempty"`
 	ArtifactCount       int                          `json:"artifact_count"`
 	FocusedArtifactID   string                       `json:"focused_artifact_id,omitempty"`
 	UnseenArtifactCount int                          `json:"unseen_artifact_count,omitempty"`
@@ -309,6 +369,15 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		}
 	}
 	artifactCount, focusedArtifactID, unseenArtifactCount := artifactCountAndFocus(sess)
+	var activityAt *time.Time
+	if activity, ok := sess.ActivityAt(); ok {
+		activityAt = &activity
+	}
+	var lastOpenedAt *time.Time
+	if !sess.LastAttached.IsZero() {
+		lastOpened := sess.LastAttached
+		lastOpenedAt = &lastOpened
+	}
 	var gatepost *gatepostResponse
 	if sess.Target.Gatepost.Enabled {
 		logsURL := ""
@@ -330,6 +399,9 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		ExternalRoutes:      externalRoutes,
 		TargetType:          sess.TargetType(),
 		AttentionFlag:       sess.AttentionFlag,
+		Pinned:              sess.Pinned,
+		ActivityAt:          activityAt,
+		LastOpenedAt:        lastOpenedAt,
 		ArtifactCount:       artifactCount,
 		FocusedArtifactID:   focusedArtifactID,
 		UnseenArtifactCount: unseenArtifactCount,
@@ -727,6 +799,33 @@ func handleMarkSessionReviewed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reviewed"})
 }
 
+func handlePinSession(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name query param required"})
+		return
+	}
+	if !requireValidSession(w, name) {
+		return
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Errorf("load sessions: %w", err).Error()})
+		return
+	}
+	if err := store.SetPinned(name, r.Method == http.MethodPost); err != nil {
+		err = fmt.Errorf("set pinned state: %w", err)
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	invalidateSessionListCache()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func handleColorSession(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	color := r.URL.Query().Get("color")
@@ -1065,19 +1164,40 @@ func handlePaneContentView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListProjects returns the sorted list of project aliases from the registry.
+// handleListProjects returns the sorted list of project aliases from the
+// registry, plus each project's default session target so the new-session form
+// can pre-select the right type when a project is chosen. The default mirrors
+// session creation: the project's .devx/config.yaml "target" if set, otherwise
+// the global default.
 func handleListProjects(w http.ResponseWriter, r *http.Request) {
 	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	globalTarget := viper.GetString("target")
 	aliases := make([]string, 0, len(registry.Projects))
-	for alias := range registry.Projects {
+	targets := make(map[string]string, len(registry.Projects))
+	for alias, project := range registry.Projects {
 		aliases = append(aliases, alias)
+		projectPath := ""
+		if project != nil {
+			projectPath = project.Path
+		}
+		// ResolveProjectTarget intentionally skips validation, so a malformed
+		// project-level target could otherwise be preselected in the new-session
+		// form. Fall back to the global default (then host) for invalid values.
+		resolved := config.ResolveProjectTarget(projectPath, globalTarget)
+		if !isValidSessionTarget(resolved) {
+			resolved = config.ResolveProjectTarget("", globalTarget)
+			if !isValidSessionTarget(resolved) {
+				resolved = "host"
+			}
+		}
+		targets[alias] = resolved
 	}
 	sort.Strings(aliases)
-	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases})
+	writeJSON(w, http.StatusOK, map[string]any{"projects": aliases, "targets": targets})
 }
 
 // handleSwitchWindow runs `tmux select-window -t session:index`, which switches
@@ -1252,21 +1372,14 @@ func handleSendKeys(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-var allowedImageTypes = map[string]string{
-	"image/png":  ".png",
-	"image/jpeg": ".jpg",
-	"image/gif":  ".gif",
-	"image/webp": ".webp",
-}
-
 // handleUploadImage accepts a multipart image upload, saves it to
 // ~/.devx/uploads/<session>/{hex}.ext, and returns the path as JSON.
 // For Gatepost sessions the returned path uses the container mount point
 // so the agent can access the file directly.
 func handleUploadImage(w http.ResponseWriter, r *http.Request) {
-	// Cap the raw request body to 20 MB before parsing to prevent disk exhaustion.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	// Cap the raw request body before parsing to prevent disk exhaustion.
+	r.Body = http.MaxBytesReader(w, r.Body, imagepolicy.MaxUploadBytes)
+	if err := r.ParseMultipartForm(imagepolicy.MaxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
 		return
 	}
@@ -1279,6 +1392,14 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	sessionName := r.FormValue("session")
+	// Reject malformed session names before they reach filepath.Join: an
+	// unvalidated value (e.g. "../../...") would let the upload escape the
+	// per-session uploads dir under ~/.devx/uploads. An empty session is allowed
+	// (shared uploads dir); anything non-empty must be a valid session name.
+	if sessionName != "" && !session.IsValidSessionName(sessionName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session"})
+		return
+	}
 
 	// Always sniff magic bytes to determine MIME type — never trust the
 	// client-supplied Content-Type header, which is trivially spoofable.
@@ -1297,7 +1418,7 @@ func handleUploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext, ok := allowedImageTypes[mediaType]
+	ext, ok := imagepolicy.MIMEToExt[mediaType]
 	if !ok {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
 		return
@@ -1387,9 +1508,9 @@ func handleServeUpload(w http.ResponseWriter, r *http.Request) {
 // handleShow accepts a multipart image upload from the CLI, saves it to
 // ~/.devx/uploads/, then broadcasts its URL to all connected SSE clients.
 func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
-	// Cap the raw request body to 20 MB before parsing.
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
+	// Cap the raw request body before parsing.
+	r.Body = http.MaxBytesReader(w, r.Body, imagepolicy.MaxUploadBytes)
+	if err := r.ParseMultipartForm(imagepolicy.MaxUploadBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
 		return
 	}
@@ -1415,7 +1536,7 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid content type"})
 		return
 	}
-	ext, ok := allowedImageTypes[mediaType]
+	ext, ok := imagepolicy.MIMEToExt[mediaType]
 	if !ok {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported image type: " + mediaType})
 		return

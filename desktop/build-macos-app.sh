@@ -15,6 +15,10 @@ if [[ ! -f "$ICON_SRC" ]]; then
   exit 1
 fi
 
+# The desktop shell embeds the same Svelte bundle as `devx web`; make sure the
+# latest frontend changes are present before the Wails binary is compiled.
+(cd "$ROOT/../web/app" && npm ci && npm run build)
+
 rm -rf "$APP" "$ICONSET"
 mkdir -p "$APP/Contents/MacOS" "$RES" "$ICONSET"
 

@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -58,6 +60,100 @@ func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
 	}
 	if _, ok := resp["artifact_trigger_key"]; !ok {
 		t.Fatalf("artifact_trigger_key missing from response: %#v", resp)
+	}
+}
+
+func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	projectDir := filepath.Join(tmp, "nibit")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".devx", "config.yaml"), []byte("target: host\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registryDir := filepath.Join(tmp, ".config", "devx")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	registryJSON := fmt.Sprintf(`{"projects":{"nibit":{"name":"nibit","path":%q},"mystorymates":{"name":"mystorymates","path":%q}}}`, projectDir, filepath.Join(tmp, "mystorymates"))
+	if err := os.WriteFile(filepath.Join(registryDir, "projects.json"), []byte(registryJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/projects", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Projects []string          `json:"projects"`
+		Targets  map[string]string `json:"targets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got, want := resp.Projects, []string{"mystorymates", "nibit"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("projects = %v, want %v", got, want)
+	}
+	// handleListProjects resolves a concrete default target for every project so
+	// the new-session form can always pre-select a type: the project's configured
+	// target when set, otherwise the global default (here unset, so "host").
+	if got := resp.Targets["nibit"]; got != "host" {
+		t.Fatalf("nibit target = %q, want host; response=%s", got, w.Body.String())
+	}
+	if got := resp.Targets["mystorymates"]; got != "host" {
+		t.Fatalf("mystorymates (no config) should fall back to global default host, got %q", got)
+	}
+}
+
+func TestListProjectsRejectsInvalidProjectTarget(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	projectDir := filepath.Join(tmp, "bad")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A project config with an unknown target must not leak into the UI defaults;
+	// it should fall back to the global default (here unset, so "host").
+	if err := os.WriteFile(filepath.Join(projectDir, ".devx", "config.yaml"), []byte("target: bogus\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registryDir := filepath.Join(tmp, ".config", "devx")
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	registryJSON := fmt.Sprintf(`{"projects":{"bad":{"name":"bad","path":%q}}}`, projectDir)
+	if err := os.WriteFile(filepath.Join(registryDir, "projects.json"), []byte(registryJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/projects", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Targets map[string]string `json:"targets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got := resp.Targets["bad"]; got != "host" {
+		t.Fatalf("invalid project target should fall back to host, got %q; response=%s", got, w.Body.String())
 	}
 }
 
@@ -466,6 +562,111 @@ func TestGetSessionsIncludesStatusAndStaleSummary(t *testing.T) {
 	}
 }
 
+func TestGetSessionsExposesPinnedAndActivityWithoutYearOneTimestamp(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	created := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	attached := created.Add(time.Hour)
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"opened": {Name: "opened", Branch: "main", Path: t.TempDir(), CreatedAt: created, UpdatedAt: created, LastAttached: attached, Pinned: true},
+		"legacy": {Name: "legacy", Branch: "main", Path: t.TempDir()},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/sessions", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]map[string]any{}
+	for _, item := range body.Sessions {
+		byName[item["name"].(string)] = item
+	}
+	opened := byName["opened"]
+	if opened["pinned"] != true {
+		t.Fatalf("pinned = %#v, want true", opened["pinned"])
+	}
+	if opened["activity_at"] != attached.Format(time.RFC3339) {
+		t.Fatalf("activity_at = %#v, want %q", opened["activity_at"], attached.Format(time.RFC3339))
+	}
+	if opened["last_opened_at"] != attached.Format(time.RFC3339) {
+		t.Fatalf("last_opened_at = %#v, want %q", opened["last_opened_at"], attached.Format(time.RFC3339))
+	}
+	legacy := byName["legacy"]
+	if _, exists := legacy["activity_at"]; exists {
+		t.Fatalf("legacy activity_at should be omitted: %#v", legacy)
+	}
+	if _, exists := legacy["last_opened_at"]; exists {
+		t.Fatalf("legacy last_opened_at should be omitted: %#v", legacy)
+	}
+}
+
+func TestPinSessionRoutesPersistWithoutChangingUpdatedAt(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	created := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	store := &session.SessionStore{Sessions: map[string]*session.Session{
+		"s1": {Name: "s1", Branch: "main", Path: t.TempDir(), CreatedAt: created, UpdatedAt: created},
+	}, NumberedSlots: map[int]string{}}
+	if err := store.Overwrite(); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+
+	for _, tc := range []struct {
+		method string
+		want   bool
+	}{
+		{method: http.MethodPost, want: true},
+		{method: http.MethodDelete, want: false},
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(tc.method, "/api/sessions/pin?name=s1", nil))
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d: %s", tc.method, w.Code, w.Body.String())
+		}
+		reloaded, err := session.LoadSessions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := reloaded.Sessions["s1"]
+		if got.Pinned != tc.want {
+			t.Fatalf("%s pinned = %v, want %v", tc.method, got.Pinned, tc.want)
+		}
+		if !got.UpdatedAt.Equal(created) {
+			t.Fatalf("%s changed UpdatedAt: got %v want %v", tc.method, got.UpdatedAt, created)
+		}
+	}
+}
+
+func TestPinSessionRoutesValidateNameAndMissingSession(t *testing.T) {
+	setupEmptySessionStoreForTest(t)
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{path: "/api/sessions/pin", want: http.StatusBadRequest},
+		{path: "/api/sessions/pin?name=missing", want: http.StatusNotFound},
+	} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, tc.path, nil))
+		if w.Code != tc.want {
+			t.Fatalf("%s status = %d, want %d: %s", tc.path, w.Code, tc.want, w.Body.String())
+		}
+	}
+}
+
 func TestStaleEndpointsRejectInvalidDays(t *testing.T) {
 	setupEmptySessionStoreForTest(t)
 	mux := http.NewServeMux()
@@ -645,5 +846,50 @@ func TestMarkSessionReviewedMapsMissingSessionTo404(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing session, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func uploadImageRequest(t *testing.T, sessionName string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("image", "x.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Minimal valid PNG header so the handler's magic-byte sniff succeeds.
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	png = append(png, make([]byte, 32)...)
+	if _, err := part.Write(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("session", sessionName); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/upload-image", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req
+}
+
+func TestHandleUploadImageRejectsInvalidSession(t *testing.T) {
+	for _, name := range []string{"../escape", "../../etc", "a/../b", "bad\x00name"} {
+		w := httptest.NewRecorder()
+		handleUploadImage(w, uploadImageRequest(t, name))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("session %q: expected 400, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandleUploadImageAcceptsValidSession(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	w := httptest.NewRecorder()
+	handleUploadImage(w, uploadImageRequest(t, "my-session"))
+	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "invalid session") {
+		t.Fatalf("valid session wrongly rejected: %s", w.Body.String())
 	}
 }

@@ -8,7 +8,17 @@
 }
 
 :root {
-  font-family: ui-monospace, 'SFMono-Regular', Menlo, 'Liberation Mono', 'Courier New', monospace;
+  /*
+   * Keep the control-deck UI on a concrete mono face instead of the
+   * `ui-monospace` generic. Chrome and macOS WKWebView resolve that generic
+   * differently, which made the desktop shell use a font with visibly uneven
+   * glyph heights/spacing for punctuation and symbols. Menlo matches the web
+   * UI rendering more closely while the terminal iframe still loads
+   * HackNerdFontMono for Nerd Font glyph coverage.
+   */
+  --font-mono: Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --default-mono-font-family: var(--font-mono);
+  font-family: var(--font-mono);
   color-scheme: dark;
 }
 

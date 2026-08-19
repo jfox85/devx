@@ -42,29 +42,36 @@ func DetectInstallMethod() InstallMethod {
 	return InstallMethodManual
 }
 
-// isHomebrewManaged checks if a binary is managed by Homebrew
+// isHomebrewManaged checks if a binary is managed by Homebrew.
 func isHomebrewManaged(path string) bool {
-	// Check for Cellar paths (direct installation)
-	if strings.Contains(path, "/usr/local/Cellar/devx") ||
-		strings.Contains(path, "/opt/homebrew/Cellar/devx") {
+	// Direct Cellar installation, e.g. /opt/homebrew/Cellar/devx/1.2.3/bin/devx.
+	if isDevxCellarPath(path) {
 		return true
 	}
 
-	// Check if it's a symlink to a Homebrew Cellar location
+	// Homebrew symlinks bin entries (/usr/local/bin, /opt/homebrew/bin) into the
+	// Cellar. If this path is such a symlink, resolve it and check whether the
+	// target is the devx Cellar package. A symlink into the Cellar is a Homebrew
+	// install regardless of where the symlink itself lives.
 	if link, err := os.Readlink(path); err == nil {
-		return strings.Contains(link, "/Cellar/devx")
-	}
-
-	// Check common Homebrew bin locations
-	if strings.Contains(path, "/usr/local/bin/devx") ||
-		strings.Contains(path, "/opt/homebrew/bin/devx") {
-		// Verify it's actually managed by Homebrew via symlink check
-		if link, err := os.Readlink(path); err == nil {
-			return strings.Contains(link, "/Cellar/")
-		}
+		return isDevxCellarPath(link)
 	}
 
 	return false
+}
+
+// isDevxCellarPath reports whether path points at the "devx" package inside a
+// Homebrew Cellar directory. The package name must occupy a full path component
+// so sibling packages like "devx-tools" don't collide with "devx" (a plain
+// substring match would accept /opt/homebrew/Cellar/devx-tools/...).
+func isDevxCellarPath(path string) bool {
+	const marker = "/Cellar/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return false
+	}
+	rest := path[idx+len(marker):]
+	return rest == "devx" || strings.HasPrefix(rest, "devx/")
 }
 
 // CanSelfUpdate returns true if the installation method supports self-update

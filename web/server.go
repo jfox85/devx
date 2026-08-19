@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -287,6 +288,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/terminal/prewarm", s.handleTerminalPrewarm)
 	mux.HandleFunc("GET /api/terminal/status", s.handleTerminalStatus)
 	mux.HandleFunc("POST /api/terminal/send-input", s.handleTerminalSendInput)
+	mux.HandleFunc("POST /api/terminal/activity-receipt", s.handleTerminalActivityReceipt)
+	mux.HandleFunc("POST /api/sessions/activity", s.handleSessionActivity)
 	// Remote show — uploads a file and broadcasts to all SSE clients.
 	mux.HandleFunc("POST /api/show", s.handleShow)
 	// Static SPA served from embedded FS (registered in embed.go)
@@ -317,9 +320,14 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		s.ttyd.clientConnected(sessionName)
-		defer s.ttyd.clientDisconnected(sessionName)
-		proxyWebSocket(w, r, port, r.URL.Path)
+		attempt := r.URL.Query().Get("devx_attempt")
+		if !validTerminalAttempt(attempt) {
+			attempt = ""
+		}
+		proxyWebSocket(w, r, port, r.URL.Path, func() func() {
+			s.ttyd.clientConnected(sessionName, attempt)
+			return func() { s.ttyd.clientDisconnected(sessionName, attempt) }
+		})
 		return
 	}
 
@@ -328,74 +336,14 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 
 // resolveTerminalSession determines the session name and ttyd port for a /terminal/* request.
 func (s *Server) resolveTerminalSession(r *http.Request) (sessionName string, port int, err error) {
-	// Parse the first path segment, preserving %2F encoding.
-	// Terminal.svelte uses encodeURIComponent(session.name) so slashes become %2F.
-	rawPath := r.URL.RawPath
-	if rawPath == "" {
-		rawPath = r.URL.Path
+	name, port, err := s.terminal.ProxyTarget(r)
+	if err != nil || name == "" {
+		return name, port, err
 	}
-	encodedPart, _, _ := strings.Cut(strings.TrimPrefix(rawPath, "/terminal/"), "/")
-	decoded, _ := url.PathUnescape(encodedPart)
-
-	// 1. Exact lookup: session is already running with this name.
-	if decoded != "" {
-		if p, ok := s.ttyd.portForSession(decoded); ok {
-			if sess, err := s.loadGatepostSession(decoded); err == nil && sess != nil {
-				go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
-			}
-			return decoded, p, nil
-		}
-	}
-
-	// 2. Prefix-match against active sessions — handles asset requests from ttyd's HTML
-	//    where slashes are unencoded (e.g. /terminal/claude/session-name/js/app.js).
-	//    Check this BEFORE starting, to avoid a 5-second waitForPort timeout on every asset.
-	decodedPath := strings.TrimPrefix(r.URL.Path, "/terminal/")
-	if name, p, ok := s.ttyd.findSessionByPathPrefix(decodedPath); ok {
-		if sess, err := s.loadGatepostSession(name); err == nil && sess != nil {
-			go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
-		}
-		return name, p, nil
-	}
-
-	// 3. Start a new ttyd instance — only reached on the initial request.
-	if decoded == "" {
-		return "", 0, nil
-	}
-	// Validate that decoded is a known devx session before starting ttyd.
-	// This prevents authenticated users from attaching to arbitrary tmux sessions
-	// that were not created by devx (e.g. other users' sessions on a shared host).
-	if !session.IsValidSessionName(decoded) {
-		return "", 0, nil // treat as missing → 404
-	}
-	store, err := session.LoadSessions()
-	if err != nil {
-		return "", 0, fmt.Errorf("could not load session store: %w", err)
-	}
-	if store == nil || store.Sessions == nil {
-		return "", 0, nil // no sessions exist → 404
-	}
-	sess, ok := store.Sessions[decoded]
-	if !ok {
-		return "", 0, nil // not a devx-managed session → 404
-	}
-	// Before starting ttyd, ensure the target-owned tmux session is alive. If the
-	// machine was rebooted the session will be in metadata but not in tmux; this
-	// restores the target-appropriate tmux layout.
-	if err := target.EnsureTmuxSession(decoded, sess); err != nil {
-		// Log to a file since the TUI captures stderr.
-		logWebError("EnsureTmuxSession(%q, %q): %v", decoded, sess.Path, err)
-		return "", 0, fmt.Errorf("failed to restore tmux session %q: %w", decoded, err)
-	}
-	if sess.Target.Gatepost.Enabled {
-		// Re-provision secrets if proxy was restarted and lost them.
+	if sess, loadErr := s.loadGatepostSession(name); loadErr == nil && sess != nil {
 		go target.ReprovisionGatepostSecrets(sess.Target.Gatepost, s.gatepostCfg)
 	}
-	p, startErr := s.ttyd.startForSession(decoded)
-	if startErr != nil {
-		return "", 0, fmt.Errorf("failed to start terminal: %s", startErr)
-	}
-	return decoded, p, nil
+	return name, port, nil
 }
 
 // loadGatepostSession loads a session by name and returns it only if it's a
@@ -439,6 +387,80 @@ func (s *Server) handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func validTerminalAttempt(attempt string) bool {
+	if len(attempt) < 16 || len(attempt) > 128 {
+		return false
+	}
+	for _, r := range attempt {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleTerminalActivityReceipt(w http.ResponseWriter, r *http.Request) {
+	if !terminalWriteGuard(w, r, 8<<10) {
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Attempt string `json:"attempt"`
+	}
+	if !handleDecodeJSON(w, r, &req) {
+		return
+	}
+	if !validTerminalAttempt(req.Attempt) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal frame is not active"})
+		return
+	}
+	receipt, ok := s.ttyd.issueActivityReceipt(req.Session, req.Attempt, time.Now())
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal frame is not active"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"receipt": receipt})
+}
+
+func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
+	if !terminalWriteGuard(w, r, 8<<10) {
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Receipt string `json:"receipt"`
+	}
+	if !handleDecodeJSON(w, r, &req) {
+		return
+	}
+	now := time.Now()
+	issued, ok := s.ttyd.reserveActivityReceipt(req.Session, req.Receipt, now)
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "terminal activity receipt is invalid or expired"})
+		return
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		s.ttyd.restoreActivityReceipt(req.Receipt, issued, time.Now())
+		logWebError("load sessions for activity: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load sessions"})
+		return
+	}
+	if _, err := store.MarkActive(req.Session, time.Now()); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		s.ttyd.restoreActivityReceipt(req.Receipt, issued, time.Now())
+		logWebError("mark session %q active: %v", req.Session, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record activity"})
+		return
+	}
+	invalidateSessionListCache()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleTerminalSendInput(w http.ResponseWriter, r *http.Request) {

@@ -343,6 +343,66 @@ editor: code
 	}
 }
 
+func TestResolveProjectTarget(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Project A: config.yaml sets target: docker
+	projectA := filepath.Join(tmpDir, "a")
+	if err := os.MkdirAll(filepath.Join(projectA, ".devx"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectA, ".devx", "config.yaml"), []byte("target: docker\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Project B: config.yaml without a target
+	projectB := filepath.Join(tmpDir, "b")
+	if err := os.MkdirAll(filepath.Join(projectB, ".devx"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectB, ".devx", "config.yaml"), []byte("basedomain: x\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Project C: no .devx/config.yaml at all
+	projectC := filepath.Join(tmpDir, "c")
+	if err := os.MkdirAll(projectC, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Project D: malformed config.yaml — GetProjectConfig errors, helper should
+	// swallow it and fall back to the global default.
+	projectD := filepath.Join(tmpDir, "d")
+	if err := os.MkdirAll(filepath.Join(projectD, ".devx"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectD, ".devx", "config.yaml"), []byte("target: [unclosed\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		projectPath  string
+		globalTarget string
+		want         string
+	}{
+		{"project target wins over global", projectA, "gatepost", "docker"},
+		{"no project target falls back to global", projectB, "gatepost", "gatepost"},
+		{"no project config falls back to global", projectC, "gatepost", "gatepost"},
+		{"malformed project config falls back to global", projectD, "gatepost", "gatepost"},
+		{"empty global falls back to host", projectB, "", "host"},
+		{"empty project path uses global", "", "gatepost", "gatepost"},
+		{"empty project path and global uses host", "", "", "host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveProjectTarget(tt.projectPath, tt.globalTarget); got != tt.want {
+				t.Errorf("ResolveProjectTarget(%q, %q) = %q, want %q", tt.projectPath, tt.globalTarget, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectStruct(t *testing.T) {
 	// Test JSON marshaling/unmarshaling
 	project := Project{

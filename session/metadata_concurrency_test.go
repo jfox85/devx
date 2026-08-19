@@ -82,6 +82,38 @@ func TestUpdateSessionNoLostUpdate(t *testing.T) {
 	}
 }
 
+func TestPinnedStateSurvivesUnrelatedStaleStoreUpdate(t *testing.T) {
+	setupTempHome(t)
+	seed, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.AddSession("s1", "branch", "/path", nil); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinWriter, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pinWriter.SetPinned("s1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.UpdateSession("s1", func(sess *Session) { sess.DisplayName = "renamed" }); err != nil {
+		t.Fatal(err)
+	}
+	final, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !final.Sessions["s1"].Pinned || final.Sessions["s1"].DisplayName != "renamed" {
+		t.Fatalf("concurrent fields were lost: %+v", final.Sessions["s1"])
+	}
+}
+
 // TestConcurrentUpdatesAllSurvive hammers UpdateSession from many goroutines,
 // each setting a distinct route on the same session. Under the file lock +
 // re-read pattern, every write must survive.

@@ -72,11 +72,84 @@ exit 0
 	}
 }
 
+func TestAttemptlessWebsocketStillCountsAsActiveConnection(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("legacy", testSleepCommand(t, time.Second)...); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("legacy") })
+	m.clientConnected("legacy", "")
+	if got := m.sessions["legacy"].conns; got != 1 {
+		t.Fatalf("connections = %d, want 1", got)
+	}
+	m.clientDisconnected("legacy", "")
+	if got := m.sessions["legacy"].conns; got != 0 {
+		t.Fatalf("connections after disconnect = %d, want 0", got)
+	}
+}
+
+func TestPortForSessionCancelsPendingIdleStopDuringReconnect(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("reconnect", testSleepCommand(t, time.Second)...); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("reconnect") })
+	m.clientConnected("reconnect", "attempt-reconnect-1234")
+	m.clientDisconnected("reconnect", "attempt-reconnect-1234")
+	oldTimer := m.sessions["reconnect"].timer
+	if oldTimer == nil {
+		t.Fatal("expected pending idle timer")
+	}
+	if _, ok := m.portForSession("reconnect"); !ok {
+		t.Fatal("expected running ttyd")
+	}
+	newTimer := m.sessions["reconnect"].timer
+	if newTimer == nil || newTimer == oldTimer {
+		t.Fatal("reconnect lookup did not replace idle timer with handshake lease")
+	}
+}
+
+func TestStaleStopGenerationCannotKillRenewedLease(t *testing.T) {
+	m := newTtydManager()
+	if _, err := m.startForSession("generation", testSleepCommand(t, time.Second)...); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("generation") })
+	inst := m.sessions["generation"]
+	m.scheduleStopLocked("generation", inst, time.Hour)
+	staleGeneration := inst.stopGeneration
+	m.scheduleStopLocked("generation", inst, time.Hour)
+	m.stopSessionGeneration("generation", inst, staleGeneration)
+	if _, ok := m.sessions["generation"]; !ok {
+		t.Fatal("stale stop callback killed renewed ttyd lease")
+	}
+}
+
+func TestStartForSessionInvalidatesQueuedStop(t *testing.T) {
+	m := newTtydManager()
+	command := testSleepCommand(t, time.Second)
+	if _, err := m.startForSession("reuse", command...); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.stopSession("reuse") })
+	inst := m.sessions["reuse"]
+	m.scheduleStopLocked("reuse", inst, time.Hour)
+	staleGeneration := inst.stopGeneration
+	if _, err := m.startForSession("reuse", command...); err != nil {
+		t.Fatal(err)
+	}
+	m.stopSessionGeneration("reuse", inst, staleGeneration)
+	if _, ok := m.sessions["reuse"]; !ok {
+		t.Fatal("queued stop killed reused ttyd instance")
+	}
+}
+
 func TestTtydManagerStartStop(t *testing.T) {
 	m := newTtydManager()
 
 	// Use a stub command that stays alive briefly instead of real ttyd
-	port, err := m.startForSession("test-session", "sleep", "0.1")
+	command := testSleepCommand(t, 100*time.Millisecond)
+	port, err := m.startForSession("test-session", command...)
 	if err != nil {
 		t.Fatalf("startForSession returned error: %v", err)
 	}
@@ -85,7 +158,7 @@ func TestTtydManagerStartStop(t *testing.T) {
 	}
 
 	// Should return same port on second call (already running)
-	port2, err := m.startForSession("test-session", "sleep", "0.1")
+	port2, err := m.startForSession("test-session", command...)
 	if err != nil {
 		t.Fatalf("second startForSession returned error: %v", err)
 	}

@@ -2,6 +2,7 @@
   import { createEventDispatcher, onMount, tick } from 'svelte'
   import { sendInput } from '../../api.js'
   import { getComposerDraft, setComposerDraft } from '../stores/sessionUiState.js'
+  import { isDesktop } from '../desktopBridge.js'
 
   export let sessionName
   // 'overlay' — floating panel summoned on demand (desktop, Cmd/Ctrl+K)
@@ -34,6 +35,24 @@
   }
 
   $: if (sessionName) setComposerDraft(sessionName, text)
+
+  // Insert text at the textarea caret (or append). Used to drop an uploaded
+  // image path into the composer when an image is pasted/dropped while the
+  // overlay is open, instead of sending it to the terminal pane.
+  export function insertText(insert) {
+    const el = textareaEl
+    const start = el ? el.selectionStart : text.length
+    const end = el ? el.selectionEnd : text.length
+    text = text.slice(0, start) + insert + text.slice(end)
+    tick().then(() => {
+      autoGrow()
+      if (el) {
+        const caret = start + insert.length
+        el.focus()
+        el.setSelectionRange(caret, caret)
+      }
+    })
+  }
 
   function autoGrow() {
     if (!textareaEl) return
@@ -90,6 +109,16 @@
     if (files.length) {
       e.preventDefault()
       dispatch('imagepaste', { files })
+      return
+    }
+    // WKWebView (desktop shell) omits clipboard images from the DOM paste event,
+    // so when the composer is focused and there are no file items but also no
+    // text, ask the parent to pull the image from the native clipboard. Guard on
+    // empty text/plain so a normal text paste isn't intercepted.
+    const text = e.clipboardData?.getData('text/plain') || ''
+    if (isDesktop() && !text) {
+      e.preventDefault()
+      dispatch('desktopclipboardimage')
     }
   }
 </script>

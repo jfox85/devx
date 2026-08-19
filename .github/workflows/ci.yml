@@ -19,6 +19,24 @@ jobs:
       with:
         go-version: ${{ env.GO_VERSION }}
         cache: true
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: web/app/package-lock.json
+    - name: Check frontend build assets
+      run: |
+        cd web/app
+        npm ci
+        npm run build
+        cd ../..
+        git diff --exit-code web/dist
+        untracked=$(git ls-files --others web/dist)
+        if [ -n "$untracked" ]; then
+          echo "Untracked generated web/dist files:"
+          echo "$untracked"
+          exit 1
+        fi
     - name: Check formatting
       run: |
         unformatted=$(gofmt -l .)
@@ -74,10 +92,45 @@ jobs:
         flags: unittests
         fail_ci_if_error: false
 
+  web:
+    name: Web tests and build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: web/app/package-lock.json
+    - name: Install web dependencies
+      working-directory: web/app
+      run: npm ci
+    - name: Run web unit tests
+      working-directory: web/app
+      run: npm test
+    - name: Install Playwright Chromium
+      working-directory: web/app
+      run: npx playwright install --with-deps chromium
+    - name: Run web interaction tests
+      working-directory: web/app
+      run: npm run test:ui
+    - name: Build embedded web app
+      working-directory: web/app
+      run: npm run build
+    - name: Verify committed embedded assets are current
+      run: |
+        git diff --exit-code -- web/dist
+        untracked=$(git ls-files --others web/dist)
+        test -z "$untracked" || { echo "$untracked"; exit 1; }
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, web]
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-go@v5

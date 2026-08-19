@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/session"
+	"github.com/jfox85/devx/target"
 )
 
 const (
@@ -92,7 +93,7 @@ type terminalService struct {
 	mu         sync.Mutex
 	ttyd       *ttydManager
 	loadStore  func() (*session.SessionStore, error)
-	ensureTmux func(name, path string) error
+	ensureTmux func(name string, sess *session.Session) error
 	tmuxInput  func(bufferName, target, text string, submit bool) error
 }
 
@@ -100,7 +101,7 @@ func newTerminalService(ttyd *ttydManager) *terminalService {
 	return &terminalService{
 		ttyd:       ttyd,
 		loadStore:  session.LoadSessions,
-		ensureTmux: session.EnsureTmuxSession,
+		ensureTmux: target.EnsureTmuxSession,
 		tmuxInput:  pasteTmuxBuffer,
 	}
 }
@@ -138,7 +139,7 @@ func (s *terminalService) EnsureReady(sessionName string, reason terminalStartRe
 		return terminalStatus{Session: sessionName, Ready: false, Running: false, State: terminalStateCapped}, nil
 	}
 	if reason != terminalStartPrewarm {
-		if err := s.ensureTmux(sessionName, sess.Path); err != nil {
+		if err := s.ensureTmux(sessionName, sess); err != nil {
 			return terminalStatus{}, terminalHTTPError{status: http.StatusInternalServerError, message: fmt.Sprintf("failed to restore tmux session %q", sessionName), err: err}
 		}
 	}
@@ -203,7 +204,7 @@ func (s *terminalService) SendInput(sessionName string, input terminalInput) err
 	if input.Mode == "" {
 		input.Mode = "paste-buffer"
 	}
-	if input.Mode != "paste-buffer" {
+	if input.Mode != "paste-buffer" && input.Mode != "literal" {
 		return terminalHTTPError{status: http.StatusBadRequest, message: "unsupported send mode"}
 	}
 	if input.Text == "" {
@@ -213,6 +214,17 @@ func (s *terminalService) SendInput(sessionName string, input terminalInput) err
 		return terminalHTTPError{status: http.StatusRequestEntityTooLarge, message: "text is too large"}
 	}
 	target := exactTmuxSessionTarget(sessionName) + ":"
+	if input.Mode == "literal" {
+		if err := execTmuxRun("send-keys", "-t", target, "-l", "--", input.Text); err != nil {
+			return terminalHTTPError{status: http.StatusInternalServerError, message: "failed to send input", err: err}
+		}
+		if input.Submit {
+			if err := execTmuxRun("send-keys", "-t", target, "Enter"); err != nil {
+				return terminalHTTPError{status: http.StatusInternalServerError, message: "failed to submit input", err: err}
+			}
+		}
+		return nil
+	}
 	bufferName, err := randomTmuxBufferName()
 	if err != nil {
 		return terminalHTTPError{status: http.StatusInternalServerError, message: "failed to allocate input buffer", err: err}

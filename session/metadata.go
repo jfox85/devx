@@ -30,6 +30,7 @@ type Session struct {
 	AttentionTime      time.Time         `json:"attention_time,omitempty"`
 	DisplayName        string            `json:"display_name,omitempty"`
 	Color              string            `json:"color,omitempty"`
+	Pinned             bool              `json:"pinned,omitempty"`
 	LastAttached       time.Time         `json:"last_attached,omitempty"`
 	LastArtifactSeenAt time.Time         `json:"last_artifact_seen_at,omitempty"`
 	LastReviewedAt     time.Time         `json:"last_reviewed_at,omitempty"`
@@ -90,6 +91,19 @@ func (s *Session) TargetType() string {
 // IsContainerized returns true if the session runs inside a container.
 func (s *Session) IsContainerized() bool {
 	return s.TargetType() != "host"
+}
+
+// ActivityAt returns the latest intentional session activity. Creation counts
+// until the session has been attached; cosmetic metadata updates do not.
+func (s *Session) ActivityAt() (time.Time, bool) {
+	if s == nil {
+		return time.Time{}, false
+	}
+	activity := s.CreatedAt
+	if s.LastAttached.After(activity) {
+		activity = s.LastAttached
+	}
+	return activity, !activity.IsZero()
 }
 
 var ErrSessionNotFound = errors.New("session not found")
@@ -348,6 +362,31 @@ func (s *SessionStore) UpdateSession(name string, updateFn func(*Session)) error
 	})
 }
 
+// SetPinned updates durable presentation state without treating the change as
+// session activity or changing UpdatedAt.
+func (s *SessionStore) SetPinned(name string, pinned bool) error {
+	err := withSessionsLock(func() error {
+		fresh, err := loadSessionsUnlocked()
+		if err != nil {
+			return err
+		}
+		sess, exists := fresh.Sessions[name]
+		if !exists {
+			return fmt.Errorf("%w: %s", ErrSessionNotFound, name)
+		}
+		sess.Pinned = pinned
+		if err := fresh.writeStoreAtomic(); err != nil {
+			return err
+		}
+		s.adoptFrom(fresh)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("set pinned state for session %q: %w", name, err)
+	}
+	return nil
+}
+
 // MarkReviewed records an explicit stale-review/snooze marker without treating
 // the review as real activity or changing UpdatedAt.
 func MarkReviewed(name string, at time.Time) error {
@@ -590,58 +629,77 @@ func GetCurrentSessionName() string {
 func (s *SessionStore) AssignSlot(name string) (int, error) {
 	var assigned int
 	err := s.Mutate(func(fresh *SessionStore) error {
-		if _, exists := fresh.Sessions[name]; !exists {
-			return fmt.Errorf("session '%s' not found", name)
-		}
+		var err error
+		assigned, err = fresh.assignSlot(name)
+		return err
+	})
+	return assigned, err
+}
 
-		// Check if session already has a slot
-		if slot := fresh.GetSlotForSession(name); slot != 0 {
-			assigned = slot
-			return nil
+// MarkActive atomically records an intentional open and ensures the session has
+// an MRU number slot. All entry points use this shared activation policy.
+func (s *SessionStore) MarkActive(name string, at time.Time) (int, error) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	var assigned int
+	err := s.Mutate(func(fresh *SessionStore) error {
+		sess, exists := fresh.Sessions[name]
+		if !exists {
+			return fmt.Errorf("%w: %s", ErrSessionNotFound, name)
 		}
-
-		// Find lowest available slot (1-9)
-		for i := 1; i <= 9; i++ {
-			if _, taken := fresh.NumberedSlots[i]; !taken {
-				fresh.NumberedSlots[i] = name
-				assigned = i
-				return nil
-			}
+		if at.After(sess.LastAttached) {
+			sess.LastAttached = at
 		}
-
-		// All slots full — evict the session with the oldest LastAttached.
-		// Iterate slots in ascending order for deterministic tie-breaking.
-		slots := make([]int, 0, len(fresh.NumberedSlots))
-		for slot := range fresh.NumberedSlots {
-			slots = append(slots, slot)
+		if at.After(sess.UpdatedAt) {
+			sess.UpdatedAt = at
 		}
-		sort.Ints(slots)
-
-		oldestSlot := 0
-		var oldestTime time.Time
-		for _, slot := range slots {
-			sessName := fresh.NumberedSlots[slot]
-			sess, exists := fresh.Sessions[sessName]
-			if !exists {
-				// Stale slot, use it immediately
-				fresh.NumberedSlots[slot] = name
-				assigned = slot
-				return nil
-			}
-			if oldestSlot == 0 || sess.LastAttached.Before(oldestTime) {
-				oldestSlot = slot
-				oldestTime = sess.LastAttached
-			}
-		}
-
-		fresh.NumberedSlots[oldestSlot] = name
-		assigned = oldestSlot
-		return nil
+		var err error
+		assigned, err = fresh.assignSlot(name)
+		return err
 	})
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("mark session %q active: %w", name, err)
 	}
 	return assigned, nil
+}
+
+// assignSlot mutates an already lock-owned store.
+func (s *SessionStore) assignSlot(name string) (int, error) {
+	if _, exists := s.Sessions[name]; !exists {
+		return 0, fmt.Errorf("session '%s' not found", name)
+	}
+	if slot := s.GetSlotForSession(name); slot != 0 {
+		return slot, nil
+	}
+	for i := 1; i <= 9; i++ {
+		if _, taken := s.NumberedSlots[i]; !taken {
+			s.NumberedSlots[i] = name
+			return i, nil
+		}
+	}
+
+	slots := make([]int, 0, len(s.NumberedSlots))
+	for slot := range s.NumberedSlots {
+		slots = append(slots, slot)
+	}
+	sort.Ints(slots)
+	oldestSlot := 0
+	var oldestTime time.Time
+	for _, slot := range slots {
+		sessName := s.NumberedSlots[slot]
+		sess, exists := s.Sessions[sessName]
+		if !exists {
+			s.NumberedSlots[slot] = name
+			return slot, nil
+		}
+		if oldestSlot == 0 || sess.LastAttached.Before(oldestTime) {
+			oldestSlot = slot
+			oldestTime = sess.LastAttached
+		}
+	}
+	s.NumberedSlots[oldestSlot] = name
+	return oldestSlot, nil
 }
 
 // GetSlotForSession returns the slot number for a session, or 0 if unassigned.
