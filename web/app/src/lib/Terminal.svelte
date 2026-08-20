@@ -6,6 +6,8 @@
   import ImageToast from './ImageToast.svelte'
   import ArtifactPane from './artifacts/ArtifactPane.svelte'
   import MobileActionsMenu from './terminal/MobileActionsMenu.svelte'
+  import SessionTopbar from './terminal/SessionTopbar.svelte'
+  import SessionStatusPanel from './terminal/SessionStatusPanel.svelte'
   import PaneViewerModal from './terminal/PaneViewerModal.svelte'
   import ArtifactSearchOverlay from './terminal/ArtifactSearchOverlay.svelte'
   import PromptComposer from './composer/PromptComposer.svelte'
@@ -37,6 +39,8 @@
   let paneViewerOpen = false
   let paneViewerURL = ''
   let actionsMenuOpen = false
+  let moreMenuOpen = false
+  let statusPanelOpen = false
   let modalStack = []
   let suppressNextPopState = false
   let splitMode = 'vertical' // vertical | horizontal | artifacts | terminal
@@ -131,6 +135,8 @@
     paneViewerOpen = false
     paneViewerURL = ''
     actionsMenuOpen = false
+    moreMenuOpen = false
+    statusPanelOpen = false
     modalStack = []
     artifactSearchOpen = false
     artifactQuery = ''
@@ -1114,8 +1120,8 @@
   }
 
   function handleDocumentClick(e) {
-    if (!actionsMenuOpen) return
-    if (!e.target?.closest?.('[data-actions-menu]')) actionsMenuOpen = false
+    if (actionsMenuOpen && !e.target?.closest?.('[data-actions-menu]')) actionsMenuOpen = false
+    if (moreMenuOpen && !e.target?.closest?.('[data-more-menu]')) moreMenuOpen = false
   }
 
   onMount(() => {
@@ -1206,11 +1212,19 @@
     </div>
   {/if}
 
-  <!-- Header: back + window tabs (or session name) + attach button -->
+  <!-- Session header: crumbs + title + status pill + facts (desktop) + Status toggle -->
+  <SessionTopbar
+    {session}
+    statusOpen={statusPanelOpen}
+    onToggleStatus={() => statusPanelOpen = !statusPanelOpen}
+  />
+
+  <!-- Window bar: tmux window tabs + labeled workspace actions -->
   <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] shrink-0 h-9">
+    <!-- Mobile back button; desktop keeps the persistent sidebar. -->
     <button
       on:click={onBack}
-      class="px-3 text-gray-400 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
+      class="lg:hidden px-3 text-gray-400 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
       aria-label="Back to session list"
       title="back to session list"
     >←</button>
@@ -1243,45 +1257,43 @@
       <button
         on:click={openPaneViewer}
         title="open current terminal output in fullscreen"
-        class="px-3 text-gray-500 hover:text-cyan-300 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center justify-center transition-colors min-w-[58px]"
-      >[view]</button>
-
-      <!-- Artifact actions -->
-      <button
-        on:click={openPasteArtifact}
-        title="create/paste a text artifact"
-        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-      >[new artifact]</button>
-
-      <button
-        on:click={() => openArtifactSearch('insert')}
-        title="insert an artifact path reference into the terminal"
-        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-      >[insert ref]</button>
+        class="px-3 text-cyan-400 hover:text-cyan-200 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center justify-center transition-colors"
+      >Output</button>
       <button
         on:click={toggleArtifacts}
         title="open/close artifacts panel (Ctrl+Shift+A)"
-        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-      >{artifactsIsVisible ? '[hide artifacts]' : '[artifacts]'}</button>
+        class="px-3 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors
+          {artifactsIsVisible ? 'text-cyan-300 bg-cyan-950/30' : 'text-gray-500 hover:text-cyan-300'}"
+      >Artifacts</button>
       <button
         on:click={cycleSplitMode}
         title="cycle artifact split layout (Ctrl+Shift+O)"
-        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-      >[split: {splitMode}]</button>
-
-      <!-- Compose overlay (Cmd/Ctrl+K) -->
+        class="px-3 text-gray-500 hover:text-cyan-300 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >Split: {splitMode}</button>
       <button
         on:click={toggleComposer}
         title="compose a prompt outside the terminal (⌘/Ctrl+K)"
-        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-      >[compose]</button>
+        class="px-3 text-gray-500 hover:text-cyan-300 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
+      >Compose</button>
 
-      <!-- Attach image button -->
-      <button
-        on:click={() => fileInputEl?.click()}
-        title="attach image"
-        class="px-3 text-gray-600 hover:text-cyan-400 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors"
-      >[img]</button>
+      <!-- More: lower-frequency actions behind one labeled menu -->
+      <div class="relative flex items-stretch" data-more-menu>
+        <button
+          on:click={() => moreMenuOpen = !moreMenuOpen}
+          aria-expanded={moreMenuOpen}
+          aria-haspopup="menu"
+          title="more workspace actions"
+          class="px-3 text-xs font-mono shrink-0 border-l border-[#1e2d4a] flex items-center transition-colors
+            {moreMenuOpen ? 'text-cyan-300 bg-cyan-950/30' : 'text-gray-500 hover:text-cyan-300'}"
+        >More</button>
+        {#if moreMenuOpen}
+          <div class="absolute right-0 top-9 z-[70] w-60 bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden" role="menu">
+            <button class="w-full text-left px-4 py-2.5 text-xs font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={() => { moreMenuOpen = false; openPasteArtifact() }}>New artifact</button>
+            <button class="w-full text-left px-4 py-2.5 text-xs font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={() => { moreMenuOpen = false; openArtifactSearch('insert') }}>Insert artifact reference</button>
+            <button class="w-full text-left px-4 py-2.5 text-xs font-mono text-gray-200 hover:bg-cyan-950/30" role="menuitem" on:click={() => { moreMenuOpen = false; fileInputEl?.click() }}>Attach image</button>
+          </div>
+        {/if}
+      </div>
     </div>
 
     <MobileActionsMenu
@@ -1295,6 +1307,7 @@
       onInsertArtifact={openArtifactSearchFromMenu}
       onToggleArtifacts={toggleArtifactsFromMenu}
       onCycleSplit={cycleSplitModeFromMenu}
+      onStatus={() => { actionsMenuOpen = false; statusPanelOpen = true }}
     />
     <input
       bind:this={fileInputEl}
@@ -1360,6 +1373,10 @@
 
   {#if paneViewerOpen}
     <PaneViewerModal {session} url={paneViewerURL} onClose={() => closePaneViewer()} />
+  {/if}
+
+  {#if statusPanelOpen}
+    <SessionStatusPanel {session} onClose={() => statusPanelOpen = false} />
   {/if}
 
   <!-- Desktop: transient composer overlay (Cmd/Ctrl+K) -->
