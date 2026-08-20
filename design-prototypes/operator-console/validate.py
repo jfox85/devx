@@ -227,8 +227,18 @@ def run():
             assert_shell(page, width, height)
             assert page.locator(".brand").text_content() == "devx"
             assert_fleet_contract(page)
-            row_height = page.locator(".session").first.bounding_box()["height"]
-            assert row_height == (44 if width <= 600 else 32), (width, row_height)
+            # Recent/pinned rows stack identity above metadata like production; Projects rows stay one-line.
+            if width < 1024:
+                page.locator("#open-nav").click()
+            stacked_height = page.locator(".session.stacked").first.bounding_box()["height"]
+            assert stacked_height == (64 if width <= 600 else 42), (width, stacked_height)
+            page.locator("#view-projects").click()
+            flat_height = page.locator(".session:not(.stacked)").first.bounding_box()["height"]
+            assert flat_height == (44 if width <= 600 else 32), (width, flat_height)
+            page.locator("#view-recent").click()
+            page.evaluate("localStorage.removeItem('devx_session_list_view_v1')")
+            if width < 1024:
+                page.keyboard.press("Escape")
             if width >= 1024:
                 for label in ["Output", "Artifacts", "Split: terminal", "Compose", "More"]:
                     expect(page.get_by_role("button", name=label, exact=True)).to_be_visible()
@@ -249,9 +259,16 @@ def run():
 
         # Desktop: repeated ordered fleet navigation, truthfulness, and Output popup/focus/scroll.
         page, errors = new_page(browser, 1440, 1000)
-        assert page.locator(".session").first.bounding_box()["height"] == 32
+        assert page.locator(".session.stacked").first.bounding_box()["height"] == 42
         visible_rows = page.locator(".session").evaluate_all("els => els.filter(el => { const r=el.getBoundingClientRect(); return r.bottom>0 && r.top<innerHeight }).length")
-        assert visible_rows >= 18, visible_rows
+        assert visible_rows >= 16, visible_rows
+        # Projects view keeps the denser one-line rows.
+        page.locator("#view-projects").click()
+        assert page.locator(".session:not(.stacked)").first.bounding_box()["height"] == 32
+        flat_visible = page.locator(".session").evaluate_all("els => els.filter(el => { const r=el.getBoundingClientRect(); return r.bottom>0 && r.top<innerHeight }).length")
+        assert flat_visible >= 18, flat_visible
+        page.locator("#view-recent").click()
+        page.evaluate("localStorage.removeItem('devx_session_list_view_v1')")
         assert_projects_view(page)
         assert_pinning(page)
         search = page.locator("#session-search")
