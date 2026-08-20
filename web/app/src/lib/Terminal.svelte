@@ -6,6 +6,7 @@
   import ImageToast from './ImageToast.svelte'
   import ArtifactPane from './artifacts/ArtifactPane.svelte'
   import MobileActionsMenu from './terminal/MobileActionsMenu.svelte'
+  import MobileBottomNav from './terminal/MobileBottomNav.svelte'
   import SessionTopbar from './terminal/SessionTopbar.svelte'
   import SessionStatusPanel from './terminal/SessionStatusPanel.svelte'
   import PaneViewerModal from './terminal/PaneViewerModal.svelte'
@@ -1219,16 +1220,9 @@
     onToggleStatus={() => statusPanelOpen = !statusPanelOpen}
   />
 
-  <!-- Window bar: tmux window tabs + labeled workspace actions -->
+  <!-- Window bar: tmux window tabs + labeled workspace actions.
+       Mobile navigation lives in the bottom nav, so no back button here. -->
   <div class="flex items-stretch bg-[#0a0e1a] border-b border-[#1e2d4a] shrink-0 h-9">
-    <!-- Mobile back button; desktop keeps the persistent sidebar. -->
-    <button
-      on:click={onBack}
-      class="lg:hidden px-3 text-gray-400 hover:text-cyan-400 text-xs font-mono shrink-0 border-r border-[#1e2d4a] flex items-center transition-colors"
-      aria-label="Back to session list"
-      title="back to session list"
-    >←</button>
-
     {#if windows.length > 0}
       <div role="tablist" aria-label="tmux windows" class="flex items-center gap-1 px-2 overflow-x-auto flex-1 min-w-0">
         {#each windows as win}
@@ -1364,7 +1358,8 @@
   </div>
 
   {#if artifactsIsVisible && artifactFullScreen}
-    <div class="fixed inset-0 z-[1000] bg-[#0b1020] border border-[#1e2d4a] shadow-2xl">
+    <!-- On mobile the overlay stops above the bottom nav so tabs stay reachable. -->
+    <div class="fixed inset-x-0 top-0 bottom-[calc(3rem+env(safe-area-inset-bottom))] lg:inset-0 z-[1000] bg-[#0b1020] border border-[#1e2d4a] shadow-2xl">
       {#key session.name}
         <ArtifactPane {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={true} onToggleFullScreen={() => closeArtifactFullScreen()} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} />
       {/key}
@@ -1403,6 +1398,16 @@
       {/if}
     </div>
   {/if}
+
+  <!-- Mobile bottom navigation: Sessions · Terminal · Status · Artifacts -->
+  <MobileBottomNav
+    active={statusPanelOpen ? 'status' : (artifactFullScreen ? 'artifacts' : 'terminal')}
+    attention={!!session.attention_flag}
+    onSessions={onBack}
+    onTerminal={() => { statusPanelOpen = false; if (artifactPaneOpen) closeArtifacts() }}
+    onStatus={() => { if (artifactFullScreen) closeArtifacts(); statusPanelOpen = !statusPanelOpen }}
+    onArtifacts={() => { statusPanelOpen = false; if (artifactFullScreen) { closeArtifacts() } else { openViewerPane(); openArtifactFullScreen() } }}
+  />
 
   {#if artifactSearchOpen}
     <ArtifactSearchOverlay
