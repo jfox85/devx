@@ -13,6 +13,7 @@
   export let onDeleteSession = null    // called when the currently-active session is deleted
   export let refreshTrigger = 0        // bump to force an immediate background reload
   export let flashSession = null       // session name to momentarily highlight
+  export let onSessionsLoaded = null   // called with the fresh session list after each load
 
   let sessions = []
   let staleSummary = null
@@ -119,6 +120,7 @@
       const data = await listSessionsWithSummary()
       if (requestID !== loadRequestID) return
       sessions = data.sessions || []
+      onSessionsLoaded?.(sessions)
       staleSummary = data.stale_summary || null
       if (!showStaleReview) staleReviewSummary = null
     }

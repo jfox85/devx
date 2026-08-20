@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/Terminal.svelte -->
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, sendInput, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus, recordSessionActivity } from '../api.js'
+  import { getActivePane, listWindows, switchWindow as apiSwitchWindow, sendKeys as apiSendKeys, sendLiteral, sendInput, refreshTerminal, uploadImage, listArtifacts, getSettings, clearArtifactFocus, recordSessionActivity, unflagSession } from '../api.js'
   import SoftKeybar from './SoftKeybar.svelte'
   import ImageToast from './ImageToast.svelte'
   import ArtifactPane from './artifacts/ArtifactPane.svelte'
@@ -553,6 +553,12 @@
   function openPaneViewerFromMenu() {
     actionsMenuOpen = false
     openPaneViewer()
+  }
+
+  // Viewing session status acknowledges the attention flag, mirroring how
+  // opening the session from the list clears it in App.svelte.
+  function acknowledgeAttention() {
+    if (session.attention_flag) unflagSession(session.name).catch(() => {})
   }
 
   function openPasteArtifactFromMenu() {
@@ -1216,7 +1222,7 @@
   <SessionTopbar
     {session}
     statusOpen={statusPanelOpen}
-    onToggleStatus={() => statusPanelOpen = !statusPanelOpen}
+    onToggleStatus={() => { statusPanelOpen = !statusPanelOpen; if (statusPanelOpen) acknowledgeAttention() }}
   />
 
   <!-- Window bar: tmux window tabs + labeled workspace actions -->
@@ -1307,7 +1313,7 @@
       onInsertArtifact={openArtifactSearchFromMenu}
       onToggleArtifacts={toggleArtifactsFromMenu}
       onCycleSplit={cycleSplitModeFromMenu}
-      onStatus={() => { actionsMenuOpen = false; statusPanelOpen = true }}
+      onStatus={() => { actionsMenuOpen = false; statusPanelOpen = true; acknowledgeAttention() }}
       attention={!!session.attention_flag}
       unseenArtifacts={session.unseen_artifact_count || 0}
     />
