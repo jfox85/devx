@@ -63,8 +63,7 @@
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-<!-- On mobile the drawer stops above the bottom nav so tabs stay reachable. -->
-<div class="fixed inset-x-0 top-0 bottom-[calc(3rem+env(safe-area-inset-bottom))] lg:inset-0 z-[60] lg:bg-transparent bg-black/50" on:click={onClose}>
+<div class="fixed inset-0 z-[60] lg:bg-transparent bg-black/50" on:click={onClose}>
   <div
     bind:this={panelEl}
     role="dialog"
