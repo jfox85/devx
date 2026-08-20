@@ -53,6 +53,7 @@
   let focusedArtifactTimer
   let composerOpen = false
   let composerComponent = null
+  let dockedComposerComponent = null
   let softKeysOpen = false
   $: terminalIsVisible = !artifactPaneOpen || splitMode !== 'artifacts'
   $: artifactsIsVisible = artifactPaneOpen && splitMode !== 'terminal'
@@ -849,8 +850,8 @@
   }
 
   // Core image upload and path injection logic. Accepts one or more files,
-  // uploads them in parallel, and injects all paths space-separated into the
-  // active tmux pane.
+  // uploads them in parallel, and inserts all paths space-separated via
+  // insertPathText (composer when in use, otherwise the active tmux pane).
   async function processImageFiles(files) {
     if (!files.length || uploading) return
 
@@ -868,18 +869,8 @@
       const results = await Promise.all(valid.map(uploadOneImage))
       const paths = results.map(r => r.path)
       const joined = paths.join(' ') + ' '
-      // When the composer overlay is open, insert the path(s) into the composer
-      // textarea instead of the tmux pane so a paste/drop while composing lands
-      // where the user is typing. Otherwise inject into the active tmux pane
-      // (no Enter — user confirms). sendLiteral preserves spaces in paths.
-      // composerComponent can briefly lag composerOpen during mount, so wait a
-      // tick for the bind before deciding where the paths go.
-      if (composerOpen && !composerComponent) await tick()
-      if (composerOpen && composerComponent) {
-        composerComponent.insertText(joined)
-      } else {
-        await sendLiteral(session.name, joined)
-      }
+      // Route the path(s) to whichever input is in use (composer vs tmux pane).
+      await insertPathText(joined)
       toastError = null
       setToastUpload({
         path: paths.length === 1 ? paths[0] : `${paths.length} images uploaded`,
@@ -1018,16 +1009,38 @@
     await insertArtifactPath(artifact.path)
   }
 
-  async function insertArtifactPath(path) {
-    closeArtifactSearch()
-    await sendLiteral(session.name, path + ' ')
-    focusTerminal()
+  // Insert path text into whichever input is in use: the desktop composer
+  // overlay when open, else the docked mobile composer when visible, else the
+  // active tmux pane (no Enter — user confirms; sendLiteral preserves spaces).
+  // composerComponent can briefly lag composerOpen during mount, so wait a
+  // tick for the bind before deciding where the text goes.
+  // Returns true when the text went to the tmux pane, so callers can decide
+  // whether to focus the terminal (composers focus themselves in insertText).
+  async function insertPathText(text) {
+    if (composerOpen && !composerComponent) await tick()
+    if (composerOpen && composerComponent) {
+      composerComponent.insertText(text)
+      return false
+    }
+    if (dockedComposerComponent?.isVisible()) {
+      dockedComposerComponent.insertText(text)
+      return false
+    }
+    await sendLiteral(session.name, text)
+    return true
   }
 
-  function closeArtifactSearch(goBack = true) {
+  async function insertArtifactPath(path) {
+    closeArtifactSearch(true, { focus: false })
+    const sentToPane = await insertPathText(path + ' ')
+    if (sentToPane) focusTerminal()
+  }
+
+  function closeArtifactSearch(goBack = true, { focus = true } = {}) {
+    const wasOpen = artifactSearchOpen
     artifactSearchOpen = false
-    focusTerminal()
-    if (goBack) popModalHistory('artifact-search')
+    if (focus) focusTerminal()
+    if (goBack && wasOpen) popModalHistory('artifact-search')
   }
 
   function handleComposerSent(event) {
@@ -1372,6 +1385,7 @@
   {#if terminalIsVisible}
     <div class="lg:hidden">
       <PromptComposer
+        bind:this={dockedComposerComponent}
         variant="docked"
         sessionName={session.name}
         keysOpen={softKeysOpen}

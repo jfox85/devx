@@ -39,6 +39,13 @@
   // Insert text at the textarea caret (or append). Used to drop an uploaded
   // image path into the composer when an image is pasted/dropped while the
   // overlay is open, instead of sending it to the terminal pane.
+  // Whether the composer is actually rendered and visible (the docked variant
+  // stays mounted on desktop but is hidden via CSS, so callers deciding where
+  // to route inserted text need a real visibility check, not just a binding).
+  export function isVisible() {
+    return !!textareaEl && textareaEl.offsetParent !== null
+  }
+
   export function insertText(insert) {
     const el = textareaEl
     const start = el ? el.selectionStart : text.length
