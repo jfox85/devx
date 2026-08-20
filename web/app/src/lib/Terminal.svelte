@@ -850,8 +850,8 @@
   }
 
   // Core image upload and path injection logic. Accepts one or more files,
-  // uploads them in parallel, and injects all paths space-separated into the
-  // active tmux pane.
+  // uploads them in parallel, and inserts all paths space-separated via
+  // insertPathText (composer when in use, otherwise the active tmux pane).
   async function processImageFiles(files) {
     if (!files.length || uploading) return
 
@@ -1037,9 +1037,10 @@
   }
 
   function closeArtifactSearch(goBack = true, { focus = true } = {}) {
+    const wasOpen = artifactSearchOpen
     artifactSearchOpen = false
     if (focus) focusTerminal()
-    if (goBack) popModalHistory('artifact-search')
+    if (goBack && wasOpen) popModalHistory('artifact-search')
   }
 
   function handleComposerSent(event) {
