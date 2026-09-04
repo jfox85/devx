@@ -72,6 +72,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create private devx server: %v", err)
 	}
+	// The desktop shell reads only the global ~/.config/devx/config.yaml (never
+	// a project-level config — see UsageOptionsFromGlobalConfig), so a project
+	// repo can never redirect this poller or name an arbitrary file as its
+	// token. A misconfigured Redline URL must not stop the app from starting:
+	// log it and continue with usage disabled.
+	if err := priv.ConfigureUsage(web.UsageOptionsFromGlobalConfig()); err != nil {
+		log.Printf("usage: %v; provider usage disabled", err)
+	}
 	go func() {
 		if err := priv.Serve(); err != nil && err != http.ErrServerClosed {
 			log.Printf("private devx server exited: %v", err)

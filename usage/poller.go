@@ -81,9 +81,31 @@ func (p *Poller) keepStaleFor() time.Duration {
 	return defaultKeepStaleFor
 }
 
-// defaultInterval matches the plan's usage.poll_interval default; Redline's
-// dashboard read is DB-only so this is cheap.
-const defaultInterval = 30 * time.Second
+// DefaultPollInterval matches the plan's usage.poll_interval default;
+// Redline's dashboard read is DB-only so this is cheap. cmd/root.go and
+// web.UsageOptionsFromGlobalConfig build their viper/option defaults from this
+// so there is one source of truth for the interval.
+const DefaultPollInterval = 30 * time.Second
+
+// MinPollInterval is the floor for usage.poll_interval: anything below this
+// (including a misconfigured value that parses to a tiny duration, like a bare
+// number of nanoseconds) is clamped up rather than hammering Redline.
+const MinPollInterval = 5 * time.Second
+
+// effectivePollInterval clamps interval to [MinPollInterval, +inf), and maps
+// a non-positive interval (unset, or a config value that failed to parse) onto
+// DefaultPollInterval. Both Start and the config-parsing layer
+// (web.UsageOptionsFromGlobalConfig) apply this so a bad config value can
+// never reach the poll loop as-is.
+func effectivePollInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return DefaultPollInterval
+	}
+	if interval < MinPollInterval {
+		return MinPollInterval
+	}
+	return interval
+}
 
 // Start polls Redline immediately and then every Interval until ctx is done.
 // It returns as soon as the background loop is running; the returned channel is
@@ -94,10 +116,9 @@ const defaultInterval = 30 * time.Second
 // Starting an already-started Poller panics: two loops over one cache is a
 // programming error, not a runtime condition.
 func (p *Poller) Start(ctx context.Context) <-chan struct{} {
-	interval := p.Interval
-	if interval <= 0 {
-		interval = defaultInterval
-	}
+	// Defensive clamp: Start is the last line of defense even when a caller built
+	// a Poller directly (bypassing the config-parsing floor).
+	interval := effectivePollInterval(p.Interval)
 
 	p.mu.Lock()
 	if p.started {

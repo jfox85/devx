@@ -611,6 +611,24 @@ func TestPollerStartClosesDoneWhenTheLoopExits(t *testing.T) {
 	}
 }
 
+func TestPollerStartClampsIntervalBelowMinimumToMinPollInterval(t *testing.T) {
+	if got := effectivePollInterval(1 * time.Millisecond); got != MinPollInterval {
+		t.Errorf("effectivePollInterval(1ms) = %v, want MinPollInterval (%v)", got, MinPollInterval)
+	}
+	if got := effectivePollInterval(MinPollInterval); got != MinPollInterval {
+		t.Errorf("effectivePollInterval(MinPollInterval) = %v, want it unchanged", got)
+	}
+	if got := effectivePollInterval(time.Hour); got != time.Hour {
+		t.Errorf("effectivePollInterval(1h) = %v, want it unchanged", got)
+	}
+	if got := effectivePollInterval(0); got != DefaultPollInterval {
+		t.Errorf("effectivePollInterval(0) = %v, want DefaultPollInterval (%v)", got, DefaultPollInterval)
+	}
+	if got := effectivePollInterval(-1); got != DefaultPollInterval {
+		t.Errorf("effectivePollInterval(-1) = %v, want DefaultPollInterval (%v)", got, DefaultPollInterval)
+	}
+}
+
 func TestPollerStartTwicePanics(t *testing.T) {
 	f := newFakeRedline(t, twoProviderDashboard)
 	p := &Poller{Client: &Client{BaseURL: f.URL}, Interval: time.Hour}

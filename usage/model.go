@@ -79,9 +79,10 @@ type Provider struct {
 	Label    string `json:"label"`
 
 	State ProviderState `json:"state"`
-	// Error is advisory in any state: Redline reports a per-account error
-	// alongside a usable snapshot, so a provider can be ok or stale and still
-	// carry text here. Only ProviderError means there is no snapshot at all.
+	// Error is populated only when State is ProviderError (no usable snapshot).
+	// Redline's per-account error text can contain filesystem paths, so it is
+	// deliberately dropped for the ok/stale cases where a usable snapshot exists
+	// alongside it. Capped at 200 runes.
 	Error      string    `json:"error,omitempty"`
 	Source     string    `json:"source,omitempty"`
 	ObservedAt time.Time `json:"observed_at"`
@@ -187,12 +188,11 @@ func MapDashboard(raw []byte, now time.Time) (Usage, error) {
 		switch {
 		case item.Snapshot == nil:
 			p.State = ProviderError
-			p.Error = firstNonEmpty(item.Error, item.UsageSource.LastError, "no usage snapshot")
+			p.Error = capError(firstNonEmpty(item.Error, item.UsageSource.LastError, "no usage snapshot"))
 		default:
 			if item.SnapshotStale {
 				p.State = ProviderStale
 			}
-			p.Error = item.Error
 			p.ObservedAt = item.Snapshot.ObservedAt
 			p.Source = item.Snapshot.Source
 			p.Windows = mapWindows(item.Snapshot)
@@ -333,6 +333,20 @@ func windowLabel(a redlineAllowance) string {
 		return a.SourceLabel
 	}
 	return a.Key
+}
+
+// maxProviderErrorRunes bounds Provider.Error so a pathological Redline error
+// string cannot bloat the payload; it is diagnostic text, not data.
+const maxProviderErrorRunes = 200
+
+// capError truncates s to maxProviderErrorRunes runes (not bytes, so a
+// multi-byte-heavy error is not corrupted mid-rune).
+func capError(s string) string {
+	runes := []rune(s)
+	if len(runes) <= maxProviderErrorRunes {
+		return s
+	}
+	return string(runes[:maxProviderErrorRunes])
 }
 
 // firstNonEmpty returns the first non-empty string, or "" when there is none.

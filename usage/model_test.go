@@ -166,11 +166,12 @@ func TestMapDashboardProviderState(t *testing.T) {
 		},
 		{
 			// Redline reports a per-account error alongside a usable fresh
-			// snapshot; Error is advisory and must not downgrade the state.
-			name:        "error alongside a fresh snapshot keeps the ok state",
-			item:        `{"id":"a","provider":"claude","error":"refresh failed","snapshot":{"allowances":[{"key":"weekly","scope":"account","role":"weekly"}]},"snapshot_stale":false}`,
+			// snapshot, but that text can carry filesystem paths, so it must
+			// never reach the browser while a snapshot is usable.
+			name:        "error alongside a fresh snapshot is suppressed",
+			item:        `{"id":"a","provider":"claude","error":"refresh failed: /Users/jfox/secret","snapshot":{"allowances":[{"key":"weekly","scope":"account","role":"weekly"}]},"snapshot_stale":false}`,
 			wantState:   ProviderOK,
-			wantError:   "refresh failed",
+			wantError:   "",
 			wantWindows: 1,
 		},
 		{
@@ -198,10 +199,11 @@ func TestMapDashboardProviderState(t *testing.T) {
 			wantError: "probe failed",
 		},
 		{
-			name:        "error alongside a stale snapshot keeps the stale state",
-			item:        `{"id":"a","provider":"claude","error":"refresh failed","snapshot":{"allowances":[{"key":"weekly","scope":"account","role":"weekly"}]},"snapshot_stale":true}`,
+			// Same suppression applies to a stale-but-present snapshot.
+			name:        "error alongside a stale snapshot is suppressed",
+			item:        `{"id":"a","provider":"claude","error":"refresh failed: /Users/jfox/secret","snapshot":{"allowances":[{"key":"weekly","scope":"account","role":"weekly"}]},"snapshot_stale":true}`,
 			wantState:   ProviderStale,
-			wantError:   "refresh failed",
+			wantError:   "",
 			wantWindows: 1,
 		},
 	}
@@ -221,6 +223,20 @@ func TestMapDashboardProviderState(t *testing.T) {
 				t.Errorf("len(Windows) = %d, want %d", len(p.Windows), tc.wantWindows)
 			}
 		})
+	}
+}
+
+func TestMapDashboardCapsProviderErrorAt200Runes(t *testing.T) {
+	longError := strings.Repeat("é", 250) // multi-byte rune so a byte-based cap would corrupt it
+	raw := []byte(`{"providers":[{"id":"a","provider":"claude","error":"` + longError + `"}]}`)
+
+	p := findProvider(t, mustMap(t, raw, time.Now()), "a")
+
+	if got := []rune(p.Error); len(got) != 200 {
+		t.Fatalf("len(Error) = %d runes, want 200", len(got))
+	}
+	if !strings.HasPrefix(p.Error, strings.Repeat("é", 10)) {
+		t.Errorf("Error = %q, want it to start with the original text", p.Error)
 	}
 }
 

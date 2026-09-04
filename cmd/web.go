@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -72,6 +73,11 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	srv, err := web.NewWithBind(token, port, bind, trustedGatepostRuntimeConfig())
 	if err != nil {
 		return err
+	}
+	// A misconfigured Redline URL (non-loopback without allow_remote) must not
+	// stop devx web from starting: log it and serve with usage disabled.
+	if err := srv.ConfigureUsage(web.UsageOptionsFromGlobalConfig()); err != nil {
+		log.Printf("usage: %v; provider usage disabled", err)
 	}
 
 	// Foreground mode: handle SIGTERM/SIGINT for graceful shutdown

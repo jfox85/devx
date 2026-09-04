@@ -121,6 +121,14 @@ func initConfig() {
 	viper.SetDefault("agent_responder.args", []string{"--print", "--no-session", "@{{.PromptFile}}"})
 	viper.SetDefault("agent_responder.timeout", "5m")
 	viper.SetDefault("agent_responder.read_only", true)
+	// Provider usage widget: reads Claude/Codex allowances from a Redline service
+	// on this host. Enabled by default because the no-Redline failure mode is one
+	// dim line in the UI, not an error.
+	viper.SetDefault("usage.enabled", true)
+	viper.SetDefault("usage.poll_interval", "30s")
+	viper.SetDefault("usage.redline.url", "http://127.0.0.1:7436")
+	viper.SetDefault("usage.redline.token_file", "")
+	viper.SetDefault("usage.redline.allow_remote", false)
 
 	// Read primary config (project-level if found, otherwise global)
 	_ = viper.ReadInConfig()

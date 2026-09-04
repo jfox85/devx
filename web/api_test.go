@@ -44,8 +44,12 @@ func TestGetSessionsReturnsJSON(t *testing.T) {
 }
 
 func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
+	srv := newUsageTestServer(t)
+	if err := srv.ConfigureUsage(UsageOptions{Enabled: true, RedlineURL: "http://127.0.0.1:7436"}); err != nil {
+		t.Fatalf("ConfigureUsage: %v", err)
+	}
 	mux := http.NewServeMux()
-	registerAPIRoutes(mux)
+	srv.registerRoutes(mux)
 
 	req := httptest.NewRequest("GET", "/api/settings", nil)
 	w := httptest.NewRecorder()
@@ -60,6 +64,31 @@ func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
 	}
 	if _, ok := resp["artifact_trigger_key"]; !ok {
 		t.Fatalf("artifact_trigger_key missing from response: %#v", resp)
+	}
+	// The SPA skips mounting the usage widget when this is false.
+	if got := resp["usage_enabled"]; got != true {
+		t.Fatalf("usage_enabled = %#v, want true", got)
+	}
+}
+
+func TestGetSettingsReportsUsageDisabledFromServerState(t *testing.T) {
+	srv := newUsageTestServer(t)
+	if err := srv.ConfigureUsage(UsageOptions{Enabled: false}); err != nil {
+		t.Fatalf("ConfigureUsage: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.registerRoutes(mux)
+
+	req := httptest.NewRequest("GET", "/api/settings", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if got := resp["usage_enabled"]; got != false {
+		t.Fatalf("usage_enabled = %#v, want false when ConfigureUsage disabled usage", got)
 	}
 }
 

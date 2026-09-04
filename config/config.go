@@ -23,6 +23,7 @@ type Config struct {
 	WebAutostart           bool                 `mapstructure:"web_autostart"`
 	ArtifactTriggerKey     string               `mapstructure:"artifact_trigger_key"`
 	AgentResponder         AgentResponderConfig `mapstructure:"agent_responder"`
+	Usage                  UsageConfig          `mapstructure:"usage"`
 	Gatepost               struct {
 		Root                     string `mapstructure:"root"`
 		AgentImage               string `mapstructure:"agent_image"`
@@ -40,6 +41,20 @@ type AgentResponderConfig struct {
 	Args     []string `mapstructure:"args"`
 	Timeout  string   `mapstructure:"timeout"`
 	ReadOnly bool     `mapstructure:"read_only"`
+}
+
+// UsageConfig configures the provider usage widget, which reads Claude/Codex
+// allowances from a Redline service on this host.
+type UsageConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	PollInterval string `mapstructure:"poll_interval"`
+	Redline      struct {
+		URL       string `mapstructure:"url"`
+		TokenFile string `mapstructure:"token_file"`
+		// AllowRemote permits a non-loopback Redline URL, which puts the API
+		// token on the network and so must be opted into explicitly.
+		AllowRemote bool `mapstructure:"allow_remote"`
+	} `mapstructure:"redline"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -112,6 +127,11 @@ func SaveConfig(cfg *Config) error {
 	viper.Set("agent_responder.args", cfg.AgentResponder.Args)
 	viper.Set("agent_responder.timeout", cfg.AgentResponder.Timeout)
 	viper.Set("agent_responder.read_only", cfg.AgentResponder.ReadOnly)
+	viper.Set("usage.enabled", cfg.Usage.Enabled)
+	viper.Set("usage.poll_interval", cfg.Usage.PollInterval)
+	viper.Set("usage.redline.url", cfg.Usage.Redline.URL)
+	viper.Set("usage.redline.token_file", cfg.Usage.Redline.TokenFile)
+	viper.Set("usage.redline.allow_remote", cfg.Usage.Redline.AllowRemote)
 	viper.Set("gatepost.root", cfg.Gatepost.Root)
 	viper.Set("gatepost.agent_image", cfg.Gatepost.AgentImage)
 	viper.Set("gatepost.logs_command", cfg.Gatepost.LogsCommand)
