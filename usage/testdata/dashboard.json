@@ -1,0 +1,115 @@
+{
+  "generated_at": "2026-09-04T17:02:11Z",
+  "tasks": [
+    { "id": "task-1", "state": "running" }
+  ],
+  "runs": [
+    { "id": "run-1", "provider": "claude", "tokens": 12345 }
+  ],
+  "health": { "status": "ok", "uptime_seconds": 4821 },
+  "providers": [
+    {
+      "id": "claude-main",
+      "provider": "claude",
+      "paused": false,
+      "snapshot": {
+        "provider": "claude",
+        "observed_at": "2026-09-04T16:31:23Z",
+        "short": { "remaining": 0.56, "resets_at": "2026-09-04T20:50:00Z" },
+        "weekly": { "remaining": 0.15, "resets_at": "2026-09-04T16:59:59Z" },
+        "allowances": [
+          {
+            "key": "session",
+            "source_label": "Session",
+            "scope": "account",
+            "role": "short",
+            "remaining": 0.56,
+            "resets_at": "2026-09-04T20:50:00Z",
+            "period_duration_seconds": 18000,
+            "reset_inferred": false
+          },
+          {
+            "key": "weekly",
+            "source_label": "Weekly",
+            "scope": "account",
+            "role": "weekly",
+            "remaining": 0.15,
+            "resets_at": "2026-09-04T16:59:59Z",
+            "period_duration_seconds": 604800,
+            "reset_inferred": false
+          },
+          {
+            "key": "model:fable:weekly",
+            "source_label": "Fable",
+            "scope": "model",
+            "role": "weekly",
+            "remaining": 0.45,
+            "resets_at": "2026-09-04T16:59:59Z",
+            "period_duration_seconds": 604800,
+            "reset_inferred": false
+          }
+        ],
+        "source": "openusage",
+        "confidence": "high"
+      },
+      "snapshot_stale": false,
+      "error": "",
+      "usage_source": {
+        "active": "openusage",
+        "consecutive_failures": 0,
+        "last_error": ""
+      }
+    },
+    {
+      "id": "codex-main",
+      "provider": "codex",
+      "paused": false,
+      "snapshot": {
+        "provider": "codex",
+        "observed_at": "2026-09-04T16:31:20Z",
+        "weekly": { "remaining": 0, "resets_at": "2026-09-07T03:03:02Z" },
+        "allowances": [
+          {
+            "key": "model:spark:short",
+            "source_label": "Spark",
+            "scope": "model",
+            "role": "short",
+            "remaining": 0.55,
+            "resets_at": "2026-09-04T19:36:00Z",
+            "period_duration_seconds": 18000,
+            "reset_inferred": true
+          },
+          {
+            "key": "model:spark:weekly",
+            "source_label": "Spark Weekly",
+            "scope": "model",
+            "role": "weekly",
+            "remaining": 0.6,
+            "resets_at": "2026-09-07T03:03:02Z",
+            "period_duration_seconds": 604800,
+            "reset_inferred": false
+          },
+          {
+            "key": "weekly",
+            "source_label": "Weekly",
+            "scope": "account",
+            "role": "weekly",
+            "remaining": 0,
+            "resets_at": "2026-09-07T03:03:02Z",
+            "period_duration_seconds": 604800,
+            "reset_inferred": false
+          }
+        ],
+        "source": "native",
+        "confidence": "high"
+      },
+      "snapshot_stale": false,
+      "error": "",
+      "usage_source": {
+        "active": "native",
+        "consecutive_failures": 0,
+        "last_error": ""
+      }
+    }
+  ]
+}
