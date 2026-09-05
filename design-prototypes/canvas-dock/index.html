@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>DevX — Canvas + Dock</title>
+  <style>
+    :root {
+      --bg: #080a0d;
+      --surface: rgba(23, 26, 31, 0.92);
+      --surface-2: #1d2025;
+      --surface-3: #25292f;
+      --line: rgba(255, 255, 255, 0.085);
+      --line-strong: rgba(255, 255, 255, 0.14);
+      --text: #f2f3f5;
+      --muted: #9a9fa8;
+      --faint: #656b75;
+      --blue: #79a8ff;
+      --blue-2: #4d7fdc;
+      --blue-wash: rgba(121, 168, 255, 0.13);
+      --green: #70d6a1;
+      --amber: #e4b66b;
+      --red: #ef7a7a;
+      --purple: #c7a7ff;
+      --dock-width: 292px;
+      --radius: 16px;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 68% -10%, rgba(86, 110, 158, 0.13), transparent 34%),
+        linear-gradient(145deg, #0b0d11 0%, #060709 68%);
+      font-size: 14px;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    svg { display: block; }
+    .icon { width: 16px; height: 16px; flex: 0 0 auto; }
+    .icon.sm { width: 14px; height: 14px; }
+    .icon.lg { width: 19px; height: 19px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+    .app { min-height: 100dvh; position: relative; padding: 14px; }
+    .noise {
+      position: fixed; inset: 0; pointer-events: none; opacity: .12;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.86' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.14'/%3E%3C/svg%3E");
+    }
+
+    .dock {
+      position: fixed; z-index: 30; inset: 14px auto 14px 14px;
+      width: var(--dock-width); display: flex; flex-direction: column;
+      border: 1px solid var(--line); border-radius: 18px;
+      background: rgba(24, 27, 32, .88); backdrop-filter: blur(24px) saturate(125%);
+      box-shadow: 0 24px 80px rgba(0,0,0,.48), inset 0 1px rgba(255,255,255,.035);
+      transition: width .22s ease;
+      overflow: hidden;
+    }
+    body.dock-collapsed { --dock-width: 74px; }
+    body.dock-collapsed .dock-expanded { display: none !important; }
+    body.dock-collapsed .dock-collapsed-only { display: flex; }
+    .dock-collapsed-only { display: none; }
+    .dock-head { height: 58px; display: flex; align-items: center; gap: 11px; padding: 0 14px; flex: 0 0 auto; }
+    .brand-mark {
+      width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+      background: linear-gradient(145deg, #8eb8ff, #4973c4); color: #0b101a; font-weight: 850;
+      box-shadow: 0 5px 15px rgba(78,127,220,.25);
+    }
+    .brand { font-weight: 680; letter-spacing: -.02em; font-size: 15px; }
+    .brand small { display: block; font-weight: 450; font-size: 10px; color: var(--faint); letter-spacing: .03em; margin-top: 1px; }
+    .icon-btn {
+      width: 34px; height: 34px; border: 0; border-radius: 9px; display: grid; place-items: center;
+      background: transparent; color: var(--muted); cursor: pointer;
+    }
+    .icon-btn:hover, .icon-btn:focus-visible { color: var(--text); background: var(--surface-3); outline: none; }
+    .dock-toggle { margin-left: auto; }
+    body.dock-collapsed .dock-head { padding: 0 12px; justify-content: center; }
+    body.dock-collapsed .dock-toggle { margin: 0; }
+
+    .new-session {
+      margin: 4px 12px 10px; min-height: 38px; padding: 0 12px; border: 1px solid var(--line-strong);
+      border-radius: 10px; display: flex; align-items: center; gap: 9px; cursor: pointer;
+      background: linear-gradient(180deg, #2a2e35, #23262c); color: #e4e6e9; font-size: 12px;
+      box-shadow: inset 0 1px rgba(255,255,255,.035);
+    }
+    .new-session:hover { border-color: rgba(121,168,255,.42); background: #2a303a; }
+    .new-session kbd { margin-left: auto; color: var(--faint); font-size: 10px; }
+    .search-wrap { position: relative; margin: 0 12px 9px; }
+    .search-wrap .icon { position: absolute; left: 10px; top: 9px; color: var(--faint); }
+    .search {
+      width: 100%; height: 34px; border: 1px solid transparent; border-radius: 9px; outline: 0;
+      background: rgba(7,9,12,.48); color: var(--text); padding: 0 38px 0 33px; font-size: 12px;
+    }
+    .search::placeholder { color: #6f747c; }
+    .search:focus { border-color: rgba(121,168,255,.36); background: #10141b; }
+    .search-key { position: absolute; right: 9px; top: 8px; color: var(--faint); font-size: 10px; }
+
+    .dock-scroll { flex: 1; min-height: 0; overflow: auto; padding: 3px 8px 16px; scrollbar-width: thin; scrollbar-color: #34383e transparent; }
+    .section-label {
+      display: flex; align-items: center; padding: 12px 8px 6px; color: #70757d;
+      font-weight: 590; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    }
+    .section-label .count { margin-left: auto; color: #595e66; }
+    .project-row {
+      width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 7px;
+      color: #a4a9b1; border: 0; border-radius: 7px; background: transparent; cursor: pointer; text-align: left;
+      font-size: 12px; font-weight: 570;
+    }
+    .project-row:hover { background: rgba(255,255,255,.035); color: var(--text); }
+    .project-row .chevron { margin-left: auto; transition: transform .18s; }
+    .project.closed .project-row .chevron { transform: rotate(-90deg); }
+    .project.closed .sessions { display: none; }
+    .sessions { margin: 2px 0 7px 10px; border-left: 1px solid rgba(255,255,255,.07); padding-left: 6px; }
+    .session-row {
+      width: 100%; min-height: 43px; border: 0; border-radius: 9px; cursor: pointer;
+      color: #a7abb2; background: transparent; padding: 5px 8px; display: grid;
+      grid-template-columns: 8px 1fr auto; column-gap: 8px; align-items: center; text-align: left;
+    }
+    .session-row:hover { background: rgba(255,255,255,.04); color: #e7e9ec; }
+    .session-row.active {
+      background: linear-gradient(90deg, rgba(93,137,218,.2), rgba(70,89,125,.12));
+      box-shadow: inset 0 0 0 1px rgba(121,168,255,.17); color: var(--text);
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #626872; box-shadow: 0 0 0 2px rgba(255,255,255,.025); }
+    .dot.live { background: var(--green); box-shadow: 0 0 9px rgba(112,214,161,.32); }
+    .dot.attention { background: var(--amber); box-shadow: 0 0 9px rgba(228,182,107,.3); }
+    .dot.dirty { background: #8daef0; }
+    .session-copy { min-width: 0; }
+    .session-name { display: block; font-size: 12px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-meta { display: block; font-size: 10px; line-height: 14px; color: #686e77; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-badge { font-size: 9px; color: var(--amber); background: rgba(228,182,107,.1); border-radius: 99px; padding: 2px 5px; }
+    .dock-foot { flex: 0 0 auto; margin: 0 8px 8px; padding: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 9px; }
+    .avatar { width: 27px; height: 27px; border-radius: 8px; display: grid; place-items: center; background: #323741; color: #cad2df; font-size: 10px; }
+    .workspace-copy { min-width: 0; line-height: 1.25; }
+    .workspace-copy strong { display: block; font-size: 11px; font-weight: 570; }
+    .workspace-copy span { color: var(--faint); font-size: 10px; }
+
+    body.dock-collapsed .dock-scroll { padding: 6px 10px; overflow: hidden auto; }
+    .dock-rail { flex-direction: column; gap: 7px; align-items: center; }
+    .rail-project {
+      width: 40px; height: 40px; border: 0; border-radius: 11px; background: transparent; color: #858b94;
+      display: grid; place-items: center; position: relative; cursor: pointer;
+    }
+    .rail-project:hover, .rail-project.active { background: #282d34; color: #dfe7f6; }
+    .rail-project.active { box-shadow: inset 0 0 0 1px rgba(121,168,255,.2); color: var(--blue); }
+    .rail-project .dot { position: absolute; width: 6px; height: 6px; right: 5px; top: 5px; }
+    .rail-sep { width: 28px; height: 1px; background: var(--line); margin: 4px 0; }
+
+    .canvas-shell {
+      position: fixed; inset: 14px 14px 14px calc(var(--dock-width) + 27px);
+      min-width: 0; display: flex; flex-direction: column; gap: 12px; transition: left .22s ease;
+    }
+    .workspace-chrome {
+      min-height: 58px; display: flex; align-items: center; gap: 12px; padding: 8px;
+      background: rgba(20,23,28,.8); border: 1px solid var(--line); border-radius: 16px;
+      backdrop-filter: blur(22px); box-shadow: 0 14px 45px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.025);
+    }
+    .session-identity { display: flex; align-items: center; gap: 10px; padding: 0 8px; min-width: 210px; }
+    .session-symbol { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: var(--blue); background: var(--blue-wash); }
+    .session-title { min-width: 0; }
+    .session-title h1 { font-size: 13px; line-height: 16px; margin: 0; font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-title p { font-size: 10px; line-height: 14px; margin: 0; color: var(--faint); white-space: nowrap; }
+    .window-tabs { display: flex; gap: 4px; padding: 4px; background: rgba(7,9,12,.5); border-radius: 10px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+    .window-tab {
+      height: 32px; padding: 0 12px; border: 0; border-radius: 7px; color: #777d86;
+      background: transparent; white-space: nowrap; font-size: 11px; cursor: pointer;
+    }
+    .window-tab:hover { color: #c8ccd2; }
+    .window-tab.active { color: #edf3ff; background: #292e36; box-shadow: 0 1px 5px rgba(0,0,0,.32), inset 0 1px rgba(255,255,255,.04); }
+    .chrome-actions { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+    .action-btn {
+      min-height: 36px; border: 0; border-radius: 9px; padding: 0 10px; display: inline-flex; align-items: center; gap: 7px;
+      color: #9298a2; background: transparent; cursor: pointer; font-size: 11px; white-space: nowrap;
+    }
+    .action-btn:hover, .action-btn.active { color: #eef2f8; background: var(--surface-3); }
+    .action-btn.active { color: var(--blue); }
+    .action-btn .label-short { display: none; }
+    .divider { width: 1px; height: 24px; background: var(--line); margin: 0 3px; }
+
+    .stage {
+      position: relative; flex: 1; min-height: 0; overflow: hidden; border: 1px solid var(--line);
+      border-radius: 18px; background: #0b0d10; box-shadow: 0 26px 80px rgba(0,0,0,.42), inset 0 1px rgba(255,255,255,.022);
+    }
+    .stage-topline { height: 35px; display: flex; align-items: center; padding: 0 15px; border-bottom: 1px solid rgba(255,255,255,.055); color: #5e646d; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .stage-topline .live-label { display: flex; gap: 6px; align-items: center; color: #7a9588; }
+    .stage-topline .live-label .dot { width: 5px; height: 5px; }
+    .stage-topline .terminal-size { margin-left: auto; }
+    .terminal {
+      position: absolute; inset: 36px 0 0; padding: 23px 28px 118px; overflow: hidden;
+      font: 12px/1.58 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #bcc3cd;
+      background:
+        linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px) 0 0/100% 22px,
+        radial-gradient(circle at 20% 10%, rgba(63,87,127,.055), transparent 35%), #0a0c0f;
+    }
+    .term-line { white-space: pre-wrap; min-height: 19px; }
+    .term-dim { color: #5d646e; }
+    .term-blue { color: #87b5ff; }
+    .term-green { color: #79d8a5; }
+    .term-amber { color: #e5bd79; }
+    .term-purple { color: #c9b2f3; }
+    .term-white { color: #eef1f5; }
+    .prompt { color: #7f8ea7; }
+    .cursor { display: inline-block; width: 7px; height: 15px; background: #a9b7ce; vertical-align: -3px; animation: blink 1.15s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: .2; } }
+
+    .status-card {
+      position: absolute; z-index: 15; right: 16px; top: 16px; width: 304px;
+      background: rgba(34,37,43,.94); border: 1px solid var(--line-strong); border-radius: 15px;
+      box-shadow: 0 22px 55px rgba(0,0,0,.55), inset 0 1px rgba(255,255,255,.04);
+      backdrop-filter: blur(20px); overflow: hidden; transform-origin: top right;
+      transition: opacity .17s, transform .17s;
+    }
+    .status-card.hidden { opacity: 0; transform: translateY(-7px) scale(.98); pointer-events: none; }
+    .status-head { height: 43px; display: flex; align-items: center; padding: 0 13px; border-bottom: 1px solid var(--line); }
+    .status-head strong { font-size: 11px; font-weight: 610; }
+    .status-head .health { margin-left: 8px; display: flex; align-items: center; gap: 5px; color: var(--green); font-size: 9px; }
+    .status-head .icon-btn { margin-left: auto; width: 28px; height: 28px; }
+    .status-body { padding: 12px; }
+    .status-primary { display: flex; align-items: center; gap: 10px; padding-bottom: 11px; }
+    .branch-icon { width: 31px; height: 31px; border-radius: 9px; display: grid; place-items: center; background: rgba(121,168,255,.1); color: var(--blue); }
+    .branch-copy { min-width: 0; }
+    .branch-copy strong { display: block; font-size: 11px; font-weight: 580; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .branch-copy span { color: var(--muted); font-size: 10px; }
+    .dirty-pill { margin-left: auto; flex: 0 0 auto; color: var(--amber); background: rgba(228,182,107,.1); padding: 4px 7px; border-radius: 99px; font-size: 9px; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .metric { min-width: 0; padding: 9px; border-right: 1px solid var(--line); }
+    .metric:last-child { border: 0; }
+    .metric span { display: block; color: var(--faint); font-size: 9px; margin-bottom: 3px; }
+    .metric strong { display: block; font-size: 10px; font-weight: 570; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status-label { color: var(--faint); font-size: 9px; text-transform: uppercase; letter-spacing: .07em; margin: 12px 0 7px; }
+    .routes { display: grid; gap: 5px; }
+    .route {
+      height: 30px; border: 1px solid transparent; border-radius: 8px; padding: 0 8px; display: flex; align-items: center; gap: 7px;
+      background: rgba(9,11,14,.42); color: #959ba4; cursor: pointer; text-align: left; min-width: 0;
+    }
+    .route:hover { border-color: rgba(121,168,255,.23); color: #dce7f8; }
+    .route .service { color: #d5d9df; width: 28px; font-size: 9px; }
+    .route .url { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 9px ui-monospace, monospace; }
+    .route .icon { margin-left: auto; }
+
+    .composer {
+      position: absolute; z-index: 12; left: 50%; transform: translateX(-50%); bottom: 18px; width: min(690px, calc(100% - 360px));
+      min-height: 66px; border-radius: 15px; border: 1px solid var(--line-strong); background: rgba(31,34,39,.95);
+      backdrop-filter: blur(18px); box-shadow: 0 20px 50px rgba(0,0,0,.5), inset 0 1px rgba(255,255,255,.04);
+      padding: 10px 12px 9px;
+    }
+    .composer-line { display: flex; align-items: center; gap: 9px; }
+    .composer input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
+    .composer input::placeholder { color: #6e747d; }
+    .send-btn { width: 31px; height: 31px; border: 0; border-radius: 9px; display: grid; place-items: center; background: #dfe8f8; color: #1a202a; cursor: pointer; }
+    .send-btn:hover { background: white; }
+    .composer-meta { display: flex; align-items: center; margin-top: 6px; color: #696f78; font-size: 9px; }
+    .composer-meta button { border: 0; color: #7f8792; background: transparent; padding: 0; cursor: pointer; }
+    .composer-meta .hint { margin-left: auto; }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 105px; z-index: 100; transform: translateX(-50%) translateY(14px);
+      opacity: 0; pointer-events: none; transition: .2s; border: 1px solid var(--line-strong); border-radius: 9px;
+      padding: 8px 11px; background: #272b31; box-shadow: 0 12px 35px rgba(0,0,0,.4); color: #dfe3e8; font-size: 11px;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .mobile-top, .mobile-windows, .mobile-dock, .sheet-backdrop, .sheet { display: none; }
+
+    button:focus-visible, input:focus-visible { outline: 2px solid rgba(121,168,255,.8); outline-offset: 2px; }
+
+    @media (max-width: 1180px) {
+      .session-identity { min-width: 172px; }
+      .action-btn .label-long { display: none; }
+      .action-btn .label-short { display: inline; }
+      .action-btn { padding: 0 9px; }
+      .composer { width: min(600px, calc(100% - 330px)); }
+    }
+
+    @media (max-width: 760px) {
+      body { background: #090b0e; }
+      .app { padding: 0; min-height: 100dvh; }
+      .dock, .workspace-chrome { display: none; }
+      .canvas-shell { inset: 0 0 0 0; gap: 0; }
+      .mobile-top {
+        display: flex; height: calc(56px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0;
+        align-items: center; gap: 9px; flex: 0 0 auto; background: rgba(18,21,25,.96); border-bottom: 1px solid var(--line);
+      }
+      .mobile-top .session-symbol { width: 32px; height: 32px; border-radius: 9px; }
+      .mobile-title { min-width: 0; flex: 1; }
+      .mobile-title strong { display: block; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .mobile-title span { display: block; color: var(--faint); font-size: 9px; margin-top: 1px; }
+      .mobile-top .status-trigger { position: relative; }
+      .mobile-top .status-trigger::after { content: ""; position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; background: var(--green); border: 2px solid #15181c; border-radius: 50%; }
+      .mobile-windows {
+        display: flex; gap: 5px; align-items: center; height: 39px; flex: 0 0 auto; padding: 4px 10px;
+        overflow-x: auto; background: #101216; border-bottom: 1px solid rgba(255,255,255,.055); scrollbar-width: none;
+      }
+      .mobile-windows .window-tab { height: 29px; font-size: 10px; padding: 0 11px; }
+      .stage { border: 0; border-radius: 0; box-shadow: none; flex: 1; }
+      .stage-topline { height: 28px; padding: 0 12px; font-size: 9px; }
+      .terminal { inset: 29px 0 0; padding: 14px 13px 150px; font-size: 10.5px; line-height: 1.62; overflow: auto; }
+      .terminal .desktop-only-line { display: none; }
+      .status-card { display: none; }
+      .composer {
+        left: 10px; right: 10px; bottom: calc(72px + env(safe-area-inset-bottom)); transform: none; width: auto; min-height: 68px;
+        border-radius: 14px; padding: 10px; background: rgba(34,37,43,.97);
+      }
+      .composer-line { gap: 6px; }
+      .composer input { font-size: 11px; }
+      .composer-meta .hint { display: none; }
+      .composer-meta { margin-top: 5px; }
+      .mobile-dock {
+        display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; z-index: 45; left: 0; right: 0; bottom: 0;
+        height: calc(64px + env(safe-area-inset-bottom)); padding: 4px 5px env(safe-area-inset-bottom);
+        background: rgba(20,23,27,.98); border-top: 1px solid var(--line-strong); backdrop-filter: blur(22px);
+      }
+      .mobile-nav-item {
+        border: 0; background: transparent; color: #757b84; border-radius: 10px; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 4px; font-size: 9px; cursor: pointer; min-width: 0;
+      }
+      .mobile-nav-item:hover, .mobile-nav-item.active { color: var(--blue); background: rgba(121,168,255,.07); }
+      .mobile-nav-item.compose-nav {
+        width: 47px; height: 47px; justify-self: center; align-self: center; margin-top: -20px; border-radius: 15px;
+        color: #10151d; background: linear-gradient(145deg, #a4c6ff, #668fdd); box-shadow: 0 9px 25px rgba(79,126,213,.28);
+      }
+      .mobile-nav-item.compose-nav span { color: #202c40; }
+      .sheet-backdrop { position: fixed; z-index: 60; inset: 0; background: rgba(0,0,0,.58); opacity: 0; pointer-events: none; display: block; transition: opacity .2s; }
+      .sheet {
+        display: flex; position: fixed; z-index: 65; left: 7px; right: 7px; bottom: 7px; max-height: min(76dvh, 640px);
+        flex-direction: column; background: #1c1f24; border: 1px solid var(--line-strong); border-radius: 20px;
+        box-shadow: 0 25px 80px rgba(0,0,0,.65); transform: translateY(calc(100% + 16px)); transition: transform .24s ease;
+        overflow: hidden; padding-bottom: env(safe-area-inset-bottom);
+      }
+      body.sheet-open .sheet-backdrop { opacity: 1; pointer-events: auto; }
+      body.sheet-open .sheet.open { transform: translateY(0); }
+      .sheet-grabber { width: 36px; height: 4px; border-radius: 99px; background: #464b53; margin: 8px auto 5px; }
+      .sheet-head { display: flex; align-items: center; min-height: 48px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+      .sheet-head strong { font-size: 13px; }
+      .sheet-head .icon-btn { margin-left: auto; }
+      .sheet-scroll { overflow-y: auto; padding: 10px; }
+      .mobile-search { margin: 0 0 9px; }
+      .mobile-session { min-height: 54px; grid-template-columns: 8px 1fr auto; padding: 7px 10px; }
+      .mobile-session .session-name { font-size: 13px; }
+      .mobile-session .session-meta { font-size: 10px; }
+      .sheet-section { color: #686e77; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; padding: 12px 8px 5px; }
+      .mobile-action-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+      .mobile-action {
+        min-height: 55px; border: 1px solid var(--line); border-radius: 12px; background: #23272d; color: #c7cbd1;
+        display: flex; align-items: center; gap: 10px; padding: 0 12px; text-align: left;
+      }
+      .mobile-action span { font-size: 11px; }
+      .mobile-action small { display: block; color: var(--faint); margin-top: 2px; }
+      .mobile-status-block { border: 1px solid var(--line); border-radius: 13px; padding: 12px; background: #15181c; }
+      .mobile-status-block + .mobile-status-block { margin-top: 8px; }
+      .mobile-status-row { display: flex; align-items: center; gap: 9px; }
+      .mobile-status-row strong { font-size: 11px; }
+      .mobile-status-row span { margin-left: auto; color: var(--amber); font-size: 9px; }
+      .mobile-metrics { margin-top: 10px; }
+      .toast { bottom: calc(147px + env(safe-area-inset-bottom)); font-size: 10px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="noise"></div>
+  <main class="app" aria-label="DevX workspace prototype">
+    <aside class="dock" aria-label="Projects and sessions">
+      <div class="dock-head">
+        <div class="brand-mark dock-expanded" aria-hidden="true">d<span style="opacity:.6">x</span></div>
+        <div class="brand dock-expanded">DevX<small>local workspace</small></div>
+        <button class="icon-btn dock-toggle" id="dockToggle" title="Collapse project dock" aria-label="Collapse project dock" aria-expanded="true">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16M14 9l-3 3 3 3"/></svg>
+        </button>
+      </div>
+
+      <div class="dock-expanded">
+        <button class="new-session" id="newSession"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>New session <kbd>⌃⇧C</kbd></button>
+        <div class="search-wrap">
+          <svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <label class="sr-only" for="sessionSearch">Filter sessions</label>
+          <input class="search" id="sessionSearch" type="search" placeholder="Filter sessions…" />
+          <span class="search-key">/</span>
+        </div>
+      </div>
+
+      <div class="dock-scroll dock-expanded" id="sessionList">
+        <div class="section-label">Workspace <span class="count">6 active</span></div>
+        <section class="project" data-project="devx">
+          <button class="project-row" aria-expanded="true">
+            <svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h6"/></svg>
+            devx
+            <svg class="icon sm chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+          <div class="sessions">
+            <button class="session-row active" data-session="jf-ui-refresh" data-project-name="devx" data-branch="jf/ui-refresh" data-state="dirty" data-artifacts="8">
+              <span class="dot live"></span><span class="session-copy"><span class="session-name">UI refresh</span><span class="session-meta">jf-ui-refresh · 2m ago</span></span><span></span>
+            </button>
+            <button class="session-row" data-session="gatepost-proxy" data-project-name="devx" data-branch="fix/gatepost-proxy" data-state="attention" data-artifacts="2">
+              <span class="dot attention"></span><span class="session-copy"><span class="session-name">Gatepost proxy</span><span class="session-meta">fix/gatepost-proxy · waiting</span></span><span class="session-badge">!</span>
+            </button>
+            <button class="session-row" data-session="web-unit-tests" data-project-name="devx" data-branch="test/web-units" data-state="live" data-artifacts="4">
+              <span class="dot dirty"></span><span class="session-copy"><span class="session-name">Web unit tests</span><span class="session-meta">test/web-units · 18m ago</span></span><span></span>
+            </button>
+          </div>
+        </section>
+        <section class="project" data-project="toneclone">
+          <button class="project-row" aria-expanded="true">
+            <svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h6"/></svg>
+            toneclone
+            <svg class="icon sm chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+          <div class="sessions">
+            <button class="session-row" data-session="billing-flow" data-project-name="toneclone" data-branch="feat/billing-flow" data-state="live" data-artifacts="1">
+              <span class="dot live"></span><span class="session-copy"><span class="session-name">Billing flow</span><span class="session-meta">feat/billing-flow · 6m ago</span></span><span></span>
+            </button>
+            <button class="session-row" data-session="mention-sync" data-project-name="toneclone" data-branch="fix/mention-sync" data-state="dirty" data-artifacts="0">
+              <span class="dot dirty"></span><span class="session-copy"><span class="session-name">Mention sync</span><span class="session-meta">fix/mention-sync · 1h ago</span></span><span></span>
+            </button>
+          </div>
+        </section>
+        <section class="project" data-project="nibit">
+          <button class="project-row" aria-expanded="true">
+            <svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h6"/></svg>
+            nibit
+            <svg class="icon sm chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+          <div class="sessions">
+            <button class="session-row" data-session="dashboard-a11y" data-project-name="nibit" data-branch="chore/dashboard-a11y" data-state="live" data-artifacts="3">
+              <span class="dot live"></span><span class="session-copy"><span class="session-name">Dashboard accessibility</span><span class="session-meta">chore/dashboard-a11y · 34m ago</span></span><span></span>
+            </button>
+          </div>
+        </section>
+        <div class="section-label">Needs review <span class="count">1</span></div>
+        <button class="session-row" data-session="old-caddy-routes" data-project-name="devx" data-branch="cleanup/caddy" data-state="attention" data-artifacts="0">
+          <span class="dot attention"></span><span class="session-copy"><span class="session-name">Old Caddy routes</span><span class="session-meta">stale · uncommitted changes</span></span><span class="session-badge">review</span>
+        </button>
+      </div>
+
+      <div class="dock-scroll dock-collapsed-only dock-rail">
+        <button class="rail-project active" title="devx"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h6"/></svg><span class="dot live"></span></button>
+        <button class="rail-project" title="toneclone"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h6"/></svg><span class="dot dirty"></span></button>
+        <button class="rail-project" title="nibit"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h6"/></svg></button>
+        <span class="rail-sep"></span>
+        <button class="rail-project" title="New session"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+
+      <div class="dock-foot dock-expanded">
+        <div class="avatar">JF</div><div class="workspace-copy"><strong>Local machine</strong><span>7 sessions · host online</span></div>
+        <button class="icon-btn" aria-label="Workspace settings"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.5h-4L10.3 6a8 8 0 0 0-1.6.9l-2.4-1-2 3.5 2 1.5a8 8 0 0 0 0 2.1l-2 1.5 2 3.5 2.4-1a8 8 0 0 0 1.6.9l.4 2.5h4l.3-2.5a8 8 0 0 0 1.6-.9l2.4 1 2-3.5-2.1-1.5c.1-.3.1-.7.1-1z"/></svg></button>
+      </div>
+    </aside>
+
+    <section class="canvas-shell">
+      <header class="workspace-chrome">
+        <div class="session-identity">
+          <div class="session-symbol"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m5 7 4 5-4 5M11 17h8"/></svg></div>
+          <div class="session-title"><h1 id="sessionTitle">UI refresh</h1><p><span id="sessionProject">devx</span> / <span id="sessionSlug">jf-ui-refresh</span></p></div>
+        </div>
+        <nav class="window-tabs" aria-label="Terminal windows">
+          <button class="window-tab active">1:agent</button><button class="window-tab">2:web</button><button class="window-tab">3:tests</button><button class="window-tab">4:logs</button>
+        </nav>
+        <div class="chrome-actions">
+          <button class="action-btn" data-toast="Composer focused" id="composeTop"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 19.5V5a2 2 0 0 1 2-2h10l4 4v12.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19.5z"/><path d="M8 12h8M8 16h5"/></svg><span class="label-long">Compose</span><span class="label-short">Write</span></button>
+          <button class="action-btn" data-toast="Artifacts panel toggled"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6.5h6l2 2h8v11H4z"/></svg><span class="label-long">Artifacts</span><span class="label-short">Files</span><span style="color:var(--blue);font-size:9px" id="artifactCount">8</span></button>
+          <button class="action-btn" data-toast="Split layout cycled"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg><span>Split</span></button>
+          <div class="divider"></div>
+          <button class="action-btn active" id="statusToggle" aria-expanded="true"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Status</span></button>
+          <button class="icon-btn" title="More session actions" aria-label="More session actions"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg></button>
+        </div>
+      </header>
+
+      <div class="mobile-top">
+        <div class="session-symbol"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m5 7 4 5-4 5M11 17h8"/></svg></div>
+        <div class="mobile-title"><strong id="mobileTitle">UI refresh</strong><span><span class="dot live" style="display:inline-block;width:5px;height:5px;margin-right:4px"></span><span id="mobileSlug">devx / jf-ui-refresh</span></span></div>
+        <button class="icon-btn" data-open-sheet="actions" aria-label="Workspace controls"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+        <button class="icon-btn status-trigger" data-open-sheet="status" aria-label="Session status"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></button>
+      </div>
+      <nav class="mobile-windows" aria-label="Terminal windows">
+        <button class="window-tab active">1:agent</button><button class="window-tab">2:web</button><button class="window-tab">3:tests</button><button class="window-tab">4:logs</button>
+      </nav>
+
+      <section class="stage" aria-label="Active session terminal">
+        <div class="stage-topline"><span class="live-label"><span class="dot live"></span>attached · tmux</span><span class="terminal-size">jf-ui-refresh — 152×44</span></div>
+        <div class="terminal" id="terminalContent" tabindex="0" aria-label="Terminal output">
+          <div class="term-line"><span class="term-dim">Last login: Thu Mar 13 09:41:06 on ttys004</span></div>
+          <div class="term-line"><span class="prompt">~/projects/devx/.worktrees/jf-ui-refresh</span> <span class="term-blue">jf/ui-refresh*</span></div>
+          <div class="term-line">$ make web-dev</div>
+          <div class="term-line"><span class="term-dim">cd web/app &amp;&amp; npm run dev -- --host 0.0.0.0</span></div>
+          <div class="term-line"></div>
+          <div class="term-line"><span class="term-purple">  VITE v7.3.1</span>  <span class="term-green">ready in 241 ms</span></div>
+          <div class="term-line"></div>
+          <div class="term-line">  <span class="term-green">➜</span>  Local:   <span class="term-blue">https://jf-ui-refresh-ui.localhost</span></div>
+          <div class="term-line desktop-only-line">  <span class="term-green">➜</span>  press <span class="term-white">h + enter</span> to show help</div>
+          <div class="term-line"></div>
+          <div class="term-line"><span class="term-dim">[devx]</span> session metadata refreshed <span class="term-green">✓</span></div>
+          <div class="term-line"><span class="term-dim">[devx]</span> 2 routes online · target <span class="term-white">host</span> · terminal attached</div>
+          <div class="term-line"></div>
+          <div class="term-line"><span class="prompt">~/projects/devx/.worktrees/jf-ui-refresh</span> <span class="term-blue">jf/ui-refresh*</span></div>
+          <div class="term-line">$ <span class="cursor"></span></div>
+        </div>
+
+        <aside class="status-card" id="statusCard" aria-label="Session status">
+          <div class="status-head"><strong>Session status</strong><span class="health"><span class="dot live" style="width:5px;height:5px"></span>healthy</span><button class="icon-btn" id="closeStatus" aria-label="Hide status"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div>
+          <div class="status-body">
+            <div class="status-primary"><div class="branch-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 9c5 0 4-2 8-2"/></svg></div><div class="branch-copy"><strong id="branchName">jf/ui-refresh</strong><span>worktree in sync</span></div><span class="dirty-pill" id="dirtyPill">5 changes</span></div>
+            <div class="metric-grid"><div class="metric"><span>Target</span><strong>⌁ host</strong></div><div class="metric"><span>Windows</span><strong>4 tmux</strong></div><div class="metric"><span>Artifacts</span><strong id="metricArtifacts">8 files</strong></div></div>
+            <div class="status-label">Routes</div>
+            <div class="routes">
+              <button class="route" data-toast="UI route copied"><span class="service">ui</span><span class="url" id="routeUI">jf-ui-refresh-ui.localhost</span><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 5h5v5M13 11l6-6M19 14v5H5V5h5"/></svg></button>
+              <button class="route" data-toast="API route copied"><span class="service">api</span><span class="url" id="routeAPI">jf-ui-refresh-api.localhost</span><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 5h5v5M13 11l6-6M19 14v5H5V5h5"/></svg></button>
+            </div>
+          </div>
+        </aside>
+
+        <form class="composer" id="composerForm">
+          <div class="composer-line"><button type="button" class="icon-btn" style="width:28px;height:28px" data-toast="Attach an image" aria-label="Attach image"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v10a4 4 0 0 1-8 0V7a3 3 0 0 1 6 0v8a2 2 0 0 1-4 0V8"/></svg></button><label class="sr-only" for="composerInput">Compose terminal input</label><input id="composerInput" placeholder="Send a command or prompt…" autocomplete="off" /><button class="send-btn" type="submit" aria-label="Send"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="m6 12 6-6 6 6M12 6v12"/></svg></button></div>
+          <div class="composer-meta"><button type="button" data-toast="Full terminal access enabled">◉ Full access</button><span class="hint">⌘ K to focus · Enter to send</span></div>
+        </form>
+      </section>
+    </section>
+
+    <nav class="mobile-dock" aria-label="Workspace navigation">
+      <button class="mobile-nav-item" data-open-sheet="sessions"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>Sessions</span></button>
+      <button class="mobile-nav-item active"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m5 7 4 5-4 5M11 17h8"/></svg><span>Terminal</span></button>
+      <button class="mobile-nav-item compose-nav" id="mobileCompose"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14"/></svg><span>Compose</span></button>
+      <button class="mobile-nav-item" data-toast="Artifacts panel toggled"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6.5h6l2 2h8v11H4z"/></svg><span>Artifacts</span></button>
+      <button class="mobile-nav-item" data-open-sheet="actions"><svg class="icon lg" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg><span>More</span></button>
+    </nav>
+
+    <div class="sheet-backdrop" id="sheetBackdrop"></div>
+    <section class="sheet" id="sessionsSheet" aria-label="Switch session"><div class="sheet-grabber"></div><div class="sheet-head"><strong>Switch workspace</strong><button class="icon-btn close-sheet" aria-label="Close"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div class="sheet-scroll"><div class="search-wrap mobile-search"><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input class="search" aria-label="Filter mobile sessions" placeholder="Filter sessions…"></div><div class="sheet-section">devx</div><button class="session-row mobile-session active" data-mobile-session="jf-ui-refresh"><span class="dot live"></span><span class="session-copy"><span class="session-name">UI refresh</span><span class="session-meta">jf-ui-refresh · active now</span></span><span></span></button><button class="session-row mobile-session" data-mobile-session="gatepost-proxy"><span class="dot attention"></span><span class="session-copy"><span class="session-name">Gatepost proxy</span><span class="session-meta">fix/gatepost-proxy · waiting</span></span><span class="session-badge">!</span></button><button class="session-row mobile-session" data-mobile-session="web-unit-tests"><span class="dot dirty"></span><span class="session-copy"><span class="session-name">Web unit tests</span><span class="session-meta">test/web-units · 18m ago</span></span><span></span></button><div class="sheet-section">toneclone</div><button class="session-row mobile-session" data-mobile-session="billing-flow"><span class="dot live"></span><span class="session-copy"><span class="session-name">Billing flow</span><span class="session-meta">feat/billing-flow · 6m ago</span></span><span></span></button></div></section>
+
+    <section class="sheet" id="actionsSheet" aria-label="Workspace controls"><div class="sheet-grabber"></div><div class="sheet-head"><strong>Workspace controls</strong><button class="icon-btn close-sheet" aria-label="Close"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div class="sheet-scroll"><div class="mobile-action-list"><button class="mobile-action" data-toast="Split layout cycled"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg><span>Split layout<small>vertical</small></span></button><button class="mobile-action" data-toast="Terminal output viewer opened"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.5"/></svg><span>View output<small>fullscreen</small></span></button><button class="mobile-action" data-toast="Create a text artifact"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M8 13h8M8 17h6"/></svg><span>New artifact<small>paste text</small></span></button><button class="mobile-action" data-toast="Artifact reference search opened"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="10" r="5"/><path d="m14 14 5 5M10 7v6M7 10h6"/></svg><span>Insert ref<small>8 artifacts</small></span></button><button class="mobile-action" data-toast="Image picker opened"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m4 17 5-5 4 4 2-2 5 4"/></svg><span>Attach image<small>png, jpg, webp</small></span></button><button class="mobile-action" data-toast="Terminal size refreshed"><svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18 12a7 7 0 0 0-12-4M6 12a7 7 0 0 0 12 4"/></svg><span>Refresh<small>terminal size</small></span></button></div></div></section>
+
+    <section class="sheet" id="statusSheet" aria-label="Session status"><div class="sheet-grabber"></div><div class="sheet-head"><strong>Session status</strong><span style="color:var(--green);font-size:9px;margin-left:8px">● healthy</span><button class="icon-btn close-sheet" aria-label="Close"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m7 7 10 10M17 7 7 17"/></svg></button></div><div class="sheet-scroll"><div class="mobile-status-block"><div class="mobile-status-row"><div class="branch-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 9c5 0 4-2 8-2"/></svg></div><strong>jf/ui-refresh</strong><span>5 changes</span></div><div class="metric-grid mobile-metrics"><div class="metric"><span>Target</span><strong>host</strong></div><div class="metric"><span>Windows</span><strong>4 tmux</strong></div><div class="metric"><span>Artifacts</span><strong>8 files</strong></div></div></div><div class="mobile-status-block"><div class="status-label" style="margin-top:0">Routes</div><div class="routes"><button class="route" data-toast="UI route copied"><span class="service">ui</span><span class="url">jf-ui-refresh-ui.localhost</span><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 5h5v5M13 11l6-6M19 14v5H5V5h5"/></svg></button><button class="route" data-toast="API route copied"><span class="service">api</span><span class="url">jf-ui-refresh-api.localhost</span><svg class="icon sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 5h5v5M13 11l6-6M19 14v5H5V5h5"/></svg></button></div></div></div></section>
+
+    <div class="toast" id="toast" role="status"></div>
+  </main>
+
+  <script>
+    const $ = (sel, root = document) => root.querySelector(sel)
+    const $$ = (sel, root = document) => [...root.querySelectorAll(sel)]
+    const body = document.body
+    const toast = $('#toast')
+    let toastTimer
+
+    function showToast(message) {
+      toast.textContent = message
+      toast.classList.add('show')
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 1800)
+    }
+
+    $('#dockToggle').addEventListener('click', (event) => {
+      body.classList.toggle('dock-collapsed')
+      const collapsed = body.classList.contains('dock-collapsed')
+      event.currentTarget.setAttribute('aria-expanded', String(!collapsed))
+      event.currentTarget.setAttribute('aria-label', collapsed ? 'Expand project dock' : 'Collapse project dock')
+      event.currentTarget.title = collapsed ? 'Expand project dock' : 'Collapse project dock'
+    })
+
+    $$('.project-row').forEach(button => button.addEventListener('click', () => {
+      const project = button.closest('.project')
+      project.classList.toggle('closed')
+      button.setAttribute('aria-expanded', String(!project.classList.contains('closed')))
+    }))
+
+    $('#sessionSearch').addEventListener('input', (event) => {
+      const query = event.target.value.trim().toLowerCase()
+      $$('.session-row[data-session]').forEach(row => {
+        row.style.display = row.textContent.toLowerCase().includes(query) ? '' : 'none'
+      })
+    })
+
+    const sessionDetails = {
+      'jf-ui-refresh': { title: 'UI refresh', project: 'devx', branch: 'jf/ui-refresh', state: '5 changes', artifacts: 8 },
+      'gatepost-proxy': { title: 'Gatepost proxy', project: 'devx', branch: 'fix/gatepost-proxy', state: 'attention', artifacts: 2 },
+      'web-unit-tests': { title: 'Web unit tests', project: 'devx', branch: 'test/web-units', state: '3 changes', artifacts: 4 },
+      'billing-flow': { title: 'Billing flow', project: 'toneclone', branch: 'feat/billing-flow', state: '1 change', artifacts: 1 },
+      'mention-sync': { title: 'Mention sync', project: 'toneclone', branch: 'fix/mention-sync', state: '2 changes', artifacts: 0 },
+      'dashboard-a11y': { title: 'Dashboard accessibility', project: 'nibit', branch: 'chore/dashboard-a11y', state: 'clean', artifacts: 3 },
+      'old-caddy-routes': { title: 'Old Caddy routes', project: 'devx', branch: 'cleanup/caddy', state: 'review', artifacts: 0 }
+    }
+
+    function selectSession(slug) {
+      const detail = sessionDetails[slug]
+      if (!detail) return
+      $$('.session-row[data-session]').forEach(row => row.classList.toggle('active', row.dataset.session === slug))
+      $('#sessionTitle').textContent = detail.title
+      $('#sessionProject').textContent = detail.project
+      $('#sessionSlug').textContent = slug
+      $('#mobileTitle').textContent = detail.title
+      $('#mobileSlug').textContent = `${detail.project} / ${slug}`
+      $('#branchName').textContent = detail.branch
+      $('#dirtyPill').textContent = detail.state
+      $('#artifactCount').textContent = detail.artifacts
+      $('#metricArtifacts').textContent = `${detail.artifacts} files`
+      $('#routeUI').textContent = `${slug}-ui.localhost`
+      $('#routeAPI').textContent = `${slug}-api.localhost`
+      $('.terminal-size').textContent = `${slug} — 152×44`
+      $$('.term-blue').filter(el => el.textContent.includes('/')).forEach(el => el.textContent = `${detail.branch}*`)
+      closeSheets()
+      showToast(`Switched to ${detail.title}`)
+    }
+
+    $$('.session-row[data-session]').forEach(row => row.addEventListener('click', () => selectSession(row.dataset.session)))
+    $$('[data-mobile-session]').forEach(row => row.addEventListener('click', () => selectSession(row.dataset.mobileSession)))
+
+    $$('.window-tab').forEach(tab => tab.addEventListener('click', () => {
+      const label = tab.textContent
+      $$('.window-tab').forEach(other => other.classList.toggle('active', other.textContent === label))
+      showToast(`Window ${label} active`)
+    }))
+
+    const statusCard = $('#statusCard')
+    function setStatusOpen(open) {
+      statusCard.classList.toggle('hidden', !open)
+      $('#statusToggle').classList.toggle('active', open)
+      $('#statusToggle').setAttribute('aria-expanded', String(open))
+    }
+    $('#statusToggle').addEventListener('click', () => setStatusOpen(statusCard.classList.contains('hidden')))
+    $('#closeStatus').addEventListener('click', () => setStatusOpen(false))
+
+    function openSheet(name) {
+      closeSheets(false)
+      const sheet = $(`#${name}Sheet`)
+      if (!sheet) return
+      sheet.classList.add('open')
+      body.classList.add('sheet-open')
+      setTimeout(() => $('.close-sheet', sheet)?.focus(), 250)
+    }
+    function closeSheets(removeBody = true) {
+      $$('.sheet').forEach(sheet => sheet.classList.remove('open'))
+      if (removeBody) body.classList.remove('sheet-open')
+    }
+    $$('[data-open-sheet]').forEach(button => button.addEventListener('click', () => openSheet(button.dataset.openSheet)))
+    $$('.close-sheet').forEach(button => button.addEventListener('click', () => closeSheets()))
+    $('#sheetBackdrop').addEventListener('click', () => closeSheets())
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closeSheets()
+      if (event.key === '/' && window.innerWidth > 760 && document.activeElement.tagName !== 'INPUT') {
+        event.preventDefault(); $('#sessionSearch').focus()
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault(); $('#composerInput').focus()
+      }
+    })
+
+    $('#composerForm').addEventListener('submit', event => {
+      event.preventDefault()
+      const input = $('#composerInput')
+      if (!input.value.trim()) { input.focus(); return }
+      showToast('Sent to 1:agent')
+      input.value = ''
+    })
+    $('#composeTop').addEventListener('click', () => $('#composerInput').focus())
+    $('#mobileCompose').addEventListener('click', () => $('#composerInput').focus())
+    $('#newSession').addEventListener('click', () => showToast('New session dialog'))
+    $$('[data-toast]').forEach(button => button.addEventListener('click', () => { showToast(button.dataset.toast); if (button.closest('.sheet')) closeSheets() }))
+  </script>
+</body>
+</html>

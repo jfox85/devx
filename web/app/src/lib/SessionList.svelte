@@ -16,6 +16,7 @@
   export let flashSession = null       // session name to momentarily highlight
   export let usage = null              // provider usage state, owned by App (see UsageStrip.svelte)
   export let usageEnabled = false      // resolved (non-null, true) usage_enabled setting, owned by App
+  export let onSessionsLoaded = null   // called with the fresh session list after each load
 
   let sessions = []
   let staleSummary = null
@@ -122,6 +123,7 @@
       const data = await listSessionsWithSummary()
       if (requestID !== loadRequestID) return
       sessions = data.sessions || []
+      onSessionsLoaded?.(sessions)
       staleSummary = data.stale_summary || null
       if (!showStaleReview) staleReviewSummary = null
     }

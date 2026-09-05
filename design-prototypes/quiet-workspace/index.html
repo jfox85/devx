@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DevX — Quiet Workspace</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f6f6f4;
+      --surface: #fbfbfa;
+      --surface-strong: #ffffff;
+      --ink: #20211f;
+      --muted: #747670;
+      --faint: #a7a9a3;
+      --line: #e5e5e1;
+      --line-strong: #d9dad4;
+      --accent: #5366d8;
+      --accent-soft: #eceefa;
+      --attention: #bd6a30;
+      --ok: #4d7d60;
+      --terminal: #181917;
+      --terminal-2: #20211f;
+      --terminal-text: #d8d9d4;
+      --terminal-muted: #898c85;
+      --shadow: 0 18px 50px rgba(29, 30, 27, .12), 0 2px 8px rgba(29, 30, 27, .06);
+      --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body { background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 14px; -webkit-font-smoothing: antialiased; }
+    button, input, textarea { font: inherit; }
+    button { color: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .icon { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-sm { width: 14px; height: 14px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+    .app { height: 100dvh; display: grid; grid-template-columns: 276px minmax(0, 1fr); grid-template-rows: 48px minmax(0, 1fr); }
+    .global-bar { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: 276px minmax(0, 1fr); align-items: center; background: rgba(251,251,250,.96); border-bottom: 1px solid var(--line); z-index: 40; }
+    .brand-area { height: 100%; padding: 0 15px 0 17px; display: flex; align-items: center; gap: 10px; }
+    .brand-mark { width: 22px; height: 22px; border: 1px solid var(--line-strong); border-radius: 7px; display: grid; place-items: center; color: #3d3e3a; background: var(--surface-strong); }
+    .brand-mark svg { width: 13px; height: 13px; }
+    .brand { font-weight: 650; letter-spacing: -.02em; }
+    .brand-chevron { color: var(--faint); margin-left: -5px; }
+    .global-main { min-width: 0; height: 100%; padding: 0 12px 0 20px; display: flex; align-items: center; gap: 10px; }
+    .mobile-menu { display: none; }
+    .global-context { min-width: 0; display: flex; align-items: center; gap: 8px; }
+    .global-project { font-weight: 590; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .context-slash { color: var(--line-strong); }
+    .global-session { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .global-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    .quiet-button { height: 31px; border: 1px solid transparent; background: transparent; border-radius: 8px; padding: 0 9px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted); cursor: pointer; }
+    .quiet-button:hover { background: #f1f1ee; color: var(--ink); }
+    .quiet-button.icon-only { width: 32px; padding: 0; }
+    .status-trigger { border-color: var(--line); background: var(--surface-strong); color: #555750; padding-right: 10px; }
+    .status-trigger[aria-expanded="true"] { background: #f0f0ed; color: var(--ink); }
+    .status-live { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+    .kbd { border: 1px solid var(--line); background: #f7f7f4; color: var(--faint); border-radius: 5px; padding: 1px 5px; font-family: var(--mono); font-size: 10px; }
+
+    .sidebar { grid-column: 1; grid-row: 2; min-height: 0; background: #f1f1ef; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+    .sidebar-tools { padding: 13px 12px 10px; display: flex; gap: 7px; }
+    .search-button { flex: 1; justify-content: flex-start; border-color: var(--line-strong); background: #f8f8f6; color: var(--muted); }
+    .new-button { width: 33px; border-color: var(--line-strong); background: #f8f8f6; padding: 0; }
+    .sidebar-scroll { min-height: 0; overflow-y: auto; padding: 2px 8px 18px; scrollbar-width: thin; scrollbar-color: #d6d6d1 transparent; }
+    .section-label { padding: 15px 9px 6px; color: #92948e; font-size: 11px; font-weight: 560; letter-spacing: .02em; display: flex; align-items: center; justify-content: space-between; }
+    .attention-summary { color: var(--attention); font-variant-numeric: tabular-nums; }
+    .project { margin: 1px 0 3px; }
+    .project-button, .session-button { width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left; }
+    .project-button { height: 34px; border-radius: 7px; display: flex; align-items: center; gap: 8px; padding: 0 9px; font-weight: 530; color: #555752; }
+    .project-button:hover { background: rgba(255,255,255,.65); color: var(--ink); }
+    .project-button .chevron { margin-left: auto; color: #9b9d97; transition: transform .16s ease; }
+    .project.collapsed .project-button .chevron { transform: rotate(-90deg); }
+    .project.collapsed .sessions { display: none; }
+    .sessions { padding: 1px 0 4px 18px; }
+    .session-button { min-height: 42px; padding: 6px 9px 6px 12px; border-radius: 8px; display: grid; grid-template-columns: 8px minmax(0,1fr) auto; column-gap: 8px; align-items: center; position: relative; color: #61635e; }
+    .session-button:hover { background: rgba(255,255,255,.62); }
+    .session-button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(20,20,18,.04); }
+    .session-button.active::before { content: ""; position: absolute; left: -1px; top: 11px; bottom: 11px; width: 2px; border-radius: 2px; background: var(--accent); }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #8f918c; }
+    .status-dot.ok { background: var(--ok); }
+    .status-dot.attention { background: var(--attention); }
+    .status-dot.dirty { background: #aa8434; }
+    .session-copy { min-width: 0; }
+    .session-name { display: block; font-size: 13px; line-height: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-meta { display: block; color: #a0a29c; font-family: var(--mono); font-size: 10px; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-badge { align-self: start; margin-top: 3px; color: var(--attention); font-size: 10px; }
+    .sidebar-footer { margin-top: auto; min-height: 42px; padding: 0 14px; border-top: 1px solid var(--line); display: flex; align-items: center; color: var(--muted); gap: 8px; font-size: 12px; }
+    .sidebar-footer .health { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; color: #777a73; }
+
+    .workspace { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--surface); }
+    .session-chrome { height: 66px; flex: none; display: flex; align-items: center; padding: 0 21px; border-bottom: 1px solid var(--line); gap: 14px; }
+    .session-heading { min-width: 0; }
+    .session-heading h1 { font-size: 17px; line-height: 22px; letter-spacing: -.025em; margin: 0; font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-subtitle { margin-top: 3px; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .branch-mark { color: #969892; }
+    .dirty-copy { color: #9a7330; }
+    .chrome-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+    .action-button { height: 32px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); padding: 0 9px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    .action-button:hover, .action-button.active { background: #f0f0ed; color: var(--ink); }
+    .action-button.primary { border-color: var(--line); background: white; color: #4c4e49; }
+    .action-button.primary:hover { border-color: #cbccc6; }
+    .more-button { width: 32px; padding: 0; justify-content: center; }
+
+    .window-strip { height: 39px; flex: none; padding: 0 14px; display: flex; align-items: end; gap: 3px; border-bottom: 1px solid var(--line); background: #f9f9f7; overflow-x: auto; scrollbar-width: none; }
+    .window-tab { height: 34px; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 10px; color: #92948e; font-family: var(--mono); font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .window-tab:hover { color: #555750; }
+    .window-tab.active { color: #353632; border-bottom-color: #75776f; }
+
+    .work-area { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: 14px 15px 15px; gap: 10px; position: relative; }
+    .terminal-frame { min-height: 0; flex: 1; border: 1px solid #2b2c29; background: var(--terminal); border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.14); display: flex; flex-direction: column; }
+    .terminal-labelbar { height: 34px; flex: none; display: flex; align-items: center; padding: 0 11px 0 14px; border-bottom: 1px solid #2d2f2b; color: var(--terminal-muted); background: #1d1e1c; font-size: 11px; }
+    .terminal-labelbar .target { display: inline-flex; align-items: center; gap: 6px; }
+    .terminal-labelbar .terminal-actions { margin-left: auto; display: flex; gap: 4px; }
+    .terminal-mini { width: 27px; height: 26px; border: 0; border-radius: 6px; display: grid; place-items: center; background: transparent; color: #8e9089; cursor: pointer; }
+    .terminal-mini:hover { background: #2b2c29; color: #d0d1cd; }
+    .terminal-content { min-height: 0; overflow: auto; padding: 20px 22px 32px; font-family: var(--mono); font-size: 12px; line-height: 1.72; color: var(--terminal-text); scrollbar-width: thin; scrollbar-color: #41423e transparent; }
+    .terminal-content p { margin: 0; white-space: pre-wrap; }
+    .terminal-muted { color: var(--terminal-muted); }
+    .terminal-dim { color: #5e615b; }
+    .terminal-green { color: #87a98e; }
+    .terminal-amber { color: #c6a566; }
+    .terminal-blue { color: #9ba8d9; }
+    .terminal-prompt { color: #eff0eb; }
+    .cursor { display: inline-block; width: 7px; height: 14px; margin-left: 2px; background: #a9aba5; vertical-align: -2px; animation: blink 1.15s steps(2) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .composer { min-height: 54px; flex: none; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-strong); display: flex; align-items: center; padding: 8px 9px 8px 13px; gap: 9px; box-shadow: 0 1px 2px rgba(20,20,18,.03); }
+    .composer textarea { flex: 1; min-width: 0; height: 34px; max-height: 80px; resize: none; border: 0; outline: 0; padding: 8px 0; color: var(--ink); background: transparent; font-size: 13px; }
+    .composer textarea::placeholder { color: #a5a7a1; }
+    .compose-tool { width: 30px; height: 30px; border: 0; background: transparent; border-radius: 7px; display: grid; place-items: center; color: #8a8c86; cursor: pointer; }
+    .compose-tool:hover { background: #f1f1ee; color: #4b4d48; }
+    .send-button { width: 32px; height: 32px; border: 0; border-radius: 9px; background: #373936; color: white; display: grid; place-items: center; cursor: pointer; }
+    .send-button:hover { background: #222320; }
+
+    .inspector { position: absolute; z-index: 30; top: 112px; right: 14px; width: 302px; max-height: calc(100% - 126px); overflow: auto; background: #f6f6f4; border: 1px solid #dcdcd7; border-radius: 14px; box-shadow: var(--shadow); transition: opacity .15s ease, transform .15s ease; }
+    .inspector.closed { opacity: 0; transform: translateY(-6px) scale(.985); pointer-events: none; visibility: hidden; }
+    .inspector-head { height: 48px; padding: 0 14px 0 16px; display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+    .inspector-head h2 { font-size: 13px; font-weight: 610; margin: 0; }
+    .inspector-head .eyebrow { margin-left: auto; color: var(--ok); display: flex; align-items: center; gap: 6px; font-size: 11px; }
+    .inspector-close { display: none; }
+    .inspector-section { padding: 13px 15px; border-bottom: 1px solid var(--line); }
+    .inspector-section:last-child { border-bottom: 0; }
+    .inspector-label { color: #989a94; font-size: 10px; font-weight: 620; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 9px; }
+    .info-row { min-height: 28px; display: grid; grid-template-columns: 22px 78px minmax(0, 1fr); align-items: center; color: #5f615c; font-size: 12px; }
+    .info-row svg { color: #868881; }
+    .info-key { color: #959791; }
+    .info-value { color: #484a45; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .info-value.mono { font-family: var(--mono); font-size: 10px; }
+    .info-value.dirty { color: #926c2c; }
+    .route-link { grid-column: 2 / -1; display: flex; align-items: center; justify-content: space-between; height: 28px; color: #50524d; text-decoration: none; border-radius: 6px; padding: 0 5px 0 0; }
+    .route-link:hover { color: var(--accent); }
+    .route-host { color: #93958f; font-family: var(--mono); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 10px; }
+    .artifact-row { display: flex; align-items: center; gap: 9px; height: 30px; color: #666862; font-size: 11px; }
+    .artifact-row .artifact-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .artifact-row .artifact-age { margin-left: auto; color: #a0a29c; font-size: 10px; }
+    .inspector-footer { height: 39px; display: flex; align-items: center; padding: 0 15px; color: #8d8f89; font-size: 10px; }
+    .inspector-footer button { margin-left: auto; border: 0; background: transparent; color: #686a64; cursor: pointer; font-size: 11px; }
+    .inspector-footer button:hover { color: var(--ink); }
+    .scrim, .mobile-bottom-nav { display: none; }
+
+    .toast { position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%); background: #292a27; color: #efefeb; padding: 9px 12px; border-radius: 8px; font-size: 11px; box-shadow: var(--shadow); z-index: 80; opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease; }
+    .toast.show { opacity: 1; transform: translate(-50%, -4px); }
+
+    @media (max-width: 920px) {
+      .app { grid-template-columns: 236px minmax(0, 1fr); }
+      .global-bar { grid-template-columns: 236px minmax(0, 1fr); }
+      .chrome-actions .action-label { display: none; }
+      .action-button { width: 32px; padding: 0; justify-content: center; }
+    }
+
+    @media (max-width: 700px) {
+      html, body { background: var(--surface); }
+      .app { display: grid; grid-template-columns: 1fr; grid-template-rows: 48px minmax(0,1fr) 58px; }
+      .global-bar { grid-column: 1; grid-row: 1; display: flex; padding: 0 9px; }
+      .brand-area { display: none; }
+      .global-main { padding: 0; width: 100%; gap: 7px; }
+      .mobile-menu { display: grid; place-items: center; width: 34px; height: 34px; border: 0; background: transparent; border-radius: 8px; color: #555750; }
+      .mobile-menu:hover { background: #f1f1ee; }
+      .global-context { gap: 6px; flex: 1; }
+      .global-project { font-size: 13px; }
+      .global-session { font-size: 12px; }
+      .global-actions .quiet-button:not(.status-trigger) { display: none; }
+      .status-trigger { width: 34px; height: 34px; padding: 0; }
+      .status-trigger .status-copy, .status-trigger .chev-copy { display: none; }
+      .status-live { width: 7px; height: 7px; }
+      .sidebar { position: fixed; z-index: 70; inset: 48px 34px 0 0; transform: translateX(-102%); transition: transform .2s ease; box-shadow: 22px 0 60px rgba(30,31,28,.16); border-right-color: var(--line-strong); }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar-footer { margin-bottom: 58px; }
+      .scrim { display: block; position: fixed; z-index: 60; inset: 48px 0 0; background: rgba(25,26,23,.22); opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+      .scrim.open { opacity: 1; pointer-events: auto; }
+      .workspace { grid-column: 1; grid-row: 2; }
+      .session-chrome { height: 56px; padding: 0 13px; }
+      .session-heading h1 { font-size: 15px; }
+      .session-subtitle { font-size: 10px; gap: 5px; }
+      .session-subtitle .mobile-hide { display: none; }
+      .chrome-actions { gap: 2px; }
+      .chrome-actions .action-button:nth-child(1), .chrome-actions .action-button:nth-child(2), .chrome-actions .action-button:nth-child(3) { display: none; }
+      .window-strip { height: 37px; padding-left: 7px; }
+      .window-tab { height: 33px; padding: 0 9px; }
+      .work-area { padding: 8px 8px 9px; gap: 7px; }
+      .terminal-frame { border-radius: 8px; }
+      .terminal-labelbar { height: 31px; padding-left: 11px; }
+      .terminal-labelbar .target span { display: none; }
+      .terminal-content { padding: 15px 13px 70px; font-size: 10.5px; line-height: 1.7; }
+      .terminal-content .desktop-line { display: none; }
+      .composer { min-height: 52px; border-radius: 10px; padding-left: 11px; }
+      .composer textarea { font-size: 12px; }
+      .inspector { position: fixed; z-index: 90; top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: min(690px, calc(100dvh - 70px)); border-radius: 17px; transform-origin: bottom center; }
+      .inspector.closed { transform: translateY(14px) scale(.99); }
+      .inspector-close { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px; margin-left: 7px; background: transparent; color: var(--muted); }
+      .inspector-head .eyebrow { margin-left: auto; }
+      .mobile-bottom-nav { grid-column: 1; grid-row: 3; display: grid; grid-template-columns: repeat(3, 1fr); background: rgba(251,251,250,.97); border-top: 1px solid var(--line); z-index: 50; padding: 4px 18px 5px; }
+      .bottom-tab { border: 0; background: transparent; color: #999b95; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 9px; border-radius: 8px; }
+      .bottom-tab.active { color: #454742; }
+      .bottom-tab .icon { width: 17px; height: 17px; }
+      .toast { bottom: 72px; white-space: nowrap; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="global-bar">
+      <div class="brand-area">
+        <span class="brand-mark" aria-hidden="true">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M7.5 7.5 3 12l4.5 4.5M16.5 7.5 21 12l-4.5 4.5M14 5l-4 14"/></svg>
+        </span>
+        <span class="brand">DevX</span>
+        <svg class="icon icon-sm brand-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+      </div>
+      <div class="global-main">
+        <button class="mobile-menu" id="navToggle" aria-label="Open projects and sessions" aria-expanded="false">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="global-context" aria-label="Current project and session">
+          <span class="global-project">devx</span>
+          <span class="context-slash">/</span>
+          <span class="global-session current-session-copy">quiet-workspace</span>
+        </div>
+        <div class="global-actions">
+          <button class="quiet-button" title="Quick switcher">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+            <span class="kbd">⌘P</span>
+          </button>
+          <button class="quiet-button icon-only" title="Notifications" aria-label="Notifications">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+          </button>
+          <button class="quiet-button status-trigger" id="statusToggle" aria-haspopup="dialog" aria-expanded="true">
+            <span class="status-live"></span>
+            <span class="status-copy">Environment</span>
+            <svg class="icon icon-sm chev-copy" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Projects and sessions">
+      <div class="sidebar-tools">
+        <button class="quiet-button search-button">
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <span>Find a session</span><span class="kbd" style="margin-left:auto">/</span>
+        </button>
+        <button class="quiet-button new-button" title="New session" aria-label="New session">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="sidebar-scroll">
+        <div class="section-label"><span>Attention</span><span class="attention-summary">1</span></div>
+        <button class="session-button" data-session="release-check" data-project="docs-site">
+          <span class="status-dot attention"></span>
+          <span class="session-copy"><span class="session-name">release-check</span><span class="session-meta">flagged · 2 artifacts</span></span>
+          <span class="session-badge">Review</span>
+        </button>
+
+        <div class="section-label"><span>Projects</span></div>
+        <section class="project">
+          <button class="project-button" aria-expanded="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9H3zM3 7.5v-2h7l2 2"/></svg>
+            <span>devx</span>
+            <svg class="icon icon-sm chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+          <div class="sessions">
+            <button class="session-button active" data-session="quiet-workspace" data-project="devx">
+              <span class="status-dot ok"></span>
+              <span class="session-copy"><span class="session-name">quiet-workspace</span><span class="session-meta">jf-ui-refresh · dirty</span></span>
+            </button>
+            <button class="session-button" data-session="route-containers" data-project="devx">
+              <span class="status-dot ok"></span>
+              <span class="session-copy"><span class="session-name">route-containers</span><span class="session-meta">gatepost · active</span></span>
+            </button>
+            <button class="session-button" data-session="artifact-review" data-project="devx">
+              <span class="status-dot dirty"></span>
+              <span class="session-copy"><span class="session-name">artifact-review</span><span class="session-meta">3 changes · 4 artifacts</span></span>
+            </button>
+          </div>
+        </section>
+        <section class="project">
+          <button class="project-button" aria-expanded="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9H3zM3 7.5v-2h7l2 2"/></svg>
+            <span>docs-site</span>
+            <svg class="icon icon-sm chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+          <div class="sessions">
+            <button class="session-button" data-session="release-check" data-project="docs-site">
+              <span class="status-dot attention"></span>
+              <span class="session-copy"><span class="session-name">release-check</span><span class="session-meta">needs attention</span></span>
+              <span class="session-badge">1</span>
+            </button>
+            <button class="session-button" data-session="search-index" data-project="docs-site">
+              <span class="status-dot"></span>
+              <span class="session-copy"><span class="session-name">search-index</span><span class="session-meta">host · idle 2h</span></span>
+            </button>
+          </div>
+        </section>
+        <section class="project collapsed">
+          <button class="project-button" aria-expanded="false">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9H3zM3 7.5v-2h7l2 2"/></svg>
+            <span>payments-api</span>
+            <span style="margin-left:auto;color:#a0a29c;font-size:11px">2</span>
+            <svg class="icon icon-sm chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+          </button>
+          <div class="sessions">
+            <button class="session-button" data-session="webhooks" data-project="payments-api">
+              <span class="status-dot ok"></span><span class="session-copy"><span class="session-name">webhooks</span><span class="session-meta">docker · active</span></span>
+            </button>
+          </div>
+        </section>
+      </div>
+      <div class="sidebar-footer">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+        <span>2 stale sessions</span>
+        <span class="health"><span class="status-live"></span> Services healthy</span>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <section class="session-chrome" aria-label="Session header">
+        <div class="session-heading">
+          <h1 class="current-session-copy">quiet-workspace</h1>
+          <div class="session-subtitle">
+            <svg class="icon icon-sm branch-mark" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 10c6 0 4-4 8-4"/></svg>
+            <span>jf-ui-refresh</span><span>·</span><span class="dirty-copy">3 changes</span><span class="mobile-hide">· host target · active now</span>
+          </div>
+        </div>
+        <div class="chrome-actions">
+          <button class="action-button" data-action="view" title="View output">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 12s3-5 9-5 9 5 9 5-3 5-9 5-9-5-9-5Z"/><circle cx="12" cy="12" r="2"/></svg><span class="action-label">View</span>
+          </button>
+          <button class="action-button" id="artifactsAction" data-action="artifacts" title="Open artifacts">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v5h5"/></svg><span class="action-label">Artifacts</span>
+          </button>
+          <button class="action-button" id="splitAction" data-action="split" title="Cycle split">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg><span class="action-label">Split</span>
+          </button>
+          <button class="action-button primary" id="composeAction" data-action="compose">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/></svg><span class="action-label">Compose</span>
+          </button>
+          <button class="action-button more-button" aria-label="More session actions" title="More">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <nav class="window-strip" aria-label="Terminal windows" role="tablist">
+        <button class="window-tab active" role="tab" aria-selected="true">1:agent</button>
+        <button class="window-tab" role="tab" aria-selected="false">2:server</button>
+        <button class="window-tab" role="tab" aria-selected="false">3:tests</button>
+      </nav>
+
+      <section class="work-area">
+        <div class="terminal-frame">
+          <div class="terminal-labelbar">
+            <span class="target">
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 10 2 2-2 2M12 15h4"/></svg>
+              <span>Terminal</span>
+            </span>
+            <span style="margin-left:8px;color:#5f615b">~/projects/devx/.worktrees/jf-ui-refresh</span>
+            <div class="terminal-actions">
+              <button class="terminal-mini" title="Refresh terminal" aria-label="Refresh terminal"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18 10a7 7 0 0 0-12-3l-2 2M6 14a7 7 0 0 0 12 3l2-2"/></svg></button>
+              <button class="terminal-mini" title="Expand terminal" aria-label="Expand terminal"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+            </div>
+          </div>
+          <div class="terminal-content" id="terminalContent" tabindex="0" aria-label="Terminal output">
+            <p><span class="terminal-dim">Last login: Today at 09:41 on ttys004</span></p>
+            <p><span class="terminal-blue">devx</span> <span class="terminal-dim">on</span> <span class="terminal-amber">jf-ui-refresh*</span></p>
+            <p><span class="terminal-prompt">❯</span> devx status</p>
+            <p>  session     <span class="terminal-blue">quiet-workspace</span></p>
+            <p>  worktree    .worktrees/jf-ui-refresh</p>
+            <p>  target      host <span class="terminal-green">ready</span></p>
+            <p>  routes      <span class="terminal-blue">ui</span>  https://jf-ui-refresh-ui.localhost</p>
+            <p>              <span class="terminal-blue">api</span> https://jf-ui-refresh-api.localhost</p>
+            <p>  artifacts   4 available</p>
+            <p>  git         <span class="terminal-amber">3 modified · 1 untracked</span></p>
+            <p> </p>
+            <p class="desktop-line"><span class="terminal-dim">✓ terminal attached to tmux window 1:agent</span></p>
+            <p><span class="terminal-prompt">❯</span> npm run dev</p>
+            <p> </p>
+            <p><span class="terminal-green">  VITE v7.3.1</span>  ready in 281 ms</p>
+            <p> </p>
+            <p>  <span class="terminal-dim">Local:</span>   <span class="terminal-blue">http://localhost:4173/</span></p>
+            <p>  <span class="terminal-dim">Route:</span>   <span class="terminal-blue">https://jf-ui-refresh-ui.localhost</span></p>
+            <p>  <span class="terminal-dim">press h + enter to show help</span></p>
+            <p> </p>
+            <p><span class="terminal-prompt">❯</span> <span class="cursor" aria-hidden="true"></span></p>
+          </div>
+        </div>
+        <form class="composer" id="composer">
+          <button type="button" class="compose-tool" title="Attach image" aria-label="Attach image">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8"/></svg>
+          </button>
+          <textarea rows="1" aria-label="Compose a terminal prompt" placeholder="Compose a prompt for this session…"></textarea>
+          <button type="button" class="compose-tool" title="Insert artifact" aria-label="Insert artifact">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v5h5M9 13h6M9 17h4"/></svg>
+          </button>
+          <button type="submit" class="send-button" aria-label="Send prompt">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </button>
+        </form>
+      </section>
+
+      <aside class="inspector" id="inspector" role="dialog" aria-label="Environment status">
+        <div class="inspector-head">
+          <h2>Environment</h2>
+          <span class="eyebrow"><span class="status-live"></span> Running</span>
+          <button class="inspector-close" id="inspectorClose" aria-label="Close environment status">
+            <svg class="icon" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="inspector-section">
+          <div class="inspector-label">Session</div>
+          <div class="info-row">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 10c6 0 4-4 8-4"/></svg><span class="info-key">Branch</span><span class="info-value mono">jf-ui-refresh</span>
+          </div>
+          <div class="info-row">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/></svg><span class="info-key">Worktree</span><span class="info-value dirty">3 modified · 1 new</span>
+          </div>
+          <div class="info-row">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 10 2 2-2 2M12 15h4"/></svg><span class="info-key">Target</span><span class="info-value">Host · ready</span>
+          </div>
+          <div class="info-row">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M8 12h8M12 8v8"/><circle cx="12" cy="12" r="9"/></svg><span class="info-key">Windows</span><span class="info-value">3 attached</span>
+          </div>
+        </div>
+        <div class="inspector-section">
+          <div class="inspector-label">Routes</div>
+          <div class="info-row">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg>
+            <a class="route-link" href="#route-ui"><span>UI</span><span class="route-host">jf-ui-refresh-ui.localhost ↗</span></a>
+          </div>
+          <div class="info-row">
+            <span></span><a class="route-link" href="#route-api"><span>API</span><span class="route-host">jf-ui-refresh-api.localhost ↗</span></a>
+          </div>
+        </div>
+        <div class="inspector-section">
+          <div class="inspector-label">Recent artifacts · 4</div>
+          <div class="artifact-row"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v5h5"/></svg><span class="artifact-name">desktop-shell-review.png</span><span class="artifact-age">2m</span></div>
+          <div class="artifact-row"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v5h5"/></svg><span class="artifact-name">responsive-notes.md</span><span class="artifact-age">9m</span></div>
+          <div class="artifact-row"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v5h5"/></svg><span class="artifact-name">mobile-chrome.png</span><span class="artifact-age">14m</span></div>
+        </div>
+        <div class="inspector-footer"><span>Updated just now</span><button id="openArtifacts">View all artifacts</button></div>
+      </aside>
+      <div class="toast" id="toast" role="status" aria-live="polite">Prompt sent to 1:agent</div>
+    </main>
+
+    <div class="scrim" id="scrim"></div>
+    <nav class="mobile-bottom-nav" aria-label="Workspace views">
+      <button class="bottom-tab" id="bottomSessions">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9H3zM3 7.5v-2h7l2 2"/></svg><span>Sessions</span>
+      </button>
+      <button class="bottom-tab active" aria-current="page">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 10 2 2-2 2M12 15h4"/></svg><span>Terminal</span>
+      </button>
+      <button class="bottom-tab" id="bottomArtifacts">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v5h5"/></svg><span>Artifacts</span>
+      </button>
+    </nav>
+  </div>
+
+  <script>
+    const sidebar = document.querySelector('#sidebar');
+    const scrim = document.querySelector('#scrim');
+    const navToggle = document.querySelector('#navToggle');
+    const inspector = document.querySelector('#inspector');
+    const statusToggle = document.querySelector('#statusToggle');
+    const inspectorClose = document.querySelector('#inspectorClose');
+    const toast = document.querySelector('#toast');
+    const composer = document.querySelector('#composer');
+
+    function setNav(open) {
+      sidebar.classList.toggle('open', open);
+      scrim.classList.toggle('open', open);
+      navToggle.setAttribute('aria-expanded', String(open));
+    }
+    function setInspector(open) {
+      inspector.classList.toggle('closed', !open);
+      inspector.setAttribute('aria-hidden', String(!open));
+      statusToggle.setAttribute('aria-expanded', String(open));
+      if (window.innerWidth <= 700) scrim.classList.toggle('open', open);
+    }
+    function announce(message) {
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(window.__toastTimer);
+      window.__toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+    }
+
+    navToggle.addEventListener('click', () => setNav(!sidebar.classList.contains('open')));
+    document.querySelector('#bottomSessions').addEventListener('click', () => setNav(true));
+    scrim.addEventListener('click', () => { setNav(false); setInspector(false); });
+    statusToggle.addEventListener('click', () => setInspector(inspector.classList.contains('closed')));
+    inspectorClose.addEventListener('click', () => setInspector(false));
+
+    document.querySelectorAll('.project-button').forEach(button => {
+      button.addEventListener('click', () => {
+        const project = button.closest('.project');
+        project.classList.toggle('collapsed');
+        button.setAttribute('aria-expanded', String(!project.classList.contains('collapsed')));
+      });
+    });
+
+    document.querySelectorAll('.session-button[data-session]').forEach(button => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.session-button').forEach(item => item.classList.remove('active'));
+        document.querySelectorAll(`[data-session="${button.dataset.session}"]`).forEach(item => item.classList.add('active'));
+        document.querySelectorAll('.current-session-copy').forEach(item => item.textContent = button.dataset.session);
+        document.querySelector('.global-project').textContent = button.dataset.project;
+        setNav(false);
+        announce(`Opened ${button.dataset.session}`);
+      });
+    });
+
+    document.querySelectorAll('.window-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.window-tab').forEach(item => { item.classList.remove('active'); item.setAttribute('aria-selected', 'false'); });
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+        announce(`Switched to ${tab.textContent}`);
+      });
+    });
+
+    document.querySelector('#artifactsAction').addEventListener('click', event => {
+      event.currentTarget.classList.toggle('active');
+      setInspector(true);
+      announce('Artifacts shown in Environment');
+    });
+    document.querySelector('#bottomArtifacts').addEventListener('click', () => setInspector(true));
+    document.querySelector('#openArtifacts').addEventListener('click', () => announce('4 artifacts available'));
+    document.querySelector('#splitAction').addEventListener('click', event => {
+      event.currentTarget.classList.toggle('active');
+      announce(event.currentTarget.classList.contains('active') ? 'Vertical split selected' : 'Terminal-only view selected');
+    });
+    document.querySelector('#composeAction').addEventListener('click', () => {
+      composer.querySelector('textarea').focus();
+      announce('Composer focused');
+    });
+    composer.addEventListener('submit', event => {
+      event.preventDefault();
+      const input = composer.querySelector('textarea');
+      if (!input.value.trim()) { input.focus(); announce('Type a prompt first'); return; }
+      announce('Prompt sent to 1:agent');
+      input.value = '';
+    });
+
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { setNav(false); setInspector(false); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); composer.querySelector('textarea').focus(); }
+    });
+
+    const mobileQuery = window.matchMedia('(max-width: 700px)');
+    function adaptInspector(event) {
+      if (event.matches) setInspector(false);
+      else setInspector(true);
+    }
+    mobileQuery.addEventListener('change', adaptInspector);
+    if (mobileQuery.matches) setInspector(false);
+  </script>
+</body>
+</html>
