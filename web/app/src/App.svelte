@@ -311,7 +311,7 @@
     <!-- Terminal / empty state -->
     <div class="flex-1 flex flex-col min-w-0 {view === 'sessions' ? 'hidden lg:flex' : 'flex'}">
       {#if activeSession}
-        <Terminal bind:this={terminalComponent} session={activeSession} {artifactEvent} onBack={goHome} usageEnabled={!!usageEnabled} />
+        <Terminal bind:this={terminalComponent} session={activeSession} {artifactEvent} onBack={goHome} {usage} usageEnabled={!!usageEnabled} />
       {:else}
         <!-- Desktop: no session selected yet -->
         <div class="flex-1 flex flex-col items-center justify-center text-gray-700 select-none">

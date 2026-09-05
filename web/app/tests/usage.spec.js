@@ -199,6 +199,60 @@ test.describe('provider usage widget — desktop (1280px)', () => {
   })
 })
 
+test.describe('provider usage summary in the session header — desktop (1440px)', () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  // The header only exists once a session is open, so each case opens one.
+  async function openSession(page) {
+    await page.getByRole('button', { name: /^Alpha/ }).click()
+    await page.locator('[aria-label="Session facts"]').waitFor()
+  }
+
+  test('the header pill shows each provider between the facts and the Status toggle', async ({ page }) => {
+    await mockBaseAPI(page)
+    await page.goto('/')
+    await openSession(page)
+
+    // Two buttons now carry the summarizing name (sidebar strip + header pill);
+    // the header one is the sibling of the facts strip.
+    const pill = page.locator('[aria-label="Session facts"] ~ button[aria-label^="Provider usage:"]')
+    await expect(pill).toBeVisible()
+    await expect(pill).toContainText('claude')
+    await expect(pill).toContainText('56%')
+    await expect(pill).toContainText('codex')
+    await expect(pill).toContainText('0%')
+    await expect(pill.locator('[data-tone="danger"]')).toHaveCount(1)
+  })
+
+  test('clicking the header pill opens the detail modal', async ({ page }) => {
+    await mockBaseAPI(page)
+    await page.goto('/')
+    await openSession(page)
+
+    await page.locator('[aria-label="Session facts"] ~ button[aria-label^="Provider usage:"]').click()
+    await expect(page.getByRole('dialog', { name: 'Provider usage details' })).toBeVisible()
+  })
+
+  test('the header pill degrades to a muted marker when Redline is unavailable', async ({ page }) => {
+    await mockBaseAPI(page, {
+      usage: { state: 'unavailable', message: 'Redline is not running on this host', updated_at: '', providers: [] },
+    })
+    await page.goto('/')
+    await openSession(page)
+
+    const pill = page.locator('[aria-label="Session facts"] ~ button[aria-label^="Provider usage"]')
+    await expect(pill).toContainText('n/a')
+  })
+
+  test('the header pill is not mounted when usage is disabled', async ({ page }) => {
+    await mockBaseAPI(page, { usageEnabled: false })
+    await page.goto('/')
+    await openSession(page)
+
+    await expect(page.locator('[aria-label="Session facts"] ~ button[aria-label^="Provider usage"]')).toHaveCount(0)
+  })
+})
+
 test.describe('provider usage widget — mobile (390px)', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 

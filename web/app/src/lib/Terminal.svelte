@@ -21,6 +21,7 @@
   export let artifactEvent = null
   export let onBack
   export let usageEnabled = false  // resolved usage_enabled setting, owned by App.svelte
+  export let usage = null          // provider usage state, owned by App.svelte
 
   let windows = []
   let windowPollTimer
@@ -1229,6 +1230,8 @@
   <!-- Session header: crumbs + title + status pill + facts (desktop) + Status toggle -->
   <SessionTopbar
     {session}
+    {usage}
+    {usageEnabled}
     statusOpen={statusPanelOpen}
     onToggleStatus={() => { statusPanelOpen = !statusPanelOpen; if (statusPanelOpen) acknowledgeAttention() }}
   />

@@ -6,9 +6,13 @@
   when opened from a notification, so every field access is guarded.
 -->
 <script>
+  import UsageHeaderPill from '../usage/UsageHeaderPill.svelte'
+
   export let session
   export let statusOpen = false
   export let onToggleStatus = () => {}
+  export let usage = null            // provider usage state, owned by App
+  export let usageEnabled = false    // resolved usage_enabled setting, owned by App
 
   const pillColor = {
     green: 'text-green-400',
@@ -68,6 +72,12 @@
       <span class="text-[11px] font-mono {fact.tone} shrink-0">{fact.label}</span>
     {/each}
   </div>
+
+  <!-- Provider usage summary: fills the open space the facts strip leaves,
+       giving always-on visibility without taking room from the rest of the app. -->
+  {#if usageEnabled}
+    <UsageHeaderPill {usage} />
+  {/if}
 
   <button
     on:click={onToggleStatus}
