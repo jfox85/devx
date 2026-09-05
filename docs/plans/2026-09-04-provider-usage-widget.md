@@ -1,6 +1,6 @@
 # Provider Usage Widget (Claude / Codex quota in the DevX UI)
 
-Status: proposal v2 — not yet implemented
+Status: implemented in `906e870`, `87e8c36`, `26613e3`, `7806b4f`, `8a999c3`
 
 ## Goal
 
@@ -254,11 +254,23 @@ desktop/main.go                   menu item
 - Colors match Redline's web dashboard (`<15` red, `<35` amber).
 - Existing Playwright suite passes with the new mocks.
 
-## Open Questions
+## Resolved Questions
 
-1. Non-macOS token default: `~/.config/redline/api-token`? (Redline currently only has a macOS standard path; `token_file` config covers any case.)
-2. Should `[↻]` refresh all providers or only the one section it sits in? Proposal: one global button, refreshes all.
-3. Poll interval 30s okay, or switch to Redline's SSE (`/v1/dashboard/events`) from the start?
+1. **Non-macOS token default** — `~/.config/redline/api-token`, with `usage.redline.token_file` overriding and `REDLINE_API_TOKEN` taking precedence over both (`usage/client.go` `DiscoverToken`).
+2. **`[↻]` scope** — one global button that refreshes all providers in parallel (capped at 4 concurrent).
+3. **Poll interval** — kept at 30s polling; Redline's SSE stays deferred.
+
+## Deviations from the plan as written
+
+Recorded during implementation; none change the delivered UX.
+
+- **`Provider.Error` is suppressed unless the provider has no snapshot.** The plan forwarded Redline's per-account error text alongside a usable snapshot. Security review flagged that this text can contain filesystem paths, so it is now dropped for the ok/stale cases and capped at 200 runes otherwise (`usage/model.go`).
+- **Redline connection settings are read from the global config only.** The plan implied ordinary viper resolution. Because a project-level `.devx/config.yaml` is repo-supplied, it could have pointed the client at a remote host and named an arbitrary 0600 file as the "token", exfiltrating it. `usage.redline.{url,token_file,allow_remote}` now come from `~/.config/devx/config.yaml` or `DEVX_*` env only (`web.UsageOptionsFromGlobalConfig`). `usage.enabled` and `usage.poll_interval` still honor project overrides.
+- **A bad Redline URL degrades instead of failing startup.** The plan made a non-loopback URL a startup error. It still returns an error from `ConfigureUsage`, but `devx web` and the desktop shell log it and run with usage disabled, matching the feature's "one dim line, not an error" failure model.
+- **`poll_interval` has a 5s floor** (`usage.MinPollInterval`). A bare number such as `poll_interval: 30` parses as 30ns and would have busy-looped against Redline.
+- **`POST /api/usage/refresh` always returns the `Usage` shape**, including for 404/502, so the SPA has one parser rather than branching on status before decoding.
+- **Desktop uses plain `Cmd+U`.** `Cmd+Shift+U` was already View Terminal Output; the two are distinct accelerators, so neither is ambiguous.
+- **A `loading` state was added** to the wire shape. The plan's UX table distinguished loading from unavailable, but the original state enum could not express it, leaving the SPA to sniff message strings.
 
 ## Deferred
 
