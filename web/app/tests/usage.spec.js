@@ -154,6 +154,49 @@ test.describe('provider usage widget — desktop (1280px)', () => {
 
     await expect(page.getByText('usage · redline not running')).toBeVisible()
   })
+
+  test('a provider error renders one red line on the strip and the message in the modal', async ({ page }) => {
+    const usage = usageFixture()
+    usage.providers[1] = {
+      ...usage.providers[1],
+      state: 'error',
+      error: 'no usage snapshot',
+      primary: null,
+      windows: [],
+    }
+    await mockBaseAPI(page, { usage })
+    await page.goto('/')
+
+    // Strip: the failing provider collapses to a single error line while the
+    // healthy provider keeps rendering its meter.
+    await expect(page.getByText('codex: no usage snapshot')).toBeVisible()
+    await expect(page.getByText('56%')).toBeVisible()
+    await expect(page.locator('[data-tone]')).toHaveCount(1)
+
+    // Modal: the full error text is shown and refresh stays available.
+    await page.getByRole('button', { name: /^Provider usage:/ }).click()
+    const dialog = page.getByRole('dialog', { name: 'Provider usage details' })
+    await expect(dialog.getByText('no usage snapshot')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Refresh provider usage' })).toBeEnabled()
+  })
+
+  test('the strip shows a loading line until the first usage payload arrives', async ({ page }) => {
+    let release = () => {}
+    const gate = new Promise(resolve => { release = resolve })
+    await mockBaseAPI(page)
+    // Re-route /api/usage to hang until we release it, so the loading state is
+    // observable rather than a sub-frame flash.
+    await page.route('**/api/usage', async route => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await gate
+      return route.fulfill({ json: usageFixture() })
+    })
+    await page.goto('/')
+
+    await expect(page.getByText('usage · …')).toBeVisible()
+    release()
+    await expect(page.getByText('56%')).toBeVisible()
+  })
 })
 
 test.describe('provider usage widget — mobile (390px)', () => {
@@ -163,6 +206,16 @@ test.describe('provider usage widget — mobile (390px)', () => {
     await mockBaseAPI(page)
     await page.goto('/')
     await expect(page.getByRole('button', { name: /^Provider usage:/ })).toBeVisible()
+  })
+
+  test('the unavailable line is hidden on mobile to save vertical space', async ({ page }) => {
+    await mockBaseAPI(page, {
+      usage: { state: 'unavailable', message: 'Redline is not running on this host', updated_at: '', providers: [] },
+    })
+    await page.goto('/')
+
+    // Rendered in the DOM (desktop shares this markup) but hidden below lg.
+    await expect(page.getByText('usage · redline not running')).toBeHidden()
   })
 
   test('mobile menu → Provider usage opens the modal from the terminal view', async ({ page }) => {
