@@ -9,6 +9,8 @@
   export let onInsertArtifact = () => {}
   export let onToggleArtifacts = () => {}
   export let onCycleSplit = () => {}
+  export let usageEnabled = false
+  export let onShowUsage = () => {}
 </script>
 
 <div class="lg:hidden relative shrink-0 border-l border-[#1e2d4a]" data-actions-menu>
@@ -28,7 +30,11 @@
       <button class="w-full text-left px-4 py-3 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={onNewArtifact}>New artifact</button>
       <button class="w-full text-left px-4 py-3 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={onInsertArtifact}>Insert artifact reference</button>
       <button class="w-full text-left px-4 py-3 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={onToggleArtifacts}>{artifactsIsVisible ? 'Hide artifacts panel' : 'Show artifacts panel'}</button>
-      <button class="w-full text-left px-4 py-3 text-sm font-mono text-gray-200 hover:bg-cyan-950/30" role="menuitem" on:click={onCycleSplit}>Change split: {splitMode}</button>
+      <button class="w-full text-left px-4 py-3 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 {usageEnabled ? 'border-b border-[#111a2e]' : ''}" role="menuitem" on:click={onCycleSplit}>Change split: {splitMode}</button>
+      {#if usageEnabled}
+        <div class="px-3 py-2 text-[10px] uppercase tracking-wide font-mono text-cyan-500 border-b border-[#1e2d4a]">usage</div>
+        <button class="w-full text-left px-4 py-3 text-sm font-mono text-gray-200 hover:bg-cyan-950/30" role="menuitem" on:click={onShowUsage}>Provider usage</button>
+      {/if}
     </div>
   {/if}
 </div>

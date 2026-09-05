@@ -437,6 +437,23 @@ export async function commitShareIntent(id, payload) {
   return data.artifacts || []
 }
 
+export async function getUsage() {
+  const res = await apiFetch('/usage')
+  await requireOK(res, 'Failed to load provider usage')
+  return res.json()
+}
+
+// refreshUsage triggers a live Redline refresh. The backend ALWAYS returns
+// the Usage shape in the body — even on 202 (throttled), 404 (disabled), and
+// 502 (rejected token) — so this deliberately does not throw on those status
+// codes; callers get a Usage object to render regardless of outcome.
+export async function refreshUsage() {
+  const res = await apiFetch('/usage/refresh', { method: 'POST' })
+  const data = await res.json().catch(() => null)
+  if (!data) throw new Error(`Failed to refresh usage: ${res.status}`)
+  return { usage: data, status: res.status, retryAfter: Number(res.headers.get('Retry-After')) || 0 }
+}
+
 export function isLoggedIn() {
   return !!localStorage.getItem('devx_authed')
 }

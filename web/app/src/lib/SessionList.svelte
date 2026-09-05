@@ -7,12 +7,15 @@
   import StaleReviewPanel from './StaleReviewPanel.svelte'
   import { buildSessionSections, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
   import { openExternal as openExternalDesktop } from './desktopBridge.js'
+  import UsageStrip from './usage/UsageStrip.svelte'
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
   export let onDeleteSession = null    // called when the currently-active session is deleted
   export let refreshTrigger = 0        // bump to force an immediate background reload
   export let flashSession = null       // session name to momentarily highlight
+  export let usage = null              // provider usage state, owned by App (see UsageStrip.svelte)
+  export let usageEnabled = false      // resolved (non-null, true) usage_enabled setting, owned by App
 
   let sessions = []
   let staleSummary = null
@@ -213,6 +216,9 @@
     } else if (e.shiftKey && (e.key === 'p' || e.key === 'P') && !inOtherInput && !inOtherControl && document.activeElement !== searchInputEl && document.activeElement?.tagName !== 'SELECT') {
       e.preventDefault()
       if (displayOrdered[selectedIndex]) handlePin(displayOrdered[selectedIndex], true)
+    } else if ((e.key === 'u' || e.key === 'U') && !e.metaKey && !e.ctrlKey && !e.altKey && !inOtherInput && !inOtherControl && document.activeElement !== searchInputEl) {
+      e.preventDefault()
+      window.dispatchEvent(new CustomEvent('devx:showUsage'))
     } else if (e.key === 'Escape') {
       searchQuery = ''
       searchInputEl?.blur()
@@ -802,6 +808,13 @@
     </div>
   {/if}
 
+  <!-- Provider usage strip: mounted above the key-hint bar per the plan's UI
+       section. Only mounted once App has resolved usage_enabled === true, so
+       a disabled install never renders even a momentary loading line. -->
+  {#if usageEnabled}
+    <UsageStrip {usage} />
+  {/if}
+
   <!-- Key hint bar (desktop only) -->
   <div class="hidden lg:flex items-center gap-4 px-3 h-7 border-t border-[#1e2d4a] text-[10px] font-mono text-gray-700 shrink-0 select-none">
     <button on:click={() => showStatusHelp = !showStatusHelp} class="text-gray-600 hover:text-cyan-400 border border-[#1e2d4a] px-1 leading-none" title="status color legend">?</button>
@@ -809,6 +822,7 @@
     <span>⏎ open</span>
     <span>/ search</span>
     <span>⇧P pin</span>
+    <span>u usage</span>
     <span class="ml-auto">^⇧C new</span>
     <span>^⇧S focus</span>
   </div>

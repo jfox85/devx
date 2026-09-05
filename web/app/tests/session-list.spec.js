@@ -36,6 +36,8 @@ async function mockSessionAPI(page) {
     await route.fulfill({ status: 204 })
   })
   await page.route('**/api/asks/pending', route => route.fulfill({ json: { requests: [] } }))
+  await page.route('**/api/settings', route => route.fulfill({ json: { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host', usage_enabled: false } }))
+  await page.route('**/api/usage', route => route.fulfill({ json: { state: 'disabled', message: '', updated_at: '', providers: [] } }))
   await page.route('**/api/events', route => route.abort())
   return {
     pinWrites: () => pinWrites,

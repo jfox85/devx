@@ -18,6 +18,7 @@
   export let session
   export let artifactEvent = null
   export let onBack
+  export let usageEnabled = false  // resolved usage_enabled setting, owned by App.svelte
 
   let windows = []
   let windowPollTimer
@@ -562,6 +563,11 @@
   function toggleArtifactsFromMenu() {
     actionsMenuOpen = false
     toggleArtifacts()
+  }
+
+  function showUsageFromMenu() {
+    actionsMenuOpen = false
+    window.dispatchEvent(new CustomEvent('devx:showUsage'))
   }
 
   function cycleSplitModeFromMenu() {
@@ -1122,7 +1128,9 @@
     // Defer non-critical chrome/artifact settings so switching sessions prioritizes
     // the terminal iframe connection first.
     setTimeout(loadWindows, 250)
-    setTimeout(() => getSettings().then(settings => { artifactTriggerKey = settings.artifact_trigger_key || 'Ctrl+Space' }).catch(() => {}), 500)
+    setTimeout(() => getSettings().then(settings => {
+      artifactTriggerKey = settings.artifact_trigger_key || 'Ctrl+Space'
+    }).catch(() => {}), 500)
     windowPollTimer = setInterval(loadWindows, 3000)
     // visualViewport fires on mobile when the address bar hides/shows or the
     // soft keyboard appears — more reliable than ResizeObserver alone.
@@ -1295,6 +1303,8 @@
       onInsertArtifact={openArtifactSearchFromMenu}
       onToggleArtifacts={toggleArtifactsFromMenu}
       onCycleSplit={cycleSplitModeFromMenu}
+      {usageEnabled}
+      onShowUsage={showUsageFromMenu}
     />
     <input
       bind:this={fileInputEl}

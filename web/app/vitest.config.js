@@ -11,6 +11,7 @@ export default defineConfig({
       'src/api.test.js',
       'src/lib/sessionOrdering.test.js',
       'src/lib/terminalActivity.test.js',
+      'src/lib/usage/usageFormat.test.js',
     ],
   },
 })
