@@ -59,8 +59,9 @@
     // Focus something inside the dialog so Escape/Tab reach handleModalKeydown
     // (attached to modalEl, which only sees events bubbling from its own
     // descendants) instead of being swallowed by whatever had focus before
-    // the modal opened (e.g. the strip button behind it).
-    closeButtonEl?.focus()
+    // the modal opened (e.g. the header pill behind it). modalEl is the
+    // fallback: it is tabindex="-1" and carries the handler itself.
+    ;(closeButtonEl || modalEl)?.focus()
   })
 
   onDestroy(() => clearTimeout(refreshTimer))

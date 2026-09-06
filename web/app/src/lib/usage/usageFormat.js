@@ -1,8 +1,8 @@
 // web/app/src/lib/usage/usageFormat.js
 //
 // Pure, DOM-free formatting helpers for the provider usage widget
-// (UsageStrip.svelte, UsageDetailModal.svelte). Kept dependency-free so they
-// can be unit tested with plain node/vitest — no Svelte, no fetch.
+// (UsageHeaderPill.svelte, UsageDetailModal.svelte). Kept dependency-free so
+// they can be unit tested with plain node/vitest — no Svelte, no fetch.
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -124,13 +124,6 @@ export function sampleAgePhrase(observedAt, now = new Date()) {
   if (age === '—') return 'at an unknown time'
   if (age === 'now') return 'just now'
   return `${age} ago`
-}
-
-// staleLabel renders the strip's "· stale 22m" suffix, or '' when fresh.
-export function staleLabel(observedAt, now = new Date()) {
-  const age = sampleAge(observedAt, now)
-  if (age === '—') return ''
-  return `stale ${age}`
 }
 
 // providerDisplayName picks a human label for a provider entry: prefer the

@@ -9,7 +9,6 @@ import {
   sampleAgePhrase,
   toneTextClass,
   toneBarClass,
-  staleLabel,
   stripAriaLabel,
 } from './usageFormat.js'
 
@@ -99,12 +98,6 @@ test('sampleAgePhrase reads as prose without a caller-appended "ago"', () => {
   // "now" and the invalid marker must not become "now ago" / "— ago".
   assert.equal(sampleAgePhrase('2026-09-04T16:31:20Z', now), 'just now')
   assert.equal(sampleAgePhrase(null, now), 'at an unknown time')
-})
-
-test('staleLabel renders "stale <age>" or empty for invalid input', () => {
-  const now = new Date('2026-09-04T16:31:23Z')
-  assert.equal(staleLabel('2026-09-04T16:09:23Z', now), 'stale 22m')
-  assert.equal(staleLabel(null, now), '')
 })
 
 test('stripAriaLabel summarizes ok providers with percent and window words', () => {

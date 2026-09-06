@@ -305,7 +305,7 @@
       {view === 'terminal' ? 'hidden lg:flex lg:w-72 xl:w-80' : 'flex w-full lg:w-72 xl:w-80'}
       border-r border-[#1e2d4a]
     ">
-      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} onDeleteSession={goHome} refreshTrigger={sessionRefreshTrigger} {flashSession} onSessionsLoaded={handleSessionsLoaded} {usage} usageEnabled={usageEnabled === true} />
+      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} onDeleteSession={goHome} refreshTrigger={sessionRefreshTrigger} {flashSession} onSessionsLoaded={handleSessionsLoaded} />
     </div>
 
     <!-- Terminal / empty state -->

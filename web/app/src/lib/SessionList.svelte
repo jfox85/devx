@@ -7,15 +7,12 @@
   import StaleReviewPanel from './StaleReviewPanel.svelte'
   import { buildSessionSections, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
   import { openExternal as openExternalDesktop } from './desktopBridge.js'
-  import UsageStrip from './usage/UsageStrip.svelte'
 
   export let onOpenTerminal
   export let activeSessionName = null  // set by parent for desktop highlight
   export let onDeleteSession = null    // called when the currently-active session is deleted
   export let refreshTrigger = 0        // bump to force an immediate background reload
   export let flashSession = null       // session name to momentarily highlight
-  export let usage = null              // provider usage state, owned by App (see UsageStrip.svelte)
-  export let usageEnabled = false      // resolved (non-null, true) usage_enabled setting, owned by App
   export let onSessionsLoaded = null   // called with the fresh session list after each load
 
   let sessions = []
@@ -808,13 +805,6 @@
         Target chips show <span class="text-gray-400">host</span>, <span class="text-gray-400">docker</span>, or <span class="text-gray-400">gatepost</span>. Gatepost sessions with logs expose a <span class="text-emerald-500">logs</span> link.
       </div>
     </div>
-  {/if}
-
-  <!-- Provider usage strip: mounted above the key-hint bar per the plan's UI
-       section. Only mounted once App has resolved usage_enabled === true, so
-       a disabled install never renders even a momentary loading line. -->
-  {#if usageEnabled}
-    <UsageStrip {usage} />
   {/if}
 
   <!-- Key hint bar (desktop only) -->

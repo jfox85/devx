@@ -87,34 +87,17 @@ async function mockBaseAPI(page, { usageEnabled = true, usage = usageFixture() }
 test.describe('provider usage widget — desktop (1280px)', () => {
   test.use({ viewport: { width: 1280, height: 720 } })
 
-  test('strip renders both providers with correct percent/labels and tone colors', async ({ page }) => {
+  // Usage lives in the session header, which only exists once a session is
+  // open, so every case here opens one first.
+  async function openSession(page) {
+    await page.getByRole('button', { name: /^Alpha/ }).click()
+    await page.locator('[aria-label="Session facts"]').waitFor()
+  }
+
+  test('the modal lists all windows including model-scoped pools', async ({ page }) => {
     await mockBaseAPI(page)
     await page.goto('/')
-
-    const strip = page.getByRole('button', { name: /^Provider usage:/ })
-    await expect(strip).toBeVisible()
-    // The outer button's accessible name summarizes every provider's numbers
-    // and window (per-row aria-labels were removed as misleading — this is
-    // now the one name AT actually announces).
-    await expect(strip).toHaveAccessibleName('Provider usage: Claude 56% remaining, 5h window; Codex 0% remaining, weekly window')
-    await expect(strip).toContainText('claude')
-    await expect(strip).toContainText('56%')
-    await expect(strip).toContainText('5h')
-    await expect(strip).toContainText('codex')
-    await expect(strip).toContainText('0%')
-    await expect(strip).toContainText('wk')
-
-    // ok tone (56% >= 35%) on claude, danger tone (0% < 15%) on codex — a
-    // stable data-tone contract, not a Tailwind class-name assertion.
-    const claudePercent = strip.locator('span', { hasText: '56%' })
-    await expect(claudePercent).toHaveAttribute('data-tone', 'ok')
-    const codexPercent = strip.locator('span', { hasText: '0%' })
-    await expect(codexPercent).toHaveAttribute('data-tone', 'danger')
-  })
-
-  test('clicking the strip opens the modal with all windows including a model-scoped one', async ({ page }) => {
-    await mockBaseAPI(page)
-    await page.goto('/')
+    await openSession(page)
 
     await page.getByRole('button', { name: /^Provider usage:/ }).click()
     const modal = page.getByRole('dialog', { name: 'Provider usage details' })
@@ -129,13 +112,18 @@ test.describe('provider usage widget — desktop (1280px)', () => {
     const codexSection = page.getByRole('region', { name: 'Codex usage' })
     await expect(codexSection).toContainText('Spark') // model-scoped window
 
-    await page.keyboard.press('Escape')
+    // Escape is handled on the dialog, which only sees events bubbling from its
+    // own descendants, so dispatch the key from inside it. Targeting the dialog
+    // rather than page.keyboard avoids depending on OS window focus, which is
+    // not guaranteed under Playwright's parallel workers.
+    await modal.press('Escape')
     await expect(modal).toBeHidden()
   })
 
   test('refresh button fires POST /api/usage/refresh', async ({ page }) => {
     const state = await mockBaseAPI(page)
     await page.goto('/')
+    await openSession(page)
 
     await page.getByRole('button', { name: /^Provider usage:/ }).click()
     const [request] = await Promise.all([
@@ -146,16 +134,7 @@ test.describe('provider usage widget — desktop (1280px)', () => {
     expect(state.refreshCalls()).toBe(1)
   })
 
-  test('unavailable state shows a single dim line on desktop', async ({ page }) => {
-    await mockBaseAPI(page, {
-      usage: { state: 'unavailable', message: 'Redline is not running on this host', updated_at: '', providers: [] },
-    })
-    await page.goto('/')
-
-    await expect(page.getByText('usage · redline not running')).toBeVisible()
-  })
-
-  test('a provider error renders one red line on the strip and the message in the modal', async ({ page }) => {
+  test('a provider error is reported in the header and detailed in the modal', async ({ page }) => {
     const usage = usageFixture()
     usage.providers[1] = {
       ...usage.providers[1],
@@ -166,36 +145,39 @@ test.describe('provider usage widget — desktop (1280px)', () => {
     }
     await mockBaseAPI(page, { usage })
     await page.goto('/')
+    await openSession(page)
 
-    // Strip: the failing provider collapses to a single error line while the
-    // healthy provider keeps rendering its meter.
-    await expect(page.getByText('codex: no usage snapshot')).toBeVisible()
-    await expect(page.getByText('56%')).toBeVisible()
-    await expect(page.locator('[data-tone]')).toHaveCount(1)
+    // The row has no space for an error string, so the failing provider is
+    // dropped from the meters and the modal carries the message.
+    const pill = page.getByRole('button', { name: /^Provider usage:/ })
+    await expect(pill).toContainText('claude')
+    await expect(pill).toContainText('56%')
+    await expect(pill).not.toContainText('codex')
 
-    // Modal: the full error text is shown and refresh stays available.
-    await page.getByRole('button', { name: /^Provider usage:/ }).click()
+    await pill.click()
     const dialog = page.getByRole('dialog', { name: 'Provider usage details' })
     await expect(dialog.getByText('no usage snapshot')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Refresh provider usage' })).toBeEnabled()
   })
 
-  test('the strip shows a loading line until the first usage payload arrives', async ({ page }) => {
-    let release = () => {}
-    const gate = new Promise(resolve => { release = resolve })
+  test('the u hotkey opens the modal from the session list', async ({ page }) => {
     await mockBaseAPI(page)
-    // Re-route /api/usage to hang until we release it, so the loading state is
-    // observable rather than a sub-frame flash.
-    await page.route('**/api/usage', async route => {
-      if (route.request().method() !== 'GET') return route.continue()
-      await gate
-      return route.fulfill({ json: usageFixture() })
-    })
     await page.goto('/')
+    await page.getByRole('button', { name: /^Alpha/ }).waitFor()
 
-    await expect(page.getByText('usage · …')).toBeVisible()
-    release()
-    await expect(page.getByText('56%')).toBeVisible()
+    await page.keyboard.press('u')
+    await expect(page.getByRole('dialog', { name: 'Provider usage details' })).toBeVisible()
+  })
+
+  test('the session list no longer carries a usage strip', async ({ page }) => {
+    await mockBaseAPI(page)
+    await page.goto('/')
+    await page.getByRole('button', { name: /^Alpha/ }).waitFor()
+
+    // With no session open there is no header, so nothing renders usage; the
+    // sidebar space belongs to the session list.
+    await expect(page.getByRole('button', { name: /^Provider usage:/ })).toHaveCount(0)
+    await expect(page.getByText('usage · redline not running')).toHaveCount(0)
   })
 })
 
@@ -213,14 +195,21 @@ test.describe('provider usage summary in the session header — desktop (1440px)
     await page.goto('/')
     await openSession(page)
 
-    // Two buttons now carry the summarizing name (sidebar strip + header pill);
-    // the header one is the sibling of the facts strip.
+    // The pill is the sibling of the facts strip, i.e. the open space between
+    // the session facts and the Status toggle.
     const pill = page.locator('[aria-label="Session facts"] ~ button[aria-label^="Provider usage:"]')
     await expect(pill).toBeVisible()
+    await expect(pill).toHaveAccessibleName('Provider usage: Claude 56% remaining, 5h window; Codex 0% remaining, weekly window')
     await expect(pill).toContainText('claude')
     await expect(pill).toContainText('56%')
+    await expect(pill).toContainText('5h')
     await expect(pill).toContainText('codex')
     await expect(pill).toContainText('0%')
+    await expect(pill).toContainText('wk')
+
+    // ok tone (56% >= 35%) on claude, danger tone (0% < 15%) on codex — a
+    // stable data-tone contract, not a Tailwind class-name assertion.
+    await expect(pill.locator('[data-tone="ok"]')).toHaveCount(1)
     await expect(pill.locator('[data-tone="danger"]')).toHaveCount(1)
   })
 
@@ -256,20 +245,14 @@ test.describe('provider usage summary in the session header — desktop (1440px)
 test.describe('provider usage widget — mobile (390px)', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 
-  test('strip is visible in the sessions view', async ({ page }) => {
+  test('the sessions view is free of usage chrome', async ({ page }) => {
     await mockBaseAPI(page)
     await page.goto('/')
-    await expect(page.getByRole('button', { name: /^Provider usage:/ })).toBeVisible()
-  })
+    await page.getByRole('button', { name: /^Alpha/ }).waitFor()
 
-  test('the unavailable line is hidden on mobile to save vertical space', async ({ page }) => {
-    await mockBaseAPI(page, {
-      usage: { state: 'unavailable', message: 'Redline is not running on this host', updated_at: '', providers: [] },
-    })
-    await page.goto('/')
-
-    // Rendered in the DOM (desktop shares this markup) but hidden below lg.
-    await expect(page.getByText('usage · redline not running')).toBeHidden()
+    // v2: usage reaches mobile through the actions menu only, so the list keeps
+    // its vertical space. The session header (and its pill) is desktop-only.
+    await expect(page.getByRole('button', { name: /^Provider usage:/ })).toHaveCount(0)
   })
 
   test('mobile menu → Provider usage opens the modal from the terminal view', async ({ page }) => {

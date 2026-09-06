@@ -3,10 +3,11 @@
   Compact provider-usage summary for the session header's open middle section
   (SessionTopbar), sitting between the session facts and the Status toggle.
 
-  This is the same data as UsageStrip but tuned for a single 48px-tall row: one
-  short group per provider (name · bar · percent) and no reset times, so it
-  reads at a glance without competing with the facts strip. Clicking it opens
-  the same detail modal via the shared devx:showUsage event.
+  Tuned for a single 48px-tall row: one short group per provider (name · bar ·
+  percent) and no reset times, so it reads at a glance without competing with
+  the facts strip. Clicking it opens the detail modal via the shared
+  devx:showUsage event, as do the `u` hotkey, the mobile actions menu, and the
+  desktop Cmd+U menu item.
 
   Desktop/tablet only: the session header itself is hidden below lg, where the
   actions menu carries the "Provider usage" entry instead.
