@@ -12,6 +12,7 @@ export default defineConfig({
       'src/lib/sessionOrdering.test.js',
       'src/lib/terminalActivity.test.js',
       'src/lib/usage/usageFormat.test.js',
+      'src/lib/composer/composerStorage.test.js',
     ],
   },
 })
