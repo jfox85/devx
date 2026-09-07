@@ -1,19 +1,76 @@
-// Per-session UI state, kept in memory for the app lifetime.
-// Composer drafts are intentionally memory-only (never persisted) so prompt
-// text doesn't outlive the tab. Layout chrome (split mode, artifact pane) is
-// also in-memory: it restores across session switches, which is the case that
-// matters, without persisting anything.
-const drafts = new Map()
+// Per-session UI state, kept for the app lifetime.
+// Composer drafts and prompt history are persisted to localStorage via the
+// composerStorage singleton below (see
+// docs/plans/2026-09-05-composer-draft-persistence-and-history.md): a typed,
+// unsent prompt survives a reload/tab-discard, scoped per session. Layout
+// chrome (split mode, artifact pane) remains in-memory only: it restores
+// across session switches within the tab, which is the case that matters,
+// without persisting anything.
+import { createComposerStorage, mergeRecall as mergeRecallPure } from '../composer/composerStorage.js'
+
 const chrome = new Map()
 
+const composerStorage = createComposerStorage()
+
 export function getComposerDraft(sessionName) {
-  return drafts.get(sessionName) || ''
+  return composerStorage.getSession(sessionName).draft
 }
 
 export function setComposerDraft(sessionName, value) {
   if (!sessionName) return
-  if (value) drafts.set(sessionName, value)
-  else drafts.delete(sessionName)
+  composerStorage.setDraft(sessionName, value)
+}
+
+export function clearComposerDraft(sessionName) {
+  if (!sessionName) return
+  composerStorage.clearDraft(sessionName)
+}
+
+export function getComposerSession(sessionName) {
+  return composerStorage.getSession(sessionName)
+}
+
+export function markComposerSending(sessionName, sending) {
+  composerStorage.markSending(sessionName, sending)
+}
+
+export function recordComposerSend(sessionName, text, at) {
+  composerStorage.recordSend(sessionName, text, at)
+}
+
+export function clearComposerHistory(sessionName) {
+  composerStorage.clearHistory(sessionName)
+}
+
+// Client-only privacy preferences (devx_composer_prefs_v1): { draft, history },
+// both default true. Exposed here so PromptHistorySheet — which must not
+// import storage directly — can read/write them via props/callbacks wired
+// through PromptComposer. Setting either to false purges its already-stored
+// data via composerStorage's purge semantics (see composerStorage.js); it
+// never touches text currently sitting in a textarea (memory-only draft
+// state lives in the Svelte component, not here).
+export function getComposerPrefs() {
+  return composerStorage.getPrefs()
+}
+
+export function setComposerPrefs(partial) {
+  return composerStorage.setPrefs(partial)
+}
+
+export function mergeComposerRecall(currentText, entryText) {
+  return mergeRecallPure(currentText, entryText)
+}
+
+export function flushComposerDrafts(sessionName) {
+  composerStorage.flush(sessionName)
+}
+
+export function pruneComposerSessions(names) {
+  composerStorage.pruneSessions(names)
+}
+
+export function disposeComposerStorage() {
+  composerStorage.dispose()
 }
 
 // Layout chrome: { splitMode, artifactPaneOpen, selectedArtifactID }

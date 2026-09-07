@@ -37,14 +37,17 @@ History records **sends the user initiated** — both `submit: true` (↵) and `
 
 Mobile is where retyping hurts, so v1 ships the docked composer only; the desktop overlay gets the same sheet as a fast-follow once the interaction has been used in anger.
 
-- **Docked (mobile), v1:** a `⏱` button left of `¶`, shown only when history is non-empty. Opens a bottom sheet listing recent prompts (newest first) with relative timestamps.
-- **Overlay (desktop), deferred:** a `history` button in the overlay footer opening the same component.
+- **Docked (mobile), v1:** a `⏱` button left of `¶`, **always visible** (not gated on `history.length > 0`) so the privacy controls in the sheet's footer (below) stay reachable even when history is empty or disabled. Opens a bottom sheet listing recent prompts (newest first) with relative timestamps; with no history, the sheet still opens showing an empty state plus the prefs footer.
+- **Overlay (desktop), deferred:** a `history` button in the overlay footer opening the same component. Remains absent from the desktop overlay in v1, per the original decision.
+- **iOS keyboard dismissal:** opening the sheet explicitly blurs the composer textarea *before* flipping the sheet open, so the on-screen keyboard collapses first instead of fighting the sheet's entrance for viewport space.
+- **Safe-area:** the sheet's inner container carries `pb-[env(safe-area-inset-bottom)]` so its content (including the prefs footer) isn't obscured by a device's home indicator/notch.
+- **Focus:** the history trigger button is bound and refocused after an ordinary close; a recall continues to focus the textarea, as before.
 
 Draft persistence itself is variant-independent, so desktop still gets the problem-2 fix in v1.
 
 Tapping an entry **loads it into the composer** (replacing current text only if the box is empty; otherwise appending on a new line, so recall never destroys what you're typing). It does not auto-send — the user stays in control, which matters when the reason it's in history is that sending misbehaved.
 
-The sheet also offers **clear history** for this session.
+The sheet also offers **clear history** for this session, gated behind a two-step confirmation: the first tap arms the control (label flips to a danger-toned `[confirm clear?]`) without clearing anything; a second tap within 5 seconds performs the clear. The confirmation disarms automatically after 5 seconds, on Escape, and on the sheet closing/unmounting, so a stray later tap can never clear history. Clearing keeps the sheet open, showing the empty state — it is not treated as a close.
 
 ### Storage: `localStorage`, one key **per session**, capped and resilient
 
@@ -74,6 +77,10 @@ The user explicitly chose default-on persistence after reviewing the privacy tra
 
 This intentionally changes the older control-deck plan's default (*"Sensitive prompt history is not persisted by default"*) based on an explicit product decision. The escape hatch remains client-only (`devx_composer_prefs_v1`): `draft` and `history` both default on, turning either off **purges** its stored data, and the history sheet has a per-session **clear history** action. The server has no enforcement role and gains no endpoint or setting.
 
+These preferences are reachable from the product UI itself, not only via `localStorage` devtools: the always-visible `⏱` button (see above) opens a bottom sheet whose `local storage` footer renders two compact toggles — `save drafts on this device` and `keep sent prompt history` — both default checked, each with a stable `aria-label` and the explanatory copy `saved only in this browser`. Turning history off purges it immediately and keeps the sheet open; turning it back on re-enables future recording. Turning drafts off purges the *persisted* draft only — text currently sitting in the textarea is untouched (memory-only for the rest of the page lifetime), matching the storage layer's existing memory-only-on-quota-failure behavior.
+
+**Non-goal:** DevX assumes a single-user local browser profile. A generic `401`/token-rotation event does **not** purge drafts or history — doing so would turn a transient auth failure into silent data loss. Purging is a deliberate user action taken through the client controls described above (or clearing `localStorage` directly), never an automatic side effect of an auth error.
+
 The desktop security invariant that matters (`docs/plans/2026-06-11-devx-desktop-control-deck.md:64-95`) forbids **tokens** in localStorage; prompt text is a different class of data, and the control-deck plan explicitly contemplated enabling draft persistence later.
 
 ### Sessions that go away
@@ -91,7 +98,7 @@ web/app/src/lib/composer/PromptHistorySheet.svelte NEW — recall list (bottom s
 web/app/src/lib/composer/PromptComposer.svelte     draft restore/persist, history append on send, recall button, in-flight hint
 web/app/src/lib/stores/sessionUiState.js           delegate draft get/set to composerStorage; update the stale comment
 web/app/src/lib/SessionList.svelte                 call pruneSessions after a load
-web/app/tests/composer.spec.js                     NEW — Playwright: reload persistence, recall, opt-in, disabled mode
+web/app/tests/composer.spec.js                     NEW — Playwright: reload persistence, recall, default-on, disabled mode
 ```
 
 No Go, API, or `web/dist`-adjacent backend changes: this is a client-only feature.
@@ -116,12 +123,14 @@ No Go, API, or `web/dist`-adjacent backend changes: this is a client-only featur
 
 | State | Docked (mobile), v1 | Overlay (desktop), v1 |
 |---|---|---|
-| History off (explicit preference) | no `⏱`; stored history purged | draft persistence only |
-| History on (default), empty | no `⏱` button yet | — |
+| History off (explicit preference) | `⏱` still visible; sheet opens empty with prefs footer | draft persistence only |
+| History on (default), empty | `⏱` still visible; sheet opens empty with prefs footer | — |
 | History on, non-empty | `⏱` left of `¶` | — (deferred) |
-| Sheet open | bottom sheet, newest first, relative times, tap to recall | — |
+| Sheet open | bottom sheet, newest first, relative times, tap to recall, safe-area bottom padding | — |
 | Recall into empty box | replaces text, focuses end | — |
 | Recall into non-empty box | appends after a newline | — |
+| Clear history | two-step: first tap arms `[confirm clear?]`, second clears; disarms after 5s / Escape / close | — |
+| Sheet close (ordinary) | focus returns to the `⏱` trigger button | — |
 | Draft restored mid-send | subdued "may already have been sent" hint | same |
 | Prefs off | drafts memory-only, stored data purged | same |
 | Storage unavailable | everything works, memory-only | same |

@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "npm run test:node && npm run test:unit",
-    "test:node": "node --test src/*.test.js src/lib/*.test.js src/lib/usage/*.test.js src/lib/composer/*.test.js",
+    "test:node": "node --test src/*.test.js src/lib/*.test.js src/lib/usage/*.test.js src/lib/composer/*.test.js src/lib/stores/*.test.js",
     "test:unit": "vitest run --config vitest.config.js",
     "test:ui": "playwright test"
   },

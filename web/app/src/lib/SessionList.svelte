@@ -2,7 +2,7 @@
 <script>
   import { onMount, tick } from 'svelte'
   import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, colorSession, pinSession, unpinSession } from '../api.js'
-  import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
+  import { markPrewarmed, markSwitchStart, pruneComposerSessions } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
   import StaleReviewPanel from './StaleReviewPanel.svelte'
   import { buildSessionSections, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
@@ -120,6 +120,11 @@
       const data = await listSessionsWithSummary()
       if (requestID !== loadRequestID) return
       sessions = data.sessions || []
+      // Safe here specifically because GET /api/sessions returns every session
+      // (session.LoadSessions() with no filter/pagination) — never a partial or
+      // recent-only view. If that ever changes, this prune call must move to
+      // wherever the client next holds a truly complete session list.
+      pruneComposerSessions(sessions.map(s => s.name))
       onSessionsLoaded?.(sessions)
       staleSummary = data.stale_summary || null
       if (!showStaleReview) staleReviewSummary = null

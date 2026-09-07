@@ -86,6 +86,20 @@ test('recent/projects preference and pinning remain deterministic', async ({ pag
   expect(state.pinWrites()).toBe(1)
 })
 
+test('a full session list load prunes stored composer drafts/history for sessions that no longer exist', async ({ page }) => {
+  await mockSessionAPI(page)
+  await page.addInitScript(() => {
+    localStorage.setItem('devx_composer_v1:older-alpha', JSON.stringify({ draft: 'still here' }))
+    localStorage.setItem('devx_composer_v1:deleted-gone', JSON.stringify({ draft: 'should be pruned' }))
+  })
+  await page.goto('/')
+  await expect(page.getByRole('listitem')).toHaveCount(2)
+
+  await expect.poll(async () => page.evaluate(() => localStorage.getItem('devx_composer_v1:deleted-gone'))).toBeNull()
+  // A session still present in the (authoritative, unpaginated) list is untouched.
+  expect(await page.evaluate(() => localStorage.getItem('devx_composer_v1:older-alpha'))).not.toBeNull()
+})
+
 test('failed initial load offers a working retry', async ({ page }) => {
   const state = await mockSessionAPI(page)
   state.failNextSessions()
