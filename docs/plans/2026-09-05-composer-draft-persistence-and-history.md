@@ -1,6 +1,6 @@
 # Composer Draft Persistence and Prompt History
 
-Status: proposal — not yet implemented
+Status: implemented in `96458d5` and `0c8728a`
 
 ## Goal
 
@@ -152,6 +152,16 @@ No Go, API, or `web/dist`-adjacent backend changes: this is a client-only featur
 - Sending still works with `localStorage` unavailable or full.
 - Draft/history stay client-only; disabling either default-on preference purges its stored data.
 - No prompt text crosses `/api/*`; no new endpoint, no Go changes.
+
+## Deviations and implementation notes
+
+- **History defaults on.** The first reviewed proposal made durable sent-prompt history opt-in to preserve the older control-deck plan's privacy default. The user explicitly chose default-on after confirming the data remains browser-local. Both preferences still have visible mobile controls that purge stored data when disabled.
+- **The mobile `⏱` button is always visible.** The initial proposal showed it only when history was non-empty. It now doubles as the entry point for client-only persistence controls, so it must remain reachable after history is cleared or disabled.
+- **Clear history uses two taps.** Review found that one tap irreversibly deleting up to 20 prompts was inconsistent with DevX's destructive-action convention. `[clear]` arms `[confirm clear?]` for five seconds.
+- **Generic 401 responses do not purge composer data.** DevX assumes a single-user local browser profile. Purging on token rotation or a transient authentication failure would turn an access problem into exactly the draft loss this feature prevents; users purge through the visible client controls instead.
+- **Desktop history UI remains deferred.** Draft persistence works for both variants, but the history sheet ships only in the mobile docked composer as requested.
+- **Storage implementation required stronger multi-tab semantics than the first draft.** The original single-blob design was replaced before implementation with per-session keys. Review then added same-session history union, cross-tab preference rechecks, true timestamp-sorted LRU, reload-aware budget accounting, and caps on loaded/corrupt values.
+- **TDD process deviation:** Component 1's first worker wrote the complete public-interface test suite before implementation instead of vertical red→green slices. Review exposed the blind spot (zero shared-storage instances), so the module was not committed until each multi-tab/reload defect had its own failing behavioral test and fix. Component 2 was implemented and reviewed in vertical behavior slices.
 
 ## Deferred
 
