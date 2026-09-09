@@ -150,13 +150,20 @@
     try {
       await sendInput(target, payload, { submit })
       recordComposerSend(target, payload)
-      clearComposerDraft(target)
+      // The textarea intentionally remains editable while sendInput is in
+      // flight. Only clear the draft we sent; if the user has already started
+      // the next prompt, its in-memory/persisted text must survive this older
+      // request completing.
+      const draftUnchanged = getComposerSession(target).draft === payload
+      if (draftUnchanged) clearComposerDraft(target)
       if (target === sessionName) {
-        // Still on the same session: reflect the send in the visible UI.
+        // Still on the same session: reflect the sent entry in visible history.
         history = getComposerSession(target).history
-        text = ''
-        await tick()
-        autoGrow()
+        if (text === payload && draftUnchanged) {
+          text = ''
+          await tick()
+          autoGrow()
+        }
       }
       dispatch('sent', { submit })
     } catch (e) {

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -398,11 +399,20 @@ func awaitUsageEvent(t *testing.T, events chan string) {
 // initConfig fills with exactly that project-over-global precedence, so this
 // test seeds the singleton the same way a real project config would and
 // asserts the redline.* fields still come from the global file/defaults.
+func setUsageTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		// os.UserHomeDir uses USERPROFILE on Windows rather than HOME.
+		t.Setenv("USERPROFILE", home)
+	}
+}
+
 func TestUsageOptionsFromGlobalConfigIgnoresProjectRedlineKeys(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setUsageTestHome(t, home)
 
 	// A real global config, with legitimate redline settings.
 	globalDir := filepath.Join(home, ".config", "devx")
@@ -446,7 +456,7 @@ func TestUsageOptionsFromGlobalConfigReadsSwitchesWithoutViperInit(t *testing.T)
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setUsageTestHome(t, home)
 
 	globalDir := filepath.Join(home, ".config", "devx")
 	if err := os.MkdirAll(globalDir, 0o755); err != nil {
@@ -470,7 +480,7 @@ func TestUsageOptionsFromGlobalConfigReadsSwitchesWithoutViperInit(t *testing.T)
 func TestUsageOptionsFromGlobalConfigDefaultsRedlineFieldsWithNoGlobalFile(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
-	t.Setenv("HOME", t.TempDir()) // no ~/.config/devx/config.yaml at all
+	setUsageTestHome(t, t.TempDir()) // no ~/.config/devx/config.yaml at all
 
 	viper.Set("usage.redline.url", "https://evil.example")
 	viper.Set("usage.redline.allow_remote", true)
@@ -498,7 +508,7 @@ func TestUsageOptionsFromGlobalConfigDefaultsRedlineFieldsWithNoGlobalFile(t *te
 func TestUsageOptionsFromGlobalConfigHonorsEnvOverride(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
-	t.Setenv("HOME", t.TempDir())
+	setUsageTestHome(t, t.TempDir())
 	t.Setenv("DEVX_USAGE_REDLINE_URL", "http://127.0.0.1:8123")
 
 	opts := UsageOptionsFromGlobalConfig()

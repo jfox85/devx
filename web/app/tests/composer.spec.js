@@ -193,6 +193,32 @@ test.describe('composer draft persistence — mobile (390px)', () => {
     await expect(page.getByRole('dialog', { name: 'Prompt history for alpha' })).toContainText('sent from alpha')
   })
 
+  test('typing the next prompt while a send is in flight preserves that new draft when the send resolves', async ({ page }) => {
+    let releaseSend
+    const sendGate = new Promise(resolve => { releaseSend = resolve })
+    await mockBaseAPI(page, {
+      sendImpl: async (route) => { await sendGate; return route.fulfill({ status: 200, json: {} }) },
+    })
+    await page.goto('/')
+    await openSession(page, 'Alpha')
+
+    const composer = page.getByLabel('terminal input composer')
+    await composer.fill('first prompt being sent')
+    await page.getByTitle('send to terminal').click()
+    await composer.fill('next prompt typed while waiting')
+    await page.waitForTimeout(500) // let the new draft persist before send resolves
+
+    releaseSend()
+    await page.waitForTimeout(300)
+    await expect(composer).toHaveValue('next prompt typed while waiting')
+
+    await page.reload()
+    await openSession(page, 'Alpha')
+    await expect(composer).toHaveValue('next prompt typed while waiting')
+    await page.getByTitle('prompt history').click()
+    await expect(page.getByRole('dialog', { name: 'Prompt history for alpha' })).toContainText('first prompt being sent')
+  })
+
   test('a failed send keeps the text, shows an error, and does not record history', async ({ page }) => {
     await mockBaseAPI(page, {
       sendImpl: (route) => route.fulfill({ status: 500, json: { error: 'send failed' } }),
