@@ -51,6 +51,7 @@
   // "usage · …" loading flash — it renders nothing at all, per the plan.
   let usage = null
   let usageEnabled = null
+  let usageDashboardURL = ''
   let usageModalOpen = false
 
   async function loadUsage() {
@@ -114,6 +115,7 @@
       requestNotificationPermission()
       getSettings().then(settings => {
         usageEnabled = !!settings.usage_enabled
+        usageDashboardURL = settings.usage_dashboard_url || ''
         if (usageEnabled) loadUsage()
       }).catch(() => { usageEnabled = false })
       document.addEventListener('visibilitychange', handleUsageVisibilityChange)
@@ -344,7 +346,7 @@
     <AskApprovalModal />
 
     {#if usageEnabled && usageModalOpen}
-      <UsageDetailModal {usage} onClose={() => usageModalOpen = false} />
+      <UsageDetailModal {usage} {usageDashboardURL} onUsageUpdate={(fresh) => usage = fresh} onClose={() => usageModalOpen = false} />
     {/if}
 
     <!-- Quick switcher: Cmd/Ctrl+P fuzzy session jump -->

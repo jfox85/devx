@@ -133,6 +133,11 @@
   async function send({ submit }) {
     const payload = text
     if (!payload.trim() || sending) return
+    // Pin the target: `sessionName` is a reactive prop and this component stays
+    // mounted across session switches (sidebar / quick switcher), so by the
+    // time sendInput resolves the user may be looking at a different session.
+    // Every storage write below must go to the session the prompt was sent to.
+    const target = sessionName
     sending = true
     error = ''
     showSendingWarning = false
@@ -141,21 +146,24 @@
     // draft: if the tab is discarded mid-send (the mobile-backgrounding case
     // this whole feature targets), a restored draft with `sending: true` warns
     // the user instead of silently inviting a duplicate send.
-    markComposerSending(sessionName, true)
+    markComposerSending(target, true)
     try {
-      await sendInput(sessionName, payload, { submit })
-      recordComposerSend(sessionName, payload)
-      history = getComposerSession(sessionName).history
-      text = ''
-      clearComposerDraft(sessionName)
-      await tick()
-      autoGrow()
+      await sendInput(target, payload, { submit })
+      recordComposerSend(target, payload)
+      clearComposerDraft(target)
+      if (target === sessionName) {
+        // Still on the same session: reflect the send in the visible UI.
+        history = getComposerSession(target).history
+        text = ''
+        await tick()
+        autoGrow()
+      }
       dispatch('sent', { submit })
     } catch (e) {
-      error = e.message || 'Failed to send input'
+      if (target === sessionName) error = e.message || 'Failed to send input'
     } finally {
       sending = false
-      markComposerSending(sessionName, false)
+      markComposerSending(target, false)
     }
   }
 

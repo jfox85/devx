@@ -48,14 +48,25 @@ func UsageOptionsFromGlobalConfig() UsageOptions {
 		PollInterval: usage.DefaultPollInterval,
 		RedlineURL:   usage.DefaultBaseURL,
 	}
-	if viper.IsSet("usage.enabled") {
+	global := globalOnlyViper()
+
+	// The on/off switch and poll interval are harmless to take from a project
+	// config, so prefer the merged singleton (project > global > env) when the
+	// CLI's initConfig populated it. The desktop app never runs initConfig,
+	// leaving the singleton empty; fall back to the global file so a user's
+	// `usage.enabled: false` is honored there too instead of silently ignored.
+	switch {
+	case viper.IsSet("usage.enabled"):
 		opts.Enabled = viper.GetBool("usage.enabled")
+	case global.IsSet("usage.enabled"):
+		opts.Enabled = global.GetBool("usage.enabled")
 	}
 	if d := viper.GetDuration("usage.poll_interval"); d > 0 {
 		opts.PollInterval = d
+	} else if d := global.GetDuration("usage.poll_interval"); d > 0 {
+		opts.PollInterval = d
 	}
 
-	global := globalOnlyViper()
 	if url := global.GetString("usage.redline.url"); url != "" {
 		opts.RedlineURL = url
 	}
@@ -214,6 +225,18 @@ func (s *Server) usageEnabled() bool {
 	s.bgMu.Lock()
 	defer s.bgMu.Unlock()
 	return s.usageOpts != nil
+}
+
+// usageDashboardURL returns the validated Redline base URL backing this
+// server. Clients use it only as an optional dashboard link; an empty value
+// means usage is disabled or configuration validation failed.
+func (s *Server) usageDashboardURL() string {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.usageOpts == nil {
+		return ""
+	}
+	return s.usageOpts.RedlineURL
 }
 
 // broadcastUsage pushes a changed usage payload to connected SPA clients.

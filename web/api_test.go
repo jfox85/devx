@@ -69,6 +69,9 @@ func TestGetSettingsReturnsArtifactTriggerKey(t *testing.T) {
 	if got := resp["usage_enabled"]; got != true {
 		t.Fatalf("usage_enabled = %#v, want true", got)
 	}
+	if got := resp["usage_dashboard_url"]; got != "http://127.0.0.1:7436" {
+		t.Fatalf("usage_dashboard_url = %#v, want configured validated Redline URL", got)
+	}
 }
 
 func TestGetSettingsReportsUsageDisabledFromServerState(t *testing.T) {
@@ -89,6 +92,9 @@ func TestGetSettingsReportsUsageDisabledFromServerState(t *testing.T) {
 	}
 	if got := resp["usage_enabled"]; got != false {
 		t.Fatalf("usage_enabled = %#v, want false when ConfigureUsage disabled usage", got)
+	}
+	if got := resp["usage_dashboard_url"]; got != "" {
+		t.Fatalf("usage_dashboard_url = %#v, want empty when usage is disabled", got)
 	}
 }
 

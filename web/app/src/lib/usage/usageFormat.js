@@ -145,6 +145,29 @@ function windowLabelWords(label) {
   return `${label} window`
 }
 
+function isLoopbackHost(hostname) {
+  const host = String(hostname || '').toLowerCase()
+  return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host)
+}
+
+// Return the configured dashboard URL only when it is meaningful on this
+// client. Native desktop runs on the DevX/Redline host. A remote browser must
+// not receive a loopback link — 127.0.0.1 there points at the phone/laptop
+// viewing DevX, not the server. Non-loopback URLs were explicitly enabled by
+// the server's allow_remote validation and may be reachable from the client.
+export function reachableDashboardURL(configuredURL, pageURL, desktop = false) {
+  if (!configuredURL) return ''
+  try {
+    const dashboard = new URL(configuredURL)
+    if (dashboard.protocol !== 'http:' && dashboard.protocol !== 'https:') return ''
+    if (desktop || !isLoopbackHost(dashboard.hostname)) return configuredURL
+    const page = new URL(pageURL)
+    return isLoopbackHost(page.hostname) ? configuredURL : ''
+  } catch {
+    return ''
+  }
+}
+
 // stripAriaLabel composes ONE summarizing accessible name for the strip's
 // outer button from the current usage data, e.g.:
 //   "Provider usage: Claude 56% remaining, 5h window; Codex 0% remaining, weekly window"

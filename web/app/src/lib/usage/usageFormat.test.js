@@ -10,6 +10,7 @@ import {
   toneTextClass,
   toneBarClass,
   stripAriaLabel,
+  reachableDashboardURL,
 } from './usageFormat.js'
 
 test('tone classifies remaining fraction against Redline thresholds', () => {
@@ -138,4 +139,18 @@ test('stripAriaLabel falls back to a bare label and title-cased provider id', ()
 test('stripAriaLabel handles no providers', () => {
   assert.equal(stripAriaLabel({ providers: [] }), 'Provider usage')
   assert.equal(stripAriaLabel(null), 'Provider usage')
+})
+
+test('reachableDashboardURL exposes the configured URL only when the client can reach it', () => {
+  // Local browser and native desktop run on the Redline host.
+  assert.equal(reachableDashboardURL('http://127.0.0.1:9001', 'http://127.0.0.1:7777/', false), 'http://127.0.0.1:9001')
+  assert.equal(reachableDashboardURL('http://localhost:9001', 'https://devx.tail.example/', true), 'http://localhost:9001')
+
+  // A remote/Tailscale browser's loopback is the phone, not the DevX host.
+  assert.equal(reachableDashboardURL('http://127.0.0.1:9001', 'https://devx.tail.example/', false), '')
+
+  // An explicitly configured non-loopback Redline URL may be client-reachable.
+  assert.equal(reachableDashboardURL('https://redline.tail.example/', 'https://devx.tail.example/', false), 'https://redline.tail.example/')
+  assert.equal(reachableDashboardURL('file:///tmp/redline', 'http://127.0.0.1:7777/', false), '')
+  assert.equal(reachableDashboardURL('', 'http://127.0.0.1:7777/', false), '')
 })

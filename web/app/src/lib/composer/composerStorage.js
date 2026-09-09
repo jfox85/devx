@@ -511,8 +511,10 @@ export function createComposerStorage(storage = globalThis.localStorage, options
     for (const name of allKnownNames()) {
       // Leave the in-memory draft alone (still usable for this page lifetime);
       // only the persisted representation drops it, via the prefs gate in
-      // writeSessionRaw.
-      writeSessionRaw(name, loadSessionState(name))
+      // writeSessionRaw. This purge is authoritative for the draft field
+      // only, so history must still union with what is on disk — another tab
+      // may have recorded a send since this instance loaded the session.
+      writeSessionRaw(name, mergeWithPersisted(name, loadSessionState(name)))
     }
     maintainCaps()
   }

@@ -5,6 +5,7 @@
   Shows only fields the API actually returns; the session prop may be a stub.
 -->
 <script>
+  import { onMount } from 'svelte'
   import { relativeActivity } from '../sessionOrdering.js'
   import { openExternal as openExternalDesktop } from '../desktopBridge.js'
 
@@ -12,6 +13,11 @@
   export let onClose = () => {}
 
   let panelEl
+
+  // The Escape/Tab handler is attached to panelEl and only receives events
+  // from its descendants. Move focus into the drawer on open so the first
+  // Escape works without requiring a click inside it first.
+  onMount(() => panelEl?.focus())
 
   const pillColor = {
     green: 'text-green-400', cyan: 'text-cyan-300', orange: 'text-orange-400',

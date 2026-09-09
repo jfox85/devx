@@ -438,6 +438,35 @@ func TestUsageOptionsFromGlobalConfigIgnoresProjectRedlineKeys(t *testing.T) {
 // TestUsageOptionsFromGlobalConfigDefaultsRedlineFieldsWithNoGlobalFile covers
 // the no-global-config case: all four fields must fall back to the documented
 // defaults, not the zero value, even though a project config sets them.
+// TestUsageOptionsFromGlobalConfigReadsSwitchesWithoutViperInit covers the
+// desktop launch path: desktop/main.go never runs cmd/root.go's initConfig, so
+// the viper singleton is empty. usage.enabled / usage.poll_interval must still
+// be honored from ~/.config/devx/config.yaml, not silently fall to defaults.
+func TestUsageOptionsFromGlobalConfigReadsSwitchesWithoutViperInit(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	globalDir := filepath.Join(home, ".config", "devx")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalYAML := "usage:\n  enabled: false\n  poll_interval: 90s\n"
+	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := UsageOptionsFromGlobalConfig()
+
+	if opts.Enabled {
+		t.Error("Enabled = true, want false from the global config file")
+	}
+	if opts.PollInterval != 90*time.Second {
+		t.Errorf("PollInterval = %v, want 90s from the global config file", opts.PollInterval)
+	}
+}
+
 func TestUsageOptionsFromGlobalConfigDefaultsRedlineFieldsWithNoGlobalFile(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

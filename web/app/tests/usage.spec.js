@@ -44,7 +44,7 @@ function usageFixture(overrides = {}) {
   }
 }
 
-async function mockBaseAPI(page, { usageEnabled = true, usage = usageFixture() } = {}) {
+async function mockBaseAPI(page, { usageEnabled = true, usage = usageFixture(), dashboardURL = 'http://127.0.0.1:7436' } = {}) {
   let currentUsage = usage
   let refreshCalls = 0
   await page.addInitScript(() => localStorage.setItem('devx_authed', '1'))
@@ -54,7 +54,7 @@ async function mockBaseAPI(page, { usageEnabled = true, usage = usageFixture() }
   })
   await page.route('**/api/asks/pending', route => route.fulfill({ json: { requests: [] } }))
   await page.route('**/api/settings', route => route.fulfill({
-    json: { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host', usage_enabled: usageEnabled },
+    json: { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host', usage_enabled: usageEnabled, usage_dashboard_url: dashboardURL },
   }))
   await page.route('**/api/usage', route => {
     if (route.request().method() !== 'GET') return route.continue()
@@ -120,18 +120,32 @@ test.describe('provider usage widget — desktop (1280px)', () => {
     await expect(modal).toBeHidden()
   })
 
-  test('refresh button fires POST /api/usage/refresh', async ({ page }) => {
+  test('refresh applies the returned snapshot even while SSE is disconnected', async ({ page }) => {
     const state = await mockBaseAPI(page)
     await page.goto('/')
     await openSession(page)
 
     await page.getByRole('button', { name: /^Provider usage:/ }).click()
+    const claudeSection = page.getByRole('region', { name: 'Claude usage' })
+    await expect(claudeSection).toContainText('56%')
+
+    // The events route is aborted by mockBaseAPI, so the only way the UI can
+    // see this changed value is by applying POST /refresh's response payload.
+    const refreshed = usageFixture({ updated_at: '2026-09-04T16:32:53Z' })
+    refreshed.providers[0] = {
+      ...refreshed.providers[0],
+      primary: { ...refreshed.providers[0].primary, remaining: 0.23 },
+      windows: refreshed.providers[0].windows.map((w, i) => i === 0 ? { ...w, remaining: 0.23 } : w),
+    }
+    state.setUsage(refreshed)
+
     const [request] = await Promise.all([
       page.waitForRequest(req => req.url().includes('/api/usage/refresh') && req.method() === 'POST'),
       page.getByRole('button', { name: 'Refresh provider usage' }).click(),
     ])
     expect(request.method()).toBe('POST')
     expect(state.refreshCalls()).toBe(1)
+    await expect(claudeSection).toContainText('23%')
   })
 
   test('a provider error is reported in the header and detailed in the modal', async ({ page }) => {
@@ -231,6 +245,36 @@ test.describe('provider usage summary in the session header — desktop (1440px)
 
     const pill = page.locator('[aria-label="Session facts"] ~ button[aria-label^="Provider usage"]')
     await expect(pill).toContainText('n/a')
+  })
+
+  test('the modal links to the configured Redline dashboard instead of a hard-coded port', async ({ page }) => {
+    await mockBaseAPI(page, { dashboardURL: 'http://127.0.0.1:9001' })
+    await page.goto('/')
+    await openSession(page)
+
+    await page.getByRole('button', { name: /^Provider usage:/ }).click()
+    await expect(page.getByRole('link', { name: 'open redline dashboard' })).toHaveAttribute('href', 'http://127.0.0.1:9001')
+  })
+
+  test('the modal omits the dashboard link when settings provide no client-reachable URL', async ({ page }) => {
+    await mockBaseAPI(page, { dashboardURL: '' })
+    await page.goto('/')
+    await openSession(page)
+
+    await page.getByRole('button', { name: /^Provider usage:/ }).click()
+    await expect(page.getByRole('link', { name: 'open redline dashboard' })).toHaveCount(0)
+  })
+
+  test('the session status panel owns focus on open so the first Escape closes it', async ({ page }) => {
+    await mockBaseAPI(page)
+    await page.goto('/')
+    await openSession(page)
+
+    await page.getByRole('button', { name: 'Status' }).click()
+    const panel = page.getByRole('dialog', { name: 'Session status details' })
+    await expect(panel).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(panel).toBeHidden()
   })
 
   test('the header pill is not mounted when usage is disabled', async ({ page }) => {

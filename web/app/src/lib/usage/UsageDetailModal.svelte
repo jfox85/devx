@@ -3,12 +3,14 @@
   import { onMount, onDestroy } from 'svelte'
   import { refreshUsage } from '../../api.js'
   import { isDesktop, openExternal as openExternalDesktop } from '../desktopBridge.js'
-  import { percent, relativeReset, absoluteReset, sampleAge, sampleAgePhrase, tone, toneTextClass, toneBarClass } from './usageFormat.js'
+  import { percent, relativeReset, absoluteReset, sampleAge, sampleAgePhrase, tone, toneTextClass, toneBarClass, reachableDashboardURL } from './usageFormat.js'
 
   export let usage = null      // Usage shape from GET /api/usage / SSE
+  export let usageDashboardURL = '' // validated configured URL from /api/settings
   export let onClose = () => {}
+  export let onUsageUpdate = () => {} // apply successful refresh without requiring SSE
 
-  const REDLINE_DASHBOARD_URL = 'http://127.0.0.1:7436/'
+  $: dashboardURL = reachableDashboardURL(usageDashboardURL, window.location.href, isDesktop())
   const REFRESH_TIMEOUT_MS = 15000
 
   let modalEl
@@ -43,6 +45,7 @@
     refreshTimer = setTimeout(stopRefreshSpinner, REFRESH_TIMEOUT_MS)
     try {
       const { usage: fresh, status } = await refreshUsage()
+      if (fresh) onUsageUpdate(fresh)
       if (status !== 202) {
         // 202 (throttled) keeps waiting for the SSE push / timeout above; any
         // other outcome (200/404/502) is final immediately.
@@ -91,7 +94,7 @@
   }
 
   function openRedlineDashboard(e) {
-    if (openExternalDesktop(REDLINE_DASHBOARD_URL)) {
+    if (openExternalDesktop(dashboardURL)) {
       e.preventDefault()
     }
   }
@@ -201,13 +204,15 @@
         <p class="text-gray-700 text-[10px] font-mono">
           via redline · polled {sampleAgePhrase(usage?.updated_at)}
         </p>
-        <a
-          href={REDLINE_DASHBOARD_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          on:click={openRedlineDashboard}
-          class="hidden sm:inline-block text-cyan-600 hover:text-cyan-300 text-[10px] font-mono"
-        >[open redline dashboard]</a>
+        {#if dashboardURL}
+          <a
+            href={dashboardURL}
+            target="_blank"
+            rel="noopener noreferrer"
+            on:click={openRedlineDashboard}
+            class="hidden sm:inline-block text-cyan-600 hover:text-cyan-300 text-[10px] font-mono"
+          >[open redline dashboard]</a>
+        {/if}
       </div>
     {/if}
   </div>

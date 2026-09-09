@@ -351,6 +351,25 @@ test('disabling draft pref purges persisted drafts; memory-only draft still work
   assert.equal('draft' in (JSON.parse(storage._map.get(sessionStorageKey('alpha')) || '{}')), false)
 })
 
+test('disabling the draft pref in one tab does not erase history another tab recorded since this tab loaded', () => {
+  const storage = makeFakeStorage()
+  const timersA = makeFakeTimers()
+  const tabA = createComposerStorage(storage, { setTimeout: timersA.setTimeout, clearTimeout: timersA.clearTimeout })
+  tabA.setDraft('alpha', 'tab A draft')
+  timersA.flushAll() // tab A has now loaded+cached alpha with an empty history
+
+  const tabB = createComposerStorage(storage)
+  tabB.recordSend('alpha', 'sent from tab B', 10)
+  assert.equal(JSON.parse(storage._map.get(sessionStorageKey('alpha'))).history.length, 1)
+
+  // Turning drafts off is authoritative for the *draft* field only; it must
+  // not write tab A's stale (empty) history over tab B's send.
+  tabA.setPrefs({ draft: false })
+  const onDisk = JSON.parse(storage._map.get(sessionStorageKey('alpha')))
+  assert.equal('draft' in onDisk, false, 'draft purged')
+  assert.deepEqual(onDisk.history.map(e => e.text), ['sent from tab B'], 'other tab history preserved')
+})
+
 test('disabling history pref purges stored history for all sessions', () => {
   const storage = makeFakeStorage()
   const composer = createComposerStorage(storage)

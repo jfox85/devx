@@ -205,6 +205,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"artifact_trigger_key":   viper.GetString("artifact_trigger_key"),
 		"default_session_target": defaultTarget,
 		"usage_enabled":          s.usageEnabled(),
+		"usage_dashboard_url":    s.usageDashboardURL(),
 	})
 }
 

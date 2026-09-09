@@ -145,6 +145,54 @@ test.describe('composer draft persistence — mobile (390px)', () => {
     await expect(composer).toHaveValue('first sent prompt\nfirst sent prompt')
   })
 
+  test('a send that is still in flight when the user switches sessions is credited to the original session', async ({ page }) => {
+    // Hold the send-input response until the test releases it, so we can
+    // switch sessions while the promise is unresolved.
+    let releaseSend
+    const sendGate = new Promise(resolve => { releaseSend = resolve })
+    await mockBaseAPI(page, {
+      sendImpl: async (route) => { await sendGate; return route.fulfill({ status: 200, json: {} }) },
+    })
+    await page.goto('/')
+
+    // Seed a draft in Beta so we can prove it is not clobbered by Alpha's send.
+    await openSession(page, 'Beta')
+    await page.getByLabel('terminal input composer').fill('beta draft stays')
+    await page.waitForTimeout(500)
+    await page.goto('/')
+
+    await openSession(page, 'Alpha')
+    const composer = page.getByLabel('terminal input composer')
+    await composer.fill('sent from alpha')
+    await page.getByTitle('send to terminal').click()
+
+    // Mid-flight: jump to Beta via the quick switcher (desktop sidebar / Ctrl+P
+    // keep PromptComposer mounted, so sessionName changes under the await).
+    await page.keyboard.press('Control+p')
+    await page.getByLabel('session switcher search').fill('beta')
+    await page.getByLabel('session switcher results').getByRole('button', { name: /Beta/ }).click()
+    await expect(composer).toHaveValue('beta draft stays')
+
+    releaseSend()
+    await page.waitForTimeout(300)
+
+    // Beta's draft is intact and Beta has no history from Alpha's send.
+    await expect(composer).toHaveValue('beta draft stays')
+    await page.getByTitle('prompt history').click()
+    const betaSheet = page.getByRole('dialog', { name: 'Prompt history for beta' })
+    await expect(betaSheet).toContainText('no prompt history yet')
+    await betaSheet.getByLabel('Close').click()
+
+    // Alpha's history has the prompt, its draft is cleared, and no stale
+    // "may already have been sent" warning remains.
+    await page.goto('/')
+    await openSession(page, 'Alpha')
+    await expect(composer).toHaveValue('')
+    await expect(page.getByText(/may already have been sent/)).toHaveCount(0)
+    await page.getByTitle('prompt history').click()
+    await expect(page.getByRole('dialog', { name: 'Prompt history for alpha' })).toContainText('sent from alpha')
+  })
+
   test('a failed send keeps the text, shows an error, and does not record history', async ({ page }) => {
     await mockBaseAPI(page, {
       sendImpl: (route) => route.fulfill({ status: 500, json: { error: 'send failed' } }),
