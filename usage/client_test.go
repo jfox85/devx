@@ -19,7 +19,7 @@ func TestClientDashboardReadsBodyWithBearerToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
-		w.Write([]byte(`{"providers":[]}`))
+		_, _ = w.Write([]byte(`{"providers":[]}`))
 	}))
 	defer srv.Close()
 
@@ -44,7 +44,7 @@ func TestClientDashboardOmitsAuthorizationWithoutToken(t *testing.T) {
 	var hadAuth bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, hadAuth = r.Header["Authorization"]
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 
@@ -177,7 +177,7 @@ func TestClientDashboardNeverFollowsARedirect(t *testing.T) {
 	var targetHits int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&targetHits, 1)
-		w.Write([]byte(`{"providers":[]}`))
+		_, _ = w.Write([]byte(`{"providers":[]}`))
 	}))
 	defer target.Close()
 
@@ -283,8 +283,8 @@ func TestNewClientKeepsCredentialsOutOfItsErrors(t *testing.T) {
 
 func TestClientDashboardRejectsOversizedResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"providers":[`))
-		w.Write(make([]byte, maxBodyBytes))
+		_, _ = w.Write([]byte(`{"providers":[`))
+		_, _ = w.Write(make([]byte, maxBodyBytes))
 	}))
 	defer srv.Close()
 

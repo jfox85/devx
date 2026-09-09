@@ -89,6 +89,18 @@
     return !!textareaEl && textareaEl.offsetParent !== null
   }
 
+  // Whether keyboard focus is currently inside this composer (textarea, action
+  // buttons, or the history sheet). Terminal.svelte consults this before its
+  // deferred focusTerminal retries so they never steal focus from the docked
+  // composer the user is interacting with.
+  export function hasFocusWithin() {
+    if (historyOpen) return true
+    const active = document.activeElement
+    return !!active && !!dockedRootEl?.contains(active)
+  }
+
+  let dockedRootEl = null
+
   export function insertText(insert) {
     const el = textareaEl
     const start = el ? el.selectionStart : text.length
@@ -282,7 +294,7 @@
 {:else}
   <!-- Mobile: docked composer — THE input on touch devices. Compact single row
        that grows with content; terminal above is primarily a display surface. -->
-  <div class="border-t border-[#1e2d4a] bg-[#07101f] shrink-0">
+  <div class="border-t border-[#1e2d4a] bg-[#07101f] shrink-0" bind:this={dockedRootEl}>
     <div class="flex items-end gap-1.5 p-1.5">
       <button
         type="button"

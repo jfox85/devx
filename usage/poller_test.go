@@ -38,7 +38,7 @@ func newFakeRedline(t *testing.T, body string) *fakeRedline {
 			code, body := f.dashboardCode, f.dashboardBody
 			f.mu.Unlock()
 			w.WriteHeader(code)
-			w.Write([]byte(body))
+			_, _ = w.Write([]byte(body))
 			return
 		}
 		f.refreshedPaths = append(f.refreshedPaths, r.URL.Path)
@@ -301,7 +301,7 @@ func TestPollerRefreshCapsConcurrentProviderRequests(t *testing.T) {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
-		w.Write([]byte(manyProviderDashboard(12)))
+		_, _ = w.Write([]byte(manyProviderDashboard(12)))
 	}))
 	defer srv.Close()
 
@@ -454,7 +454,7 @@ func TestPollerRefreshDoesNotLetACancelledCallerBlankTheCache(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	p.Refresh(ctx)
+	_, _ = p.Refresh(ctx)
 
 	got := p.Current()
 	if got.State != StateOK {
@@ -535,7 +535,7 @@ func TestPollerWithoutALoggerStaysSilent(t *testing.T) {
 
 	p := &Poller{Client: &Client{BaseURL: f.URL}}
 	p.Poll(context.Background())
-	p.Refresh(context.Background())
+	_, _ = p.Refresh(context.Background())
 
 	if globalLog.Len() != 0 {
 		t.Errorf("wrote %q to the global logger, want nothing so a TUI display is not corrupted", globalLog.String())
@@ -550,7 +550,7 @@ func TestPollerRefreshLogsFailuresOnceAsOneLine(t *testing.T) {
 	f.failRefreshFor("claude-main", http.StatusInternalServerError)
 	f.failRefreshFor("codex-main", http.StatusServiceUnavailable)
 
-	p.Refresh(context.Background())
+	_, _ = p.Refresh(context.Background())
 
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	if len(lines) != 1 {
@@ -577,7 +577,7 @@ func TestPollerSurvivesConcurrentRefreshAndCurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for time.Now().Before(deadline) {
-				p.Refresh(ctx)
+				_, _ = p.Refresh(ctx)
 				if u := p.Current(); u.Providers != nil {
 					u.Providers = append(u.Providers, Provider{ID: "scratch"})
 				}
