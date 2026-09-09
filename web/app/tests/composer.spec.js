@@ -491,7 +491,12 @@ test.describe('composer draft persistence — desktop overlay (1280px)', () => {
 
     const composer = page.getByLabel('terminal input composer').and(page.locator(':visible'))
     await composer.fill('desktop overlay draft')
-    await page.waitForTimeout(500)
+    // Wait for the observable debounce result rather than sleeping 500ms for a
+    // 400ms timer; loaded CI workers can delay timers beyond that margin.
+    await expect.poll(() => page.evaluate(() => {
+      const stored = localStorage.getItem('devx_composer_v1:alpha')
+      return stored ? JSON.parse(stored).draft : ''
+    })).toBe('desktop overlay draft')
 
     await page.reload()
     await openOverlay(page)
