@@ -282,11 +282,14 @@
   // This is same-origin (ttyd is served by the same server) so contentDocument
   // access is allowed.
   function focusTerminal() {
-    // On mobile the docked composer is THE input, so never yank focus away
-    // from it (or from its chrome, e.g. the history trigger) into the frame.
-    // focusTerminalSoon retries up to 360ms after iframe readiness, which
-    // otherwise races the user's first taps on the composer.
+    // Never yank focus into the frame while the user is somewhere else that
+    // owns keyboard input: the docked mobile composer (THE input on touch),
+    // or any open modal dialog (usage details, history sheet, session
+    // switcher…). focusTerminalSoon retries up to 360ms after iframe
+    // readiness, which otherwise races the user's first interactions and
+    // silently redirects Escape/typing into xterm.
     if (dockedComposerComponent?.hasFocusWithin?.()) return
+    if (document.activeElement?.closest?.('[role="dialog"]')) return
     try {
       const textarea = iframeEl?.contentDocument?.querySelector('.xterm-helper-textarea')
       if (textarea) {
