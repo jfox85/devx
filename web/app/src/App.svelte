@@ -1,7 +1,7 @@
 <!-- web/app/src/App.svelte -->
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { isLoggedIn, subscribeToEvents, unflagSession } from './api.js'
+  import { isLoggedIn, subscribeToEvents, unflagSession, getUsage, getSettings } from './api.js'
   import { requestNotificationPermission, notifyFlag } from './lib/notifications.js'
   import Login from './lib/Login.svelte'
   import SessionList from './lib/SessionList.svelte'
@@ -12,6 +12,7 @@
   import FlagToast from './lib/FlagToast.svelte'
   import ShareTarget from './lib/ShareTarget.svelte'
   import AskApprovalModal from './lib/AskApprovalModal.svelte'
+  import UsageDetailModal from './lib/usage/UsageDetailModal.svelte'
   import { DESKTOP_EVENTS, isDesktop } from './lib/desktopBridge.js'
 
   // view is only used on mobile to toggle between sessions and terminal.
@@ -42,11 +43,37 @@
   let unsubscribeSSE
   let switcherOpen = false
 
+  // Provider usage widget: App owns the fetched state so the strip
+  // (SessionList), the detail modal, and the mobile menu item share one
+  // source of truth. usageEnabled is tri-state: `null` while GET /api/settings
+  // is still in flight, then `true`/`false` once resolved. The strip/modal
+  // only mount once it resolves `true`, so a disabled install never shows the
+  // "usage · …" loading flash — it renders nothing at all, per the plan.
+  let usage = null
+  let usageEnabled = null
+  let usageDashboardURL = ''
+  let usageModalOpen = false
+
+  async function loadUsage() {
+    if (!usageEnabled) return
+    try {
+      usage = await getUsage()
+    } catch { /* keep the last known usage; the strip/modal show it as-is */ }
+  }
+
+  function openUsageModal() {
+    usageModalOpen = true
+  }
+
   function handleGlobalKeydown(e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
       e.preventDefault()
       switcherOpen = !switcherOpen
     }
+  }
+
+  function handleUsageVisibilityChange() {
+    if (!document.hidden) loadUsage()
   }
 
   async function handleSwitcherSelect(session) {
@@ -86,6 +113,13 @@
   onMount(() => {
     if (loggedIn) {
       requestNotificationPermission()
+      getSettings().then(settings => {
+        usageEnabled = !!settings.usage_enabled
+        usageDashboardURL = settings.usage_dashboard_url || ''
+        if (usageEnabled) loadUsage()
+      }).catch(() => { usageEnabled = false })
+      document.addEventListener('visibilitychange', handleUsageVisibilityChange)
+      window.addEventListener('devx:showUsage', openUsageModal)
       window.addEventListener('devx:quickSwitcher', toggleSwitcher)
       window.addEventListener('devx:focusTerminal', focusTerminalHandler)
       window.addEventListener('devx:toggleComposer', toggleComposerHandler)
@@ -120,12 +154,17 @@
             artifactEvent = { ...event, nonce: Date.now() }
           }
         },
+        usage: (event) => {
+          usage = event
+        },
       })
     }
   })
 
   onDestroy(() => {
     unsubscribeSSE?.()
+    document.removeEventListener('visibilitychange', handleUsageVisibilityChange)
+    window.removeEventListener('devx:showUsage', openUsageModal)
     window.removeEventListener('devx:quickSwitcher', toggleSwitcher)
     window.removeEventListener('devx:focusTerminal', focusTerminalHandler)
     window.removeEventListener('devx:toggleComposer', toggleComposerHandler)
@@ -141,6 +180,14 @@
 
   function dismissRemoteShow() {
     remoteShow = null
+  }
+
+  // Keep the active session object fresh as SessionList polls: status, attention
+  // flag, and unseen artifact counts update live instead of freezing at open time.
+  function handleSessionsLoaded(list) {
+    if (!activeSession) return
+    const match = list.find(s => s.name === activeSession.name)
+    if (match) activeSession = match
   }
 
   function openTerminal(session) {
@@ -260,13 +307,13 @@
       {view === 'terminal' ? 'hidden lg:flex lg:w-72 xl:w-80' : 'flex w-full lg:w-72 xl:w-80'}
       border-r border-[#1e2d4a]
     ">
-      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} onDeleteSession={goHome} refreshTrigger={sessionRefreshTrigger} {flashSession} />
+      <SessionList onOpenTerminal={openTerminal} activeSessionName={activeSession?.name} onDeleteSession={goHome} refreshTrigger={sessionRefreshTrigger} {flashSession} onSessionsLoaded={handleSessionsLoaded} />
     </div>
 
     <!-- Terminal / empty state -->
     <div class="flex-1 flex flex-col min-w-0 {view === 'sessions' ? 'hidden lg:flex' : 'flex'}">
       {#if activeSession}
-        <Terminal bind:this={terminalComponent} session={activeSession} {artifactEvent} onBack={goHome} />
+        <Terminal bind:this={terminalComponent} session={activeSession} {artifactEvent} onBack={goHome} {usage} usageEnabled={!!usageEnabled} />
       {:else}
         <!-- Desktop: no session selected yet -->
         <div class="flex-1 flex flex-col items-center justify-center text-gray-700 select-none">
@@ -297,6 +344,10 @@
     {/if}
 
     <AskApprovalModal />
+
+    {#if usageEnabled && usageModalOpen}
+      <UsageDetailModal {usage} {usageDashboardURL} onUsageUpdate={(fresh) => usage = fresh} onClose={() => usageModalOpen = false} />
+    {/if}
 
     <!-- Quick switcher: Cmd/Ctrl+P fuzzy session jump -->
     {#if switcherOpen}

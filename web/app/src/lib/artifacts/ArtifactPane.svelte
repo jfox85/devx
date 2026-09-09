@@ -42,6 +42,13 @@
   let renameTags = ''
   let renameRetention = 'session'
 
+  // Mobile: the wide tool row doesn't fit, so tools collapse behind one menu.
+  let mobileMenuOpen = false
+
+  function handleWindowClick(e) {
+    if (mobileMenuOpen && !e.target?.closest?.('[data-artifact-actions]')) mobileMenuOpen = false
+  }
+
   let lastPasteArtifactNonce = pasteArtifactNonce
 
   $: selectedURL = selected?.url || ''
@@ -384,23 +391,49 @@
   })
 </script>
 
+<svelte:window on:click={handleWindowClick} />
+
 <div class="h-full min-h-0 flex flex-col bg-[#0b1020] text-gray-200 relative outline-none border-l border-[#1e2d4a]" tabindex="0" role="application" aria-label="artifacts panel" on:paste={handlePaste} on:dragenter={(e) => { if (Array.from(e.dataTransfer?.items || []).some(i => i.kind === 'file')) dragOver = true }} on:dragover={(e) => e.preventDefault()} on:dragleave={() => { dragOver = false }} on:drop={handleDrop}>
   <div class="h-9 shrink-0 flex items-center gap-2 border-b border-[#1e2d4a] px-2 bg-[#0a0e1a]">
     <div class="text-xs font-mono text-cyan-300 flex-1 truncate">artifacts {artifacts.length ? `(${artifacts.length})` : ''}</div>
-    <label class="text-[10px] font-mono text-gray-500 flex items-center gap-1" title="sort artifact list">
-      sort
-      <select class="bg-black/40 border border-[#1e2d4a] rounded px-1 py-0.5 text-[10px] text-gray-300 outline-none focus:border-cyan-500" bind:value={artifactSort}>
-        <option value="newest">newest</option>
-        <option value="oldest">oldest</option>
-        <option value="title">title</option>
-      </select>
-    </label>
-    <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="show or hide artifact list" on:click={() => { listCollapsed = !listCollapsed }}>{listCollapsed ? '[show list]' : '[hide list]'}</button>
-    <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="use full browser window" on:click={onToggleFullScreen}>{fullScreen ? '[exit full]' : '[full screen]'}</button>
-    <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="upload artifact files" on:click={() => fileInput?.click()}>[upload]</button>
-    <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="create artifact from pasted text" on:click={() => openTextModal()}>[new]</button>
-    <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="refresh artifact list" on:click={load}>[refresh]</button>
-    <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="close artifacts and clear focus" on:click={onClose}>[close]</button>
+
+    <!-- Desktop tool row -->
+    <div class="hidden lg:flex items-center gap-2">
+      <label class="text-[10px] font-mono text-gray-500 flex items-center gap-1" title="sort artifact list">
+        sort
+        <select class="bg-black/40 border border-[#1e2d4a] rounded px-1 py-0.5 text-[10px] text-gray-300 outline-none focus:border-cyan-500" bind:value={artifactSort}>
+          <option value="newest">newest</option>
+          <option value="oldest">oldest</option>
+          <option value="title">title</option>
+        </select>
+      </label>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="show or hide artifact list" on:click={() => { listCollapsed = !listCollapsed }}>{listCollapsed ? '[show list]' : '[hide list]'}</button>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="use full browser window" on:click={onToggleFullScreen}>{fullScreen ? '[exit full]' : '[full screen]'}</button>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="upload artifact files" on:click={() => fileInput?.click()}>[upload]</button>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="create artifact from pasted text" on:click={() => openTextModal()}>[new]</button>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="refresh artifact list" on:click={load}>[refresh]</button>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="close artifacts and clear focus" on:click={onClose}>[close]</button>
+    </div>
+
+    <!-- Mobile: single actions menu; the wide tool row cannot fit -->
+    <div class="lg:hidden relative" data-artifact-actions>
+      <button
+        on:click={() => mobileMenuOpen = !mobileMenuOpen}
+        aria-expanded={mobileMenuOpen}
+        aria-haspopup="menu"
+        class="text-[11px] font-mono px-2 py-1 border rounded transition-colors
+          {mobileMenuOpen ? 'text-cyan-300 border-cyan-800 bg-cyan-950/30' : 'text-gray-400 border-[#1e2d4a]'}"
+      >Artifact actions</button>
+      {#if mobileMenuOpen}
+        <div class="absolute right-0 top-8 z-30 w-56 bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden" role="menu">
+          <button class="w-full text-left px-4 py-2.5 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={() => { mobileMenuOpen = false; artifactSort = artifactSort === 'newest' ? 'oldest' : artifactSort === 'oldest' ? 'title' : 'newest' }}>Sort: {artifactSort}</button>
+          <button class="w-full text-left px-4 py-2.5 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={() => { mobileMenuOpen = false; listCollapsed = !listCollapsed }}>{listCollapsed ? 'Show list' : 'Hide list'}</button>
+          <button class="w-full text-left px-4 py-2.5 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={() => { mobileMenuOpen = false; fileInput?.click() }}>Upload files</button>
+          <button class="w-full text-left px-4 py-2.5 text-sm font-mono text-gray-200 hover:bg-cyan-950/30 border-b border-[#111a2e]" role="menuitem" on:click={() => { mobileMenuOpen = false; openTextModal() }}>New text artifact</button>
+          <button class="w-full text-left px-4 py-2.5 text-sm font-mono text-gray-200 hover:bg-cyan-950/30" role="menuitem" on:click={() => { mobileMenuOpen = false; load() }}>Refresh</button>
+        </div>
+      {/if}
+    </div>
     <input bind:this={fileInput} class="hidden" type="file" multiple on:change={(e) => { handleFiles(e.target.files); e.target.value = '' }} />
   </div>
 
@@ -442,7 +475,8 @@
   {/if}
 
   {#if selected}
-    <div class="h-9 shrink-0 flex items-center gap-2 border-b border-[#1e2d4a] px-3 bg-[#0a0e1a]">
+    <!-- min-h + flex-wrap: preview actions wrap to a second line on narrow widths instead of clipping -->
+    <div class="min-h-9 shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 py-1 border-b border-[#1e2d4a] px-3 bg-[#0a0e1a]">
       <div class="flex-1 min-w-0"><div class="text-xs truncate">{selected.title}</div><div class="text-[10px] font-mono text-gray-500 truncate">{selected.agent || 'unknown'} · {selected.retention || 'session'}</div></div>
       {#if previewKind(selected) === 'jsx'}
         <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="toggle JSX preview/code" on:click={() => jsxPreviewMode = jsxPreviewMode === 'preview' ? 'code' : 'preview'}>{jsxPreviewMode === 'preview' ? '[code]' : '[preview]'}</button>

@@ -2,7 +2,7 @@
 <script>
   import { onMount, tick } from 'svelte'
   import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, colorSession, pinSession, unpinSession } from '../api.js'
-  import { markPrewarmed, markSwitchStart } from './stores/sessionUiState.js'
+  import { markPrewarmed, markSwitchStart, pruneComposerSessions } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
   import StaleReviewPanel from './StaleReviewPanel.svelte'
   import { buildSessionSections, loadSessionView, saveSessionView, relativeActivity } from './sessionOrdering.js'
@@ -13,6 +13,7 @@
   export let onDeleteSession = null    // called when the currently-active session is deleted
   export let refreshTrigger = 0        // bump to force an immediate background reload
   export let flashSession = null       // session name to momentarily highlight
+  export let onSessionsLoaded = null   // called with the fresh session list after each load
 
   let sessions = []
   let staleSummary = null
@@ -119,6 +120,12 @@
       const data = await listSessionsWithSummary()
       if (requestID !== loadRequestID) return
       sessions = data.sessions || []
+      // Safe here specifically because GET /api/sessions returns every session
+      // (session.LoadSessions() with no filter/pagination) — never a partial or
+      // recent-only view. If that ever changes, this prune call must move to
+      // wherever the client next holds a truly complete session list.
+      pruneComposerSessions(sessions.map(s => s.name))
+      onSessionsLoaded?.(sessions)
       staleSummary = data.stale_summary || null
       if (!showStaleReview) staleReviewSummary = null
     }
@@ -213,6 +220,9 @@
     } else if (e.shiftKey && (e.key === 'p' || e.key === 'P') && !inOtherInput && !inOtherControl && document.activeElement !== searchInputEl && document.activeElement?.tagName !== 'SELECT') {
       e.preventDefault()
       if (displayOrdered[selectedIndex]) handlePin(displayOrdered[selectedIndex], true)
+    } else if ((e.key === 'u' || e.key === 'U') && !e.metaKey && !e.ctrlKey && !e.altKey && !inOtherInput && !inOtherControl && document.activeElement !== searchInputEl) {
+      e.preventDefault()
+      window.dispatchEvent(new CustomEvent('devx:showUsage'))
     } else if (e.key === 'Escape') {
       searchQuery = ''
       searchInputEl?.blur()
@@ -809,6 +819,7 @@
     <span>⏎ open</span>
     <span>/ search</span>
     <span>⇧P pin</span>
+    <span>u usage</span>
     <span class="ml-auto">^⇧C new</span>
     <span>^⇧S focus</span>
   </div>

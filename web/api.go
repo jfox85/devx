@@ -48,7 +48,6 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/pane-content.txt", handlePaneContentText)
 	mux.HandleFunc("GET /api/pane-content/view", handlePaneContentView)
 	mux.HandleFunc("GET /api/projects", handleListProjects)
-	mux.HandleFunc("GET /api/settings", handleSettings)
 	mux.HandleFunc("GET /api/asks/pending", handleAskPending)
 	mux.HandleFunc("POST /api/asks/approve", handleAskApprove)
 	mux.HandleFunc("POST /api/asks/deny", handleAskDeny)
@@ -193,7 +192,11 @@ type loginRequest struct {
 	Token string `json:"token"`
 }
 
-func handleSettings(w http.ResponseWriter, r *http.Request) {
+// handleSettings reports usage_enabled from the server's actual configured
+// state (s.usageOpts, set by ConfigureUsage), not by independently re-reading
+// viper: the two could otherwise disagree, e.g. after ConfigureUsage rejected
+// a bad Redline URL and left usage disabled while viper still says enabled.
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	defaultTarget := viper.GetString("target")
 	if defaultTarget == "" {
 		defaultTarget = "host"
@@ -201,6 +204,8 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"artifact_trigger_key":   viper.GetString("artifact_trigger_key"),
 		"default_session_target": defaultTarget,
+		"usage_enabled":          s.usageEnabled(),
+		"usage_dashboard_url":    s.usageDashboardURL(),
 	})
 }
 

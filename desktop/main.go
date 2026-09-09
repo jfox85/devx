@@ -72,6 +72,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create private devx server: %v", err)
 	}
+	// The desktop shell reads only the global ~/.config/devx/config.yaml (never
+	// a project-level config — see UsageOptionsFromGlobalConfig), so a project
+	// repo can never redirect this poller or name an arbitrary file as its
+	// token. A misconfigured Redline URL must not stop the app from starting:
+	// log it and continue with usage disabled.
+	if err := priv.ConfigureUsage(web.UsageOptionsFromGlobalConfig()); err != nil {
+		log.Printf("usage: %v; provider usage disabled", err)
+	}
 	go func() {
 		if err := priv.Serve(); err != nil && err != http.ErrServerClosed {
 			log.Printf("private devx server exited: %v", err)
@@ -107,6 +115,10 @@ func main() {
 	// ambiguous.
 	devxMenu.AddText("View Terminal Output", keys.Combo("u", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:viewTerminalOutput"))
 	devxMenu.AddText("Insert Artifact", keys.Combo("i", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:insertArtifact"))
+	// Provider Usage takes plain Cmd+U, mirroring the SPA's bare `u` hotkey in
+	// the session list. Cmd+Shift+U is View Terminal Output above; the two are
+	// distinct accelerators, so neither shortcut is ambiguous.
+	devxMenu.AddText("Provider Usage…", keys.CmdOrCtrl("u"), emit(eventShowUsage))
 	devxMenu.AddText("New Text Artifact", keys.Combo("n", keys.CmdOrCtrlKey, keys.ShiftKey), emit("devx:newArtifact"))
 	// A standard Edit menu is required so the WebView receives Cut/Copy/Paste/
 	// SelectAll actions through the macOS responder chain. Without it, WKWebView
@@ -253,6 +265,10 @@ func readDroppedImage(p string) ([]byte, error) {
 const (
 	eventFileDrop         = "devx:desktop:filedrop"
 	eventFileDropRejected = "devx:desktop:filedrop-rejected"
+	// eventShowUsage opens the provider usage modal. The SPA listens for it in
+	// App.svelte and dispatches the same name from the usage strip, the `u`
+	// hotkey, and the mobile actions menu, so every surface shares one path.
+	eventShowUsage = "devx:showUsage"
 )
 
 // droppedFile is the payload shape the SPA's filedrop handler decodes

@@ -109,6 +109,30 @@ func TestLoadConfigExternalDomain(t *testing.T) {
 	}
 }
 
+func TestUsageConfigRoundTripsThroughSaveConfig(t *testing.T) {
+	viper.Reset()
+	t.Setenv("HOME", t.TempDir())
+
+	saved := &Config{}
+	saved.Usage.Enabled = false
+	saved.Usage.PollInterval = "45s"
+	saved.Usage.Redline.URL = "http://127.0.0.1:9999"
+	saved.Usage.Redline.TokenFile = "/tmp/api-token"
+	saved.Usage.Redline.AllowRemote = true
+
+	if err := SaveConfig(saved); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Usage != saved.Usage {
+		t.Fatalf("usage config did not round-trip: got %+v, want %+v", loaded.Usage, saved.Usage)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	// Reset viper for clean test
 	viper.Reset()

@@ -10,10 +10,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/target"
+	"github.com/jfox85/devx/usage"
 	"github.com/spf13/viper"
 )
 
@@ -27,6 +29,22 @@ type Server struct {
 	terminal    *terminalService
 	hub         *sseHub
 	gatepostCfg target.GatepostRuntimeConfig
+
+	// bgMu guards every field below: the validated usage config and the
+	// currently-running poller's lifecycle handles.
+	bgMu sync.Mutex
+	// usageOpts is set by ConfigureUsage once opts are validated (Enabled and a
+	// buildable Redline client); nil means usage is disabled or was never
+	// successfully configured. startBackground builds a fresh usage.Poller from
+	// it on every start.
+	usageOpts *UsageOptions
+	// usage is the poller currently backing GET /api/usage and the refresh
+	// endpoint; nil until startBackground runs. A fresh instance is built on
+	// every startBackground call because usage.Poller.Start panics if called
+	// twice on the same instance, which a Stop→Start cycle would otherwise hit.
+	usage       *usage.Poller
+	usageCancel context.CancelFunc
+	usageDone   <-chan struct{}
 }
 
 // New creates a new Server. token must be non-empty.
@@ -73,17 +91,25 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", s.port, err)
 	}
+	s.startBackground()
 
 	fmt.Printf("devx web listening on http://%s:%d\n", s.bind, s.port)
 	return s.server.Serve(ln)
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server. The poller is cancelled first, the
+// HTTP server is shut down second, and only then does Shutdown wait for the
+// poller's goroutine to exit — so a slow in-flight Redline poll cannot eat into
+// ctx's deadline before the HTTP server even starts closing connections
+// (desktop passes a 3s deadline here).
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.server == nil {
-		return nil
+	s.cancelBackground()
+	var httpErr error
+	if s.server != nil {
+		httpErr = s.server.Shutdown(ctx)
 	}
-	return s.server.Shutdown(ctx)
+	s.waitBackground(ctx)
+	return httpErr
 }
 
 // authMiddleware enforces token auth on all /api/* and /terminal/* routes.
@@ -290,6 +316,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/terminal/send-input", s.handleTerminalSendInput)
 	mux.HandleFunc("POST /api/terminal/activity-receipt", s.handleTerminalActivityReceipt)
 	mux.HandleFunc("POST /api/sessions/activity", s.handleSessionActivity)
+	// Provider usage — served from the poller's cache, so it needs s.
+	mux.HandleFunc("GET /api/usage", s.handleUsage)
+	mux.HandleFunc("POST /api/usage/refresh", s.handleUsageRefresh)
+	// Settings reports usage_enabled from the server's real configured state —
+	// needs s rather than re-reading viper (see handleSettings).
+	mux.HandleFunc("GET /api/settings", s.handleSettings)
 	// Remote show — uploads a file and broadcasts to all SSE clients.
 	mux.HandleFunc("POST /api/show", s.handleShow)
 	// Static SPA served from embedded FS (registered in embed.go)

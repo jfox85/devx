@@ -98,6 +98,31 @@ func TestDropEventNames(t *testing.T) {
 	}
 }
 
+// TestShowUsageEventNameInSync pins the Provider Usage menu item's event name
+// against the SPA listener that opens the modal. The desktop menu, the usage
+// strip, the `u` hotkey, and the mobile actions menu all share this one event,
+// so a rename on either side must fail CI rather than silently making the menu
+// item a no-op.
+func TestShowUsageEventNameInSync(t *testing.T) {
+	if eventShowUsage != "devx:showUsage" {
+		t.Errorf("eventShowUsage = %q, want devx:showUsage", eventShowUsage)
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	appPath := filepath.Join(filepath.Dir(thisFile), "..", "web", "app", "src", "App.svelte")
+	raw, err := os.ReadFile(appPath)
+	if err != nil {
+		t.Fatalf("reading App.svelte: %v", err)
+	}
+	// The SPA must register a listener for exactly this event name.
+	listener := regexp.MustCompile(`addEventListener\(\s*['"]` + regexp.QuoteMeta(eventShowUsage) + `['"]`)
+	if !listener.MatchString(string(raw)) {
+		t.Errorf("App.svelte does not addEventListener(%q); the desktop menu item would be a no-op", eventShowUsage)
+	}
+}
+
 // TestDesktopBridgeEventNamesInSync closes the cross-language drift gap that
 // TestDropEventNames alone cannot: it parses the JS mirror in
 // web/app/src/lib/desktopBridge.js (DESKTOP_EVENTS) and asserts each event-name

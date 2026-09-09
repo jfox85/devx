@@ -81,6 +81,7 @@ func (p *PrivateServer) Serve() error {
 	// on wails://.
 	handler := p.authenticateTerminalToken(authMiddleware(p.token, mux))
 	p.server = &http.Server{Handler: handler}
+	p.startBackground()
 	return p.server.Serve(p.listener)
 }
 

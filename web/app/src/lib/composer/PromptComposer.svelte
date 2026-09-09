@@ -1,8 +1,13 @@
 <script>
-  import { createEventDispatcher, onMount, tick } from 'svelte'
+  import { createEventDispatcher, onMount, onDestroy, tick } from 'svelte'
   import { sendInput } from '../../api.js'
-  import { getComposerDraft, setComposerDraft } from '../stores/sessionUiState.js'
+  import {
+    getComposerDraft, setComposerDraft, clearComposerDraft, getComposerSession,
+    markComposerSending, recordComposerSend, clearComposerHistory, mergeComposerRecall,
+    flushComposerDrafts, getComposerPrefs, setComposerPrefs,
+  } from '../stores/sessionUiState.js'
   import { isDesktop } from '../desktopBridge.js'
+  import PromptHistorySheet from './PromptHistorySheet.svelte'
 
   export let sessionName
   // 'overlay' — floating panel summoned on demand (desktop, Cmd/Ctrl+K)
@@ -12,25 +17,63 @@
   export let keysOpen = false
 
   const dispatch = createEventDispatcher()
-  let text = ''
+  // Restored synchronously (not in onMount) so the very first run of the
+  // `setComposerDraft` reactive statement below sees the restored draft, not
+  // an empty initial value — otherwise that first reactive write would race
+  // onMount and clobber the just-restored persisted draft.
+  let text = getComposerDraft(sessionName)
   let sending = false
   let error = ''
   let textareaEl
   let currentSessionName = sessionName
+  let history = getComposerSession(sessionName).history
+  let historyOpen = false
+  let historyTriggerEl
+  // Client-only privacy prefs (draft/history, both default-on) surfaced in the
+  // history sheet's "local storage" footer. Read once on mount/session-switch
+  // and refreshed after every change so the sheet reflects composerStorage's
+  // authoritative state, matching how `history` is refreshed after a send.
+  let prefs = getComposerPrefs()
+  // Warn when a draft is restored while a previous send's `sending: true`
+  // flag is still set (see docs/plans/2026-09-05-...): the tab may have been
+  // discarded mid-send, so the send may already have reached the terminal.
+  let showSendingWarning = getComposerSession(sessionName).sending && !!text
+
+  // Flush the debounced draft write immediately when the tab is hidden or the
+  // page is being torn down (mobile app-switch / discard), rather than waiting
+  // for the 400ms debounce that may never fire in those cases.
+  function handleVisibilityChange() {
+    if (document.hidden) flushComposerDrafts(currentSessionName)
+  }
+  function handlePageHide() {
+    flushComposerDrafts(currentSessionName)
+  }
 
   onMount(() => {
-    text = getComposerDraft(sessionName)
     tick().then(() => {
       autoGrow()
       if (variant === 'overlay') textareaEl?.focus()
     })
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pagehide', handlePageHide)
+  })
+
+  onDestroy(() => {
+    flushComposerDrafts(currentSessionName)
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+    window.removeEventListener('pagehide', handlePageHide)
   })
 
   $: if (sessionName !== currentSessionName) {
     if (currentSessionName) setComposerDraft(currentSessionName, text)
     currentSessionName = sessionName
-    text = getComposerDraft(sessionName)
+    const restored = getComposerSession(sessionName)
+    text = restored.draft
+    history = restored.history
+    showSendingWarning = restored.sending && !!restored.draft
+    historyOpen = false
     error = ''
+    prefs = getComposerPrefs()
     tick().then(autoGrow)
   }
 
@@ -45,6 +88,18 @@
   export function isVisible() {
     return !!textareaEl && textareaEl.offsetParent !== null
   }
+
+  // Whether keyboard focus is currently inside this composer (textarea, action
+  // buttons, or the history sheet). Terminal.svelte consults this before its
+  // deferred focusTerminal retries so they never steal focus from the docked
+  // composer the user is interacting with.
+  export function hasFocusWithin() {
+    if (historyOpen) return true
+    const active = document.activeElement
+    return !!active && !!dockedRootEl?.contains(active)
+  }
+
+  let dockedRootEl = null
 
   export function insertText(insert) {
     const el = textareaEl
@@ -78,20 +133,93 @@
   async function send({ submit }) {
     const payload = text
     if (!payload.trim() || sending) return
+    // Pin the target: `sessionName` is a reactive prop and this component stays
+    // mounted across session switches (sidebar / quick switcher), so by the
+    // time sendInput resolves the user may be looking at a different session.
+    // Every storage write below must go to the session the prompt was sent to.
+    const target = sessionName
     sending = true
     error = ''
+    showSendingWarning = false
+    historyOpen = false
+    // Persist the in-flight flag *before* the await, alongside the still-present
+    // draft: if the tab is discarded mid-send (the mobile-backgrounding case
+    // this whole feature targets), a restored draft with `sending: true` warns
+    // the user instead of silently inviting a duplicate send.
+    markComposerSending(target, true)
     try {
-      await sendInput(sessionName, payload, { submit })
-      text = ''
-      setComposerDraft(sessionName, '')
-      await tick()
-      autoGrow()
+      await sendInput(target, payload, { submit })
+      recordComposerSend(target, payload)
+      // The textarea intentionally remains editable while sendInput is in
+      // flight. Only clear the draft we sent; if the user has already started
+      // the next prompt, its in-memory/persisted text must survive this older
+      // request completing.
+      const draftUnchanged = getComposerSession(target).draft === payload
+      if (draftUnchanged) clearComposerDraft(target)
+      if (target === sessionName) {
+        // Still on the same session: reflect the sent entry in visible history.
+        history = getComposerSession(target).history
+        if (text === payload && draftUnchanged) {
+          text = ''
+          await tick()
+          autoGrow()
+        }
+      }
       dispatch('sent', { submit })
     } catch (e) {
-      error = e.message || 'Failed to send input'
+      if (target === sessionName) error = e.message || 'Failed to send input'
     } finally {
       sending = false
+      markComposerSending(target, false)
     }
+  }
+
+  function dismissSendingWarning() {
+    showSendingWarning = false
+    markComposerSending(sessionName, false)
+  }
+
+  function openHistory() {
+    // Blur the textarea *before* flipping historyOpen so iOS/Android dismiss
+    // the on-screen keyboard first, rather than fighting the bottom sheet's
+    // entrance animation for viewport space while the keyboard is still up.
+    textareaEl?.blur()
+    historyOpen = true
+  }
+
+  function closeHistory() {
+    historyOpen = false
+    // Return focus to the trigger button on an ordinary close (not after a
+    // recall, which continues focusing the textarea in handleHistorySelect).
+    tick().then(() => historyTriggerEl?.focus())
+  }
+
+  function handleHistorySelect(entryText) {
+    text = mergeComposerRecall(text, entryText)
+    historyOpen = false
+    setComposerDraft(sessionName, text)
+    tick().then(() => {
+      autoGrow()
+      textareaEl?.focus()
+      const end = text.length
+      textareaEl?.setSelectionRange?.(end, end)
+    })
+  }
+
+  function handleClearHistory() {
+    clearComposerHistory(sessionName)
+    history = []
+    // Sheet stays open showing the empty state — clearing is not a close.
+  }
+
+  function handlePrefsChange(partial) {
+    prefs = setComposerPrefs(partial)
+    // Turning history off purges it immediately (composerStorage.setPrefs);
+    // turning it back on enables future recording. Either way, refresh local
+    // state from the session so the sheet reflects it right away. Turning
+    // draft off purges only the *persisted* draft — text currently in the
+    // textarea is left alone (memory-only behavior), so `text` is untouched.
+    history = getComposerSession(sessionName).history
   }
 
   function handleKeydown(e) {
@@ -181,7 +309,7 @@
 {:else}
   <!-- Mobile: docked composer — THE input on touch devices. Compact single row
        that grows with content; terminal above is primarily a display surface. -->
-  <div class="border-t border-[#1e2d4a] bg-[#07101f] shrink-0">
+  <div class="border-t border-[#1e2d4a] bg-[#07101f] shrink-0" bind:this={dockedRootEl}>
     <div class="flex items-end gap-1.5 p-1.5">
       <button
         type="button"
@@ -204,6 +332,13 @@
       ></textarea>
       <button
         type="button"
+        bind:this={historyTriggerEl}
+        on:click={openHistory}
+        title="prompt history"
+        class="px-2.5 py-2 text-[11px] font-mono border border-[#1e2d4a] rounded-md text-gray-500 hover:text-cyan-300 active:text-cyan-200 shrink-0"
+      >⏱</button>
+      <button
+        type="button"
         disabled={!text.trim() || sending}
         on:click={() => send({ submit: false })}
         title="paste into terminal without submitting"
@@ -217,8 +352,30 @@
         class="px-3.5 py-2 text-[11px] font-mono border border-cyan-900/70 rounded-md text-cyan-300 active:text-cyan-100 bg-cyan-950/30 disabled:opacity-40 shrink-0"
       >↵</button>
     </div>
+    {#if showSendingWarning}
+      <div class="flex items-center justify-between gap-2 px-2 pb-1.5 text-[11px] font-mono text-amber-400/80">
+        <span>this may already have been sent — check the terminal before resending</span>
+        <button
+          type="button"
+          on:click={dismissSendingWarning}
+          aria-label="dismiss may-already-have-been-sent warning"
+          class="shrink-0 text-amber-600 hover:text-amber-300 px-1"
+        >×</button>
+      </div>
+    {/if}
     {#if error}
       <div class="px-2 pb-1 text-[11px] font-mono text-red-400 truncate">{error}</div>
     {/if}
   </div>
+  {#if historyOpen}
+    <PromptHistorySheet
+      {history}
+      {sessionName}
+      {prefs}
+      onSelect={handleHistorySelect}
+      onClear={handleClearHistory}
+      onClose={closeHistory}
+      onPrefsChange={handlePrefsChange}
+    />
+  {/if}
 {/if}

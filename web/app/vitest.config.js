@@ -11,6 +11,10 @@ export default defineConfig({
       'src/api.test.js',
       'src/lib/sessionOrdering.test.js',
       'src/lib/terminalActivity.test.js',
+      'src/lib/usage/usageFormat.test.js',
+      'src/lib/composer/composerStorage.test.js',
+      'src/lib/composer/composerFormat.test.js',
+      'src/lib/stores/sessionUiState.test.js',
     ],
   },
 })

@@ -36,6 +36,8 @@ async function mockSessionAPI(page) {
     await route.fulfill({ status: 204 })
   })
   await page.route('**/api/asks/pending', route => route.fulfill({ json: { requests: [] } }))
+  await page.route('**/api/settings', route => route.fulfill({ json: { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host', usage_enabled: false } }))
+  await page.route('**/api/usage', route => route.fulfill({ json: { state: 'disabled', message: '', updated_at: '', providers: [] } }))
   await page.route('**/api/events', route => route.abort())
   return {
     pinWrites: () => pinWrites,
@@ -82,6 +84,20 @@ test('recent/projects preference and pinning remain deterministic', async ({ pag
   await search.press('Shift+P')
   await expect(search).toHaveValue('Older P')
   expect(state.pinWrites()).toBe(1)
+})
+
+test('a full session list load prunes stored composer drafts/history for sessions that no longer exist', async ({ page }) => {
+  await mockSessionAPI(page)
+  await page.addInitScript(() => {
+    localStorage.setItem('devx_composer_v1:older-alpha', JSON.stringify({ draft: 'still here' }))
+    localStorage.setItem('devx_composer_v1:deleted-gone', JSON.stringify({ draft: 'should be pruned' }))
+  })
+  await page.goto('/')
+  await expect(page.getByRole('listitem')).toHaveCount(2)
+
+  await expect.poll(async () => page.evaluate(() => localStorage.getItem('devx_composer_v1:deleted-gone'))).toBeNull()
+  // A session still present in the (authoritative, unpaginated) list is untouched.
+  expect(await page.evaluate(() => localStorage.getItem('devx_composer_v1:older-alpha'))).not.toBeNull()
 })
 
 test('failed initial load offers a working retry', async ({ page }) => {
