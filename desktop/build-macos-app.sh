@@ -22,8 +22,11 @@ fi
 rm -rf "$APP" "$ICONSET"
 mkdir -p "$APP/Contents/MacOS" "$RES" "$ICONSET"
 
-# Build the Wails binary. The tags match the manual spike command.
-go build -tags desktop,production -o "$BIN" .
+# Build the Wails binary from the desktop module regardless of the caller's
+# working directory. Without the subshell, invoking this script from the repo
+# root silently packaged the CLI module as devx-desktop; launching the bundle
+# then failed trying to open /dev/tty.
+(cd "$ROOT" && go build -tags desktop,production -o "$BIN" .)
 
 # Convert the existing PWA icon into a proper macOS .icns bundle. macOS ships
 # sips/iconutil, so no extra dependency is required.
