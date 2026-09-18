@@ -23,8 +23,13 @@ const (
 	terminalPrewarmLimit       = 3
 	terminalPrewarmIdleTimeout = 3 * time.Minute
 	terminalSendInputMaxBytes  = 64 << 10 // 64 KiB
-	terminalWriteRateLimit     = 30
-	terminalWriteRateWindow    = time.Minute
+	// Terminal writes are rate limited to blunt abuse of a remote-reachable
+	// endpoint. The budget must still cover a human typing: the desktop shell
+	// forwards keystrokes over HTTP (see terminalWritesExempt), and the old
+	// 30/minute budget was smaller than a single sentence, so typing stopped
+	// dead after ~30 debounced batches with no visible error.
+	terminalWriteRateLimit  = 600
+	terminalWriteRateWindow = time.Minute
 )
 
 var terminalWrites = newSimpleRateLimiter(terminalWriteRateLimit, terminalWriteRateWindow)
@@ -282,21 +287,6 @@ func writeTerminalError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "terminal error"})
-}
-
-func terminalWriteGuard(w http.ResponseWriter, r *http.Request, maxBytes int64) bool {
-	if !sameOriginRequest(r) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden origin"})
-		return false
-	}
-	if !terminalWrites.allow(rateLimitKey(r), time.Now()) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
-		return false
-	}
-	if maxBytes > 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	}
-	return true
 }
 
 func rateLimitKey(r *http.Request) string {
