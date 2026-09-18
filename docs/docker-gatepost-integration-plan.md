@@ -588,6 +588,11 @@ Everything else: policy engine, proxy, secret injection, control plane, audit lo
 - Caddy/Cloudflare sync code doesn't change
 - tmux behavior unchanged for host sessions
 - `sessions.json` gains optional new fields; old DevX binaries ignore unknown JSON
+  on **read** — but note they do not preserve it on **write**. Every store
+  mutation is a full read-modify-write, so an older binary re-serialises from a
+  struct that lacks the new field and silently drops it for *every* session. Keep
+  one devx build in play (the desktop app bundles its own CLI for this reason)
+  rather than relying on forward compatibility.
 
 ---
 

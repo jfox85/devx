@@ -28,6 +28,25 @@ mkdir -p "$APP/Contents/MacOS" "$RES" "$ICONSET"
 # then failed trying to open /dev/tty.
 (cd "$ROOT" && go build -tags desktop,production -o "$BIN" .)
 
+# Bundle a devx CLI built from this same source tree next to the desktop binary.
+# The shell shells out to `devx` for session create/rm; resolving that from PATH
+# is a lottery that can pick up an older install. Because every sessions.json
+# mutation is a full read-modify-write, a stale CLI silently drops fields it
+# predates (e.g. "pinned") from every session. runSelfExecutable prefers this
+# sibling over PATH, so the bundled app can never skew against its own schema.
+(
+  cd "$ROOT/.."
+  VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+  GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  BUILD_DATE="$(date -u '+%Y-%m-%d_%H:%M:%S')"
+  go build -ldflags "\
+-X github.com/jfox85/devx/version.Version=$VERSION \
+-X github.com/jfox85/devx/version.GitCommit=$GIT_COMMIT \
+-X github.com/jfox85/devx/version.BuildDate=$BUILD_DATE" \
+    -o "$APP/Contents/MacOS/devx" .
+)
+chmod +x "$APP/Contents/MacOS/devx"
+
 # Convert the existing PWA icon into a proper macOS .icns bundle. macOS ships
 # sips/iconutil, so no extra dependency is required.
 for size in 16 32 128 256 512; do
