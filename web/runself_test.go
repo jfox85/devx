@@ -45,13 +45,13 @@ func TestRunSelfExecutableDesktopPrefersBundledCLIOverPath(t *testing.T) {
 	desktop := filepath.Join(appDir, "devx-desktop")
 	bundled := filepath.Join(appDir, "devx")
 	if err := os.WriteFile(bundled, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write bundled devx CLI: %v", err)
 	}
 
 	// A different (stale) devx earlier on PATH must lose to the bundled one.
 	pathDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(pathDir, "devx"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write stale PATH devx CLI: %v", err)
 	}
 	t.Setenv("PATH", pathDir)
 
@@ -71,7 +71,7 @@ func TestRunSelfExecutableDesktopFallsBackToPathWithoutBundledCLI(t *testing.T) 
 	pathDir := t.TempDir()
 	cli := filepath.Join(pathDir, "devx")
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write PATH devx CLI: %v", err)
 	}
 	t.Setenv("PATH", pathDir)
 
@@ -87,13 +87,13 @@ func TestRunSelfExecutableIgnoresNonExecutableSibling(t *testing.T) {
 	appDir := t.TempDir()
 	desktop := filepath.Join(appDir, "devx-desktop")
 	if err := os.WriteFile(filepath.Join(appDir, "devx"), []byte("not executable"), 0o644); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write non-executable sibling: %v", err)
 	}
 
 	pathDir := t.TempDir()
 	cli := filepath.Join(pathDir, "devx")
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write PATH devx CLI: %v", err)
 	}
 	t.Setenv("PATH", pathDir)
 

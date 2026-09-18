@@ -25,7 +25,11 @@ func augmentPATH() {
 
 	var add []string
 	consider := func(dir string) {
-		if dir == "" || present[dir] {
+		// Reject relative entries: prepending one would make tool resolution
+		// depend on the working directory, so a stray ./bin could shadow the real
+		// binaries. candidateBinDirs already filters these; this is the final
+		// guard at the point where PATH is actually modified.
+		if dir == "" || !filepath.IsAbs(dir) || present[dir] {
 			return
 		}
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -88,10 +92,21 @@ func candidateBinDirs() []string {
 func goBinDirs(home string) []string {
 	var dirs []string
 	seen := map[string]bool{}
+	// Only absolute paths are accepted. An empty GOPATH list element (from a
+	// leading, trailing, or doubled separator) would otherwise Join to the
+	// RELATIVE path "bin", which augmentPATH would prepend — making `devx`
+	// resolution depend on the process working directory and allowing a stray
+	// ./bin/devx to take precedence. The go tool likewise ignores empty entries.
 	add := func(dir string) {
-		if dir != "" && !seen[dir] {
-			seen[dir] = true
-			dirs = append(dirs, dir)
+		if dir == "" || !filepath.IsAbs(dir) || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	addGopathBin := func(gopath string) {
+		if gopath = strings.TrimSpace(gopath); gopath != "" {
+			add(filepath.Join(gopath, "bin"))
 		}
 	}
 
@@ -99,7 +114,7 @@ func goBinDirs(home string) []string {
 		add(gobin)
 	}
 	for _, gopath := range filepath.SplitList(os.Getenv("GOPATH")) {
-		add(filepath.Join(gopath, "bin"))
+		addGopathBin(gopath)
 	}
 
 	// Ask the toolchain when the environment did not tell us. `go env` reads the
@@ -107,7 +122,7 @@ func goBinDirs(home string) []string {
 	if gobin, gopath := goEnvBinPaths(); gobin != "" || gopath != "" {
 		add(gobin)
 		for _, p := range filepath.SplitList(gopath) {
-			add(filepath.Join(p, "bin"))
+			addGopathBin(p)
 		}
 	}
 

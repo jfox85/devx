@@ -128,11 +128,18 @@ func TestGoEnvBinPaths_DoesNotShiftGOPATHIntoGOBIN(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
-	// Unset in the environment so `go env` reports GOBIN as an empty line.
+	// `cfg.Getenv` falls back to the persisted go env file when the OS variable
+	// is empty, so a developer with a saved GOBIN would get a non-empty first
+	// line and this test would not exercise the blank-line case at all.
+	// GOENV=off disables that file so GOBIN is genuinely reported as empty.
+	t.Setenv("GOENV", "off")
 	t.Setenv("GOBIN", "")
 
 	gobin, gopath := goEnvBinPaths()
 
+	if gobin != "" {
+		t.Fatalf("expected an empty GOBIN with GOENV=off, got %q", gobin)
+	}
 	if gopath == "" {
 		t.Fatalf("expected a GOPATH from the toolchain, got gobin=%q gopath=%q", gobin, gopath)
 	}
@@ -147,6 +154,54 @@ func TestGoEnvBinPaths_DoesNotShiftGOPATHIntoGOBIN(t *testing.T) {
 	}
 	if containsPath(dirs, gopath) {
 		t.Errorf("bare GOPATH %q (missing /bin) leaked into %v", gopath, dirs)
+	}
+}
+
+// An empty GOPATH list element (leading, trailing, or doubled separator) joins
+// to the RELATIVE path "bin". Prepending that to PATH makes tool resolution
+// depend on the working directory, so a stray ./bin/devx could shadow the real
+// CLI. Every candidate must be absolute.
+func TestGoBinDirs_SkipsEmptyGOPATHEntries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", string(os.PathListSeparator)+filepath.Join(home, "projects", "go")+string(os.PathListSeparator))
+
+	for _, dir := range goBinDirs(home) {
+		if !filepath.IsAbs(dir) {
+			t.Errorf("relative candidate %q from malformed GOPATH", dir)
+		}
+	}
+}
+
+// augmentPATH is where PATH is actually mutated, so it must reject relative
+// entries even if a candidate slipped through.
+func TestAugmentPATH_NeverPrependsRelativeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", string(os.PathListSeparator)+filepath.Join(home, "projects", "go"))
+
+	// A real ./bin in the working directory would otherwise pass the Stat check.
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, "bin"), 0o755); err != nil {
+		t.Fatalf("create ./bin fixture: %v", err)
+	}
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	if err := os.Chdir(work); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	t.Setenv("PATH", "/usr/bin")
+	augmentPATH()
+
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if p != "" && !filepath.IsAbs(p) {
+			t.Errorf("relative entry %q reached PATH: %s", p, os.Getenv("PATH"))
+		}
 	}
 }
 
