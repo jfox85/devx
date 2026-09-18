@@ -37,6 +37,11 @@
   // Consecutive failed relays; resets on the next success. Drives the toast copy
   // and, by changing the message, re-arms its auto-dismiss timer during a burst.
   let keyboardProxyFailureCount = 0
+  // Bumped on every session switch. Switching replaces keyboardProxyQueue but
+  // cannot cancel a request already in flight, so callbacks from the previous
+  // session would otherwise reset the new session's failure count or toast an
+  // error about a session the user already left.
+  let keyboardProxyGeneration = 0
 
   // Artifact pane/reference state
   let artifactPaneOpen = false
@@ -154,6 +159,7 @@
     keyboardProxyTextBuffer = ''
     keyboardProxyTextSession = ''
     keyboardProxyFailureCount = 0
+    keyboardProxyGeneration += 1
     clearTimeout(keyboardProxyFlushTimer)
     // Restore incoming session's chrome (or defaults for first visit).
     const chrome = getSessionChrome(session.name)
@@ -490,10 +496,19 @@
     // resolved, so the next keystroke still runs and no upstream guard is
     // needed. Keep it last: without it a rejection here is unhandled and input
     // stops silently, which is the bug this replaced.
+    //
+    // Both callbacks are ignored if the session changed while the request was in
+    // flight, so a late reply cannot clear the new session's failure count or
+    // raise a toast for a session the user already left.
+    const generation = keyboardProxyGeneration
     keyboardProxyQueue = keyboardProxyQueue
       .then(() => send(sessionName))
-      .then(() => { keyboardProxyFailureCount = 0 })
-      .catch(error => { reportKeyboardProxyFailure(error) })
+      .then(() => {
+        if (generation === keyboardProxyGeneration) keyboardProxyFailureCount = 0
+      })
+      .catch(error => {
+        if (generation === keyboardProxyGeneration) reportKeyboardProxyFailure(error)
+      })
     return keyboardProxyQueue
   }
 

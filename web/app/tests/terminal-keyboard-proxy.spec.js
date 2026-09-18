@@ -11,6 +11,7 @@ import { test, expect } from '@playwright/test'
 
 const sessionFixtures = [
   { name: 'alpha', display_name: 'Alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-09-04T12:00:00Z', last_opened_at: '2026-09-04T12:00:00Z', target_type: 'host', color: 'blue', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
+  { name: 'beta', display_name: 'Beta', project_alias: 'beta', branch: 'main', pinned: false, activity_at: '2026-09-04T11:00:00Z', last_opened_at: '2026-09-04T11:00:00Z', target_type: 'host', color: 'cyan', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
 ]
 
 async function mockTerminalAPI(page, { sendInputImpl } = {}) {
@@ -18,7 +19,7 @@ async function mockTerminalAPI(page, { sendInputImpl } = {}) {
   await page.addInitScript(() => localStorage.setItem('devx_authed', '1'))
   await page.route('**/api/sessions', route => {
     if (route.request().method() !== 'GET') return route.continue()
-    return route.fulfill({ json: { sessions: sessionFixtures, stale_summary: { total: 1, clean: 0, needs_review: 0, broken: 0 } } })
+    return route.fulfill({ json: { sessions: sessionFixtures, stale_summary: { total: sessionFixtures.length, clean: 0, needs_review: 0, broken: 0 } } })
   })
   await page.route('**/api/asks/pending', route => route.fulfill({ json: { requests: [] } }))
   await page.route('**/api/settings', route => route.fulfill({
@@ -109,11 +110,20 @@ test.describe('desktop keyboard proxy error reporting', () => {
   })
 
   test('a successful relay shows no error toast', async ({ page }) => {
-    await mockTerminalAPI(page)
+    const { sent } = await mockTerminalAPI(page)
     await page.goto('/')
+
+    // typeViaProxy only buffers; the 75ms debounce then issues the request and
+    // the queue callbacks run after it resolves. Asserting immediately would
+    // pass before anything had a chance to fail, so wait for the relay to
+    // actually complete first.
+    const relayed = page.waitForResponse(r => r.url().includes('/api/terminal/send-input'))
     await openSessionAndTypeViaProxy(page, 'hello')
+    await relayed
+    await expect.poll(() => sent.length, { timeout: 5000 }).toBeGreaterThan(0)
 
     await expect(page.getByText(/rate limited/i)).toHaveCount(0)
     await expect(page.getByText(/Terminal input failed/i)).toHaveCount(0)
   })
+
 })
