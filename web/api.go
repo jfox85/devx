@@ -1668,10 +1668,36 @@ func runSelfExecutable(current string) string {
 	if strings.Contains(filepath.Base(current), "devx-desktop") {
 		// The desktop shell runs the same web package, but re-executing itself for
 		// CLI subcommands would open a second desktop window instead of creating a
-		// session. Prefer the real devx CLI from PATH when embedded in desktop.
+		// session. Use the real devx CLI instead.
+		//
+		// A CLI shipped alongside the desktop binary is strongly preferred over a
+		// PATH lookup: it is built from the same source tree, so it cannot persist
+		// sessions.json with an older schema. Every store mutation is a full
+		// read-modify-write, so an older CLI silently drops fields it does not know
+		// about (e.g. "pinned") from *every* session on any add/remove/rename.
+		// Resolving from PATH is a lottery that can pick up a stale install.
+		if sibling := siblingDevxCLI(current); sibling != "" {
+			return sibling
+		}
 		if cli, err := exec.LookPath("devx"); err == nil {
 			return cli
 		}
 	}
 	return current
+}
+
+// siblingDevxCLI returns the path to a `devx` CLI installed next to the running
+// desktop binary, or "" when there is none. Only a regular, executable file is
+// accepted so a stray directory or dangling symlink is ignored.
+func siblingDevxCLI(current string) string {
+	dir := filepath.Dir(current)
+	if dir == "" || dir == "." {
+		return ""
+	}
+	candidate := filepath.Join(dir, "devx")
+	info, err := os.Stat(candidate)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return ""
+	}
+	return candidate
 }
