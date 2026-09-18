@@ -30,7 +30,23 @@
 </script>
 
 <div class="absolute bottom-12 right-3 z-50 max-w-xs font-mono text-xs shadow-lg">
-  {#if upload}
+  {#if error}
+    <!-- Errors take precedence over a success toast. An input failure means
+         keystrokes did not reach tmux, which the user must see; previously a
+         concurrent upload toast hid it and the shared dismiss then cleared both,
+         so the error was never shown at all. role="alert" matches FlagToast so
+         the failure is announced to assistive tech. -->
+    <div role="alert" class="flex items-center gap-2 bg-[#0d1117] border border-red-800 px-3 py-2">
+      <div class="flex-1 min-w-0">
+        <div class="text-red-400">{error}</div>
+      </div>
+      <button
+        on:click={onDismiss}
+        class="text-gray-600 hover:text-gray-300 ml-1 shrink-0"
+        aria-label="dismiss"
+      >×</button>
+    </div>
+  {:else if upload}
     <div class="flex items-center gap-2 bg-[#0d1117] border border-cyan-800 px-3 py-2">
       <img src={upload.objectURL} alt="" class="w-10 h-10 object-cover rounded shrink-0" />
       <div class="flex-1 min-w-0">
@@ -42,17 +58,6 @@
             inserted
           {/if}
         </div>
-      </div>
-      <button
-        on:click={onDismiss}
-        class="text-gray-600 hover:text-gray-300 ml-1 shrink-0"
-        aria-label="dismiss"
-      >×</button>
-    </div>
-  {:else if error}
-    <div class="flex items-center gap-2 bg-[#0d1117] border border-red-800 px-3 py-2">
-      <div class="flex-1 min-w-0">
-        <div class="text-red-400">{error}</div>
       </div>
       <button
         on:click={onDismiss}

@@ -34,6 +34,14 @@
   let keyboardProxyTextBuffer = ''
   let keyboardProxyTextSession = ''
   let keyboardProxyFlushTimer
+  // Consecutive failed relays; resets on the next success. Drives the toast copy
+  // and, by changing the message, re-arms its auto-dismiss timer during a burst.
+  let keyboardProxyFailureCount = 0
+  // Bumped on every session switch. Switching replaces keyboardProxyQueue but
+  // cannot cancel a request already in flight, so callbacks from the previous
+  // session would otherwise reset the new session's failure count or toast an
+  // error about a session the user already left.
+  let keyboardProxyGeneration = 0
 
   // Artifact pane/reference state
   let artifactPaneOpen = false
@@ -150,6 +158,8 @@
     keyboardProxyComposing = false
     keyboardProxyTextBuffer = ''
     keyboardProxyTextSession = ''
+    keyboardProxyFailureCount = 0
+    keyboardProxyGeneration += 1
     clearTimeout(keyboardProxyFlushTimer)
     // Restore incoming session's chrome (or defaults for first visit).
     const chrome = getSessionChrome(session.name)
@@ -445,8 +455,60 @@
     return ''
   }
 
+  // Surface a failed keystroke relay instead of dropping it silently.
+  //
+  // The desktop keyboard proxy forwards typing over HTTP, so a rejected request
+  // (rate limit, auth, backend error) means characters never reached tmux. With
+  // the rejection swallowed this looked exactly like the terminal losing focus:
+  // typing simply stopped with nothing shown. Report it so the cause is visible.
+  //
+  // The dropped batch is NOT retried and is already cleared from the buffer, so
+  // the prompt line can be missing characters. Say that plainly: the user has to
+  // check the line and retype, and "click the terminal" would be actively wrong
+  // (the proxy already has focus; clicking does not un-throttle a limiter).
+  //
+  // Deliberately warn-only: do NOT try to repair the prompt line. Sending a
+  // corrective sequence (kill-line, or a marker) to "fix" the partial input
+  // would destroy whatever the user had already typed by hand, including work
+  // that arrived through the terminal directly rather than this relay. A
+  // truncated line the user can see and correct is much better than a cleared
+  // one they cannot recover. The user decides what to do; we only tell them.
+  //
+  // The count re-arms the toast timer on each new failure. Assigning an
+  // identical string would be a no-op under Svelte's value-equality check, so a
+  // sustained burst would show one 3s toast and then go quiet while input kept
+  // dropping.
+  function reportKeyboardProxyFailure(error) {
+    keyboardProxyFailureCount += 1
+    const dropped = keyboardProxyFailureCount === 1
+      ? 'some keystrokes were not delivered'
+      : `${keyboardProxyFailureCount} batches of keystrokes were not delivered`
+    toastError = error?.status === 429
+      ? `Terminal input was rate limited — ${dropped}. Check the prompt line and retype.`
+      : `Terminal input failed (${error?.message || 'unknown error'}) — ${dropped}. Check the prompt line and retype.`
+    // Log for field triage: on desktop the private server is exempt from the
+    // limiter, so seeing this at all means something unexpected is happening.
+    console.warn('[devx] keyboard proxy write failed', error)
+  }
+
   function enqueueKeyboardProxyInput(sessionName, send) {
-    keyboardProxyQueue = keyboardProxyQueue.catch(() => {}).then(() => send(sessionName))
+    // The trailing catch both reports this link's failure and leaves the queue
+    // resolved, so the next keystroke still runs and no upstream guard is
+    // needed. Keep it last: without it a rejection here is unhandled and input
+    // stops silently, which is the bug this replaced.
+    //
+    // Both callbacks are ignored if the session changed while the request was in
+    // flight, so a late reply cannot clear the new session's failure count or
+    // raise a toast for a session the user already left.
+    const generation = keyboardProxyGeneration
+    keyboardProxyQueue = keyboardProxyQueue
+      .then(() => send(sessionName))
+      .then(() => {
+        if (generation === keyboardProxyGeneration) keyboardProxyFailureCount = 0
+      })
+      .catch(error => {
+        if (generation === keyboardProxyGeneration) reportKeyboardProxyFailure(error)
+      })
     return keyboardProxyQueue
   }
 
@@ -800,8 +862,15 @@
     resizeObserver.observe(iframeEl)
   }
 
+  // Rethrow so the desktop keyboard-proxy queue can report an undelivered key
+  // (enqueueKeyboardProxyInput catches and toasts). The soft keybar calls this
+  // directly and has no handler, so swallow there to preserve current behaviour.
   async function sendKey(key, sessionName = session.name) {
-    try { await apiSendKeys(sessionName, key) } catch { /* ignore */ }
+    await apiSendKeys(sessionName, key)
+  }
+
+  function sendKeyIgnoringErrors(key, sessionName = session.name) {
+    return sendKey(key, sessionName).catch(() => {})
   }
 
   // Stable sessionStorage key for the active window preference of a session.
@@ -1442,7 +1511,7 @@
         on:togglekeys={() => { softKeysOpen = !softKeysOpen; scheduleRefresh() }}
       />
       {#if softKeysOpen}
-        <SoftKeybar onKey={sendKey} />
+        <SoftKeybar onKey={sendKeyIgnoringErrors} />
       {/if}
     </div>
   {/if}

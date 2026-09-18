@@ -18,10 +18,15 @@ func TestRunSelfExecutableDesktopPrefersDevxOnPath(t *testing.T) {
 	dir := t.TempDir()
 	cli := filepath.Join(dir, "devx")
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write PATH devx CLI: %v", err)
 	}
 	t.Setenv("PATH", dir)
-	if got := runSelfExecutable("/Applications/DevX.app/Contents/MacOS/devx-desktop"); got != cli {
+	// Use a temp app dir with no sibling CLI rather than the literal
+	// /Applications path: on a machine with DevX.app actually installed, the
+	// bundled sibling exists and (correctly) wins, so a hardcoded real path made
+	// this test depend on local filesystem state and pass only in CI.
+	desktop := filepath.Join(t.TempDir(), "devx-desktop")
+	if got := runSelfExecutable(desktop); got != cli {
 		t.Fatalf("desktop runSelfExecutable = %q, want %q", got, cli)
 	}
 }

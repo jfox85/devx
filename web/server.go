@@ -30,6 +30,12 @@ type Server struct {
 	hub         *sseHub
 	gatepostCfg target.GatepostRuntimeConfig
 
+	// terminalWritesExempt disables the terminal write rate limiter for this
+	// server. Set only by the desktop PrivateServer, where ordinary typing is
+	// forwarded over HTTP rather than the ttyd websocket and would otherwise be
+	// throttled as if it were abuse. Origin and body-size checks still apply.
+	terminalWritesExempt bool
+
 	// bgMu guards every field below: the validated usage config and the
 	// currently-running poller's lifecycle handles.
 	bgMu sync.Mutex
@@ -396,8 +402,37 @@ type terminalPrewarmRequest struct {
 	Session string `json:"session"`
 }
 
+// terminalGuard screens a terminal write: same-origin, within the rate budget
+// (unless this server is exempt), and body size clamped.
+//
+// The rate limiter blunts abuse of an endpoint that can reach a remote-facing
+// daemon. It is skipped for the desktop private server because ordinary typing
+// there is relayed over HTTP rather than the ttyd websocket: the SPA is on the
+// wails:// origin (the only origin exposing native Wails bindings) while the
+// terminal iframe is on the private loopback origin (ttyd websockets cannot
+// traverse the Wails asset-server proxy). Those origins cannot be merged, so
+// WKWebView never hands keyboard focus to the frame. Throttling that transport
+// counts a human typing as abuse, and the private server is a per-launch,
+// loopback-only surface with an in-memory token, so the limiter buys nothing.
+//
+// Origin and body-size checks are unconditional and apply to every server.
+func (s *Server) terminalGuard(w http.ResponseWriter, r *http.Request, maxBytes int64) bool {
+	if !sameOriginRequest(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden origin"})
+		return false
+	}
+	if !s.terminalWritesExempt && !terminalWrites.allow(rateLimitKey(r), time.Now()) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+		return false
+	}
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	}
+	return true
+}
+
 func (s *Server) handleTerminalPrewarm(w http.ResponseWriter, r *http.Request) {
-	if !terminalWriteGuard(w, r, 8<<10) {
+	if !s.terminalGuard(w, r, 8<<10) {
 		return
 	}
 	var req terminalPrewarmRequest
@@ -435,7 +470,7 @@ func validTerminalAttempt(attempt string) bool {
 }
 
 func (s *Server) handleTerminalActivityReceipt(w http.ResponseWriter, r *http.Request) {
-	if !terminalWriteGuard(w, r, 8<<10) {
+	if !s.terminalGuard(w, r, 8<<10) {
 		return
 	}
 	var req struct {
@@ -458,7 +493,7 @@ func (s *Server) handleTerminalActivityReceipt(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
-	if !terminalWriteGuard(w, r, 8<<10) {
+	if !s.terminalGuard(w, r, 8<<10) {
 		return
 	}
 	var req struct {
@@ -496,7 +531,7 @@ func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTerminalSendInput(w http.ResponseWriter, r *http.Request) {
-	if !terminalWriteGuard(w, r, terminalSendInputMaxBytes+1024) {
+	if !s.terminalGuard(w, r, terminalSendInputMaxBytes+1024) {
 		return
 	}
 	var req struct {

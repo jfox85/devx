@@ -47,6 +47,13 @@ func NewPrivateServer() (*PrivateServer, error) {
 		_ = ln.Close()
 		return nil, err
 	}
+	// The desktop shell cannot put the SPA and the terminal iframe on one origin
+	// (native Wails bindings only exist on wails://; ttyd websockets cannot
+	// traverse the Wails asset-server proxy), so WKWebView will not move keyboard
+	// focus into the cross-origin frame and typing is relayed over HTTP. Exempt
+	// this per-launch loopback server from the terminal write limiter so ordinary
+	// typing is not throttled as abuse.
+	srv.terminalWritesExempt = true
 	return &PrivateServer{Server: srv, listener: ln, token: token, terminalBootstrapToken: terminalBootstrapToken}, nil
 }
 
