@@ -8,6 +8,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { relativeHistoryTime } from './composerFormat.js'
+  import { trapTab } from '../focusTrap.js'
 
   export let history = []       // [{ text, at }], newest first
   export let sessionName = ''
@@ -70,11 +71,6 @@
     return truncated ? joined + '…' : joined
   }
 
-  function focusableControls() {
-    return Array.from(sheetEl?.querySelectorAll('button, input, [tabindex]:not([tabindex="-1"])') || [])
-      .filter(el => !el.disabled && el.offsetParent !== null)
-  }
-
   function handleKeydown(e) {
     if (e.key === 'Escape') {
       e.preventDefault()
@@ -82,18 +78,7 @@
       onClose()
       return
     }
-    if (e.key !== 'Tab') return
-    const controls = focusableControls()
-    if (controls.length === 0) return
-    const first = controls[0]
-    const last = controls[controls.length - 1]
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault()
-      last.focus()
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault()
-      first.focus()
-    }
+    trapTab(e, sheetEl)
   }
 
   function selectEntry(entry) {
