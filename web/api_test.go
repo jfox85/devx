@@ -595,6 +595,29 @@ func TestGetSessionsIncludesStatusAndStaleSummary(t *testing.T) {
 	if resp.StaleSummary.Total != 1 {
 		t.Fatalf("stale summary total = %d, want 1", resp.StaleSummary.Total)
 	}
+	var raw struct {
+		Sessions []map[string]json.RawMessage `json:"sessions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if _, ok := raw.Sessions[0]["color"]; ok {
+		t.Fatalf("session identity color was removed; top-level color should not be present")
+	}
+}
+
+// TestAPIMuxHasNoColorSessionRoute guards against re-registering the removed
+// session-color API on the API mux. TestServerUnknownAPIPathReturns404 covers
+// the full server, where unmatched /api/ paths must not reach the SPA fallback.
+func TestAPIMuxHasNoColorSessionRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux)
+	req := httptest.NewRequest("POST", "/api/sessions/color?name=s1&color=blue", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected no API route for /api/sessions/color (404), got %d", w.Code)
+	}
 }
 
 func TestGetSessionsExposesPinnedAndActivityWithoutYearOneTimestamp(t *testing.T) {

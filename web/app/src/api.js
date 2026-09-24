@@ -159,17 +159,6 @@ export async function renameSession(name, displayName) {
   }
 }
 
-export async function colorSession(name, color) {
-  const res = await apiFetch(
-    '/sessions/color?name=' + encodeURIComponent(name) + '&color=' + encodeURIComponent(color),
-    { method: 'POST' }
-  )
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || 'Color change failed')
-  }
-}
-
 export async function login(token) {
   const res = await fetch(base + '/login', {
     method: 'POST',

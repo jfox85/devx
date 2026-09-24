@@ -59,23 +59,3 @@ func TestIsValidDisplayName(t *testing.T) {
 		}
 	}
 }
-
-func TestEffectiveColor(t *testing.T) {
-	// Explicit valid color is returned as-is
-	s := &Session{Name: "test", Color: "blue"}
-	if got := s.EffectiveColor(); got != "blue" {
-		t.Errorf("expected blue, got %q", got)
-	}
-
-	// Empty color falls back to AutoColor
-	s2 := &Session{Name: "test", Color: ""}
-	if got := s2.EffectiveColor(); !IsValidColor(got) {
-		t.Errorf("expected valid auto-color, got %q", got)
-	}
-
-	// Invalid stored color falls back to AutoColor
-	s3 := &Session{Name: "test", Color: "invalid-color"}
-	if got := s3.EffectiveColor(); !IsValidColor(got) {
-		t.Errorf("expected valid auto-color for invalid stored color, got %q", got)
-	}
-}

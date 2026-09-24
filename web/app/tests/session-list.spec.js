@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test'
 
 const fixtures = [
-  { name: 'older-alpha', display_name: 'Older alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-08-18T10:00:00Z', last_opened_at: '2026-08-18T10:00:00Z', target_type: 'host', color: 'blue', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
-  { name: 'newer-beta', display_name: 'Newer beta', project_alias: 'beta', branch: 'main', pinned: false, activity_at: '2026-08-18T12:00:00Z', last_opened_at: '2026-08-18T12:00:00Z', target_type: 'host', color: 'cyan', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: { api: 'api.localhost' } },
+  { name: 'older-alpha', display_name: 'Older alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-08-18T10:00:00Z', last_opened_at: '2026-08-18T10:00:00Z', target_type: 'host', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
+  { name: 'newer-beta', display_name: 'Newer beta', project_alias: 'beta', branch: 'main', pinned: false, activity_at: '2026-08-18T12:00:00Z', last_opened_at: '2026-08-18T12:00:00Z', target_type: 'host', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: { api: 'api.localhost' } },
 ]
 
 async function mockSessionAPI(page) {
@@ -119,7 +119,6 @@ test('mobile rows preserve session names and 44px touch targets', async ({ page 
   const nameButton = row.getByRole('button', { name: /^Newer beta/ })
   const projectChip = row.getByText('beta', { exact: true })
   const targetChip = row.getByTitle('Target: host')
-  const colorButton = row.getByRole('button', { name: 'change color for newer-beta' })
   const [viewBox, pinBox, nameBox, projectBox] = await Promise.all([
     viewButton.boundingBox(),
     pinButton.boundingBox(),
@@ -133,7 +132,6 @@ test('mobile rows preserve session names and 44px touch targets', async ({ page 
   expect(nameBox.height).toBeGreaterThanOrEqual(44)
   expect(projectBox.y).toBeGreaterThan(nameBox.y)
   await expect(targetChip).toBeHidden()
-  await expect(colorButton).toBeHidden()
 })
 
 test('desktop sidebar rows keep session names readable on two lines', async ({ page }) => {
@@ -145,7 +143,6 @@ test('desktop sidebar rows keep session names readable on two lines', async ({ p
   await expect(nameButton).toBeVisible()
   const projectChip = row.getByText('beta', { exact: true })
   const targetChip = row.getByTitle('Target: host')
-  const colorButton = row.getByRole('button', { name: 'change color for newer-beta' })
   const [nameBox, projectBox] = await Promise.all([
     nameButton.boundingBox(),
     projectChip.boundingBox(),
@@ -156,7 +153,6 @@ test('desktop sidebar rows keep session names readable on two lines', async ({ p
   expect(projectBox.y).toBeGreaterThan(nameBox.y)
   // Desktop keeps the extra controls that mobile hides.
   await expect(targetChip).toBeVisible()
-  await expect(colorButton).toBeVisible()
 })
 
 test('projects view keeps single-line rows without metadata lines', async ({ page }) => {

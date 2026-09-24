@@ -330,11 +330,20 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/settings", s.handleSettings)
 	// Remote show — uploads a file and broadcasts to all SSE clients.
 	mux.HandleFunc("POST /api/show", s.handleShow)
+	// Unmatched API paths must 404 rather than fall through to the SPA
+	// catch-all, which would answer any method with index.html and a 200 —
+	// letting clients of removed endpoints treat the call as a success.
+	// Every registered /api/ route is more specific, so this only catches misses.
+	mux.HandleFunc("/api/", handleAPINotFound)
 	// Static SPA served from embedded FS (registered in embed.go)
 	registerStaticRoutes(mux)
 	// Catch-all for /terminal/* — handles both iframe HTTP requests and WebSocket upgrades.
 	// Auth is enforced by authMiddleware (covers the /terminal/ prefix).
 	mux.HandleFunc("/terminal/", s.handleTerminalProxy)
+}
+
+func handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 }
 
 // handleTerminalProxy handles all /terminal/* traffic.

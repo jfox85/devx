@@ -56,7 +56,6 @@ func registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/refresh", handleRefreshTerminal)
 	mux.HandleFunc("POST /api/upload-image", handleUploadImage)
 	mux.HandleFunc("POST /api/sessions/rename", handleRenameSession)
-	mux.HandleFunc("POST /api/sessions/color", handleColorSession)
 	mux.HandleFunc("GET /api/sessions/review", handleGetSessionReview)
 	mux.HandleFunc("POST /api/sessions/review", handleReviewSession)
 	mux.HandleFunc("POST /api/sessions/reviewed", handleMarkSessionReviewed)
@@ -334,7 +333,6 @@ type gatepostResponse struct {
 type sessionResponse struct {
 	Name                string                       `json:"name"`
 	DisplayName         string                       `json:"display_name,omitempty"`
-	Color               string                       `json:"color"`
 	Branch              string                       `json:"branch"`
 	ProjectAlias        string                       `json:"project_alias,omitempty"`
 	Ports               map[string]int               `json:"ports"`
@@ -396,7 +394,6 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 	return sessionResponse{
 		Name:                sess.Name,
 		DisplayName:         sess.DisplayName,
-		Color:               sess.EffectiveColor(),
 		Branch:              sess.Branch,
 		ProjectAlias:        sess.ProjectAlias,
 		Ports:               sess.Ports,
@@ -824,28 +821,6 @@ func handlePinSession(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	invalidateSessionListCache()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func handleColorSession(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	color := r.URL.Query().Get("color")
-	if name == "" || color == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and color query params required"})
-		return
-	}
-	if !requireValidSession(w, name) {
-		return
-	}
-	if !session.IsValidColor(color) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid color"})
-		return
-	}
-	if err := runSelf("session", "color", "--", name, color); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

@@ -22,7 +22,6 @@ var (
 	noTmuxFlag            bool
 	projectFlag           string
 	reuseFlag             bool
-	createColorFlag       string
 	createDisplayNameFlag string
 	targetFlag            string
 	imageFlag             string
@@ -82,7 +81,6 @@ func init() {
 	sessionCreateCmd.Flags().IntVar(&apiPortFlag, "api-port", 0, "API port (auto-allocated if not specified)")
 	sessionCreateCmd.Flags().BoolVar(&noTmuxFlag, "no-tmux", false, "Skip launching tmux session")
 	sessionCreateCmd.Flags().StringVarP(&projectFlag, "project", "p", "", "Project alias (defaults to current directory's project)")
-	sessionCreateCmd.Flags().StringVar(&createColorFlag, "color", "", "Session color (auto-assigned if not specified)")
 	sessionCreateCmd.Flags().StringVar(&createDisplayNameFlag, "display-name", "", "Display name for the session")
 	sessionCreateCmd.Flags().StringVar(&targetFlag, "target", "", "Execution target: host, docker, or gatepost (default from config)")
 	sessionCreateCmd.Flags().StringVar(&imageFlag, "image", "", "Docker image for container sessions")
@@ -98,10 +96,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid session name %q: must start with a letter or digit, contain only letters/digits/dots/underscores/hyphens/slashes, and must not contain '..' or empty path segments", name)
 	}
 
-	// Validate --color and --display-name flags early (before side effects)
-	if createColorFlag != "" && !session.IsValidColor(createColorFlag) {
-		return fmt.Errorf("invalid color %q. Valid colors: %s", createColorFlag, strings.Join(session.Palette, ", "))
-	}
+	// Validate --display-name early (before side effects)
 	if createDisplayNameFlag != "" && !session.IsValidDisplayName(createDisplayNameFlag) {
 		return fmt.Errorf("display name too long (max %d characters)", session.MaxDisplayNameLen)
 	}
@@ -313,17 +308,12 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
-	// Override color and display name if flags were provided
-	if createColorFlag != "" || createDisplayNameFlag != "" {
+	// Set display name if provided
+	if createDisplayNameFlag != "" {
 		if err := store.UpdateSession(name, func(s *session.Session) {
-			if createColorFlag != "" {
-				s.Color = createColorFlag
-			}
-			if createDisplayNameFlag != "" {
-				s.DisplayName = createDisplayNameFlag
-			}
+			s.DisplayName = createDisplayNameFlag
 		}); err != nil {
-			fmt.Printf("Warning: failed to set color/display-name: %v\n", err)
+			fmt.Printf("Warning: failed to set display-name: %v\n", err)
 		}
 	}
 

@@ -45,7 +45,6 @@ type sessionItem struct {
 	additions         int    // Git diff additions count
 	deletions         int    // Git diff deletions count
 	displayName       string // raw DisplayName from metadata (empty if not set)
-	color             string
 	gatepostEnabled   bool
 	gatepostLogsURL   string
 	gatepostBypass    bool
@@ -395,7 +394,6 @@ type keyMap struct {
 	Back        key.Binding
 	Search      key.Binding
 	Rename      key.Binding
-	ColorCycle  key.Binding
 	Pin         key.Binding
 	SortView    key.Binding
 }
@@ -468,10 +466,6 @@ var keys = keyMap{
 	Rename: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "rename"),
-	),
-	ColorCycle: key.NewBinding(
-		key.WithKeys("K"),
-		key.WithHelp("K", "cycle color"),
 	),
 	Pin: key.NewBinding(
 		key.WithKeys("*"),
@@ -637,8 +631,6 @@ func (m *model) loadSessions() tea.Msg {
 		// Defer filling git stats until Update (avoid concurrent map access)
 		additions, deletions := 0, 0
 
-		color := sess.EffectiveColor()
-
 		activityAt, _ := sess.ActivityAt()
 		sessions = append(sessions, sessionItem{
 			name:              name,
@@ -654,7 +646,6 @@ func (m *model) loadSessions() tea.Msg {
 			additions:         additions,
 			deletions:         deletions,
 			displayName:       sess.DisplayName,
-			color:             color,
 			gatepostEnabled:   sess.Target.Gatepost.Enabled,
 			gatepostLogsURL:   fmt.Sprintf("http://127.0.0.1:%d/api/gatepost/logs?session=%s", viper.GetInt("web_port"), url.QueryEscape(sess.Name)),
 			gatepostBypass:    sess.Target.Gatepost.Bypass,
@@ -990,29 +981,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusMsg = fmt.Sprintf("view: %s", m.sessionView)
 				}
 				m.ensureCursorVisible()
-
-			case key.Matches(msg, m.keys.ColorCycle):
-				if len(m.sessions) > 0 {
-					sess := m.sessions[m.cursor]
-					nextIdx := 0
-					for i, c := range session.Palette {
-						if c == sess.color {
-							nextIdx = (i + 1) % len(session.Palette)
-							break
-						}
-					}
-					newColor := session.Palette[nextIdx]
-					store, err := session.LoadSessions()
-					if err != nil {
-						m.statusMsg = fmt.Sprintf("color: load failed: %v", err)
-					} else if err := store.UpdateSession(sess.name, func(s *session.Session) {
-						s.Color = newColor
-					}); err != nil {
-						m.statusMsg = fmt.Sprintf("color: save failed: %v", err)
-					} else {
-						m.sessions[m.cursor].color = newColor
-					}
-				}
 
 			// Handle number keys 1-9 for quick navigation (MRU slot-based)
 			case msg.String() >= "1" && msg.String() <= "9":
@@ -1764,20 +1732,13 @@ func (m *model) renderSessionList(w *strings.Builder, entries []displayEntry, sh
 			indicator = "🔔"
 		}
 
-		// Colored dot
-		dotStyle, ok := SessionColorStyles[sess.color]
-		if !ok {
-			dotStyle = dimStyle
-		}
-		dot := dotStyle.Render("●")
-
 		// Show display name if set, with real name dimmed
 		label := sess.name
 		if sess.displayName != "" {
 			label = sess.displayName + " " + dimStyle.Render("("+sess.name+")")
 		}
 
-		line := fmt.Sprintf("%s%s%s %s %s", cursor, numberPrefix, indicator, dot, label)
+		line := fmt.Sprintf("%s%s%s %s", cursor, numberPrefix, indicator, label)
 		if isSelected {
 			line = selectedStyle.Render(line)
 		}

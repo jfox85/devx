@@ -4,6 +4,8 @@ Date: 2026-06-11
 Status: draft
 Branch/worktree context: `jf-color-refactor`; related cleanup thread: `jf-clean-stale`
 
+> **Update (2026-09-24):** User-assigned session identity colors have been removed entirely (`jf-remove-color`), rather than kept alongside status colors as the Migration / Compatibility section below proposed. `Session.Color`, `session/color.go` (`Palette`, `AutoColor`, `IsValidColor`), `devx session color`, `devx session create --color`, the TUI `K` binding, `POST /api/sessions/color`, the `color` field on `/api/sessions` responses, and the web sidebar color swatch are all gone. The colored dot now means session status only (`SessionStatusSummary.Color`). The "Current State" section below describes the code as it was when this plan was written.
+
 ## Summary
 
 Session colors should move from user-selected visual identifiers to derived session status indicators. The colored dot is already present in CLI, TUI, and Web, but it is too small and too manually maintained to work as an identity system. It is better used as a compact health/attention signal: what needs action, what is safe to clean up, and what has changed since the user last looked.
@@ -223,11 +225,13 @@ Cleanup status should never auto-delete. It should feed a reviewable cleanup flo
 
 ## Migration / Compatibility
 
-- Keep `Session.Color` in metadata for now.
-- Stop auto-assigning identity colors for new sessions once status colors land.
-- Keep `devx session color` temporarily, but hide/deprecate it or repurpose it later.
-- Do not let manual color override primary status color.
-- Existing sessions with colors require no migration; their stored color simply stops driving the primary dot.
+_Superseded (2026-09-24): identity colors were removed outright instead of deprecated. See the update note at the top of this plan._
+
+- ~~Keep `Session.Color` in metadata for now.~~ Removed. Legacy `"color"` keys in `sessions.json` are ignored on load and dropped on the next save.
+- ~~Stop auto-assigning identity colors for new sessions once status colors land.~~ Done: no identity colors are assigned.
+- ~~Keep `devx session color` temporarily, but hide/deprecate it or repurpose it later.~~ Removed, along with `--color` on `session create` and `POST /api/sessions/color`.
+- Do not let manual color override primary status color. (Moot: there is no manual color.)
+- Existing sessions with colors require no migration; their stored color is ignored.
 
 ## First Implementation Pass
 

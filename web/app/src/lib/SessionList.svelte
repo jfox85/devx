@@ -1,7 +1,7 @@
 <!-- web/app/src/lib/SessionList.svelte -->
 <script>
   import { onMount, tick } from 'svelte'
-  import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, colorSession, pinSession, unpinSession } from '../api.js'
+  import { listSessionsWithSummary, getStaleSummary, deleteSession, renameSession, prewarmTerminal, pruneStaleCleanSessions, markSessionReviewed, pinSession, unpinSession } from '../api.js'
   import { markPrewarmed, markSwitchStart, pruneComposerSessions } from './stores/sessionUiState.js'
   import NewSessionModal from './NewSessionModal.svelte'
   import StaleReviewPanel from './StaleReviewPanel.svelte'
@@ -72,20 +72,6 @@
   const colorMap = {
     red: '#ef4444', blue: '#3b82f6', green: '#22c55e', yellow: '#eab308',
     purple: '#a855f7', orange: '#f97316', pink: '#ec4899', cyan: '#06b6d4', gray: '#64748b',
-  }
-  const sessionColorPalette = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']
-
-  async function cycleSessionColor(e, session) {
-    e.stopPropagation()
-    const current = session.color || 'blue'
-    const index = sessionColorPalette.indexOf(current)
-    const next = sessionColorPalette[(index + 1) % sessionColorPalette.length]
-    try {
-      await colorSession(session.name, next)
-      await load({ background: true })
-    } catch (err) {
-      error = err.message || 'Color change failed'
-    }
   }
   function startRename(session) {
     editingName = session.name
@@ -617,7 +603,7 @@
               class:flag-flash={isFlashing}
               role="listitem"
             >
-              <!-- Name row: color dot + name/rename + attention flag -->
+              <!-- Name row: status dot + name/rename + attention flag -->
               <div
                 class="
                   flex-1 flex min-w-0
@@ -637,13 +623,6 @@
                   style="color: {colorMap[session.status?.color] || colorMap.gray}"
                   title={statusTitle(session)}
                 >●</span>
-                <button
-                  on:click={(e) => cycleSessionColor(e, session)}
-                  class="hidden lg:block shrink-0 w-2.5 h-2.5 rounded-sm border border-black/40"
-                  style="background-color: {colorMap[session.color] || colorMap.blue}"
-                  title={`Session color: ${session.color || 'blue'} (click to change)`}
-                  aria-label={`change color for ${session.name}`}
-                ></button>
 
                 {#if editingName === session.name}
                   <input
