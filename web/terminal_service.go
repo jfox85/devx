@@ -335,6 +335,8 @@ func randomTmuxBufferName() (string, error) {
 	return "devx-" + hex.EncodeToString(b[:]), nil
 }
 
+// pasteTmuxBuffer pastes text into target through a temporary tmux buffer,
+// then sends Enter when submit is true.
 func pasteTmuxBuffer(bufferName, target, text string, submit bool) error {
 	load := exec.Command("tmux", "load-buffer", "-b", bufferName, "-")
 	load.Stdin = strings.NewReader(text)
@@ -342,7 +344,12 @@ func pasteTmuxBuffer(bufferName, target, text string, submit bool) error {
 		return err
 	}
 	defer exec.Command("tmux", "delete-buffer", "-b", bufferName).Run() //nolint:errcheck
-	if err := execTmuxRun("paste-buffer", "-b", bufferName, "-t", target); err != nil {
+	// -p wraps the paste in bracketed-paste markers when the pane's program has
+	// requested them (Pi, Claude Code, zsh, ...). Without it tmux replays the
+	// buffer as keystrokes, turning every newline into an Enter, so a multi-line
+	// paste gets submitted one line at a time. Programs that did not request
+	// bracketed paste receive the text unchanged.
+	if err := execTmuxRun("paste-buffer", "-p", "-b", bufferName, "-t", target); err != nil {
 		return err
 	}
 	if submit {
