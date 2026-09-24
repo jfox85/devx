@@ -1297,6 +1297,7 @@
     bind:this={keyboardProxyEl}
     bind:value={keyboardProxyValue}
     aria-hidden="true"
+    tabindex="-1"
     autocomplete="off"
     autocapitalize="off"
     spellcheck="false"

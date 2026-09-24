@@ -2,6 +2,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { refreshUsage } from '../../api.js'
+  import { trapTab } from '../focusTrap.js'
   import { isDesktop, openExternal as openExternalDesktop } from '../desktopBridge.js'
   import { percent, relativeReset, absoluteReset, sampleAge, sampleAgePhrase, tone, toneTextClass, toneBarClass, reachableDashboardURL } from './usageFormat.js'
 
@@ -69,28 +70,12 @@
 
   onDestroy(() => clearTimeout(refreshTimer))
 
-  function focusableControls() {
-    return Array.from(modalEl?.querySelectorAll('button, a, [tabindex]:not([tabindex="-1"])') || [])
-      .filter(el => !el.disabled && el.offsetParent !== null)
-  }
-
   function handleModalKeydown(e) {
     if (e.key === 'Escape') {
       onClose()
       return
     }
-    if (e.key !== 'Tab') return
-    const controls = focusableControls()
-    if (controls.length === 0) return
-    const first = controls[0]
-    const last = controls[controls.length - 1]
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault()
-      last.focus()
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault()
-      first.focus()
-    }
+    trapTab(e, modalEl)
   }
 
   function openRedlineDashboard(e) {
