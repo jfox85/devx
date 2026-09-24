@@ -29,20 +29,27 @@ func TestPasteTmuxBufferKeepsMultilineTextAsOnePaste(t *testing.T) {
 	t.Setenv("TMUX_TMPDIR", tmuxDir)
 	t.Setenv("TMUX", "")
 
-	dir := t.TempDir()
-	ready := filepath.Join(dir, "ready")
-	out := filepath.Join(dir, "out")
-	script := "printf '\\033[?2004h'; stty raw -echo; touch '" + ready + "'; exec cat > '" + out + "'"
+	out := filepath.Join(t.TempDir(), "out")
+	// The sentinel is printed after bracketed paste is enabled and the tty is
+	// raw. tmux processes pane output in order, so once the sentinel is visible
+	// in the pane, tmux has recorded the bracketed-paste mode. A file written by
+	// the shell would not prove that: tmux reads pane output asynchronously.
+	const sentinel = "DEVX-PASTE-READY"
+	script := "printf '\\033[?2004h'; stty raw -echo; printf '" + sentinel + "'; exec cat > '" + out + "'"
 
 	const name = "devx-paste-test"
+	target := "=" + name + ":"
 	if err := exec.Command("tmux", "new-session", "-d", "-s", name, "-x", "80", "-y", "24", "sh", "-c", script).Run(); err != nil {
 		t.Fatalf("start tmux: %v", err)
 	}
 	t.Cleanup(func() { exec.Command("tmux", "kill-server").Run() }) //nolint:errcheck
 
-	waitFor(t, func() bool { _, err := os.Stat(ready); return err == nil }, "pane program to start")
+	waitFor(t, func() bool {
+		screen, err := exec.Command("tmux", "capture-pane", "-p", "-t", target).Output()
+		return err == nil && strings.Contains(string(screen), sentinel)
+	}, "pane to enable bracketed paste")
 
-	if err := pasteTmuxBuffer("devx-test-buf", "="+name+":", "line one\nline two\nline three", false); err != nil {
+	if err := pasteTmuxBuffer("devx-test-buf", target, "line one\nline two\nline three", false); err != nil {
 		t.Fatalf("pasteTmuxBuffer: %v", err)
 	}
 
@@ -61,6 +68,7 @@ func TestPasteTmuxBufferKeepsMultilineTextAsOnePaste(t *testing.T) {
 	}
 }
 
+// waitFor polls cond until it returns true, failing the test after 5 seconds.
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

@@ -335,6 +335,8 @@ func randomTmuxBufferName() (string, error) {
 	return "devx-" + hex.EncodeToString(b[:]), nil
 }
 
+// pasteTmuxBuffer pastes text into target through a temporary tmux buffer,
+// then sends Enter when submit is true.
 func pasteTmuxBuffer(bufferName, target, text string, submit bool) error {
 	load := exec.Command("tmux", "load-buffer", "-b", bufferName, "-")
 	load.Stdin = strings.NewReader(text)
