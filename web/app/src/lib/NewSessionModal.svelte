@@ -2,6 +2,7 @@
 <script>
   import { onMount, createEventDispatcher } from 'svelte'
   import { createSession, getSettings, listProjects } from '../api.js'
+  import { trapTab } from './focusTrap.js'
 
   const dispatch = createEventDispatcher()
 
@@ -28,8 +29,8 @@
     // Explicitly focus the name field — autofocus alone fails when an iframe held focus.
     // Retry after layout because desktop Wails/ttyd can reclaim focus briefly.
     focusName()
-    setTimeout(focusName, 0)
-    setTimeout(focusName, 80)
+    setTimeout(refocusNameIfLost, 0)
+    setTimeout(refocusNameIfLost, 80)
     try {
       const settings = await getSettings()
       defaultTarget = settings.default_session_target || 'host'
@@ -75,9 +76,11 @@
     nameInputEl?.select()
   }
 
-  function focusableControls() {
-    return Array.from(modalEl?.querySelectorAll('input, select, button') || [])
-      .filter(el => !el.disabled && el.offsetParent !== null)
+  // Retries must not yank focus back if the user already tabbed onward.
+  function refocusNameIfLost() {
+    const active = document.activeElement
+    if (active && active !== modalEl && modalEl?.contains(active)) return
+    focusName()
   }
 
   function handleModalKeydown(e) {
@@ -90,18 +93,7 @@
       if (!loading) handleSubmit()
       return
     }
-    if (e.key !== 'Tab') return
-    const controls = focusableControls()
-    if (controls.length === 0) return
-    const first = controls[0]
-    const last = controls[controls.length - 1]
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault()
-      last.focus()
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault()
-      first.focus()
-    }
+    trapTab(e, modalEl)
   }
 </script>
 

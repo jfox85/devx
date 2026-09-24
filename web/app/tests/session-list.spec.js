@@ -190,3 +190,37 @@ test('desktop action buttons are hover-revealed uniformly for pinned and unpinne
   await unpinnedRow.hover()
   await expect.poll(async () => actionsIn(unpinnedRow).evaluate(el => getComputedStyle(el).opacity)).toBe('1')
 })
+
+test('new session dialog keeps Tab focus inside the overlay', async ({ page }) => {
+  await mockSessionAPI(page)
+  await page.route('**/api/projects', route => route.fulfill({ json: { projects: ['alpha', 'beta'], targets: {} } }))
+  await page.goto('/')
+  await expect(page.getByRole('listitem')).toHaveCount(2)
+  await page.keyboard.press('Control+Shift+C')
+  const dialog = page.getByRole('dialog')
+  const name = dialog.locator('#session-name')
+  await expect(name).toBeFocused()
+
+  // WebKit's native tab order skips buttons and radios, so the dialog must own
+  // every Tab press rather than only wrapping at the ends. Chromium would tab
+  // correctly either way, so also assert no Tab falls through to the browser.
+  await page.evaluate(() => {
+    window.__unhandledTabs = 0
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Tab' && !e.defaultPrevented) window.__unhandledTabs++
+    })
+  })
+  const forward = []
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press('Tab')
+    forward.push(await page.evaluate(() => {
+      const a = document.activeElement
+      return a.closest('[role="dialog"]') ? (a.id || a.value || a.textContent.trim()) : `OUTSIDE:${a.tagName}`
+    }))
+  }
+  expect(forward).toEqual(['session-project', 'host', 'cancel', '[ create ]', '×', 'session-name'])
+
+  await page.keyboard.press('Shift+Tab')
+  await expect(dialog.getByRole('button', { name: '×' })).toBeFocused()
+  expect(await page.evaluate(() => window.__unhandledTabs)).toBe(0)
+})
