@@ -1,5 +1,7 @@
 # Session Display Name & Color Implementation Plan
 
+> **Superseded (2026-09-24):** The color tasks in this plan were implemented and later removed. There is no `Session.Color`, palette/`AutoColor`, `devx session color`, `--color` flag, TUI `K` binding, or `/api/sessions/color` endpoint anymore; the colored dot now shows derived session status. Display-name tasks remain current. Do not re-execute the color tasks below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add display name and color indicator fields to devx sessions, surfaced in CLI, TUI, and web interfaces.

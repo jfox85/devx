@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 const sessionFixtures = [
-  { name: 'alpha', display_name: 'Alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-09-04T12:00:00Z', last_opened_at: '2026-09-04T12:00:00Z', target_type: 'host', color: 'blue', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
+  { name: 'alpha', display_name: 'Alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-09-04T12:00:00Z', last_opened_at: '2026-09-04T12:00:00Z', target_type: 'host', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {} },
 ]
 
 function usageFixture(overrides = {}) {

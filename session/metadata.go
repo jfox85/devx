@@ -29,7 +29,6 @@ type Session struct {
 	AttentionSource    string            `json:"attention_source,omitempty"`
 	AttentionTime      time.Time         `json:"attention_time,omitempty"`
 	DisplayName        string            `json:"display_name,omitempty"`
-	Color              string            `json:"color,omitempty"`
 	Pinned             bool              `json:"pinned,omitempty"`
 	LastAttached       time.Time         `json:"last_attached,omitempty"`
 	LastArtifactSeenAt time.Time         `json:"last_artifact_seen_at,omitempty"`
@@ -307,9 +306,6 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 			return fmt.Errorf("session %s already exists", name)
 		}
 
-		// Auto-assign color if not already set by caller
-		color := AutoColor(name)
-
 		now := time.Now()
 		fresh.Sessions[name] = &Session{
 			Name:         name,
@@ -319,7 +315,6 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 			Path:         path,
 			Ports:        ports,
 			Routes:       make(map[string]string),
-			Color:        color,
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		}

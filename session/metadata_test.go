@@ -3,6 +3,8 @@ package session
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -501,5 +503,37 @@ func TestNumberedSlots_GetSessionForSlot(t *testing.T) {
 	name = store.GetSessionForSlot(5)
 	if name != "" {
 		t.Errorf("expected empty for unassigned slot 5, got '%s'", name)
+	}
+}
+
+func TestLegacyColorFieldLoadsAndIsDroppedOnSave(t *testing.T) {
+	setupTempHome(t)
+
+	path := getSessionsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := `{"sessions":{"old":{"name":"old","branch":"main","path":"/tmp/old","ports":{},"color":"purple","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy sessions: %v", err)
+	}
+
+	store, err := LoadSessions()
+	if err != nil {
+		t.Fatalf("legacy sessions with color should still load: %v", err)
+	}
+	if _, ok := store.GetSession("old"); !ok {
+		t.Fatal("expected legacy session to load")
+	}
+
+	if err := store.UpdateSession("old", func(s *Session) { s.DisplayName = "Old" }); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), `"color"`) {
+		t.Fatalf("expected legacy color field to be dropped on save, got: %s", data)
 	}
 }

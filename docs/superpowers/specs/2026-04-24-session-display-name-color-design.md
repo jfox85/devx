@@ -1,5 +1,7 @@
 # Session Display Name & Color Indicator
 
+> **Superseded (2026-09-24):** The color-indicator half of this design has been removed. There is no `Session.Color`, palette/`AutoColor`, `devx session color`, `--color` flag, TUI `K` binding, or `/api/sessions/color` endpoint anymore. The colored dot now shows derived session status (see `docs/plans/2026-06-11-session-status-colors-plan.md`). Display names are unaffected. This document is kept as a historical record.
+
 ## Problem
 
 Sessions are identified by their internal name (which doubles as the git branch name). Once created, this name is immutable. As sessions evolve, the original name may no longer reflect the work being done. Additionally, when scanning a list of sessions, there's no quick visual differentiator beyond reading the name text.
