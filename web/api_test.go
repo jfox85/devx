@@ -607,8 +607,8 @@ func TestGetSessionsIncludesStatusAndStaleSummary(t *testing.T) {
 }
 
 // TestAPIMuxHasNoColorSessionRoute guards against re-registering the removed
-// session-color API. It checks the API mux only; the full server's SPA
-// catch-all serves index.html for any unmatched path.
+// session-color API on the API mux. TestServerUnknownAPIPathReturns404 covers
+// the full server, where unmatched /api/ paths must not reach the SPA fallback.
 func TestAPIMuxHasNoColorSessionRoute(t *testing.T) {
 	mux := http.NewServeMux()
 	registerAPIRoutes(mux)

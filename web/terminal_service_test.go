@@ -46,6 +46,33 @@ func serveServerRequest(t *testing.T, s *Server, method, path string, body *byte
 	return w
 }
 
+// TestServerUnknownAPIPathReturns404 ensures unmatched /api/ paths return a
+// JSON 404 on the full server instead of falling through to the SPA handler
+// (which would answer with index.html and a 200).
+func TestServerUnknownAPIPathReturns404(t *testing.T) {
+	s := newTestWebServer(t)
+	for _, tc := range []struct{ method, path string }{
+		{"POST", "/api/sessions/color?name=s1&color=blue"}, // removed endpoint
+		{"GET", "/api/does-not-exist"},
+	} {
+		resp := serveServerRequest(t, s, tc.method, tc.path, nil, true)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("%s %s: expected 404, got %d: %s", tc.method, tc.path, resp.Code, resp.Body.String())
+		}
+		if ct := resp.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+			t.Fatalf("%s %s: expected JSON error, got Content-Type %q", tc.method, tc.path, ct)
+		}
+	}
+
+	// The fallback must not shadow real routes or the SPA.
+	if resp := serveServerRequest(t, s, "GET", "/api/terminal/status?session=demo", nil, false); resp.Code != http.StatusUnauthorized {
+		t.Fatalf("registered API route shadowed: expected 401 unauthenticated, got %d", resp.Code)
+	}
+	if resp := serveServerRequest(t, s, "GET", "/", nil, false); resp.Code != http.StatusOK {
+		t.Fatalf("SPA root: expected 200, got %d", resp.Code)
+	}
+}
+
 func TestTerminalStatusRequiresAuth(t *testing.T) {
 	s := newTestWebServer(t)
 	resp := serveServerRequest(t, s, "GET", "/api/terminal/status?session=demo", nil, false)
