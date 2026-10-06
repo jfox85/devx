@@ -301,11 +301,6 @@ func (p *Poller) Refresh(ctx context.Context) (RefreshResult, error) {
 	result := make(chan outcome, 1)
 	go func() {
 		defer cancel()
-		defer func() {
-			p.mu.Lock()
-			p.refreshing = false
-			p.mu.Unlock()
-		}()
 
 		errs := make([]error, len(providers))
 		slots := make(chan struct{}, maxRefreshConcurrency)
@@ -328,7 +323,14 @@ func (p *Poller) Refresh(ctx context.Context) (RefreshResult, error) {
 			// errors.Join separates with newlines; keep it to one log line.
 			p.logf("usage: refresh failed: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
 		}
-		result <- outcome{usage: p.Poll(refreshCtx), err: err}
+		usage := p.Poll(refreshCtx)
+		// Clear the flag before handing back the result, not in a defer: a
+		// deferred reset runs after the send, so Refresh could return while the
+		// poller still looked busy and the next call was wrongly throttled.
+		p.mu.Lock()
+		p.refreshing = false
+		p.mu.Unlock()
+		result <- outcome{usage: usage, err: err}
 	}()
 
 	select {
