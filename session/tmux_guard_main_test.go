@@ -7,9 +7,10 @@ import (
 	"github.com/jfox85/devx/internal/tmuxfixture"
 )
 
-// TestMain points every tmux call made by this package's tests at a private,
-// empty TMUX_TMPDIR (TMUX/TMUX_PANE removed), so code under test can never
-// reach a developer's tmux server. See internal/tmuxfixture.
+// TestMain installs the test-only tmux wrapper: every real tmux exec made by
+// this package's tests (directly, via production code, or via tmuxp) runs as
+// "tmux -S <owned socket>" with TMUX/TMUX_PANE/TMUX_TMPDIR removed, and
+// HOME points at a fake test store. See internal/tmuxfixture.
 func TestMain(m *testing.M) {
 	os.Exit(tmuxfixture.RunGuarded(m))
 }

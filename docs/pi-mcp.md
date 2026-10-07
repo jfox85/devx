@@ -180,14 +180,19 @@ Tests that start tmux must use `internal/tmuxfixture`:
   sessions recorded through `NewSession`. It never kills a server. Every
   executed argv is written to `commands.log`, and the piagent E2E harness
   asserts on that log.
-- **Package guard.** In `cmd`, `session` and `web`, a `TestMain` calls
-  `tmuxfixture.RunGuarded`. It removes `TMUX`/`TMUX_PANE` and points
-  `TMUX_TMPDIR` at a fresh private directory, so production code paths
-  under test (exact `kill-session`, `list-sessions`, `has-session`) can't
-  reach a real server.
-- **Legacy tests.** Older tests that drive tmux or the real `sessions.json`
-  without a fixture skip unless `DEVX_ALLOW_UNSCOPED_TMUX_TESTS=1` is set.
-  CI sets it. On a machine with live DevX/tmux sessions, never set it.
-  Affected tests: `session.TestTmuxSessionLaunch`,
-  `web.TestPasteTmuxBufferKeepsMultilineTextAsOnePaste`, and the cmd session
-  lifecycle tests.
+- **Package guard (`cmd`, `session`, `web`).** `TestMain` calls
+  `tmuxfixture.RunGuarded`. That installs a test-only `tmux` wrapper first
+  on `PATH`, which is the test binary re-executed in wrapper mode.
+  - **Every real exec is pinned.** Each tmux exec reached by these tests,
+    whether direct, through production code or through tmuxp/libtmux, runs
+    as `<abs real tmux> -S /tmp/dxtw-*/tmux.sock …`. `TMUX`, `TMUX_PANE`
+    and `TMUX_TMPDIR` are removed, and ownership is verified first.
+  - **Same refusals as the fixture.** `kill-server` and the other refused
+    commands, caller `-L`/`-S`/`-f`, `;` chaining, and default, missing or
+    unowned sockets are all rejected before exec.
+  - **Fake HOME.** `HOME`/`XDG_*` point at a fake test store, so
+    `sessions.json` side effects never touch real metadata.
+  - **Cleanup.** After the tests, sessions on the owned socket are killed
+    by exact name. The server is never killed.
+  - **Former opt-in removed.** The previously gated legacy tests run under
+    the wrapper. The `DEVX_ALLOW_UNSCOPED_TMUX_TESTS` opt-in is gone.

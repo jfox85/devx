@@ -235,22 +235,3 @@ func TestEnvScrubsTmuxVariables(t *testing.T) {
 		}
 	}
 }
-
-func TestGuardPackageScrubsAndRedirects(t *testing.T) {
-	hostileEnv(t)
-	cleanup, err := GuardPackage()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := os.Getenv("TMUX_TMPDIR")
-	if os.Getenv("TMUX") != "" || os.Getenv("TMUX_PANE") != "" {
-		t.Fatal("TMUX/TMUX_PANE not removed")
-	}
-	if GuardedDir() != dir || !strings.HasPrefix(dir, "/tmp/dxtg-") {
-		t.Fatalf("TMUX_TMPDIR=%q not a guarded dir", dir)
-	}
-	cleanup()
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatal("guard dir not removed")
-	}
-}

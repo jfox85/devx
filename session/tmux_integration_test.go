@@ -6,14 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jfox85/devx/internal/tmuxfixture"
 )
 
 func TestTmuxSessionLaunch(t *testing.T) {
-	// Legacy test: it drives tmux without an explicit fixture socket, so it
-	// could reach a developer's real tmux server. It only runs on explicit
-	// opt-in (e.g. in CI, where no human tmux server exists).
-	if os.Getenv("DEVX_ALLOW_UNSCOPED_TMUX_TESTS") != "1" {
-		t.Skip("unscoped tmux test; set DEVX_ALLOW_UNSCOPED_TMUX_TESTS=1 to run (never inside a human tmux session)")
+	// tmux and tmuxp (via libtmux) reach tmux only through the test-only
+	// wrapper installed by TestMain: explicit owned -S socket, fake HOME.
+	if tmuxfixture.ActiveWrapper() == nil || tmuxfixture.ActiveWrapper().RealTmux == "" {
+		t.Skip("tmux wrapper not active or tmux not installed")
 	}
 	// Skip if tmux or tmuxp not available
 	if _, err := exec.LookPath("tmux"); err != nil {

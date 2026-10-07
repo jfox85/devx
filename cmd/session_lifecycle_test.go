@@ -14,13 +14,7 @@ import (
 // createTestSession creates a session for testing purposes
 func createTestSession(t *testing.T, sessionName string) {
 	t.Helper()
-	// These lifecycle tests use the real HOME (sessions.json) and run
-	// `tmux kill-session` without a fixture socket, so on a developer machine
-	// they could touch real DevX metadata and the user's tmux server. They
-	// run only on explicit opt-in (CI sets it).
-	if os.Getenv("DEVX_ALLOW_UNSCOPED_TMUX_TESTS") != "1" {
-		t.Skip("unscoped tmux/HOME test; set DEVX_ALLOW_UNSCOPED_TMUX_TESTS=1 to run (never on a machine with live DevX sessions)")
-	}
+	requireIsolatedTestEnv(t)
 
 	// Create a temporary git repository for testing
 	tempDir := t.TempDir()
@@ -175,10 +169,7 @@ func TestSessionRemove(t *testing.T) {
 }
 
 func TestSessionListEmpty(t *testing.T) {
-	// Overwrites the real sessions.json (then restores it). Opt-in only.
-	if os.Getenv("DEVX_ALLOW_UNSCOPED_TMUX_TESTS") != "1" {
-		t.Skip("rewrites real sessions.json; set DEVX_ALLOW_UNSCOPED_TMUX_TESTS=1 to run")
-	}
+	requireIsolatedTestEnv(t)
 	// Clear all sessions first
 	store, err := session.LoadSessions()
 	if err != nil {

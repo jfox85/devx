@@ -281,6 +281,9 @@ func validateArgs(args []string) error {
 	if len(args) == 0 {
 		return rejectf("empty command")
 	}
+	if len(args) == 1 && args[0] == "-V" {
+		return nil // version query; contacts no server (libtmux probes it)
+	}
 	if strings.HasPrefix(args[0], "-") {
 		return rejectf("global tmux option %q is not allowed (socket is fixed by the fixture)", args[0])
 	}
