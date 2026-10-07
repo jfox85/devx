@@ -1,0 +1,231 @@
+package piagent
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// dirCreator is a SessionCreator over a temp directory and an isolated tmux
+// socket: it never touches the user's DevX metadata or tmux server.
+type dirCreator struct {
+	base     string
+	tmux     Tmux
+	existing map[string]time.Time
+	creates  int
+}
+
+func (c *dirCreator) Create(name, project string, notBefore time.Time) (CreatedSession, error) {
+	if at, ok := c.existing[name]; ok && at.Before(notBefore) {
+		return CreatedSession{}, fmt.Errorf("session %q exists and predates this start", name)
+	}
+	p := filepath.Join(c.base, name)
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		return CreatedSession{}, err
+	}
+	if _, ok := c.existing[name]; !ok {
+		c.creates++
+		c.existing[name] = time.Now()
+	}
+	return CreatedSession{Name: name, Path: p, Project: project, TmuxName: name}, nil
+}
+
+func (c *dirCreator) EnsureTmux(name string) error {
+	if c.tmux.HasSession(name) {
+		return nil
+	}
+	_, err := c.tmux.Run("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", filepath.Join(c.base, name), "sleep 86400")
+	return err
+}
+
+func (c *dirCreator) Exists(name string) (bool, error) {
+	_, ok := c.existing[name]
+	return ok, nil
+}
+
+func newTestManager(t *testing.T) (*Manager, *dirCreator) {
+	t.Helper()
+	root := t.TempDir()
+	creator := &dirCreator{base: t.TempDir(), existing: map[string]time.Time{}}
+	m := NewManager(NewStore(filepath.Join(root, "state")), Tmux{}, creator, Config{AllowedProjects: []string{"proj"}})
+	return m, creator
+}
+
+// --- real interactive Pi fixture ----------------------------------------
+
+type piFixture struct {
+	t       *testing.T
+	m       *Manager
+	creator *dirCreator
+	tmux    Tmux
+}
+
+// newPiFixture launches real interactive Pi TUIs (faux model, isolated Pi
+// config dir, isolated tmux server). Skipped when pi/tmux are unavailable or
+// DEVX_PI_E2E=0.
+func newPiFixture(t *testing.T, extraEnv ...string) *piFixture {
+	t.Helper()
+	if os.Getenv("DEVX_PI_E2E") == "0" {
+		t.Skip("DEVX_PI_E2E=0")
+	}
+	piBin := os.Getenv("DEVX_PI_BIN")
+	if piBin == "" {
+		var err error
+		if piBin, err = exec.LookPath("pi"); err != nil {
+			t.Skip("pi not installed")
+		}
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	socket := fmt.Sprintf("devx-piagent-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	tm := Tmux{Socket: socket}
+	t.Cleanup(func() { _, _ = tm.Run("kill-server") })
+
+	// Short paths: macOS limits socket/path lengths and Pi derives some.
+	tmpRoot, err := os.MkdirTemp("/tmp", "dxpa-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("fixture state kept at %s", tmpRoot)
+			return
+		}
+		_ = os.RemoveAll(tmpRoot)
+	})
+	piDir := filepath.Join(tmpRoot, "pi-agent-dir")
+	_ = os.MkdirAll(piDir, 0o700)
+	faux, _ := filepath.Abs("testdata/faux-model.ts")
+	creator := &dirCreator{base: filepath.Join(tmpRoot, "wt"), tmux: tm, existing: map[string]time.Time{}}
+	m := NewManager(NewStore(filepath.Join(tmpRoot, "state")), tm, creator, Config{
+		PiArgs: []string{
+			"--offline", "--no-extensions", "--no-skills", "--no-context-files", "--no-mcp", "--no-approve",
+			"--no-prompt-templates", "-e", faux, "--model", "devx-faux/faux-1",
+			"--session-dir", filepath.Join(tmpRoot, "pi-sessions"),
+		},
+		AllowedProjects: []string{"proj"},
+	})
+	// "env VAR=... pi" keeps the launch script generic while isolating Pi's
+	// config dir (no user extensions, auth, or settings are loaded).
+	m.Config.PiCommand = "/usr/bin/env"
+	m.Config.PiCommandArgs = []string{"PI_CODING_AGENT_DIR=" + piDir, "GATEPOST_HOST_DISABLE=1"}
+	m.Config.PiCommandArgs = append(append(m.Config.PiCommandArgs, extraEnv...), piBin)
+	return &piFixture{t: t, m: m, creator: creator, tmux: tm}
+}
+
+func (f *piFixture) start(prompt, key string) *StartResult {
+	f.t.Helper()
+	r, err := f.m.Start(StartRequest{Project: "proj", Prompt: prompt, IdempotencyKey: key})
+	if err != nil {
+		f.t.Fatalf("start: %v", err)
+	}
+	return r
+}
+
+func (f *piFixture) send(agentID, prompt, key string) string {
+	f.t.Helper()
+	r, err := f.m.Send(SendRequest{AgentID: agentID, Prompt: prompt, IdempotencyKey: key})
+	if err != nil {
+		f.t.Fatalf("send: %v", err)
+	}
+	return r.TaskID
+}
+
+func (f *piFixture) waitTask(taskID string, timeout time.Duration, states ...string) *TaskView {
+	f.t.Helper()
+	deadline := time.Now().Add(timeout)
+	var tv *TaskView
+	for time.Now().Before(deadline) {
+		var err error
+		tv, _, err = f.m.TaskStatus(taskID)
+		if err != nil {
+			f.t.Fatalf("status: %v", err)
+		}
+		for _, s := range states {
+			if tv.State == s {
+				return tv
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	f.t.Fatalf("task %s did not reach %v within %s; last=%+v\npane:\n%s", taskID, states, timeout, tv, f.pane(tv.AgentID))
+	return nil
+}
+
+func (f *piFixture) waitAgent(agentID string, timeout time.Duration, pred func(*AgentView) bool, what string) *AgentView {
+	f.t.Helper()
+	deadline := time.Now().Add(timeout)
+	var v *AgentView
+	for time.Now().Before(deadline) {
+		var err error
+		if v, err = f.m.AgentStatus(agentID); err != nil {
+			f.t.Fatalf("agent status: %v", err)
+		}
+		if pred(v) {
+			return v
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	f.t.Fatalf("agent %s: %s not reached in %s; state=%s detail=%s\npane:\n%s", agentID, what, timeout, v.State, v.Detail, f.pane(agentID))
+	return nil
+}
+
+func (f *piFixture) online(agentID string) *AgentView {
+	return f.waitAgent(agentID, 30*time.Second, func(v *AgentView) bool { return v.BridgeOnline }, "bridge online")
+}
+
+func (f *piFixture) pane(agentID string) string {
+	out, err := f.m.Inspect(agentID, 60)
+	if err != nil {
+		return "<" + err.Error() + ">"
+	}
+	return out
+}
+
+// humanType types into the agent's pane exactly as a person at the keyboard
+// would (literal keys, then Enter).
+func (f *piFixture) humanType(agentID, text string, submit bool) {
+	f.t.Helper()
+	a, err := f.m.Store.LoadAgent(agentID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err := f.tmux.Run("send-keys", "-t", a.Binding.PaneID, "-l", text); err != nil {
+		f.t.Fatal(err)
+	}
+	if submit {
+		time.Sleep(150 * time.Millisecond)
+		if _, err := f.tmux.Run("send-keys", "-t", a.Binding.PaneID, "Enter"); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+func (f *piFixture) events(agentID string) []Event {
+	evs, _, err := f.m.Store.ReadEvents(agentID, 0, MaxEventsPage)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return evs
+}
+
+func eventTypes(evs []Event) string {
+	var s []string
+	for _, e := range evs {
+		s = append(s, e.Type)
+	}
+	return strings.Join(s, ",")
+}
+
+// piSessionFiles returns Pi's persisted session files for a session id.
+func piSessionFiles(t *testing.T, dir, id string) []string {
+	t.Helper()
+	matches, _ := filepath.Glob(filepath.Join(dir, "*", "*"+id+".jsonl"))
+	more, _ := filepath.Glob(filepath.Join(dir, "*"+id+".jsonl"))
+	return append(matches, more...)
+}
