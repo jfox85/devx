@@ -6,21 +6,22 @@ import (
 	"strings"
 )
 
-// Tmux runs tmux commands, optionally against an isolated server socket
-// (tests use one so they never touch the user's sessions).
+// Tmux runs tmux commands. Production uses the zero value (the user's tmux
+// server, addressed only by exact =session / %pane targets; DevX never kills
+// a tmux server). Tests set Exec to a tmuxfixture guard, which pins every
+// command to a fixture-owned socket and rejects anything else before it
+// runs.
 type Tmux struct {
-	Socket string
-}
-
-func (t Tmux) args(a ...string) []string {
-	if t.Socket != "" {
-		return append([]string{"-L", t.Socket}, a...)
-	}
-	return a
+	// Exec, when set, receives the argv (without "tmux") instead of running
+	// tmux directly.
+	Exec func(args ...string) (string, error)
 }
 
 func (t Tmux) Run(a ...string) (string, error) {
-	out, err := exec.Command("tmux", t.args(a...)...).CombinedOutput()
+	if t.Exec != nil {
+		return t.Exec(a...)
+	}
+	out, err := exec.Command("tmux", a...).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(a, " "), err, strings.TrimSpace(string(out)))
 	}

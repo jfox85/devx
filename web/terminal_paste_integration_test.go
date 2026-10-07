@@ -16,6 +16,12 @@ import (
 // each newline reaches the program as a bare Enter and the text is submitted
 // one line at a time.
 func TestPasteTmuxBufferKeepsMultilineTextAsOnePaste(t *testing.T) {
+	// Legacy test: it drives tmux without an explicit fixture socket, so it
+	// could reach a developer's real tmux server. It only runs on explicit
+	// opt-in (e.g. in CI, where no human tmux server exists).
+	if os.Getenv("DEVX_ALLOW_UNSCOPED_TMUX_TESTS") != "1" {
+		t.Skip("unscoped tmux test; set DEVX_ALLOW_UNSCOPED_TMUX_TESTS=1 to run (never inside a human tmux session)")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}

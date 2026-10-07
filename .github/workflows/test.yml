@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main, master ]
 
+env:
+  # CI runners have no human tmux server; see ci.yml.
+  DEVX_ALLOW_UNSCOPED_TMUX_TESTS: '1'
+
 jobs:
   test:
     name: Test

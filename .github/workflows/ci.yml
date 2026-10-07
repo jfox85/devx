@@ -8,6 +8,9 @@ on:
 
 env:
   GO_VERSION: '1.23'
+  # CI runners have no human tmux server, so legacy tmux tests that do not
+  # use an explicit fixture socket may run there (they skip locally).
+  DEVX_ALLOW_UNSCOPED_TMUX_TESTS: '1'
 
 jobs:
   lint:

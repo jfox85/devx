@@ -158,7 +158,6 @@ func TestStartIdempotentAndPermissionDenied(t *testing.T) {
 // exactly once.
 func TestStartRetryAfterPartialFailureResumes(t *testing.T) {
 	m, creator := newTestManager(t)
-	m.Tmux = Tmux{Socket: "devx-piagent-none-" + randomHex(4)}
 	failing := &failingTmuxCreator{dirCreator: creator}
 	m.Creator = failing
 	req := StartRequest{Project: "proj", Prompt: "p", IdempotencyKey: "k"}

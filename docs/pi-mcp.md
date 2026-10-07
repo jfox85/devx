@@ -161,3 +161,33 @@ something. Taking control fences out remote prompts.
 - **Dispatch needs a live Pi TUI.** Prompts are delivered only while Pi is
   running in the pane. If Pi exits, the agent shows as `pane_exited` until
   `devx agent relaunch`.
+
+## Test isolation (tmux)
+
+Tests that start tmux must use `internal/tmuxfixture`:
+
+- **Private socket.** Every command runs as `tmux -S <fixture-dir>/tmux.sock`.
+  The fixture dir is created by the fixture itself and recorded in
+  `owner.json` with a random nonce. The child environment has `TMUX`,
+  `TMUX_PANE` and `TMUX_TMPDIR` removed.
+- **Rejected before execution:**
+  - global options from callers (`-L`, `-S`, `-f`, …)
+  - `;` command chaining
+  - `kill-server`, `start-server` and `source-file`
+  - missing, relative, default, inherited (`$TMUX`) or unowned sockets
+  - a tampered ownership record
+- **Cleanup scope.** Cleanup only runs `kill-session -t =<name>` for
+  sessions recorded through `NewSession`. It never kills a server. Every
+  executed argv is written to `commands.log`, and the piagent E2E harness
+  asserts on that log.
+- **Package guard.** In `cmd`, `session` and `web`, a `TestMain` calls
+  `tmuxfixture.RunGuarded`. It removes `TMUX`/`TMUX_PANE` and points
+  `TMUX_TMPDIR` at a fresh private directory, so production code paths
+  under test (exact `kill-session`, `list-sessions`, `has-session`) can't
+  reach a real server.
+- **Legacy tests.** Older tests that drive tmux or the real `sessions.json`
+  without a fixture skip unless `DEVX_ALLOW_UNSCOPED_TMUX_TESTS=1` is set.
+  CI sets it. On a machine with live DevX/tmux sessions, never set it.
+  Affected tests: `session.TestTmuxSessionLaunch`,
+  `web.TestPasteTmuxBufferKeepsMultilineTextAsOnePaste`, and the cmd session
+  lifecycle tests.

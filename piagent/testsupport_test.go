@@ -1,6 +1,7 @@
 package piagent
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,13 +9,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jfox85/devx/internal/tmuxfixture"
 )
 
 // dirCreator is a SessionCreator over a temp directory and an isolated tmux
 // socket: it never touches the user's DevX metadata or tmux server.
 type dirCreator struct {
 	base     string
-	tmux     Tmux
+	fx       *tmuxfixture.Fixture
 	existing map[string]time.Time
 	creates  int
 }
@@ -35,11 +38,14 @@ func (c *dirCreator) Create(name, project string, notBefore time.Time) (CreatedS
 }
 
 func (c *dirCreator) EnsureTmux(name string) error {
-	if c.tmux.HasSession(name) {
+	if c.fx == nil {
+		return fmt.Errorf("no tmux fixture configured")
+	}
+	if c.fx.Owns(name) {
 		return nil
 	}
-	_, err := c.tmux.Run("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", filepath.Join(c.base, name), "sleep 86400")
-	return err
+	// NewSession records ownership before tmux runs.
+	return c.fx.NewSession(name, filepath.Join(c.base, name), "sleep 86400")
 }
 
 func (c *dirCreator) Exists(name string) (bool, error) {
@@ -51,7 +57,11 @@ func newTestManager(t *testing.T) (*Manager, *dirCreator) {
 	t.Helper()
 	root := t.TempDir()
 	creator := &dirCreator{base: t.TempDir(), existing: map[string]time.Time{}}
-	m := NewManager(NewStore(filepath.Join(root, "state")), Tmux{}, creator, Config{AllowedProjects: []string{"proj"}})
+	// Unit tests must not reach any tmux server: every call fails.
+	noTmux := Tmux{Exec: func(args ...string) (string, error) {
+		return "", fmt.Errorf("tmux disabled in unit tests (%s)", strings.Join(args, " "))
+	}}
+	m := NewManager(NewStore(filepath.Join(root, "state")), noTmux, creator, Config{AllowedProjects: []string{"proj"}})
 	return m, creator
 }
 
@@ -62,6 +72,7 @@ type piFixture struct {
 	m       *Manager
 	creator *dirCreator
 	tmux    Tmux
+	fx      *tmuxfixture.Fixture
 }
 
 // newPiFixture launches real interactive Pi TUIs (faux model, isolated Pi
@@ -82,9 +93,25 @@ func newPiFixture(t *testing.T, extraEnv ...string) *piFixture {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
-	socket := fmt.Sprintf("devx-piagent-test-%d-%d", os.Getpid(), time.Now().UnixNano())
-	tm := Tmux{Socket: socket}
-	t.Cleanup(func() { _, _ = tm.Run("kill-server") })
+	// Private tmux server with a fixture-owned socket. Every tmux command
+	// in this test (manager, bridge launch, human keystrokes) goes through
+	// the guard; cleanup kills only sessions the fixture recorded, never a
+	// server.
+	fx, err := tmuxfixture.New(tmuxfixture.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := Tmux{Exec: fx.Run}
+	f := &piFixture{t: t, fx: fx}
+	t.Cleanup(func() {
+		// Cleanup kills only sessions this fixture recorded (exact =name),
+		// never a server; the audit then covers cleanup too.
+		if _, err := fx.Cleanup(); err != nil {
+			t.Errorf("fixture cleanup: %v", err)
+		}
+		f.assertFixtureAudit()
+		_ = os.RemoveAll(fx.Dir())
+	})
 
 	// Short paths: macOS limits socket/path lengths and Pi derives some.
 	tmpRoot, err := os.MkdirTemp("/tmp", "dxpa-")
@@ -101,7 +128,7 @@ func newPiFixture(t *testing.T, extraEnv ...string) *piFixture {
 	piDir := filepath.Join(tmpRoot, "pi-agent-dir")
 	_ = os.MkdirAll(piDir, 0o700)
 	faux, _ := filepath.Abs("testdata/faux-model.ts")
-	creator := &dirCreator{base: filepath.Join(tmpRoot, "wt"), tmux: tm, existing: map[string]time.Time{}}
+	creator := &dirCreator{base: filepath.Join(tmpRoot, "wt"), fx: fx, existing: map[string]time.Time{}}
 	m := NewManager(NewStore(filepath.Join(tmpRoot, "state")), tm, creator, Config{
 		PiArgs: []string{
 			"--offline", "--no-extensions", "--no-skills", "--no-context-files", "--no-mcp", "--no-approve",
@@ -115,7 +142,8 @@ func newPiFixture(t *testing.T, extraEnv ...string) *piFixture {
 	m.Config.PiCommand = "/usr/bin/env"
 	m.Config.PiCommandArgs = []string{"PI_CODING_AGENT_DIR=" + piDir, "GATEPOST_HOST_DISABLE=1"}
 	m.Config.PiCommandArgs = append(append(m.Config.PiCommandArgs, extraEnv...), piBin)
-	return &piFixture{t: t, m: m, creator: creator, tmux: tm}
+	f.m, f.creator, f.tmux = m, creator, tm
+	return f
 }
 
 func (f *piFixture) start(prompt, key string) *StartResult {
@@ -229,3 +257,25 @@ func piSessionFiles(t *testing.T, dir, id string) []string {
 	more, _ := filepath.Glob(filepath.Join(dir, "*"+id+".jsonl"))
 	return append(matches, more...)
 }
+
+// assertFixtureAudit checks that every tmux argv this fixture executed was
+// pinned to its own socket and that kill-server never ran.
+func (f *piFixture) assertFixtureAudit() {
+	f.t.Helper()
+	data, err := os.ReadFile(f.fx.CommandLogPath())
+	if err != nil {
+		f.t.Fatalf("fixture audit log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	prefix := `["-S",` + strconvQuote(f.fx.Socket()) + `,`
+	for _, l := range lines {
+		if !strings.HasPrefix(l, prefix) || strings.Contains(l, `"kill-server"`) {
+			f.t.Fatalf("unsafe tmux argv in audit: %s", l)
+		}
+	}
+	if log := os.Getenv("DEVX_PIAGENT_AUDIT_DIR"); log != "" {
+		_ = os.WriteFile(filepath.Join(log, f.t.Name()+".audit.log"), append([]byte("# socket "+f.fx.Socket()+"\n"), data...), 0o600)
+	}
+}
+
+func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
