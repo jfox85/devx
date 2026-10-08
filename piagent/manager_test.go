@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -518,4 +520,38 @@ func appendFile(path, s string) error {
 	defer f.Close()
 	_, err = f.WriteString(s)
 	return err
+}
+
+// An MCP server killed while holding a start/send idempotency lock must not
+// block the client's retry until the stale timeout.
+func TestIdempotencyLockFromDeadProcessIsReclaimed(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	keyHash := hashKey("send", a.ID, "k")
+	lock := filepath.Join(m.Store.idemDir(), keyHash+".lock")
+	if err := os.MkdirAll(lock, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A pid that is certainly not running.
+	dead := 999999
+	for processAlive(dead) {
+		dead--
+	}
+	_ = os.WriteFile(filepath.Join(lock, "pid"), []byte(strconv.Itoa(dead)), 0o600)
+	start := time.Now()
+	if _, err := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("retry waited %s for a dead owner's lock", time.Since(start))
+	}
+	// A live owner (this process, simulated as another holder) still blocks.
+	_ = os.MkdirAll(lock, 0o700)
+	_ = os.WriteFile(filepath.Join(lock, "pid"), []byte(strconv.Itoa(os.Getppid())), 0o600)
+	release, err := acquireOwnedDirLock(lock, 300*time.Millisecond, time.Hour)
+	if err == nil {
+		release()
+		t.Fatal("lock held by a live process was taken")
+	}
+	_ = os.RemoveAll(lock)
 }

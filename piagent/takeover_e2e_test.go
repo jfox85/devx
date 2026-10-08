@@ -325,3 +325,53 @@ func TestE2EFailedTask(t *testing.T) {
 		t.Fatalf("%+v", tv)
 	}
 }
+
+// Deterministic human-Enter-vs-remote-send race, human first: the bridge has
+// claimed a task (state running, not yet confirmed) and is about to call
+// sendUserMessage; a human submits a message in the TUI in that window.
+// The human's input moves the lease, and the bridge's injection is then
+// fenced in the input handler: the remote prompt never reaches Pi and the
+// task returns to waiting. The test-only delivery delay makes the window
+// wide enough to land the keystrokes deterministically inside it.
+func TestE2EHumanEnterBeatsPendingRemoteSend(t *testing.T) {
+	f := newPiFixture(t, "DEVX_PI_TEST_DELIVERY_DELAY_MS=2000")
+	r := f.start("warmup", "k1")
+	f.waitTask(r.TaskID, 45*time.Second, TaskCompleted)
+	task := f.send(r.AgentID, "remote prompt racing a human", "k2")
+	f.waitTask(task, 15*time.Second, TaskRunning) // claimed, inside the delay window
+	f.humanType(r.AgentID, "human enter wins", true)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		tv, _, err := f.m.TaskStatus(task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tv.State == TaskWaiting {
+			if tv.WaitingReason != WaitHumanControl {
+				t.Fatalf("waiting reason %s", tv.WaitingReason)
+			}
+			break
+		}
+		if (tv.State != TaskWaiting && tv.State != TaskRunning) || time.Now().After(deadline) {
+			t.Fatalf("task not fenced back to waiting: %+v events=%s", tv, eventTypes(f.events(r.AgentID)))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	types := eventTypes(f.events(r.AgentID))
+	hi := strings.Index(types, "human_input")
+	fi := strings.Index(types, "delivery_fenced")
+	if hi < 0 || fi < 0 || hi > fi {
+		t.Fatalf("expected human_input before delivery_fenced: %s", types)
+	}
+	time.Sleep(time.Second)
+	pane := f.pane(r.AgentID)
+	if strings.Contains(pane, "remote prompt racing a human") || !strings.Contains(pane, "human enter wins") {
+		t.Fatalf("wrong winner in pane:\n%s", pane)
+	}
+	if _, err := f.m.Release(r.AgentID, "test", false); err != nil {
+		t.Fatal(err)
+	}
+	if tv := f.waitTask(task, 45*time.Second, TaskCompleted, TaskFailed); tv.State != TaskCompleted {
+		t.Fatalf("after release: %+v", tv)
+	}
+}

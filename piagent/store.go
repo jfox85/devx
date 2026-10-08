@@ -395,7 +395,7 @@ func (s *Store) withIdemLock(keyHash string, fn func() error) error {
 	}
 	// Starts can take tens of seconds (worktree + tmux + Pi launch), so the
 	// per-key lock waits longer and is considered stale later.
-	release, err := acquireDirLock(filepath.Join(s.idemDir(), keyHash+".lock"), 90*time.Second, 180*time.Second)
+	release, err := acquireOwnedDirLock(filepath.Join(s.idemDir(), keyHash+".lock"), 90*time.Second, 180*time.Second)
 	if err != nil {
 		return fmt.Errorf("idempotency key busy: %w", err)
 	}

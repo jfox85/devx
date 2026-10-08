@@ -40,8 +40,15 @@ const (
 // MaybeRunWrapper must be the first call in TestMain. If this process was
 // started as the tmux wrapper it never returns.
 func MaybeRunWrapper() {
-	if os.Getenv(wrapOwnerEnv) == "" || filepath.Base(os.Args[0]) != "tmux" {
+	if filepath.Base(os.Args[0]) != "tmux" {
 		return
+	}
+	// Invoked as "tmux": always wrapper mode. Without the owner variables
+	// (e.g. a process inside a fixture pane, whose env was scrubbed) fail
+	// closed instead of falling through to the test suite.
+	if os.Getenv(wrapOwnerEnv) == "" {
+		fmt.Fprintln(os.Stderr, "devx test tmux wrapper: no owned socket in this environment; refusing")
+		os.Exit(wrapRejectRC)
 	}
 	os.Exit(runWrapper(os.Args[1:]))
 }

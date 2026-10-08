@@ -192,3 +192,20 @@ func TestInstallWrapperEnvironment(t *testing.T) {
 		t.Errorf("socket %s outside owned dir", w.Socket)
 	}
 }
+
+func TestWrapperWithoutOwnerEnvFailsClosed(t *testing.T) {
+	r := newWrapperRig(t)
+	cmd := exec.Command(r.wrapper, "list-sessions")
+	cmd.Env = append(scrubWrapperEnv(os.Environ()), "TMUX=/private/tmp/tmux-501/default,1,0", wrapRealEnv+"="+r.shim)
+	out, err := cmd.CombinedOutput()
+	ee, ok := err.(*exec.ExitError)
+	if !ok || ee.ExitCode() != wrapRejectRC {
+		t.Fatalf("want rejection, got %v: %s", err, out)
+	}
+	if strings.Contains(string(out), "PASS") || strings.Contains(string(out), "=== RUN") {
+		t.Fatal("wrapper fell through to running tests")
+	}
+	if len(r.shimLines()) != 0 {
+		t.Fatal("real tmux reached")
+	}
+}
