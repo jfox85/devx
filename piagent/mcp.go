@@ -64,7 +64,7 @@ func toolList() []tool {
 			Description: "List DevX sessions running an MCP-managed Pi agent, with reconciled state (idle/running/human_control/unknown/binding_stale/pane_exited), who holds control, and how a human attaches. Also lists projects this server may start agents in.",
 			InputSchema: obj(map[string]any{})},
 		{Name: "pi_start_task", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-			Description: "Create a NEW DevX session (git worktree + tmux) in an allowlisted project, launch an interactive Pi there, and queue the first prompt. Idempotent on idempotency_key: retrying after a timeout or dropped response returns the same agent_id/task_id and never starts a second session. The human can attach and take control at any time.",
+			Description: "Create a NEW local-only DevX session (git worktree + tmux; no service ports, routes or project services) in an allowlisted project, launch an interactive Pi there, and queue the first prompt. Idempotent on idempotency_key: retrying after a timeout or dropped response returns the same agent_id/task_id and never starts a second session. The human can attach and take control at any time.",
 			InputSchema: obj(map[string]any{
 				"project":         strProp("Allowlisted DevX project alias"),
 				"prompt":          strProp("Task for Pi (max 64 KiB)"),

@@ -113,7 +113,7 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 				fmt.Printf("Warning: cleanup command failed: %v\n", err)
 			}
 		}
-	} else {
+	} else if !sess.IsLocalOnly() {
 		if err := session.RunCleanupCommandForShell(sess); err != nil {
 			fmt.Printf("Warning: cleanup command failed: %v\n", err)
 		}
@@ -166,7 +166,9 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
-	if opts.SyncRoutes {
+	// A local-only session was never in any route config, so removing it
+	// needs no shared route rewrite or tunnel reload.
+	if opts.SyncRoutes && !sess.IsLocalOnly() {
 		// Sync Caddy routes after removal
 		if err := syncAllCaddyRoutes(); err != nil {
 			fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)

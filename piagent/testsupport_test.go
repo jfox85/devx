@@ -19,12 +19,16 @@ type dirCreator struct {
 	base     string
 	fx       *tmuxfixture.Fixture
 	existing map[string]time.Time
+	owner    map[string]string // session -> owning agent id
 	creates  int
 }
 
-func (c *dirCreator) Create(name, project string, notBefore time.Time) (CreatedSession, error) {
-	if at, ok := c.existing[name]; ok && at.Before(notBefore) {
-		return CreatedSession{}, fmt.Errorf("session %q exists and predates this start", name)
+func (c *dirCreator) Create(name, project, agentID string) (CreatedSession, error) {
+	if c.owner == nil {
+		c.owner = map[string]string{}
+	}
+	if _, ok := c.existing[name]; ok && c.owner[name] != agentID {
+		return CreatedSession{}, Denied("session %q is not owned by agent %s", name, agentID)
 	}
 	p := filepath.Join(c.base, name)
 	if err := os.MkdirAll(p, 0o700); err != nil {
@@ -33,11 +37,15 @@ func (c *dirCreator) Create(name, project string, notBefore time.Time) (CreatedS
 	if _, ok := c.existing[name]; !ok {
 		c.creates++
 		c.existing[name] = time.Now()
+		c.owner[name] = agentID
 	}
 	return CreatedSession{Name: name, Path: p, Project: project, TmuxName: name}, nil
 }
 
-func (c *dirCreator) EnsureTmux(name string) error {
+func (c *dirCreator) EnsureTmux(name, agentID string) error {
+	if c.owner[name] != agentID {
+		return Denied("session %q is not owned by agent %s", name, agentID)
+	}
 	if c.fx == nil {
 		return fmt.Errorf("no tmux fixture configured")
 	}

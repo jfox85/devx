@@ -100,9 +100,24 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   Unknown tool names and unknown arguments are rejected. There is no
   shell/exec tool and no takeover or release tool.
 - **Starting agents:** `pi_start_task` only works for projects listed in
-  `pi_mcp.allowed_projects`, and only creates a **new** host-target session.
-  If the session already exists, the call is denied. MCP cannot attach to or
-  control sessions that DevX didn't create through this interface.
+  `pi_mcp.allowed_projects`, and only creates a **new** session. If the
+  session, its branch, its worktree path or a same-named tmux session
+  already exists, the call is denied. MCP cannot attach to or control
+  sessions that DevX didn't create through this interface.
+- **Local-only sessions:** managed sessions are created in local-only mode,
+  not through `devx session create`. The record carries a `local_only`
+  marker bound to the agent id. The session gets:
+  - no service ports or routes
+  - no `.envrc`, `.tmuxp.yaml` or bootstrap files
+  - no project template windows (no editor Pi, no services)
+  - no Caddy/Cloudflare sync
+
+  Its tmux session has one inert `devx-local` window plus the `pi-agent`
+  window. Caddy, the Cloudflare tunnel, the health check and the web API
+  skip any marked session, even if ports or routes are later added to its
+  record by hand. `devx session rm` on it does no shared route sync and runs
+  no project cleanup command. A missing or foreign marker is a permission
+  denial; nothing is adopted.
 - **Cancellation:** `pi_cancel` on running work is denied while a human holds
   control.
 - **Prompt delivery:** prompts are never typed into tmux. The launch script

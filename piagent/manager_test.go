@@ -190,7 +190,7 @@ func TestStartRetryAfterPartialFailureResumes(t *testing.T) {
 
 type failingTmuxCreator struct{ *dirCreator }
 
-func (f *failingTmuxCreator) EnsureTmux(string) error { return errors.New("tmux unavailable") }
+func (f *failingTmuxCreator) EnsureTmux(string, string) error { return errors.New("tmux unavailable") }
 
 func TestCancelSemantics(t *testing.T) {
 	m, _ := newTestManager(t)
@@ -555,3 +555,29 @@ func TestIdempotencyLockFromDeadProcessIsReclaimed(t *testing.T) {
 	}
 	_ = os.RemoveAll(lock)
 }
+
+// A start whose session name is already owned by a different agent (or by
+// nobody) is a permission denial; the start's own IDs persist so a retry
+// is still denied the same way and nothing is launched.
+func TestStartDeniesForeignOwnedSession(t *testing.T) {
+	m, creator := newTestManager(t)
+	creator.existing["race"] = time.Now()
+	creator.owner = map[string]string{"race": "pa_someone_else"}
+	// Exists() is checked first; simulate the race where the session
+	// appears between Exists and Create.
+	m.Creator = &raceCreator{dirCreator: creator}
+	req := StartRequest{Project: "proj", SessionName: "race", Prompt: "p", IdempotencyKey: "k"}
+	for i := 0; i < 2; i++ {
+		if _, err := m.Start(req); !IsPermissionDenied(err) {
+			t.Fatalf("attempt %d: want permission denied, got %v", i, err)
+		}
+	}
+	agents, _ := m.Store.ListAgents()
+	if len(agents) != 0 {
+		t.Fatalf("agent record created for a denied start: %d", len(agents))
+	}
+}
+
+type raceCreator struct{ *dirCreator }
+
+func (r *raceCreator) Exists(string) (bool, error) { return false, nil }

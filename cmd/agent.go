@@ -1,19 +1,16 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/piagent"
 	"github.com/jfox85/devx/session"
-	"github.com/jfox85/devx/target"
 	"github.com/jfox85/devx/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -279,65 +276,50 @@ func newAgentManager() (*piagent.Manager, error) {
 		AllowedProjects: viper.GetStringSlice("pi_mcp.allowed_projects"),
 		DevxExecutable:  exe,
 	}
-	return piagent.NewManager(piagent.NewStore(piAgentStateDir()), piagent.Tmux{}, devxSessionCreator{exe: exe}, cfg), nil
+	return piagent.NewManager(piagent.NewStore(piAgentStateDir()), piagent.Tmux{}, localOnlySessionCreator{}, cfg), nil
 }
 
-// devxSessionCreator creates sessions with the regular `devx session create`
-// path so worktrees, ports, routes and metadata match manually created ones.
-type devxSessionCreator struct{ exe string }
+// localOnlySessionCreator creates managed-agent sessions in local-only
+// mode: a DevX session record carrying a local_only marker owned by the
+// agent, plus a git worktree. It never runs `devx session create`, so no
+// service ports, routes, .envrc/.tmuxp.yaml, bootstrap files, project
+// template windows (editor Pi, services), Caddy/Cloudflare sync or tunnel
+// reload happen. Route builders skip marked sessions forever after.
+type localOnlySessionCreator struct{}
 
-func (c devxSessionCreator) Exists(name string) (bool, error) {
+func (localOnlySessionCreator) Exists(name string) (bool, error) {
 	store, err := session.LoadSessions()
 	if err != nil {
 		return false, err
 	}
-	_, ok := store.GetSession(name)
-	return ok, nil
+	if _, ok := store.GetSession(name); ok {
+		return true, nil
+	}
+	// A same-named tmux session that DevX does not know about is someone
+	// else's; treat it as taken.
+	return session.TmuxHasSession(name), nil
 }
 
-func (c devxSessionCreator) Create(name, project string, notBefore time.Time) (piagent.CreatedSession, error) {
-	if !session.IsValidSessionName(name) {
-		return piagent.CreatedSession{}, fmt.Errorf("invalid session name %q", name)
-	}
-	store, err := session.LoadSessions()
+func (localOnlySessionCreator) Create(name, project, agentID string) (piagent.CreatedSession, error) {
+	registry, err := config.LoadProjectRegistry()
 	if err != nil {
 		return piagent.CreatedSession{}, err
 	}
-	if sess, ok := store.GetSession(name); ok {
-		// Adopt only a session created by an interrupted attempt of this
-		// same start (after its idempotency record was written).
-		if sess.CreatedAt.Before(notBefore) || sess.ProjectAlias != project {
-			return piagent.CreatedSession{}, fmt.Errorf("session %q already exists and was not created by this start", name)
+	p, ok := registry.Projects[project]
+	if !ok || p == nil || p.Path == "" {
+		return piagent.CreatedSession{}, fmt.Errorf("project %q is not registered", project)
+	}
+	sess, err := session.CreateLocalOnlySession(session.LocalOnlyRequest{Name: name, ProjectAlias: project, ProjectPath: p.Path, AgentID: agentID})
+	if err != nil {
+		if errors.Is(err, session.ErrLocalOnlyNotOwned) {
+			return piagent.CreatedSession{}, piagent.Denied("%v", err)
 		}
-		return piagent.CreatedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name}, nil
-	}
-	args := []string{}
-	if cfgFile != "" {
-		args = append(args, "--config", cfgFile)
-	}
-	args = append(args, "session", "create", "--no-tmux", "--target", "host", "--project", project, "--", name)
-	child := exec.Command(c.exe, args...)
-	child.Env = withoutTmuxEnv(os.Environ())
-	var out bytes.Buffer
-	child.Stdout, child.Stderr = &out, &out
-	if err := child.Run(); err != nil {
-		return piagent.CreatedSession{}, fmt.Errorf("devx session create: %w: %s", err, strings.TrimSpace(out.String()))
-	}
-	store, err = session.LoadSessions()
-	if err != nil {
 		return piagent.CreatedSession{}, err
 	}
-	sess, ok := store.GetSession(name)
-	if !ok {
-		return piagent.CreatedSession{}, fmt.Errorf("session %q missing after create", name)
-	}
-	if sess.IsContainerized() {
-		return piagent.CreatedSession{}, fmt.Errorf("managed Pi agents support host sessions only (session %q uses %s)", name, sess.TargetType())
-	}
-	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name}, nil
+	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: project, TmuxName: name}, nil
 }
 
-func (c devxSessionCreator) EnsureTmux(name string) error {
+func (localOnlySessionCreator) EnsureTmux(name, agentID string) error {
 	store, err := session.LoadSessions()
 	if err != nil {
 		return err
@@ -346,16 +328,16 @@ func (c devxSessionCreator) EnsureTmux(name string) error {
 	if !ok {
 		return fmt.Errorf("session %q not found", name)
 	}
-	return target.EnsureTmuxSession(name, sess)
-}
-
-func withoutTmuxEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, e := range env {
-		if strings.HasPrefix(e, "TMUX=") || strings.HasPrefix(e, "TMUX_PANE=") {
-			continue
-		}
-		out = append(out, e)
+	// Fail closed: managed agents only ever run in their own local-only
+	// session. A missing or foreign marker is a permission denial.
+	if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != agentID || sess.LocalOnly.Owner != session.LocalOnlyOwnerPiMCP {
+		return piagent.Denied("session %q is not a local-only session owned by agent %s", name, agentID)
 	}
-	return out
+	if err := session.EnsureLocalOnlyTmuxSession(name, sess); err != nil {
+		if errors.Is(err, session.ErrLocalOnlyNotOwned) {
+			return piagent.Denied("%v", err)
+		}
+		return err
+	}
+	return nil
 }

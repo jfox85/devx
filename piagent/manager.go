@@ -21,6 +21,9 @@ func (e *PermissionError) Error() string { return "permission denied: " + e.Msg 
 
 func denied(format string, a ...any) error { return &PermissionError{Msg: fmt.Sprintf(format, a...)} }
 
+// Denied builds a PermissionError for SessionCreator implementations.
+func Denied(format string, a ...any) error { return denied(format, a...) }
+
 // IsPermissionDenied reports whether err is a PermissionError.
 func IsPermissionDenied(err error) bool {
 	var p *PermissionError
@@ -36,15 +39,17 @@ type CreatedSession struct {
 }
 
 // SessionCreator creates and prepares new DevX sessions. The production
-// implementation shells out to `devx session create`; tests use a temp dir.
+// implementation creates a local-only session (no ports, routes, templates
+// or project services) bound to the agent id; tests use a temp dir.
 type SessionCreator interface {
-	// Create makes a new session. If the session already exists it may be
-	// adopted only when it was created at or after notBefore (the time the
-	// idempotency record was written), i.e. by an earlier interrupted attempt
-	// of this same start. Anything older belongs to someone else: fail.
-	Create(name, project string, notBefore time.Time) (CreatedSession, error)
-	// EnsureTmux makes sure the session's tmux session exists.
-	EnsureTmux(name string) error
+	// Create makes a new session owned by agentID. If the session already
+	// exists it may be adopted only when it was created for this same agent
+	// by an earlier interrupted attempt of this start. Anything else belongs
+	// to someone else: fail.
+	Create(name, project, agentID string) (CreatedSession, error)
+	// EnsureTmux makes sure the session's tmux session exists and belongs
+	// to agentID.
+	EnsureTmux(name, agentID string) error
 	// Exists reports whether a DevX session with this name exists.
 	Exists(name string) (bool, error)
 }
@@ -206,7 +211,7 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 		return err
 	}
 	if agent == nil {
-		created, err := m.Creator.Create(rec.SessionName, req.Project, rec.CreatedAt.Add(-2*time.Second))
+		created, err := m.Creator.Create(rec.SessionName, req.Project, rec.AgentID)
 		if err != nil {
 			return fmt.Errorf("create session %q: %w", rec.SessionName, err)
 		}
@@ -271,7 +276,7 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 	if err != nil {
 		return err
 	}
-	if err := m.Creator.EnsureTmux(agent.DevxSession); err != nil {
+	if err := m.Creator.EnsureTmux(agent.DevxSession, agent.ID); err != nil {
 		return fmt.Errorf("ensure tmux session: %w", err)
 	}
 	nonce := randomHex(12)
