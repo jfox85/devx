@@ -37,6 +37,9 @@ type Session struct {
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 	Target             TargetMeta        `json:"target,omitempty"`
+	// LocalOnly marks a managed-agent session that must never be routed or
+	// published (see localonly.go).
+	LocalOnly *LocalOnlyMeta `json:"local_only,omitempty"`
 }
 
 // TargetMeta describes the execution environment for a session.

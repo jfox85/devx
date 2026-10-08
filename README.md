@@ -429,6 +429,23 @@ bootstrap_files:
 - Local Docker compose overrides
 - Test data or fixtures
 
+### Managed Pi agents (MCP)
+
+`devx mcp pi` is a local stdio MCP server that starts Pi agents in new
+sessions, queues follow-ups, and returns results. Every agent runs as a
+normal interactive Pi in the session's `pi-agent` window. You can watch it,
+attach, and take control. While you have control, remote prompts wait.
+
+```bash
+devx agent list                 # managed agents and who has control
+devx agent attach <agent-id>    # drop in (typing a message takes control)
+devx agent takeover <agent-id>  # pause remote prompts
+devx agent release <agent-id>   # resume them
+```
+
+Starting agents requires `pi_mcp.allowed_projects` in the config. See
+[docs/pi-mcp.md](docs/pi-mcp.md).
+
 ### Cleanup Command
 
 Automatically run cleanup commands when removing sessions. Perfect for tearing down Docker containers, databases, external services, or any infrastructure that needs cleanup.

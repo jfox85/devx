@@ -50,6 +50,11 @@ func ResolveSessionOperator(meta session.TargetMeta) (SessionOperator, error) {
 func (hostSessionOperator) IsRunning(_ session.TargetMeta) bool { return true }
 
 func (hostSessionOperator) EnsureTmuxSession(name string, sess *session.Session) error {
+	if sess.IsLocalOnly() {
+		// Never re-render the project tmuxp template (editor/services
+		// windows) for a managed local-only session.
+		return session.EnsureLocalOnlyTmuxSession(name, sess)
+	}
 	return session.EnsureTmuxSession(name, sess.Path)
 }
 
@@ -137,6 +142,9 @@ func IsRunning(meta session.TargetMeta) bool {
 func EnsureTmuxSession(name string, sess *session.Session) error {
 	if sess == nil {
 		return fmt.Errorf("nil session")
+	}
+	if sess.IsLocalOnly() && sess.IsContainerized() {
+		return fmt.Errorf("local-only session %q must be a host session", name)
 	}
 	op, err := ResolveSessionOperator(sess.Target)
 	if err != nil {

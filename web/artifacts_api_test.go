@@ -493,3 +493,23 @@ func TestMarkArtifactsSeenNoopsWhenAlreadySeenAndNoArtifactAttention(t *testing.
 		t.Fatalf("metadata fingerprint changed for no-op seen call: before=%s after=%s", before, after)
 	}
 }
+
+func TestSessionResponseNeverExposesLocalOnlyRoutes(t *testing.T) {
+	prev := viper.GetString("external_domain")
+	viper.Set("external_domain", "example.test")
+	t.Cleanup(func() { viper.Set("external_domain", prev) })
+	sess := &session.Session{
+		Name: "managed", ProjectAlias: "proj",
+		Ports:     map[string]int{"WEB": 41002},
+		Routes:    map[string]string{"WEB": "proj-managed-web.localhost"},
+		LocalOnly: &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: "pa_x"},
+	}
+	resp := buildSessionResponse(sess)
+	if len(resp.ExternalRoutes) != 0 || len(resp.Routes) != 0 || len(resp.Ports) != 0 || !resp.LocalOnly {
+		t.Fatalf("local-only session exposed links: %+v", resp)
+	}
+	sess.LocalOnly = nil
+	if resp := buildSessionResponse(sess); resp.ExternalRoutes["WEB"] != "proj-managed-web.example.test" || resp.Ports["WEB"] != 41002 {
+		t.Fatalf("ordinary session lost its routes: %+v", resp)
+	}
+}
