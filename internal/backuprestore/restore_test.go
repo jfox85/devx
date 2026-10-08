@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -319,11 +320,61 @@ func TestRewriteRemovesRealPathsAndConfig(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	cfg, _ := os.ReadFile(filepath.Join(root, "home", ".config", "devx", "config.yaml"))
-	if strings.Contains(string(cfg), "SECRET") || !strings.Contains(string(cfg), "allowed_projects: [synthetic]") {
+	if strings.Contains(string(cfg), "SECRET") || !strings.Contains(string(cfg), `allowed_projects: ["synthetic"]`) {
 		t.Fatalf("config not sanitized")
 	}
 	s, _ := os.ReadFile(filepath.Join(root, "home", ".config", "devx", "sessions.json"))
 	if strings.Contains(string(s), `"/Users/x`) || strings.Contains(string(s), `"/workspace"`) {
 		t.Fatalf("real paths remain: %s", s)
+	}
+}
+
+// Hostile project aliases cannot inject YAML keys into the fixture config.
+func TestRewriteQuotesAllowProject(t *testing.T) {
+	root := newRoot(t)
+	cfgDir := filepath.Join(root, "restored", "files", "Users", "x", ".config", "devx")
+	_ = os.MkdirAll(cfgDir, 0o700)
+	_ = os.WriteFile(filepath.Join(cfgDir, "sessions.json"), []byte(`{"sessions":{}}`), 0o600)
+	_ = os.WriteFile(filepath.Join(cfgDir, "projects.json"), []byte(`{"projects":{}}`), 0o600)
+	if _, err := RewriteForFixture(root, "/Users/x", "a], web_secret_token: X\nevil: [1"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := os.ReadFile(filepath.Join(root, "home", ".config", "devx", "config.yaml"))
+	var parsed map[string]any
+	if err := yaml.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatalf("config not valid YAML: %v\n%s", err, cfg)
+	}
+	if _, ok := parsed["evil"]; ok {
+		t.Fatalf("alias injected a key:\n%s", cfg)
+	}
+	if _, ok := parsed["web_secret_token"]; ok {
+		t.Fatalf("alias injected a key:\n%s", cfg)
+	}
+}
+
+// writeNewFileNoFollow never writes through a symlink at the final
+// component, and ensureNoExistingSymlinkParents rejects a symlinked parent.
+func TestUntrackedWriteRefusesSymlinks(t *testing.T) {
+	root := newRoot(t)
+	outside := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureNoExistingSymlinkParents(root, filepath.Join(link, "sub")); err == nil {
+		t.Fatal("symlinked parent accepted")
+	}
+	if err := ensureNoExistingSymlinkParents(root, filepath.Join(root, "missing", "deeper")); err != nil {
+		t.Fatalf("missing components should be fine: %v", err)
+	}
+	target := filepath.Join(root, "f")
+	if err := os.Symlink(filepath.Join(outside, "victim"), target); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNewFileNoFollow(target, []byte("x")); err == nil {
+		t.Fatal("wrote through a final-component symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "victim")); !os.IsNotExist(err) {
+		t.Fatal("file created outside the fixture")
 	}
 }

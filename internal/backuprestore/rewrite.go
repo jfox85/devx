@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -96,7 +97,7 @@ usage:
   enabled: false
 pi_mcp:
   allowed_projects: [%s]
-`, allowProject)
+`, strconv.Quote(allowProject))
 	if err := os.WriteFile(filepath.Join(dst, "config.yaml"), []byte(cfg), 0o600); err != nil {
 		return nil, err
 	}

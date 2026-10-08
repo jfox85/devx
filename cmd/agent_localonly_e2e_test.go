@@ -42,7 +42,7 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 	}
 	piBin := os.Getenv("DEVX_PI_BIN")
 	if piBin == "" {
-		piBin = "/Users/jfox/.npm-packages/bin/pi"
+		piBin = findRealPi()
 	}
 	if _, err := os.Stat(piBin); err != nil {
 		t.Skip("pi not available")

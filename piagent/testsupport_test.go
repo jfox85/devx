@@ -258,14 +258,6 @@ func eventTypes(evs []Event) string {
 	return strings.Join(s, ",")
 }
 
-// piSessionFiles returns Pi's persisted session files for a session id.
-func piSessionFiles(t *testing.T, dir, id string) []string {
-	t.Helper()
-	matches, _ := filepath.Glob(filepath.Join(dir, "*", "*"+id+".jsonl"))
-	more, _ := filepath.Glob(filepath.Join(dir, "*"+id+".jsonl"))
-	return append(matches, more...)
-}
-
 // assertFixtureAudit checks that every tmux argv this fixture executed was
 // pinned to its own socket and that kill-server never ran.
 func (f *piFixture) assertFixtureAudit() {

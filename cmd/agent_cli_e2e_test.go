@@ -38,7 +38,7 @@ func TestAgentCLIAndMCPEndToEnd(t *testing.T) {
 	}
 	piBin := os.Getenv("DEVX_PI_BIN")
 	if piBin == "" {
-		piBin = "/Users/jfox/.npm-packages/bin/pi"
+		piBin = findRealPi()
 	}
 	for _, b := range []string{"tmuxp", "git"} {
 		if _, err := exec.LookPath(b); err != nil {
@@ -335,4 +335,22 @@ func descendsFrom(pid, ancestor string) bool {
 		pid = strings.TrimSpace(string(out))
 	}
 	return false
+}
+
+// findRealPi returns the first `pi` on PATH that is not a wrapper shim
+// (e.g. ~/.gatepost/bin/pi, which re-derives state from $HOME and would
+// not start under the fixture's fake HOME). Empty if none is found.
+func findRealPi() string {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		p := filepath.Join(dir, "pi")
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+			continue
+		}
+		if strings.Contains(filepath.ToSlash(dir), "/.gatepost/") {
+			continue
+		}
+		return p
+	}
+	return ""
 }

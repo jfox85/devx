@@ -168,8 +168,9 @@ something. Taking control fences out remote prompts.
   human and the remote prompt is fenced (`delivery_fenced`). If the remote
   prompt lands first, it is confirmed, and the human's message is queued
   behind it as a normal Pi follow-up. The explicit-takeover race is
-  exercised by a real-Pi test. The human-submit race is reasoned from Pi's
-  ordering, not deterministically exercised.
+  exercised by a real-Pi test. For the human-submit race, the human-first
+  order is tested deterministically (`TestE2EHumanEnterBeatsPendingRemoteSend`);
+  the remote-first order is reasoned from Pi's ordering.
 - **Mid-turn takeover doesn't stop the current turn.** A task that already
   reached Pi keeps running. The human sees it and can press Esc.
 - **Redaction is pattern-based.** It catches common credential formats only.

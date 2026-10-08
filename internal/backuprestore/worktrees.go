@@ -191,10 +191,18 @@ func restoreOne(g Git, repo, dst string, opts Options, w Worktree, bySource map[
 		if err != nil {
 			return err
 		}
+		// The checkout and patch can create tracked symlinks; never let a
+		// write follow one out of the restored worktree.
+		if err := ensureNoExistingSymlinkParents(dst, filepath.Dir(target)); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, data, 0o600); err != nil {
+		if err := ensureNoSymlinkParents(dst, filepath.Dir(target)); err != nil {
+			return err
+		}
+		if err := writeNewFileNoFollow(target, data); err != nil {
 			return err
 		}
 		sum := sha256.Sum256(data)

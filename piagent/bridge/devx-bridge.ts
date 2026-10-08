@@ -89,12 +89,34 @@ function writeAtomic(file: string, data: string) {
 const writeJSON = (file: string, v: any) => writeAtomic(file, JSON.stringify(v, null, 2));
 const now = () => new Date().toISOString();
 
+// Highest seq among complete lines in the last 64 KiB of the event log.
+function lastSeqFromLog(): number {
+	let max = 0;
+	try {
+		const size = fs.statSync(p.events).size;
+		const start = Math.max(0, size - 65536);
+		const fd = fs.openSync(p.events, "r");
+		const b = Buffer.alloc(size - start);
+		fs.readSync(fd, b, 0, b.length, start);
+		fs.closeSync(fd);
+		for (const line of b.toString("utf8").split("\n")) {
+			try {
+				const s = JSON.parse(line)?.seq;
+				if (typeof s === "number" && s > max) max = s;
+			} catch {}
+		}
+	} catch {}
+	return max;
+}
+
 // Caller holds the lock.
 function appendEvent(type: string, taskId: string | undefined, data?: Record<string, unknown>) {
 	let last = 0;
 	try {
 		last = parseInt(fs.readFileSync(p.seq, "utf8").trim(), 10) || 0;
 	} catch {}
+	// seq is a cache; if a writer crashed after appending, the log is ahead.
+	last = Math.max(last, lastSeqFromLog());
 	const ev: any = { seq: last + 1, time: now(), type, source: "bridge" };
 	if (taskId) ev.task_id = taskId;
 	if (data) ev.data = data;

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -275,6 +276,13 @@ func (s *Store) AppendEvent(agentID string, ev Event) (Event, error) {
 	} else if !os.IsNotExist(err) {
 		return ev, err
 	}
+	// The seq file is only a cache. If a writer crashed after appending to
+	// the log but before updating it, the log is ahead; never reuse a seq.
+	if logLast, err := lastSeqFromLog(s.eventsPath(agentID)); err != nil {
+		return ev, err
+	} else if logLast > last {
+		last = logLast
+	}
 	ev.Seq = last + 1
 	if ev.Time.IsZero() {
 		ev.Time = s.now()
@@ -303,8 +311,7 @@ func (s *Store) AppendEvent(agentID string, ev Event) (Event, error) {
 		return ev, err
 	}
 	// The log is the source of truth; seq is a cache. A crash between the
-	// two writes is repaired by ReadEvents tolerating duplicate seq values
-	// and by lastSeqFromLog on the next append.
+	// two writes is repaired by lastSeqFromLog on the next append.
 	return ev, writeFileAtomic(s.seqPath(agentID), []byte(strconv.FormatInt(ev.Seq, 10)))
 }
 
@@ -401,4 +408,43 @@ func (s *Store) withIdemLock(keyHash string, fn func() error) error {
 	}
 	defer release()
 	return fn()
+}
+
+// eventTailBytes bounds how much of the log lastSeqFromLog reads.
+const eventTailBytes = 64 << 10
+
+// lastSeqFromLog returns the highest seq among complete lines in the last
+// eventTailBytes of the log (0 if the log is missing or empty). A torn final
+// line is ignored.
+func lastSeqFromLog(path string) (int64, error) {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	off := st.Size() - eventTailBytes
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return 0, err
+	}
+	var max int64
+	for _, l := range strings.Split(string(buf), "\n") {
+		var ev struct {
+			Seq int64 `json:"seq"`
+		}
+		if json.Unmarshal([]byte(l), &ev) == nil && ev.Seq > max {
+			max = ev.Seq
+		}
+	}
+	return max, nil
 }

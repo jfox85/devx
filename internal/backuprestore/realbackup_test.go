@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,7 +153,9 @@ func dirDigest(t *testing.T, dir string) string {
 			t.Fatal(err)
 		}
 		fh := sha256.New()
-		_, _ = ioCopy(fh, f)
+		if _, err := io.Copy(fh, f); err != nil {
+			t.Fatal(err)
+		}
 		_ = f.Close()
 		h.Write([]byte(e.Name() + " " + info.ModTime().UTC().String() + " " + info.Mode().String() + " " + hex.EncodeToString(fh.Sum(nil)) + "\n"))
 	}
@@ -160,18 +163,3 @@ func dirDigest(t *testing.T, dir string) string {
 }
 
 func firstLine(s string) string { l, _, _ := strings.Cut(s, "\n"); return l }
-
-func ioCopy(dst interface{ Write([]byte) (int, error) }, src *os.File) (int64, error) {
-	buf := make([]byte, 1<<20)
-	var n int64
-	for {
-		k, err := src.Read(buf)
-		if k > 0 {
-			_, _ = dst.Write(buf[:k])
-			n += int64(k)
-		}
-		if err != nil {
-			return n, nil
-		}
-	}
-}

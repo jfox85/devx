@@ -31,9 +31,7 @@ func RunGuarded(m *testing.M) int {
 	if pyBase != "" && os.Getenv("PYTHONUSERBASE") == "" {
 		_ = os.Setenv("PYTHONUSERBASE", pyBase)
 	}
-	activeWrapper = w
-	code := m.Run()
-	activeWrapper = nil
+	code := runWithActiveWrapper(w, m)
 	if err := w.killOwnedSessions(); err != nil {
 		fmt.Fprintf(os.Stderr, "tmuxfixture: owned-socket cleanup: %v\n", err)
 	}
@@ -48,6 +46,14 @@ func RunGuarded(m *testing.M) int {
 }
 
 var activeWrapper *Wrapped
+
+// runWithActiveWrapper exposes w to tests for the duration of m.Run and
+// clears it afterwards, even if m.Run panics.
+func runWithActiveWrapper(w *Wrapped, m *testing.M) int {
+	activeWrapper = w
+	defer func() { activeWrapper = nil }()
+	return m.Run()
+}
 
 // ActiveWrapper returns the wrapper installed by RunGuarded, if any.
 func ActiveWrapper() *Wrapped { return activeWrapper }

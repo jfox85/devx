@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -412,8 +411,10 @@ func (m *Manager) Send(req SendRequest) (*SendResult, error) {
 	if err := validatePrompt(req.Prompt); err != nil {
 		return nil, err
 	}
-	if _, err := m.Store.LoadAgent(req.AgentID); err != nil {
+	if a, err := m.Store.LoadAgent(req.AgentID); err != nil {
 		return nil, err
+	} else if a.RetiredAt != nil {
+		return nil, denied("agent %s is retired: its session %q was removed", a.ID, a.DevxSession)
 	}
 	keyHash := hashKey("send", req.AgentID, req.IdempotencyKey)
 	reqHash := hashKey(req.Prompt)
@@ -649,6 +650,8 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 		}
 		v.CurrentTask = running
 		switch {
+		case a.RetiredAt != nil:
+			v.State, v.Detail = AgentRetired, fmt.Sprintf("session %q was removed; records kept for inspection", a.DevxSession)
 		case a.Binding.PaneID == "":
 			v.State, v.Detail = AgentNotLaunched, "start did not finish launching Pi; retry the start with the same idempotency_key"
 		case !pane.Exists:
@@ -845,5 +848,47 @@ func (m *Manager) Inspect(agentID string, lines int) (string, error) {
 	return m.Tmux.Capture(a.Binding.PaneID, lines)
 }
 
-// itoa is used by tests and CLI helpers.
-func itoa(i int64) string { return strconv.FormatInt(i, 10) }
+// RetireForSession retires agentID after its DevX session was removed: it
+// marks the agent retired, cancels its waiting tasks, and records an event.
+// Records are kept. It is a no-op if the agent does not exist, is already
+// retired, or belongs to a different session.
+func (m *Manager) RetireForSession(agentID, session string) error {
+	if _, err := m.Store.LoadAgent(agentID); errors.Is(err, ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return m.Store.WithAgentLock(agentID, func() error {
+		a, err := m.Store.LoadAgent(agentID)
+		if err != nil {
+			return err
+		}
+		if a.RetiredAt != nil || a.DevxSession != session {
+			return nil
+		}
+		tasks, err := m.Store.ListTasks(agentID)
+		if err != nil {
+			return err
+		}
+		now := m.Store.now()
+		for _, t := range tasks {
+			switch t.State {
+			case TaskWaiting:
+				t.State, t.FinishedAt, t.Note = TaskCancelled, &now, "session removed"
+			case TaskRunning:
+				t.State, t.FinishedAt, t.Note = TaskUnknown, &now, "session removed while running"
+			default:
+				continue
+			}
+			if err := m.Store.SaveTask(t); err != nil {
+				return err
+			}
+		}
+		a.RetiredAt = &now
+		if err := m.Store.SaveAgent(a); err != nil {
+			return err
+		}
+		_, err = m.Store.AppendEvent(agentID, Event{Type: "agent_retired", Source: "devx", Data: map[string]any{"session": session}})
+		return err
+	})
+}

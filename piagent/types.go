@@ -55,6 +55,7 @@ const (
 	AgentStaleBind   = "binding_stale"
 	AgentPaneExited  = "pane_exited"
 	AgentNotLaunched = "not_launched"
+	AgentRetired     = "retired"
 )
 
 const (
@@ -104,6 +105,9 @@ type Agent struct {
 	CreatedBy     string    `json:"created_by,omitempty"`
 	StartTaskID   string    `json:"start_task_id,omitempty"`
 	StartIdemHash string    `json:"start_idempotency_hash,omitempty"`
+	// RetiredAt is set when the agent's DevX session was removed. A retired
+	// agent keeps its records for inspection but accepts no new work.
+	RetiredAt *time.Time `json:"retired_at,omitempty"`
 }
 
 // Task is one dispatched prompt.

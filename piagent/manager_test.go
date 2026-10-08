@@ -581,3 +581,65 @@ func TestStartDeniesForeignOwnedSession(t *testing.T) {
 type raceCreator struct{ *dirCreator }
 
 func (r *raceCreator) Exists(string) (bool, error) { return false, nil }
+
+// Removing an agent's session retires it: waiting work is cancelled, new
+// sends are denied, status says retired, and records stay readable.
+func TestRetireForSessionStopsNewWork(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	r, err := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RetireForSession(a.ID, "other-session"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := m.Store.LoadAgent(a.ID); got.RetiredAt != nil {
+		t.Fatal("retired for a different session")
+	}
+	if err := m.RetireForSession(a.ID, a.DevxSession); err != nil {
+		t.Fatal(err)
+	}
+	if tk, _ := m.Store.LoadTask(a.ID, r.TaskID); tk.State != TaskCancelled {
+		t.Fatalf("waiting task state=%s", tk.State)
+	}
+	if _, err := m.Send(SendRequest{AgentID: a.ID, Prompt: "p2", IdempotencyKey: "k2"}); !IsPermissionDenied(err) {
+		t.Fatalf("send to retired agent: %v", err)
+	}
+	if v, err := m.AgentStatus(a.ID); err != nil || v.State != AgentRetired {
+		t.Fatalf("status=%v err=%v", v, err)
+	}
+	if err := m.RetireForSession(a.ID, a.DevxSession); err != nil {
+		t.Fatalf("idempotent retire: %v", err)
+	}
+	if err := m.RetireForSession(newAgentID(), "x"); err != nil {
+		t.Fatalf("missing agent: %v", err)
+	}
+}
+
+// A crash between appending an event and updating the seq cache must not
+// make the next event reuse that seq (and become invisible to readers).
+func TestAppendEventRecoversSeqFromLog(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	for i := 0; i < 3; i++ {
+		if _, err := m.Store.AppendEvent(a.ID, Event{Type: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Simulate the crash: the cache lags the log.
+	if err := os.WriteFile(m.Store.seqPath(a.ID), []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := m.Store.AppendEvent(a.ID, Event{Type: "after-crash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Seq != 4 {
+		t.Fatalf("seq=%d want 4", ev.Seq)
+	}
+	evs, last, _ := m.Store.ReadEvents(a.ID, 3, 10)
+	if len(evs) != 1 || evs[0].Type != "after-crash" || last != 4 {
+		t.Fatalf("events after 3: %+v last=%d", evs, last)
+	}
+}

@@ -263,10 +263,17 @@ func RestoreFiles(opts Options) (*Result, error) {
 	for _, f := range m.Files {
 		entries[f.ArchivePath] = f
 	}
-	archive := filepath.Join(opts.BackupDir, "private-files.tar.gz")
+	// Open the archive once and stream both passes from the same file
+	// handle, so a swap of the path between passes cannot feed pass 2
+	// members that pass 1 never validated.
+	af, err := os.Open(filepath.Join(opts.BackupDir, "private-files.tar.gz"))
+	if err != nil {
+		return nil, err
+	}
+	defer af.Close()
 	// Pass 1: validate every member; no writes.
 	seen := map[string]bool{}
-	if err := walkTar(archive, func(h *tar.Header, r io.Reader) error {
+	if err := walkTarReader(af, func(h *tar.Header, r io.Reader) error {
 		if err := checkMember(opts.FixtureRoot, h, entries); err != nil {
 			return err
 		}
@@ -290,10 +297,18 @@ func RestoreFiles(opts Options) (*Result, error) {
 	if len(seen) != len(entries) {
 		return nil, rejectf("archive has %d members, manifest lists %d", len(seen), len(entries))
 	}
-	// Pass 2: write.
+	// Pass 2: write, from the same handle, after re-checking its digest.
+	if err := rewindAndCheck(af, m.ArchiveSHA256); err != nil {
+		return nil, err
+	}
 	res := &Result{ManifestFiles: len(entries)}
 	digest := sha256.New()
-	err = walkTar(archive, func(h *tar.Header, r io.Reader) error {
+	written := map[string]bool{}
+	err = walkTarReader(af, func(h *tar.Header, r io.Reader) error {
+		if !seen[h.Name] || written[h.Name] {
+			return rejectf("archive member %q was not validated in pass 1", h.Name)
+		}
+		written[h.Name] = true
 		dest, err := DestFor(opts.FixtureRoot, h.Name)
 		if err != nil {
 			return err
@@ -317,16 +332,20 @@ func RestoreFiles(opts Options) (*Result, error) {
 			return err
 		}
 		sum := hex.EncodeToString(hs.Sum(nil))
+		if sum != entries[h.Name].SHA256 || n != entries[h.Name].Size {
+			return rejectf("archive member %q changed between validation and write", h.Name)
+		}
 		res.FilesRestored++
 		res.BytesRestored += n
-		if sum == entries[h.Name].SHA256 {
-			res.HashMatches++
-		}
+		res.HashMatches++
 		fmt.Fprintf(digest, "%s %s\n", h.Name, sum)
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(written) != len(entries) {
+		return nil, rejectf("wrote %d members, manifest lists %d", len(written), len(entries))
 	}
 	res.RestoredDigest = hex.EncodeToString(digest.Sum(nil))
 	return res, nil
@@ -361,12 +380,42 @@ func ensureNoSymlinkParents(root, dir string) error {
 	return nil
 }
 
-func walkTar(archive string, fn func(*tar.Header, io.Reader) error) error {
-	f, err := os.Open(archive)
-	if err != nil {
+// ensureNoExistingSymlinkParents is ensureNoSymlinkParents for a path whose
+// trailing components may not exist yet: missing components are fine,
+// existing ones must not be symlinks.
+func ensureNoExistingSymlinkParents(root, dir string) error {
+	for d := dir; within(d, root); d = filepath.Dir(d) {
+		st, err := os.Lstat(d)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if st.Mode()&os.ModeSymlink != 0 {
+			return rejectf("restore path %q contains a symlink", d)
+		}
+	}
+	return nil
+}
+
+// rewindAndCheck seeks f to the start, verifies its sha256, and seeks back.
+func rewindAndCheck(f *os.File, want string) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	if hex.EncodeToString(h.Sum(nil)) != want {
+		return rejectf("archive changed between validation and write")
+	}
+	_, err := f.Seek(0, io.SeekStart)
+	return err
+}
+
+func walkTarReader(f io.Reader, fn func(*tar.Header, io.Reader) error) error {
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return err

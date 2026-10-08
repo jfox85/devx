@@ -34,7 +34,13 @@ func TestRealTmuxWithHostileDecoyEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(f.Dir())
+	// Registered before any session exists, so a t.Fatal anywhere below
+	// still kills the owned sessions (exact names, owned socket; never
+	// kill-server) before the directory is removed. Cleanup is idempotent.
+	t.Cleanup(func() {
+		_, _ = f.Cleanup()
+		_ = os.RemoveAll(f.Dir())
+	})
 	t.Logf("fixture socket: %s", f.Socket())
 
 	if err := f.NewSession("dxtf-a", "", "sleep", "300"); err != nil {

@@ -166,6 +166,13 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
+	if sess.IsLocalOnly() && sess.LocalOnly.AgentID != "" {
+		if m, err := newAgentManager(); err == nil {
+			if err := m.RetireForSession(sess.LocalOnly.AgentID, name); err != nil {
+				fmt.Printf("Warning: failed to retire managed agent %s: %v\n", sess.LocalOnly.AgentID, err)
+			}
+		}
+	}
 	// A local-only session was never in any route config, so removing it
 	// needs no shared route rewrite or tunnel reload.
 	if opts.SyncRoutes && !sess.IsLocalOnly() {
