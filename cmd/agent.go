@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jfox85/devx/artifactbridge"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/piagent"
 	"github.com/jfox85/devx/session"
@@ -275,7 +276,7 @@ listed in pi_mcp.allowed_projects in the DevX config. Example MCP config:
 		if err != nil {
 			return err
 		}
-		s := &piagent.MCPServer{M: m, Name: "devx-pi", Version: version.Version, Client: "mcp"}
+		s := &piagent.MCPServer{M: m, Name: "devx-pi", Version: version.Version, Client: "mcp", Extra: newArtifactBridge(m)}
 		return s.Serve(cmd.InOrStdin(), cmd.OutOrStdout())
 	},
 }
@@ -312,6 +313,20 @@ func currentUserLabel() string {
 // any worktree.
 func piAgentStateDir() string {
 	return filepath.Join(filepath.Dir(config.GetSessionsPath()), "pi-agents")
+}
+
+// newArtifactBridge returns the artifact bridge tool provider. Reading and
+// uploading are separate, opt-in capabilities (pi_mcp.artifacts.read /
+// pi_mcp.artifacts.upload, both default false); with both off no artifact
+// tool is listed or callable.
+func newArtifactBridge(m *piagent.Manager) piagent.ToolProvider {
+	return artifactbridge.New(artifactbridge.Config{
+		Read:            viper.GetBool("pi_mcp.artifacts.read"),
+		Upload:          viper.GetBool("pi_mcp.artifacts.upload"),
+		AllowedProjects: m.Config.AllowedProjects,
+		StateDir:        filepath.Join(piAgentStateDir(), "artifact-bridge"),
+		MaxUploadBytes:  viper.GetInt64("pi_mcp.artifacts.max_upload_bytes"),
+	}, m.Store)
 }
 
 func newAgentManager() (*piagent.Manager, error) {

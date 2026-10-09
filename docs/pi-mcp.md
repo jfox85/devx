@@ -141,6 +141,125 @@ pi_mcp:
 
 MCP client config: `{"mcpServers": {"devx-pi": {"command": "devx", "args": ["mcp", "pi"]}}}`
 
+## Artifact bridge (optional)
+
+Remote clients can exchange explicitly registered files with a managed
+agent's session through three extra tools. Both capabilities are **off by
+default** and enabled separately in the DevX config:
+
+```yaml
+pi_mcp:
+  artifacts:
+    read: false            # devx_artifact_list + devx_artifact_read
+    upload: false          # devx_attachment_upload
+    max_upload_bytes: 10485760   # default 10 MiB, ceiling 25 MiB
+```
+
+A disabled capability's tools are neither listed nor callable. Changes take
+effect on the next `devx mcp pi` start; the Agent Shed relay starts one per
+session, so restart only that service (not shared services) or wait for its
+idle session to be recycled.
+
+**Eligible files.** Only files registered in the session's existing artifact
+manifest (`<worktree>/.artifacts/manifest.json`, the same store as
+`devx artifact add/list` and the web artifact pane). There is no parallel
+registry and no general path argument anywhere. Uploads go only to
+`.artifacts/attachments/` and are registered in the same manifest with tag
+`remote-attachment` and agent `remote-upload`.
+
+**Scope checks on every call.**
+- The `agent_id` must exist and not be retired.
+- Its project must be in `pi_mcp.allowed_projects`.
+- Its DevX session must still point at the agent's worktree, with the same
+  project, and must not be owned by another agent (local-only marker or
+  adoption).
+
+Unknown and unauthorized agents get the same `permission_denied`. Artifact
+IDs (`dxa_<24 hex>`) are derived from agent + session + manifest id, so an
+ID from one session is `not_found` in every other.
+
+**Reading.** `devx_artifact_list` returns:
+- the opaque id;
+- title, type and MIME type (from the extension);
+- size and retention;
+- content `version` (`c_` + 24 hex of SHA-256) and `checksums.sha256`.
+
+`devx_artifact_read` returns one chunk:
+- text in UTF-8-safe chunks of at most 16 KiB (`next_offset`/`eof`);
+- PNG/JPEG/GIF/WebP files of 40 KiB or less, starting at offset 0, as an MCP
+  `image` content block (bytes must sniff as the declared type; SVG never
+  does);
+- anything else as base64 chunks in `structuredContent.data_base64`.
+
+Every chunk carries `chunk_sha256` and the full-file checksum. Every result
+stays below 60,000 bytes because the Agent Shed gateway caps results at
+64 KiB.
+
+**Version semantics.** DevX artifacts are mutable files with a stable
+manifest ID and no content history. A read may pin `version`. If the file
+changed since, the read fails with `version_mismatch` and reports
+`current_version`, so chunks of different contents are never mixed.
+Earlier contents are not retrievable. Each read hashes the file and slices
+the chunk in the same pass, with `fstat` before and after; a concurrent
+change returns `changed_during_read`.
+
+**Path safety.** Files are opened component by component with
+`openat(O_NOFOLLOW)` from the worktree, so a symlink anywhere fails,
+including `.artifacts` itself or a directory swapped in after validation.
+The leaf must also be:
+- a regular file with one link (no FIFOs, devices or hard links to files
+  elsewhere);
+- at most 32 MiB.
+
+Error messages contain no absolute paths or file contents. On Windows the
+fallback validates with `Lstat` and `SameFile`; the bridge is supported on
+macOS and Linux.
+
+**Uploads.** `devx_attachment_upload`:
+- **Chunking.** Each call carries at most 8 KiB, keeping base64 arguments
+  under the gateway's 16 KiB argument bound. Every chunk repeats the same
+  `idempotency_key`, `filename`, `mime_type`, `size` and `sha256`, plus its
+  `offset`.
+- **Offsets.** Chunks are accepted only at the current received offset. A
+  repeated chunk with identical bytes is acknowledged. A call without
+  `data_base64` reports `next_offset`, so an interrupted client can resume.
+- **Staging.** Partial bytes are staged under
+  `~/.config/devx/pi-agents/artifact-bridge/uploads/<agent>/`, never inside
+  a worktree.
+- **Limits.** At most 8 incomplete uploads per agent. Staged bytes with no
+  progress for 24 hours are dropped.
+- **Verification.** When the last byte arrives, the declared size and
+  SHA-256 are checked, then the content: PNG/JPEG/GIF/WebP/PDF magic bytes,
+  UTF-8 with no NULs for text/Markdown/CSV, and valid JSON for JSON. Only
+  then is the file registered through `artifact.Add`, which never
+  overwrites (a name collision gets a `-2` suffix, created with `O_EXCL`)
+  and records no "assets" from uploaded Markdown. If any check fails, the
+  staged bytes are discarded.
+- **Allowed types.** HTML, SVG, scripts and archives are refused.
+- **Idempotency.** Reusing a key with different metadata is `conflict`.
+  After completion, the same call returns the same artifact
+  (`replayed: true`).
+- **Response.** It includes `local.manifest_id`; the local Pi agent resolves
+  the file with `devx artifact url <manifest_id> --local` or reads
+  `local.path` in its worktree.
+
+**Task results.** When reading is enabled, `pi_status` adds `artifacts`:
+entries registered in the agent's session between delivery and finish
+(+30 s), excluding remote attachments, at most 20. The field is omitted
+otherwise, so existing clients are unaffected.
+
+**Retention.** Attachments and artifacts follow normal DevX artifact
+retention. `session` entries go with the session's worktree. `devx artifact
+archive <manifest-id>` copies them to the project archive on session
+removal. Nothing in the bridge deletes registered artifacts. Agent Library
+publication is a separate, optional, human step.
+
+**Not provided.**
+- download URLs or public links;
+- remote URL fetches;
+- rendering of HTML/SVG;
+- MCP `resources/*` (the Agent Shed relay carries `tools/*` only).
+
 ## Human controls
 
 | Action | How |

@@ -49,6 +49,13 @@ func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 	}
 }
 
+// AcquireOwnedLock takes a Go-only, cross-process mkdir lock at path (with
+// crashed-owner recovery). Used by optional tool providers such as the
+// artifact bridge for state that the Node bridge never touches.
+func AcquireOwnedLock(path string) (func(), error) {
+	return acquireOwnedDirLock(path, agentLockTimeout, agentLockStale)
+}
+
 // acquireOwnedDirLock is acquireDirLock plus a pid file, so a lock left by a
 // crashed process (e.g. an MCP server killed mid-start) is reclaimed as soon
 // as its owner is dead instead of after the stale timeout. Used only for
