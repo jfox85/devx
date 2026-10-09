@@ -29,7 +29,10 @@ func (c *fixtureAdopter) Adopt(name, agentID string) (AdoptedSession, error) {
 	c.adopted[name] = agentID
 	return AdoptedSession{Name: name, Path: p, Project: "proj", TmuxName: name}, nil
 }
-func (c *fixtureAdopter) ReleaseAdoption(name, agentID string) error { delete(c.adopted, name); return nil }
+func (c *fixtureAdopter) ReleaseAdoption(name, agentID string) error {
+	delete(c.adopted, name)
+	return nil
+}
 
 // A human starts Pi WITHOUT the bridge in their own session and talks to it.
 // adopt registers it with no tmux mutation; relaunch --force resumes the SAME
