@@ -211,6 +211,52 @@ var agentRelaunchCmd = &cobra.Command{
 	},
 }
 
+var (
+	agentAdoptPane      string
+	agentAdoptPiSession string
+)
+
+var agentAdoptCmd = &cobra.Command{
+	Use:   "adopt <session> --pane <%id> --pi-session <id>",
+	Short: "Register an existing session's running Pi as a managed agent (no restart)",
+	Long: `Register the Pi already running in one of your DevX sessions as an
+MCP-managed agent, without restarting it or creating anything.
+
+The agent starts under YOUR control, so nothing is delivered yet. Because the
+running Pi was started without the DevX bridge, it cannot receive tasks until
+it is relaunched once with the bridge, resuming the same conversation:
+
+  1. devx agent adopt <session> --pane %12 --pi-session <pi-session-id>
+  2. when that Pi is idle with nothing unsent:  devx agent relaunch <agent-id> --force
+  3. in Pi (or with devx agent release <agent-id>):  /devx-release
+
+Only host sessions can be adopted, and only the exact pane given is ever
+touched. Find the pane with: tmux list-panes -s -t <session>
+Find the Pi session id in Pi with /session.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		m, err := newAgentManager()
+		if err != nil {
+			return err
+		}
+		r, err := m.Adopt(piagent.AdoptRequest{Session: args[0], PaneID: agentAdoptPane, PiSessionID: agentAdoptPiSession, By: currentUserLabel()})
+		if err != nil {
+			return err
+		}
+		if agentJSONFlag {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(r)
+		}
+		verb := "Adopted"
+		if r.Replayed {
+			verb = "Already adopted"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s as %s (pane %s). You have control; nothing is delivered yet.\n"+
+			"Next: when that Pi is idle, run `devx agent relaunch %s --force` to load the DevX bridge (same conversation), then /devx-release.\n",
+			verb, r.Session, r.AgentID, r.Pane, r.AgentID)
+		return nil
+	},
+}
+
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Local MCP servers",
@@ -240,7 +286,11 @@ func init() {
 	agentInspectCmd.Flags().IntVar(&agentInspectLines, "lines", 200, "Scrollback lines to include")
 	agentReleaseCmd.Flags().BoolVar(&agentReleaseDrop, "drop-queued", false, "Cancel prompts queued while you had control instead of delivering them")
 	agentRelaunchCmd.Flags().BoolVar(&agentRelaunchForce, "force", false, "Replace a Pi that still appears to be running")
-	agentCmd.AddCommand(agentListCmd, agentStatusCmd, agentAttachCmd, agentInspectCmd, agentTakeoverCmd, agentReleaseCmd, agentRelaunchCmd)
+	agentAdoptCmd.Flags().StringVar(&agentAdoptPane, "pane", "", "Exact tmux pane id (%N) where the session's Pi runs")
+	agentAdoptCmd.Flags().StringVar(&agentAdoptPiSession, "pi-session", "", "Pi session id of that conversation (shown by /session in Pi)")
+	_ = agentAdoptCmd.MarkFlagRequired("pane")
+	_ = agentAdoptCmd.MarkFlagRequired("pi-session")
+	agentCmd.AddCommand(agentListCmd, agentStatusCmd, agentAttachCmd, agentInspectCmd, agentTakeoverCmd, agentReleaseCmd, agentRelaunchCmd, agentAdoptCmd)
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.AddCommand(mcpPiCmd)
 }
@@ -317,6 +367,28 @@ func (localOnlySessionCreator) Create(name, project, agentID string) (piagent.Cr
 		return piagent.CreatedSession{}, err
 	}
 	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: project, TmuxName: name}, nil
+}
+
+// Adopt records agentID on an existing human-created host session (see
+// session.AdoptManagedAgent) and returns where it lives. Idempotent for the
+// same agent, so relaunch can use it to re-verify ownership.
+func (localOnlySessionCreator) Adopt(name, agentID string) (piagent.AdoptedSession, error) {
+	sess, err := session.AdoptManagedAgent(name, agentID)
+	if err != nil {
+		if errors.Is(err, session.ErrAdoptNotAllowed) {
+			return piagent.AdoptedSession{}, piagent.Denied("%v", err)
+		}
+		return piagent.AdoptedSession{}, err
+	}
+	if !session.TmuxHasSession(name) {
+		_ = session.ReleaseManagedAgent(name, agentID)
+		return piagent.AdoptedSession{}, fmt.Errorf("session %q has no running tmux session", name)
+	}
+	return piagent.AdoptedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name}, nil
+}
+
+func (localOnlySessionCreator) ReleaseAdoption(name, agentID string) error {
+	return session.ReleaseManagedAgent(name, agentID)
 }
 
 func (localOnlySessionCreator) EnsureTmux(name, agentID string) error {

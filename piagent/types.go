@@ -56,6 +56,10 @@ const (
 	AgentPaneExited  = "pane_exited"
 	AgentNotLaunched = "not_launched"
 	AgentRetired     = "retired"
+	// AgentAdoptedPending: an existing human Pi was adopted but is still the
+	// original process without the DevX bridge; a relaunch (same Pi session)
+	// is needed before tasks can be delivered.
+	AgentAdoptedPending = "adopted_pending_relaunch"
 )
 
 const (
@@ -108,6 +112,11 @@ type Agent struct {
 	// RetiredAt is set when the agent's DevX session was removed. A retired
 	// agent keeps its records for inspection but accepts no new work.
 	RetiredAt *time.Time `json:"retired_at,omitempty"`
+	// Adopted marks an agent registered for an existing human-created DevX
+	// session and Pi (devx agent adopt) rather than created by Start. Its
+	// session is the owner's normal session: DevX never creates windows in
+	// it and only ever respawns the exact adopted pane.
+	Adopted bool `json:"adopted,omitempty"`
 }
 
 // Task is one dispatched prompt.

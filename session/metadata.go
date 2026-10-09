@@ -37,6 +37,10 @@ type Session struct {
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 	Target             TargetMeta        `json:"target,omitempty"`
+	// ManagedAgent records the MCP-managed Pi agent adopted into this normal
+	// (human-created) session via `devx agent adopt`. Unlike LocalOnly it
+	// changes nothing about routing, ports or services.
+	ManagedAgent string `json:"managed_agent,omitempty"`
 	// LocalOnly marks a managed-agent session that must never be routed or
 	// published (see localonly.go).
 	LocalOnly *LocalOnlyMeta `json:"local_only,omitempty"`

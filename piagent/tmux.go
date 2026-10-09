@@ -35,6 +35,29 @@ type PaneInfo struct {
 	WindowID    string
 	Dead        bool
 	PID         string
+	// LinkedSessions lists every session the pane's window is linked into.
+	// Grouped sessions (e.g. DevX's "<name>-web" viewer) share windows, and
+	// tmux reports whichever of them was used most recently as SessionName.
+	LinkedSessions []string
+	// Command is the pane's current foreground command (pane_current_command).
+	Command string
+}
+
+// InSession reports whether the pane's window belongs to session, either as
+// the session tmux reports or through a linked/grouped session.
+func (p PaneInfo) InSession(session string) bool {
+	if !p.Exists || session == "" {
+		return false
+	}
+	if p.SessionName == session {
+		return true
+	}
+	for _, s := range p.LinkedSessions {
+		if s == session {
+			return true
+		}
+	}
+	return false
 }
 
 // Pane looks up a pane by its stable %id.
@@ -42,17 +65,24 @@ func (t Tmux) Pane(paneID string) PaneInfo {
 	if !strings.HasPrefix(paneID, "%") {
 		return PaneInfo{}
 	}
-	out, err := t.Run("display-message", "-p", "-t", paneID, "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_dead}\t#{pane_pid}")
+	out, err := t.Run("display-message", "-p", "-t", paneID, "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_dead}\t#{pane_pid}\t#{window_linked_sessions_list}\t#{pane_current_command}")
 	if err != nil {
 		return PaneInfo{}
 	}
 	f := strings.Split(out, "\t")
-	if len(f) != 5 || f[0] != paneID {
+	if len(f) < 5 || f[0] != paneID {
 		// tmux resolves unknown targets to the current pane in some
 		// contexts; only an exact %id echo counts as a match.
 		return PaneInfo{}
 	}
-	return PaneInfo{Exists: true, SessionName: f[1], WindowID: f[2], Dead: f[3] == "1", PID: f[4]}
+	p := PaneInfo{Exists: true, SessionName: f[1], WindowID: f[2], Dead: f[3] == "1", PID: f[4]}
+	if len(f) > 5 && f[5] != "" {
+		p.LinkedSessions = strings.Split(f[5], ",")
+	}
+	if len(f) > 6 {
+		p.Command = f[6]
+	}
+	return p
 }
 
 // HasSession reports whether an exact tmux session name exists.

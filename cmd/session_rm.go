@@ -166,10 +166,16 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
+	retire := ""
 	if sess.IsLocalOnly() && sess.LocalOnly.AgentID != "" {
+		retire = sess.LocalOnly.AgentID
+	} else if sess.ManagedAgent != "" {
+		retire = sess.ManagedAgent // adopted via `devx agent adopt`
+	}
+	if retire != "" {
 		if m, err := newAgentManager(); err == nil {
-			if err := m.RetireForSession(sess.LocalOnly.AgentID, name); err != nil {
-				fmt.Printf("Warning: failed to retire managed agent %s: %v\n", sess.LocalOnly.AgentID, err)
+			if err := m.RetireForSession(retire, name); err != nil {
+				fmt.Printf("Warning: failed to retire managed agent %s: %v\n", retire, err)
 			}
 		}
 	}
