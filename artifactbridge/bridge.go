@@ -259,12 +259,16 @@ const (
 
 // sessionBindingSlack is how much later than its agent an UNMARKED session
 // record may have been created and still be considered the agent's session.
-// pi_start_task creates the session just before the agent record (observed
-// gap <= ~1s); adopted sessions predate their agent by far. A session record
-// created later than this is a different session instance that reused the
-// name and path (for example after `devx session clear` left the agent
-// unretired), and must never inherit the old agent's access.
-const sessionBindingSlack = time.Minute
+// It is zero: in every flow that binds an agent to a session the session
+// record is written first (pi_start_task creates the session, then the agent
+// record; adoption requires an existing session). So a session record newer
+// than its agent is a different instance that reused the name and path (for
+// example after `devx session clear` left the agent unretired) and never
+// inherits the old agent's access. Both timestamps come from the same host
+// clock; a backwards clock step between the agent's creation and such a
+// recreation is the remaining gap (see docs/pi-mcp.md, "Session
+// eligibility").
+const sessionBindingSlack = time.Duration(0)
 
 // eligibleSession is the single session-binding predicate for artifact
 // access. It decides whether agent a is the unambiguous owner of a live DevX
@@ -288,8 +292,8 @@ const sessionBindingSlack = time.Minute
 //   - a local_only marker, if present, names this agent; a managed_agent
 //     marker, if present, names this agent; never both;
 //   - without any marker, the session record must not be newer than the
-//     agent (sessionBindingSlack): a session recreated under the same name
-//     and path after the agent was orphaned is a different instance;
+//     agent: a session recreated under the same name and path after the
+//     agent was orphaned is a different instance;
 //   - no other non-retired agent claims the same session name, and no other
 //     non-retired agent or other session uses the same worktree path.
 //

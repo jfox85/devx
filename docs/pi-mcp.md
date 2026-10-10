@@ -183,15 +183,56 @@ the default scope and explicit lists alike:
   for sessions created by `pi_start_task`, `managed_agent` for adopted
   sessions. Both markers at once, or either naming another agent, is a
   conflict and always denies; no policy setting overrides it;
-- without a marker, the session record must not have been created more
-  than a minute after the agent. This binds the agent to that session
-  instance. If a session is removed without retiring its agent (for
-  example `devx session clear`) and a new session is later created with
-  the same name and path, the old agent never gains access to it, not
-  even through an explicit `sessions` list. An unmarked session or agent
-  record without a creation time can't be bound this way and is denied;
+- without a marker, the session record must not have been created after
+  the agent. Every flow that binds an agent writes the session record
+  first: `pi_start_task` creates the session and then the agent, and
+  adoption needs an existing session. This binds the agent to that
+  session instance. If a session is removed without retiring its agent
+  (for example `devx session clear`) and a new session is later created
+  with the same name and path, the old agent never gains access to it,
+  not even through an explicit `sessions` list. An unmarked session or
+  agent record without a creation time can't be bound this way and is
+  denied;
 - no other non-retired agent claims the same session, and no other live
   agent or other session record uses the same worktree.
+
+**Unresolved: orphaned-agent binding (owner decision pending).** For
+sessions without a marker, the binding above compares two timestamps
+from the host clock. It is not a stable identity. Remaining gaps:
+- **Clock steps.** A backwards wall-clock step (manual change, NTP
+  correction, VM restore) between creating an agent and recreating its
+  orphaned session could make the new session look older than the agent.
+  Go's `time.Now()` stores the wall clock in these records, not a
+  monotonic one.
+- **Hand-edited or imported records.** A session record restored from a
+  backup or copied from another machine keeps its old `created_at`.
+
+These need an orphaned agent and either a clock step or a restored
+record. A marker-carrying session is not affected: the marker names the
+agent.
+
+Ways to close the gap fully, not done here because each changes records
+or behaviour outside the bridge:
+1. **Stable session-instance ID.** DevX writes a random `instance_id` into
+   every new session record and copies it onto the agent when it binds
+   (`pi_start_task`, adopt). The bridge then requires them to match.
+   This needs new record fields and a write path in session creation and
+   adoption. Existing records have no ID and need either a one-time
+   owner-approved backfill or continued use of the timestamp rule for
+   legacy records only.
+2. **Retire agents on session removal.** `devx session clear` and
+   `devx session rm` retire every non-retired agent whose session and
+   worktree match, not just the marker owner. This removes orphaned
+   agents at the source, but changes session-removal behaviour, and
+   agents that are already orphaned stay.
+3. **Repair markers.** Make adoption replay restore `managed_agent`, and
+   stop old writers dropping it. Marked sessions are then bound by
+   identity, and the timestamp rule only covers the pre-local-only
+   canary.
+4. **Require markers in the default scope.** Revert to the stricter
+   41b887d-and-earlier behaviour for unmarked sessions. This closes the
+   gap now, but excludes this session, `pi-canary-mcp-20261008` and any
+   adopted session whose marker was dropped from default reads.
 
 A **missing** marker alone is not a denial. The MCP path itself
 (`pi_send`, `pi_status`, `pi_events`) does not require one, and real

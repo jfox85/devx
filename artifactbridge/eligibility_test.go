@@ -97,12 +97,21 @@ func TestEligibleSessionPredicate(t *testing.T) {
 		{"adopted: unmarked session much older than agent", func(f *eligibilityFixture) {
 			f.sessions["s1"].CreatedAt = fixtureT0.Add(-30 * 24 * time.Hour)
 		}, ""},
-		{"unmarked session created within slack after agent", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0.Add(sessionBindingSlack - time.Second)
+		{"unmarked session created at the same instant as agent", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0
 		}, ""},
+		{"unmarked session recreated 1ns after agent", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(time.Nanosecond)
+		}, denyNewerSession},
+		{"unmarked session recreated 30s after agent (within old 1-minute window)", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(30 * time.Second)
+		}, denyNewerSession},
 		{"unmarked session recreated after agent (orphaned agent)", func(f *eligibilityFixture) {
 			f.sessions["s1"].CreatedAt = fixtureT0.Add(2 * time.Hour)
 		}, denyNewerSession},
+		{"timezone offsets do not matter", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(-time.Millisecond).In(time.FixedZone("PDT", -7*3600))
+		}, ""},
 		{"unmarked session with zero created time", func(f *eligibilityFixture) { f.sessions["s1"].CreatedAt = time.Time{} }, denyNewerSession},
 		{"unmarked session, agent with zero created time", func(f *eligibilityFixture) { f.agent.CreatedAt = time.Time{} }, denyNewerSession},
 		{"marked session newer than agent is fine (marker binds instance)", func(f *eligibilityFixture) {
