@@ -338,6 +338,7 @@ type sessionResponse struct {
 	Ports               map[string]int               `json:"ports"`
 	Routes              map[string]string            `json:"routes"`
 	ExternalRoutes      map[string]string            `json:"external_routes,omitempty"`
+	LocalOnly           bool                         `json:"local_only,omitempty"`
 	TargetType          string                       `json:"target_type"`
 	AttentionFlag       bool                         `json:"attention_flag"`
 	Pinned              bool                         `json:"pinned"`
@@ -354,7 +355,7 @@ type sessionResponse struct {
 func buildSessionResponse(sess *session.Session) sessionResponse {
 	externalDomain := viper.GetString("external_domain")
 	externalRoutes := make(map[string]string)
-	if externalDomain != "" {
+	if externalDomain != "" && !sess.IsLocalOnly() {
 		// Prefer tunnel URLs for every service the UI can display. Some older
 		// sessions have stored Caddy routes whose service labels are not present
 		// in Ports (or vice versa), so derive external hostnames from both sets.
@@ -396,9 +397,10 @@ func buildSessionResponse(sess *session.Session) sessionResponse {
 		DisplayName:         sess.DisplayName,
 		Branch:              sess.Branch,
 		ProjectAlias:        sess.ProjectAlias,
-		Ports:               sess.Ports,
-		Routes:              sess.Routes,
+		Ports:               sessionPortsForResponse(sess),
+		Routes:              sessionRoutesForResponse(sess),
 		ExternalRoutes:      externalRoutes,
+		LocalOnly:           sess.IsLocalOnly(),
 		TargetType:          sess.TargetType(),
 		AttentionFlag:       sess.AttentionFlag,
 		Pinned:              sess.Pinned,
@@ -1675,4 +1677,20 @@ func siblingDevxCLI(current string) string {
 		return ""
 	}
 	return candidate
+}
+
+// Local-only sessions never expose service links, even if a record was
+// edited by hand to carry ports or routes.
+func sessionPortsForResponse(sess *session.Session) map[string]int {
+	if sess.IsLocalOnly() {
+		return map[string]int{}
+	}
+	return sess.Ports
+}
+
+func sessionRoutesForResponse(sess *session.Session) map[string]string {
+	if sess.IsLocalOnly() {
+		return map[string]string{}
+	}
+	return sess.Routes
 }

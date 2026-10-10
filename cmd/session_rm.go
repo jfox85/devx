@@ -3,12 +3,14 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
+	"github.com/jfox85/devx/piagent"
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
@@ -113,7 +115,7 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 				fmt.Printf("Warning: cleanup command failed: %v\n", err)
 			}
 		}
-	} else {
+	} else if !sess.IsLocalOnly() {
 		if err := session.RunCleanupCommandForShell(sess); err != nil {
 			fmt.Printf("Warning: cleanup command failed: %v\n", err)
 		}
@@ -166,7 +168,10 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
-	if opts.SyncRoutes {
+	retireSessionAgents(os.Stdout, name, sess, newAgentManager)
+	// A local-only session was never in any route config, so removing it
+	// needs no shared route rewrite or tunnel reload.
+	if opts.SyncRoutes && !sess.IsLocalOnly() {
 		// Sync Caddy routes after removal
 		if err := syncAllCaddyRoutes(); err != nil {
 			fmt.Printf("Warning: failed to sync Caddy routes: %v\n", err)
@@ -177,6 +182,61 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 	}
 	fmt.Printf("Removed session '%s'\n", name)
 	return nil
+}
+
+// retireSessionAgents retires the removed session's managed agents. The
+// removal itself has already happened, so failures are warnings, but they are
+// always printed: a silent failure would leave agents active that still point
+// at the removed session name.
+func retireSessionAgents(out io.Writer, name string, sess *session.Session, open func() (*piagent.Manager, error)) {
+	retire := ""
+	if sess.IsLocalOnly() && sess.LocalOnly.AgentID != "" {
+		retire = sess.LocalOnly.AgentID
+	} else if sess.ManagedAgent != "" {
+		retire = sess.ManagedAgent // adopted via `devx agent adopt`
+	}
+	m, err := open()
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "Warning: could not open the managed-agent store, so no agent of session %q was retired: %v\n", name, err)
+		return
+	}
+	agents, lerr := m.Store.ListAgents()
+	if lerr != nil {
+		_, _ = fmt.Fprintf(out, "Warning: could not list managed agents (agents bound to this session instance may stay active): %v\n", lerr)
+	}
+	for _, id := range agentsToRetire(name, sess, retire, agents) {
+		if err := m.RetireForSession(id, name); err != nil {
+			_, _ = fmt.Fprintf(out, "Warning: failed to retire managed agent %s: %v\n", id, err)
+		}
+	}
+}
+
+// agentsToRetire returns the agents to retire when session name (record
+// sess) is removed: the agent named by its marker, plus any agent BOUND to
+// this exact session instance whose marker an older writer dropped. The
+// match is the agent's recorded instance id (or, for an id-less record, its
+// exact created_at), so only agents of this removed session are retired,
+// never ones bound to an earlier or later session that reused the name.
+func agentsToRetire(name string, sess *session.Session, marker string, agents []*piagent.Agent) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	add(marker)
+	for _, a := range agents {
+		if a == nil || a.RetiredAt != nil || a.DevxSession != name || a.SessionInstanceID == "" {
+			continue
+		}
+		if (sess.InstanceID != "" && a.SessionInstanceID == sess.InstanceID) ||
+			(sess.InstanceID == "" && !a.SessionCreatedAt.IsZero() && a.SessionCreatedAt.Equal(sess.CreatedAt)) {
+			add(a.ID)
+		}
+	}
+	return out
 }
 
 func removeGatepostStateDir(sess *session.Session) error {

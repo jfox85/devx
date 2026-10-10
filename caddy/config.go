@@ -196,6 +196,9 @@ func buildRoutes(sessions map[string]*SessionInfo) []Route {
 
 	for _, sessionName := range sessionNames {
 		info := sessions[sessionName]
+		if info.LocalOnly {
+			continue
+		}
 
 		// Sort service names for deterministic output
 		serviceNames := make([]string, 0, len(info.Ports))

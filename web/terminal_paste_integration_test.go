@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jfox85/devx/internal/tmuxfixture"
 )
 
 // TestPasteTmuxBufferKeepsMultilineTextAsOnePaste drives a real, isolated tmux
@@ -16,18 +18,11 @@ import (
 // each newline reaches the program as a bare Enter and the text is submitted
 // one line at a time.
 func TestPasteTmuxBufferKeepsMultilineTextAsOnePaste(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
+	// Every tmux exec in this package goes through the test-only wrapper
+	// installed by TestMain (explicit owned -S socket, kill-server refused).
+	if tmuxfixture.ActiveWrapper() == nil || tmuxfixture.ActiveWrapper().RealTmux == "" {
+		t.Skip("tmux wrapper not active or tmux not installed")
 	}
-
-	// Private tmux server: never touch the developer's real sessions.
-	tmuxDir, err := os.MkdirTemp("", "devx-tmux-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tmuxDir) })
-	t.Setenv("TMUX_TMPDIR", tmuxDir)
-	t.Setenv("TMUX", "")
 
 	out := filepath.Join(t.TempDir(), "out")
 	// The sentinel is printed after bracketed paste is enabled and the tty is
@@ -42,7 +37,7 @@ func TestPasteTmuxBufferKeepsMultilineTextAsOnePaste(t *testing.T) {
 	if err := exec.Command("tmux", "new-session", "-d", "-s", name, "-x", "80", "-y", "24", "sh", "-c", script).Run(); err != nil {
 		t.Fatalf("start tmux: %v", err)
 	}
-	t.Cleanup(func() { exec.Command("tmux", "kill-server").Run() }) //nolint:errcheck
+	t.Cleanup(func() { exec.Command("tmux", "kill-session", "-t", "="+name).Run() }) //nolint:errcheck
 
 	waitFor(t, func() bool {
 		screen, err := exec.Command("tmux", "capture-pane", "-p", "-t", target).Output()
