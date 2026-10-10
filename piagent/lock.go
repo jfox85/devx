@@ -34,13 +34,15 @@ func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 		if err == nil {
 			return func() { releaseDirLock(path, os.Remove) }, nil
 		}
-		if !lockContended(err) {
+		if !lockContended(path, err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 		}
 		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > stale {
-			// Abandoned by a crashed holder; remove and retry immediately.
-			_ = os.Remove(path)
-			continue
+			// Abandoned by a crashed holder; remove and retry immediately
+			// (if the removal fails, fall through to the deadline and sleep).
+			if os.Remove(path) == nil {
+				continue
+			}
 		}
 		if time.Now().After(deadline) {
 			// Keep the last mkdir error: on Windows a persistent permission
@@ -70,6 +72,15 @@ func releaseDirLock(path string, remove func(string) error) {
 	}
 }
 
+// releaseOwnedDirLock releases an owned lock in two steps: remove our pid
+// file, then the (now empty) directory. Retrying a recursive removal could
+// delete a lock that a waiter reclaimed in between (it saw no pid file); a
+// plain directory removal instead fails on the new holder's pid file.
+func releaseOwnedDirLock(path string) {
+	releaseDirLock(filepath.Join(path, "pid"), os.Remove)
+	releaseDirLock(path, os.Remove)
+}
+
 // AcquireOwnedLock takes a Go-only, cross-process mkdir lock at path (with
 // crashed-owner recovery). Used by optional tool providers such as the
 // artifact bridge for state that the Node bridge never touches.
@@ -88,9 +99,9 @@ func acquireOwnedDirLock(path string, timeout, stale time.Duration) (func(), err
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
 			_ = os.WriteFile(filepath.Join(path, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
-			return func() { releaseDirLock(path, os.RemoveAll) }, nil
+			return func() { releaseOwnedDirLock(path) }, nil
 		}
-		if !lockContended(err) {
+		if !lockContended(path, err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 		}
 		info, statErr := os.Stat(path)
@@ -102,8 +113,9 @@ func acquireOwnedDirLock(path string, timeout, stale time.Duration) (func(), err
 			// it a moment before treating it as abandoned.
 			noPidTooLong := os.IsNotExist(rerr) && time.Since(info.ModTime()) > 2*time.Second
 			if ownerDead || noPidTooLong || time.Since(info.ModTime()) > stale {
-				_ = os.RemoveAll(path)
-				continue
+				if os.RemoveAll(path) == nil {
+					continue
+				}
 			}
 		}
 		if time.Now().After(deadline) {

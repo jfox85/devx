@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,6 +39,7 @@ func TestDirLockSurvivesHeavyChurn(t *testing.T) {
 						if holders.Add(1) != 1 {
 							t.Error("two holders at once")
 						}
+						time.Sleep(50 * time.Microsecond) // give an overlap a chance to show
 						holders.Add(-1)
 						release()
 					}
@@ -59,8 +61,8 @@ func TestDirLockTimeoutKeepsSentinelAndPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := acquireDirLock(path, 100*time.Millisecond, time.Hour)
-	if !errors.Is(err, errLockTimeout) {
-		t.Fatalf("err = %v, want errLockTimeout", err)
+	if !errors.Is(err, errLockTimeout) || !strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want errLockTimeout naming %s", err, path)
 	}
 }
 
@@ -81,5 +83,29 @@ func TestReleaseDirLockRetriesTransientFailure(t *testing.T) {
 	})
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("lock leaked after release (calls=%d): %v", calls, err)
+	}
+}
+
+// Releasing an owned lock must not delete a lock that someone else holds at
+// that path by the time a retry runs: only our pid file and then an empty
+// directory are removed.
+func TestOwnedReleaseNeverRemovesAnotherHoldersLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key.lock")
+	release, err := acquireOwnedDirLock(path, time.Second, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a waiter that reclaimed the lock in between: a new pid file
+	// appears after ours is gone (here: our pid file replaced by theirs).
+	if err := os.WriteFile(filepath.Join(path, "pid"), []byte("424242"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(path, "holder-marker")
+	if err := os.WriteFile(extra, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if _, err := os.Stat(extra); err != nil {
+		t.Fatalf("release removed another holder's lock contents: %v", err)
 	}
 }
