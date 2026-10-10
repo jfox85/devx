@@ -22,8 +22,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.label }}" = before-fix ]; then
-            # Same tests; production reader reverted to the pre-fix os.Open.
+            # Same tests; production reader AND writer reverted to pre-fix behaviour.
             printf '//go:build windows\n\npackage session\n\nimport "os"\n\nfunc openSessionsFileForRead(p string) (*os.File, error) { return os.Open(p) }\n' > session/readfile_windows.go
+            printf '//go:build windows\n\npackage session\n\nimport "os"\n\nfunc replaceFile(src, dst string) error { return os.Rename(src, dst) }\n' > session/replace_windows.go
             git diff --stat
           fi
           git log --oneline -1

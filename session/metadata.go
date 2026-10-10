@@ -218,8 +218,10 @@ func withSessionsLock(fn func() error) error {
 // temp file is fsynced before rename so its contents are durable before it is
 // published. Crash durability is best-effort: the parent directory entry is not
 // fsynced, which is acceptable because sessions.json is reconstructible from
-// running containers/worktrees, not a system of record. On Windows os.Rename is
-// not guaranteed atomic (see lock_windows.go); that platform is best-effort.
+// running containers/worktrees, not a system of record. On Windows the publish
+// uses a POSIX-semantics rename (replace_windows.go) so it succeeds while a
+// lock-free reader has the file open; it falls back to os.Rename where the
+// filesystem lacks POSIX rename.
 // Callers must already hold the sessions lock.
 func (s *SessionStore) writeStoreAtomic() error {
 	sessionsPath := getSessionsPath()
@@ -252,7 +254,7 @@ func (s *SessionStore) writeStoreAtomic() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("failed to close temp sessions file: %w", err)
 	}
-	if err := os.Rename(tmpName, sessionsPath); err != nil {
+	if err := replaceFile(tmpName, sessionsPath); err != nil {
 		return fmt.Errorf("failed to write sessions file: %w", err)
 	}
 	return nil
