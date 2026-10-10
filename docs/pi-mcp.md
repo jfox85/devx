@@ -204,8 +204,9 @@ from the host clock. It is not a stable identity. Remaining gaps:
   orphaned session could make the new session look older than the agent.
   Go's `time.Now()` stores the wall clock in these records, not a
   monotonic one.
-- **Hand-edited or imported records.** A session record restored from a
-  backup or copied from another machine keeps its old `created_at`.
+- **Hand-edited, restored or imported records.** A session record
+  restored from a backup (including `internal/backuprestore`) or copied
+  from another machine keeps its old `created_at`.
 
 These need an orphaned agent and either a clock step or a restored
 record. A marker-carrying session is not affected: the marker names the
@@ -222,17 +223,27 @@ or behaviour outside the bridge:
    legacy records only.
 2. **Retire agents on session removal.** `devx session clear` and
    `devx session rm` retire every non-retired agent whose session and
-   worktree match, not just the marker owner. This removes orphaned
-   agents at the source, but changes session-removal behaviour, and
-   agents that are already orphaned stay.
+   worktree match, not just the marker owner. The match must use the
+   agent records, not the session's markers, because the markers may have
+   been dropped. This removes orphaned agents at the source, but changes
+   session-removal behaviour, and agents that are already orphaned stay.
 3. **Repair markers.** Make adoption replay restore `managed_agent`, and
    stop old writers dropping it. Marked sessions are then bound by
    identity, and the timestamp rule only covers the pre-local-only
    canary.
 4. **Require markers in the default scope.** Revert to the stricter
    41b887d-and-earlier behaviour for unmarked sessions. This closes the
-   gap now, but excludes this session, `pi-canary-mcp-20261008` and any
-   adopted session whose marker was dropped from default reads.
+   gap now, but excludes from default reads the MCP sessions created
+   before local-only mode and any adopted session whose marker was
+   dropped. Those can still be named in an explicit `sessions` list.
+5. **Record the bound session's creation time on the agent.** This is a
+   cheaper version of option 1. When `pi_start_task` or adoption binds an
+   agent, it copies the session's `created_at` onto the agent record (for
+   example as `session_created_at`), and the bridge requires an exact,
+   nanosecond match. Only those two write paths change; session records
+   don't. A recreated session gets a different timestamp even after a
+   clock step, so this closes the gap for new agents. Existing agents
+   would keep the `<=` rule unless backfilled.
 
 A **missing** marker alone is not a denial. The MCP path itself
 (`pi_send`, `pi_status`, `pi_events`) does not require one, and real
