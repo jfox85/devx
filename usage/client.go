@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/jfox85/devx/internal/fileperm"
 )
 
 // ErrUnreachable reports that the Redline service could not be contacted, which
@@ -286,7 +288,9 @@ func checkTokenFile(path string) error {
 	if !mode.IsRegular() {
 		return fmt.Errorf("redline token file %s is not a regular file", path)
 	}
-	if mode.Perm()&0o077 != 0 {
+	// Skipped on Windows, where FileMode always reports 0666 and access is
+	// governed by ACLs (see fileperm.ModeBitsEnforced).
+	if fileperm.AccessibleByOthers(mode, 0o077) {
 		return fmt.Errorf("redline token file %s is readable by other users (mode %04o); chmod 600 it", path, mode.Perm())
 	}
 	return nil

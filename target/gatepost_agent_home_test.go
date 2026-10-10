@@ -11,7 +11,19 @@ import (
 	"github.com/jfox85/devx/session"
 )
 
+// skipGatepostTrustOnWindows skips tests of the Gatepost adapter trust check,
+// which is built on Unix mode bits: Windows reports every directory as 0777,
+// so the check fails closed there by design (Gatepost is not a Windows target)
+// and accept/reject assertions would pass or fail for the wrong reason.
+func skipGatepostTrustOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Gatepost trust check relies on Unix permission bits; Windows fails closed by design")
+	}
+}
+
 func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
+	skipGatepostTrustOnWindows(t)
 	root := t.TempDir()
 	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
 		t.Fatalf("gatepostAdaptersDir without hook files = %q, %v; want empty with error", got, err)
@@ -42,6 +54,7 @@ func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
 }
 
 func TestGatepostAdaptersDirRejectsWritableTrustedPaths(t *testing.T) {
+	skipGatepostTrustOnWindows(t)
 	root := t.TempDir()
 	for _, rel := range []string{
 		filepath.Join("adapters", "claude", "gatepost-events.py"),
@@ -64,6 +77,7 @@ func TestGatepostAdaptersDirRejectsWritableTrustedPaths(t *testing.T) {
 }
 
 func TestGatepostAdaptersDirRejectsWritableIntermediateDir(t *testing.T) {
+	skipGatepostTrustOnWindows(t)
 	root := t.TempDir()
 	for _, rel := range []string{
 		filepath.Join("adapters", "claude", "gatepost-events.py"),

@@ -1663,15 +1663,17 @@ func runSelfExecutable(current string) string {
 
 // siblingDevxCLI returns the path to a `devx` CLI installed next to the running
 // desktop binary, or "" when there is none. Only a regular, executable file is
-// accepted so a stray directory or dangling symlink is ignored.
+// accepted so a stray directory or dangling symlink is ignored. The file name
+// and the meaning of "executable" are platform-specific (cliExecutableName,
+// isExecutableFile): on Windows the CLI is devx.exe and there are no exec bits.
 func siblingDevxCLI(current string) string {
 	dir := filepath.Dir(current)
 	if dir == "" || dir == "." {
 		return ""
 	}
-	candidate := filepath.Join(dir, "devx")
+	candidate := filepath.Join(dir, cliExecutableName)
 	info, err := os.Stat(candidate)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+	if err != nil || !info.Mode().IsRegular() || !isExecutableFile(candidate, info) {
 		return ""
 	}
 	return candidate

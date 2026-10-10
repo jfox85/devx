@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -130,7 +131,13 @@ func TestTUISessionViewUsesDedicatedUserScopedState(t *testing.T) {
 		t.Fatalf("project config was modified: %s", projectData)
 	}
 	statePath := filepath.Join(home, ".config", "devx", "ui-state.json")
-	if info, err := os.Stat(statePath); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("user UI state missing or wrong mode: info=%v err=%v", info, err)
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("user UI state missing: %v", err)
+	}
+	// Mode is only asserted where FileMode reflects access control; Windows
+	// always reports 0666 for writable files (ACLs govern access there).
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("user UI state has wrong mode %04o, want 0600", info.Mode().Perm())
 	}
 }

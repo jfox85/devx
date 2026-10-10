@@ -15,6 +15,7 @@ import (
 	"time"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
+	"github.com/jfox85/devx/internal/fileperm"
 	"github.com/jfox85/devx/session"
 )
 
@@ -359,7 +360,9 @@ func shareTempDir() (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("share temp path is not a directory")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	// Skipped on Windows, where directories always report 0777; the default
+	// base (%LocalAppData%) is already per-user via ACLs.
+	if fileperm.AccessibleByOthers(info.Mode(), 0o077) {
 		return "", fmt.Errorf("share temp directory permissions are too open")
 	}
 	return dir, nil

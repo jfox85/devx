@@ -3,6 +3,7 @@ package web
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestRunSelfExecutableUsesOverride(t *testing.T) {
 func TestRunSelfExecutableDesktopPrefersDevxOnPath(t *testing.T) {
 	t.Setenv("DEVX_CLI_BINARY", "")
 	dir := t.TempDir()
-	cli := filepath.Join(dir, "devx")
+	cli := filepath.Join(dir, cliExecutableName)
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write PATH devx CLI: %v", err)
 	}
@@ -48,14 +49,14 @@ func TestRunSelfExecutableDesktopPrefersBundledCLIOverPath(t *testing.T) {
 
 	appDir := t.TempDir()
 	desktop := filepath.Join(appDir, "devx-desktop")
-	bundled := filepath.Join(appDir, "devx")
+	bundled := filepath.Join(appDir, cliExecutableName)
 	if err := os.WriteFile(bundled, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write bundled devx CLI: %v", err)
 	}
 
 	// A different (stale) devx earlier on PATH must lose to the bundled one.
 	pathDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(pathDir, "devx"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(pathDir, cliExecutableName), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write stale PATH devx CLI: %v", err)
 	}
 	t.Setenv("PATH", pathDir)
@@ -74,7 +75,7 @@ func TestRunSelfExecutableDesktopFallsBackToPathWithoutBundledCLI(t *testing.T) 
 	desktop := filepath.Join(appDir, "devx-desktop")
 
 	pathDir := t.TempDir()
-	cli := filepath.Join(pathDir, "devx")
+	cli := filepath.Join(pathDir, cliExecutableName)
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write PATH devx CLI: %v", err)
 	}
@@ -91,12 +92,19 @@ func TestRunSelfExecutableIgnoresNonExecutableSibling(t *testing.T) {
 
 	appDir := t.TempDir()
 	desktop := filepath.Join(appDir, "devx-desktop")
-	if err := os.WriteFile(filepath.Join(appDir, "devx"), []byte("not executable"), 0o644); err != nil {
+	sibling := filepath.Join(appDir, cliExecutableName)
+	if runtime.GOOS == "windows" {
+		// Windows has no exec permission bits, so the non-runnable case there is
+		// a non-regular entry (a directory) carrying the CLI's name.
+		if err := os.Mkdir(sibling, 0o755); err != nil {
+			t.Fatalf("create non-regular sibling: %v", err)
+		}
+	} else if err := os.WriteFile(sibling, []byte("not executable"), 0o644); err != nil {
 		t.Fatalf("write non-executable sibling: %v", err)
 	}
 
 	pathDir := t.TempDir()
-	cli := filepath.Join(pathDir, "devx")
+	cli := filepath.Join(pathDir, cliExecutableName)
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write PATH devx CLI: %v", err)
 	}
