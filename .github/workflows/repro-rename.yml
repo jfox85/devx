@@ -1,0 +1,35 @@
+name: Repro Windows rename (validation only)
+on:
+  pull_request:
+    branches: [ main ]
+jobs:
+  repro:
+    name: repro ${{ matrix.label }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: main,        ref: e22869dd }
+          - { label: pr73,        ref: d55d859c }
+          - { label: pr72,        ref: 7d52ebe }
+          - { label: pr72+pr73,   ref: b2f8927 }
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: harness }
+      - uses: actions/checkout@v4
+        with: { ref: '${{ matrix.ref }}', path: src, fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23', cache: false }
+      - name: probe + isolated x100 + package x5
+        shell: bash
+        working-directory: src
+        run: |
+          git log --oneline -1
+          cp ../harness/.github/repro/probe_rename_windows_test.go session/
+          go test -race -count=1 -v -run '^TestProbeRenameWhileReaderOpen$' ./session 2>&1 | grep -E 'PROBE|^(ok|FAIL|---)' || true
+          go test -race -count=100 -v -run '^TestConcurrentUpdatesAllSurvive$' ./session > iso.log 2>&1 || true
+          echo "ISOLATED ref=${{ matrix.ref }} runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' iso.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' iso.log) accessdenied=$(grep -c 'Access is denied' iso.log)"
+          go test -race -count=5 -v ./session > pkg.log 2>&1 || true
+          echo "PACKAGE ref=${{ matrix.ref }} runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' pkg.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' pkg.log) accessdenied=$(grep -c 'Access is denied' pkg.log) otherfails=$(grep -E -- '^--- FAIL' pkg.log | grep -vc TestConcurrentUpdatesAllSurvive)"
+          grep -m3 -B1 'Access is denied' iso.log pkg.log | cut -c1-300 || true
