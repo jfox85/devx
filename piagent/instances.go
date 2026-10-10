@@ -37,6 +37,9 @@ const (
 	ActionBindAgent       = "bind_agent"
 	ActionSkip            = "skip"
 	ActionBound           = "already_bound"
+	// ActionRestoreBinding re-writes a binding an older writer dropped from
+	// agent.json, from the agent's own event log (never a new binding).
+	ActionRestoreBinding = "restore_agent_binding"
 )
 
 // Reasons an agent is not bound automatically.
@@ -55,6 +58,7 @@ const (
 	SkipBoundElsewhere   = "agent is bound to a different session instance (session was recreated)"
 	SkipBoundIDMissing   = "agent is bound but the session lost its instance id and created_at does not match"
 	SkipInvalidSessionID = "session has a malformed instance id"
+	SkipSessionHasID     = "session has an instance id this migration did not assign, so it was created after this legacy agent (recreated)"
 )
 
 // InstancePlan is a reviewed, hashable set of changes.
@@ -74,6 +78,10 @@ type SessionPlanItem struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	Existing   bool   `json:"existing_id,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Identity of the exact record the id is written to: apply refuses if
+	// the record at this name no longer has this created_at and path.
+	CreatedAt time.Time `json:"created_at"`
+	Path      string    `json:"path"`
 }
 
 // AgentPlanItem is one agent record.
@@ -97,6 +105,18 @@ type AgentPlanItem struct {
 // current records; newID proposes the id for a session that has none
 // (deterministic in production so a reviewed plan hash stays valid).
 func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID func(name string) string) *InstancePlan {
+	return PlanInstancesWithHistory(sessions, agents, newID, nil)
+}
+
+// RecordedBindingFunc returns an agent's binding as recorded in its event
+// log ("" if none); see Store.RecordedBinding.
+type RecordedBindingFunc func(agentID string) (string, time.Time, error)
+
+// PlanInstancesWithHistory is PlanInstances that also detects agents whose
+// agent.json lost its binding (an older DevX binary rewrote the record) and
+// restores the binding recorded in their event log, instead of treating
+// them as unbound legacy agents.
+func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Agent, newID func(name string) string, recorded RecordedBindingFunc) *InstancePlan {
 	p := &InstancePlan{Version: 1, Summary: map[string]int{}}
 	names := make([]string, 0, len(sessions))
 	for n := range sessions {
@@ -113,7 +133,7 @@ func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID 
 		case s.InstanceID == "":
 			id := newID(n)
 			proposed[n] = id
-			p.Sessions = append(p.Sessions, SessionPlanItem{Session: n, Action: ActionAssignSessionID, InstanceID: id})
+			p.Sessions = append(p.Sessions, SessionPlanItem{Session: n, Action: ActionAssignSessionID, InstanceID: id, CreatedAt: s.CreatedAt, Path: s.Path})
 		case !session.ValidInstanceID(s.InstanceID):
 			p.Sessions = append(p.Sessions, SessionPlanItem{Session: n, Action: ActionSkip, InstanceID: s.InstanceID, Reason: SkipInvalidSessionID})
 		default:
@@ -130,6 +150,7 @@ func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID 
 		live[a.DevxSession] = append(live[a.DevxSession], a.ID)
 		byPath[filepath.Clean(a.Worktree)] = append(byPath[filepath.Clean(a.Worktree)], a.ID)
 	}
+	restoredBy := map[string]string{} // session -> bound id being restored
 	sessByPath := map[string][]string{}
 	for _, n := range names {
 		if s := sessions[n]; s != nil && s.Path != "" {
@@ -137,7 +158,12 @@ func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID 
 		}
 	}
 
-	sorted := append([]*Agent(nil), agents...)
+	sorted := make([]*Agent, 0, len(agents))
+	for _, a := range agents {
+		if a != nil {
+			sorted = append(sorted, a)
+		}
+	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
 	for _, a := range sorted {
 		if a == nil {
@@ -162,6 +188,28 @@ func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID 
 			it.Action, it.Reason = ActionSkip, reason
 			p.Agents = append(p.Agents, it)
 		}
+		if a.SessionInstanceID == "" && recorded != nil && a.RetiredAt == nil {
+			if rid, rat, err := recorded(a.ID); err == nil && rid != "" {
+				// The binding was dropped from agent.json. Restore it only if
+				// the session record is still that exact instance.
+				if s != nil && session.MatchesBoundInstance(s, rid, rat) &&
+					filepath.Clean(s.Path) == filepath.Clean(a.Worktree) {
+					it.Action, it.SessionInstanceID, it.SessionCreatedAt = ActionRestoreBinding, rid, rat
+					if s.InstanceID == "" {
+						restoredBy[a.DevxSession] = rid
+						for i := range p.Sessions {
+							if p.Sessions[i].Session == a.DevxSession && p.Sessions[i].Action == ActionAssignSessionID {
+								p.Sessions[i].InstanceID, p.Sessions[i].Existing = rid, true
+							}
+						}
+					}
+				} else {
+					it.Action, it.Reason = ActionSkip, SkipBoundElsewhere
+				}
+				p.Agents = append(p.Agents, it)
+				continue
+			}
+		}
 		if a.SessionInstanceID != "" {
 			it.CurrentBindings = a.SessionInstanceID
 			switch {
@@ -171,9 +219,14 @@ func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID 
 				skip(SkipBoundElsewhere)
 			case s.InstanceID == "" && (a.SessionCreatedAt.IsZero() || !s.CreatedAt.Equal(a.SessionCreatedAt)):
 				skip(SkipBoundIDMissing)
+			case s.InstanceID == "" && (filepath.Clean(s.Path) != filepath.Clean(a.Worktree) || (s.ProjectAlias != "" && s.ProjectAlias != a.Project)):
+				skip(SkipPathMismatch)
+			case s.InstanceID == "" && restoredBy[a.DevxSession] != "" && restoredBy[a.DevxSession] != a.SessionInstanceID:
+				skip(SkipDuplicateClaim)
 			case s.InstanceID == "":
 				// Old writer dropped the id: restore the SAME id the agent is
 				// bound to instead of a fresh one.
+				restoredBy[a.DevxSession] = a.SessionInstanceID
 				for i := range p.Sessions {
 					if p.Sessions[i].Session == a.DevxSession && p.Sessions[i].Action == ActionAssignSessionID {
 						p.Sessions[i].InstanceID, p.Sessions[i].Existing = a.SessionInstanceID, true
@@ -217,18 +270,27 @@ func PlanInstances(sessions map[string]*session.Session, agents []*Agent, newID 
 			skip(SkipSharedWorktree)
 			continue
 		}
-		if it.Marker == "none" {
-			// No marker: the only evidence is ordering. Every flow that binds
-			// an agent writes the session record first, so a session newer
-			// than its agent was recreated afterwards. Fail closed.
-			if s.CreatedAt.IsZero() || a.CreatedAt.IsZero() {
-				skip(SkipNoTimes)
-				continue
-			}
-			if s.CreatedAt.After(a.CreatedAt) {
-				skip(SkipSessionNewer)
-				continue
-			}
+		// Ordering, for EVERY marker type: every flow that binds an agent
+		// writes the session record first, so a session newer than its
+		// agent was recreated afterwards. A marker is not enough: before
+		// instance ids, relaunching an adopted agent re-marked whatever
+		// session had the name. Fail closed.
+		if s.CreatedAt.IsZero() || a.CreatedAt.IsZero() {
+			skip(SkipNoTimes)
+			continue
+		}
+		if s.CreatedAt.After(a.CreatedAt) {
+			skip(SkipSessionNewer)
+			continue
+		}
+		// A record that already has an id was either given it by THIS
+		// migration (an earlier, interrupted apply: the id is the keyed
+		// derivation of this exact record) or created by an instance-aware
+		// build after this legacy agent existed (a recreation). Only the
+		// former may be bound.
+		if s.InstanceID != "" && s.InstanceID != newID(a.DevxSession) {
+			skip(SkipSessionHasID)
+			continue
 		}
 		id, ok := proposed[a.DevxSession]
 		if !ok {
@@ -272,7 +334,7 @@ func (p *InstancePlan) HasWork() bool {
 		}
 	}
 	for _, a := range p.Agents {
-		if a.Action == ActionBindAgent {
+		if a.Action == ActionBindAgent || a.Action == ActionRestoreBinding {
 			return true
 		}
 	}
@@ -329,6 +391,9 @@ func ApplyInstancePlan(p *InstancePlan, st InstanceStores) error {
 			if s == nil {
 				return fmt.Errorf("session %q: %w", it.Session, ErrPlanStale)
 			}
+			if !s.CreatedAt.Equal(it.CreatedAt) || filepath.Clean(s.Path) != filepath.Clean(it.Path) {
+				return fmt.Errorf("session %q is not the reviewed record (recreated or changed): %w", it.Session, ErrPlanStale)
+			}
 			switch s.InstanceID {
 			case it.InstanceID:
 				continue // already applied
@@ -353,7 +418,7 @@ func ApplyInstancePlan(p *InstancePlan, st InstanceStores) error {
 		return err
 	}
 	for _, it := range p.Agents {
-		if it.Action != ActionBindAgent {
+		if it.Action != ActionBindAgent && it.Action != ActionRestoreBinding {
 			continue
 		}
 		if err := bindAgentChecked(st, it, now); err != nil {
@@ -381,7 +446,8 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 			return err
 		}
 		cur := sessions[it.Session]
-		if cur == nil || cur.InstanceID != it.SessionInstanceID || !cur.CreatedAt.Equal(it.SessionCreatedAt) ||
+		if cur == nil || cur.InstanceID != it.SessionInstanceID || !session.MatchesBoundInstance(cur, it.SessionInstanceID, it.SessionCreatedAt) ||
+			(!it.SessionCreatedAt.IsZero() && !cur.CreatedAt.Equal(it.SessionCreatedAt)) ||
 			filepath.Clean(cur.Path) != filepath.Clean(a.Worktree) {
 			return fmt.Errorf("agent %s session %q: %w", it.AgentID, it.Session, ErrPlanStale)
 		}
@@ -393,7 +459,8 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 			return err
 		}
 		_, err = st.Agents.AppendEvent(a.ID, Event{Type: "session_instance_bound", Source: "devx", Data: map[string]any{
-			"session": it.Session, "session_instance_id": it.SessionInstanceID, "via": "devx session instances"}})
+			"session": it.Session, "session_instance_id": it.SessionInstanceID,
+			"session_created_at": it.SessionCreatedAt.Format(time.RFC3339Nano), "via": "devx session instances"}})
 		return err
 	})
 }

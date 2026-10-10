@@ -123,8 +123,9 @@ type Agent struct {
 	// name has a different id, so the agent is never bound to it implicitly.
 	// Empty for agents from before instance ids that were not migrated.
 	SessionInstanceID string `json:"session_instance_id,omitempty"`
-	// SessionCreatedAt is the bound session record's created_at, kept as
-	// evidence for migration and diagnostics (not used for authorization).
+	// SessionCreatedAt is the bound session record's created_at. It is the
+	// identity witness when an older DevX writer dropped the record's
+	// instance_id (see session.MatchesBoundInstance): authorization-relevant.
 	SessionCreatedAt time.Time `json:"session_created_at,omitempty"`
 }
 

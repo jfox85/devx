@@ -187,6 +187,22 @@ func TestSessionInstancesMigrationEndToEnd(t *testing.T) {
 	if !strings.Contains(out, "Nothing to apply") {
 		t.Fatalf("second plan should be empty:\n%s", out)
 	}
+	// 5b. A wrong-hash or no-op apply creates no journal; two backups are
+	// distinct directories even within one second.
+	if out, _ := run("--prepare"); strings.Contains(out, "--apply ") {
+		t.Fatalf("no further apply should be offered:\n%s", out)
+	}
+	// 5c. An older run cannot be rolled back over a newer one without
+	// --force-older.
+	fake := filepath.Join(filepath.Dir(backup), "session-instances-99990101T000000Z-x-newer")
+	_ = os.MkdirAll(fake, 0o700)
+	_ = os.WriteFile(filepath.Join(fake, "journal.jsonl"), []byte("{}\n"), 0o600)
+	future := time.Now().Add(time.Hour)
+	_ = os.Chtimes(filepath.Join(fake, "journal.jsonl"), future, future)
+	if out, err := run("--rollback", backup); err == nil || !strings.Contains(out, "later migration run") {
+		t.Fatalf("rollback of an older run must be refused: %v\n%s", err, out)
+	}
+	_ = os.RemoveAll(fake)
 	// 6. Rollback restores the original field values exactly.
 	out, err = run("--rollback", backup)
 	if err != nil {

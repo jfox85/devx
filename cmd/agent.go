@@ -432,7 +432,8 @@ func (localOnlySessionCreator) ReleaseAdoption(name, agentID string) error {
 	return session.ReleaseManagedAgent(name, agentID)
 }
 
-func (localOnlySessionCreator) EnsureTmux(name, agentID string) error {
+func (localOnlySessionCreator) EnsureTmux(name string, a *piagent.Agent) error {
+	agentID := a.ID
 	store, err := session.LoadSessions()
 	if err != nil {
 		return err
@@ -445,6 +446,11 @@ func (localOnlySessionCreator) EnsureTmux(name, agentID string) error {
 	// session. A missing or foreign marker is a permission denial.
 	if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != agentID || sess.LocalOnly.Owner != session.LocalOnlyOwnerPiMCP {
 		return piagent.Denied("session %q is not a local-only session owned by agent %s", name, agentID)
+	}
+	// A bound agent runs only in the exact instance it was bound to, even
+	// if a restored or hand-edited record carries a marker naming it.
+	if a.SessionInstanceID != "" && !session.MatchesBoundInstance(sess, a.SessionInstanceID, a.SessionCreatedAt) {
+		return piagent.Denied("session %q is not the session instance agent %s was bound to (it was recreated)", name, agentID)
 	}
 	if err := session.EnsureLocalOnlyTmuxSession(name, sess); err != nil {
 		if errors.Is(err, session.ErrLocalOnlyNotOwned) {

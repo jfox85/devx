@@ -190,7 +190,7 @@ func TestStartRetryAfterPartialFailureResumes(t *testing.T) {
 
 type failingTmuxCreator struct{ *dirCreator }
 
-func (f *failingTmuxCreator) EnsureTmux(string, string) error { return errors.New("tmux unavailable") }
+func (f *failingTmuxCreator) EnsureTmux(string, *Agent) error { return errors.New("tmux unavailable") }
 
 func TestCancelSemantics(t *testing.T) {
 	m, _ := newTestManager(t)

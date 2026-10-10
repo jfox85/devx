@@ -199,7 +199,10 @@ the default scope and explicit lists alike:
     `created_at`; a recreated record gets a new one. The migration
     restores the dropped id;
   - an agent from before instance ids that hasn't been migrated is
-    eligible only while a marker on its session names it. Otherwise it
+    eligible only while a marker on its session names it, the session
+    record is no newer than the agent, and the record has no instance id.
+    A marker alone isn't proof: before instance ids, relaunching an
+    adopted agent re-marked whatever session had the name. Otherwise it
     stays denied until the owner binds it with the reviewed migration;
 - no other non-retired agent claims the same session, and no other live
   agent or other session record uses the same worktree.
@@ -221,11 +224,20 @@ to its session, but only when the evidence is unambiguous:
   `--prepare` creates only a private random key, `.instance-key` (0600,
   next to `sessions.json`). Ids are derived from the record state with
   that key, so the plan hash stays the same until a record changes.
-- **Binds only clear cases.** An agent is bound only if its session
-  exists at the agent's worktree with the same project, has no marker
-  naming another agent, has no duplicate claimant or shared worktree, and
-  (without a marker) was created no later than the agent. Anything else
-  is listed with its reason and left unchanged.
+- **Binds only clear cases.** An agent is bound only if all of these
+  hold; anything else is listed with its reason and left unchanged:
+  - its session exists at the agent's worktree with the same project;
+  - no marker names another agent;
+  - there's no duplicate claimant or shared worktree;
+  - the session record was created no later than the agent, whatever the
+    marker;
+  - the record carries no instance id the migration didn't derive itself.
+- **Restores dropped bindings.** If an older binary rewrote an agent's
+  `agent.json` and dropped its binding, the plan restores it from the
+  agent's append-only event log (`restore_agent_binding`), but only if
+  the session is still that exact instance. It never makes a new binding.
+  Old writers can also drop a session's id; the plan restores the id the
+  agent is bound to.
 - **Apply.** `--apply <plan-hash>` re-plans and refuses unless the hash
   matches. It then backs up `sessions.json`, every agent record it
   touches and the plan to `~/.config/devx/backups/session-instances-*`.
@@ -237,16 +249,24 @@ to its session, but only when the evidence is unambiguous:
   plan.
 - **Rollback.** `--rollback <backup-dir>` removes exactly the values the
   journal records, and only where the record still holds them. Ids that
-  restored an agent's existing binding are kept.
+  restored an agent's existing binding are kept. Roll back the newest
+  run first: a later run may have written identical values, so rolling
+  back an older run needs `--force-older`. Every apply gets its own
+  backup directory.
 - **Writes only these fields.** Only `instance_id` on sessions and
   `session_instance_id` / `session_created_at` on agents are written,
   plus an agent event. Worktrees, tmux sessions, Pi conversations,
   leases and markers are never touched. Output contains names, ids,
   reasons and timing differences, never file contents or secrets.
 
-**Old writers.** A `devx` binary from before this change (for example a
-long-running `devx web`) can rewrite `sessions.json` and drop
-`instance_id`. That never grants access: see the created_at rule above.
+**Old writers.** A `devx` binary from before this change can rewrite
+`sessions.json` and drop `instance_id`, or rewrite `agent.json` and drop
+`session_instance_id` / `session_created_at`. Examples are a
+long-running `devx web` and old relay `devx mcp pi` children. Neither
+grants access:
+- a session without its id is matched only by the exact created_at;
+- an agent without its binding falls back to the strict legacy rule
+  until the migration restores the binding from its event log.
 Run the dry run again after upgrading every DevX process; it restores
 dropped ids. Upgrade or restart old DevX processes before the
 migration so they stop dropping fields.

@@ -163,8 +163,9 @@ runs automatically.
    live ones: `devx session instances` (the dry run writes nothing).
 2. **Install the new binary.** Keep the previous one as a backup. Then:
    - start one fresh relay child, as in "Live reload" above;
-   - restart any long-running old DevX process (for example `devx web`)
-     so it stops dropping new fields;
+   - restart every long-running old DevX process (`devx web`, and old
+     relay `devx mcp pi` children through the one relay restart) so none
+     of them keeps dropping the new fields;
    - don't restart Pi or tmux sessions.
 3. **Prepare.** `devx session instances --prepare` creates the private key
    and prints the applicable plan and its hash. Review every `skip` line.

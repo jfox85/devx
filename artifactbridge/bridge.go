@@ -287,8 +287,9 @@ const (
 //     writers preserve created_at; a recreated record has a new one). The
 //     migration restores the id.
 //   - an unbound legacy agent (from before instance ids, not yet migrated)
-//     is eligible only while a marker on the session positively names it;
-//     otherwise the owner binds it through the reviewed migration;
+//     is eligible only while a marker on the session names it AND the
+//     record predates the agent AND carries no instance id; otherwise the
+//     owner binds it through the reviewed migration;
 //   - no other non-retired agent claims the same session name, and no other
 //     non-retired agent or other session uses the same worktree path.
 //
@@ -324,18 +325,21 @@ func eligibleSession(a *piagent.Agent, sessions map[string]*session.Session, age
 	}
 	marked := (sess.LocalOnly != nil && sess.LocalOnly.AgentID == a.ID) || sess.ManagedAgent == a.ID
 	switch {
-	case a.SessionInstanceID != "" && sess.InstanceID != "":
-		if sess.InstanceID != a.SessionInstanceID {
-			return nil, denyInstanceMismatch
-		}
 	case a.SessionInstanceID != "":
-		// Field dropped by an older writer: the exact creation time recorded
-		// at binding witnesses that this is still the same record.
-		if sess.CreatedAt.IsZero() || a.SessionCreatedAt.IsZero() || !sess.CreatedAt.Equal(a.SessionCreatedAt) {
+		if !session.MatchesBoundInstance(sess, a.SessionInstanceID, a.SessionCreatedAt) {
+			if sess.InstanceID != "" {
+				return nil, denyInstanceMismatch
+			}
 			return nil, denyInstanceMissing
 		}
 	default:
-		if !marked {
+		// Unbound legacy agent (not yet migrated). A marker alone is not
+		// proof: before instance ids, relaunching an adopted agent re-marked
+		// whatever session had the name. So also require the record to
+		// predate the agent (every binding flow writes the session first)
+		// and to carry no instance id (a record with one was created by an
+		// instance-aware build, after this legacy agent).
+		if !marked || sess.InstanceID != "" || sess.CreatedAt.IsZero() || a.CreatedAt.IsZero() || sess.CreatedAt.After(a.CreatedAt) {
 			return nil, denyUnboundLegacy
 		}
 	}

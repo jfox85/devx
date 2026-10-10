@@ -43,7 +43,8 @@ func (c *dirCreator) Create(name, project, agentID string) (CreatedSession, erro
 	return CreatedSession{Name: name, Path: p, Project: project, TmuxName: name, InstanceID: c.instance, CreatedAt: c.existing[name]}, nil
 }
 
-func (c *dirCreator) EnsureTmux(name, agentID string) error {
+func (c *dirCreator) EnsureTmux(name string, a *Agent) error {
+	agentID := a.ID
 	if c.owner[name] != agentID {
 		return Denied("session %q is not owned by agent %s", name, agentID)
 	}

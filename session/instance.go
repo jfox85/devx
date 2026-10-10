@@ -24,6 +24,25 @@ func NewInstanceID() string {
 // ValidInstanceID reports whether id is a well-formed session instance id.
 func ValidInstanceID(id string) bool { return instanceIDRe.MatchString(id) }
 
+// MatchesBoundInstance reports whether record s is the session instance an
+// agent was bound to (boundID, recorded with the record's created_at as
+// boundCreatedAt). It is the single identity rule:
+//   - the record carries an id: it must equal boundID;
+//   - the record has no id (an older DevX writer dropped the field): its
+//     created_at must equal boundCreatedAt to the nanosecond (older writers
+//     preserve created_at; a recreated record gets a new one).
+//
+// An empty boundID never matches (unbound agents are not identified here).
+func MatchesBoundInstance(s *Session, boundID string, boundCreatedAt time.Time) bool {
+	if s == nil || boundID == "" {
+		return false
+	}
+	if s.InstanceID != "" {
+		return s.InstanceID == boundID
+	}
+	return !boundCreatedAt.IsZero() && s.CreatedAt.Equal(boundCreatedAt)
+}
+
 // DeriveInstanceID returns an instance id for an EXISTING record that has
 // none, derived with a secret random key so the same record state yields the
 // same id (a reviewed migration plan stays valid until something changes)

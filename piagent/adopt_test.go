@@ -1,22 +1,24 @@
 package piagent
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jfox85/devx/session"
 )
 
 // adoptCreator is a dirCreator that can also adopt "human" sessions.
 type adoptCreator struct {
 	*dirCreator
-	human    map[string]string // existing human sessions -> worktree path
-	adopted  map[string]string // session -> agent id
-	refuse   map[string]bool   // sessions the store refuses (local-only/container)
-	instance map[string]string // session -> instance id (empty: legacy)
+	human    map[string]string    // existing human sessions -> worktree path
+	adopted  map[string]string    // session -> agent id
+	refuse   map[string]bool      // sessions the store refuses (local-only/container)
+	instance map[string]string    // session -> instance id (empty: legacy or dropped)
+	created  map[string]time.Time // session -> created_at
 }
 
 func (c *adoptCreator) Adopt(name, agentID string) (AdoptedSession, error) {
@@ -28,14 +30,23 @@ func (c *adoptCreator) Adopt(name, agentID string) (AdoptedSession, error) {
 		return AdoptedSession{}, Denied("session %q is already managed by agent %s", name, cur)
 	}
 	c.adopted[name] = agentID
-	return AdoptedSession{Name: name, Path: path, Project: "proj", TmuxName: name, InstanceID: c.instance[name]}, nil
+	return AdoptedSession{Name: name, Path: path, Project: "proj", TmuxName: name, InstanceID: c.instance[name], CreatedAt: c.created[name]}, nil
 }
 
+// VerifyAdopted mirrors session.VerifyManagedAgent over the fake records:
+// a bound agent verifies by instance (marker may be gone; created_at
+// witness when the id was dropped), an unbound one needs the marker.
 func (c *adoptCreator) VerifyAdopted(name string, a *Agent) (AdoptedSession, error) {
-	if c.adopted[name] != a.ID {
+	rec := &session.Session{Name: name, InstanceID: c.instance[name], CreatedAt: c.created[name]}
+	switch {
+	case c.adopted[name] != "" && c.adopted[name] != a.ID:
+		return AdoptedSession{}, Denied("session %q is managed by another agent", name)
+	case a.SessionInstanceID != "" && !session.MatchesBoundInstance(rec, a.SessionInstanceID, a.SessionCreatedAt):
+		return AdoptedSession{}, Denied("session %q is not the instance agent %s adopted", name, a.ID)
+	case a.SessionInstanceID == "" && c.adopted[name] != a.ID:
 		return AdoptedSession{}, Denied("session %q is not adopted by %s", name, a.ID)
 	}
-	return AdoptedSession{Name: name, Path: c.human[name], Project: "proj", TmuxName: name, InstanceID: c.instance[name]}, nil
+	return AdoptedSession{Name: name, Path: c.human[name], Project: "proj", TmuxName: name, InstanceID: c.instance[name], CreatedAt: c.created[name]}, nil
 }
 
 func (c *adoptCreator) ReleaseAdoption(name, agentID string) error {
@@ -218,50 +229,70 @@ func TestGroupedViewerSessionIsNotStale(t *testing.T) {
 
 // Stable instance binding: adoption records the session's instance; replay
 // and relaunch only verify (never re-mark); a session removed and recreated
-// under the same name is never rebound to the old agent implicitly.
+// under the same name is never rebound to the old agent implicitly; a bound
+// agent whose marker AND id an old writer dropped still verifies by the
+// exact created_at witness.
 func TestAdoptionBindsInstanceAndNeverRebindsRecreatedSession(t *testing.T) {
 	m, ac, ft := newAdoptManager(t)
+	t0 := time.Date(2026, 9, 1, 8, 0, 0, 123456789, time.UTC)
 	ac.instance = map[string]string{"human-sess": "si_aaaaaaaaaaaaaaaaaaaaaaaa"}
+	ac.created = map[string]time.Time{"human-sess": t0}
 	req := AdoptRequest{Session: "human-sess", PaneID: "%7", PiSessionID: "01a1-test"}
 	r, err := m.Adopt(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a, _ := m.Store.LoadAgent(r.AgentID)
-	if a.SessionInstanceID != "si_aaaaaaaaaaaaaaaaaaaaaaaa" {
+	if a.SessionInstanceID != "si_aaaaaaaaaaaaaaaaaaaaaaaa" || !a.SessionCreatedAt.Equal(t0) {
 		t.Fatalf("adoption must record the instance: %+v", a)
 	}
-	// Replay of the same adoption is fine while it is the same instance.
 	if rr, err := m.Adopt(req); err != nil || !rr.Replayed {
 		t.Fatalf("replay: %+v %v", rr, err)
 	}
-	// The session is removed and recreated by a human (new instance, no
-	// marker) under the same name and path.
-	ac.instance["human-sess"] = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
+	// An old writer drops BOTH the marker and the instance id, keeping
+	// created_at: replay still verifies (P1-a regression).
 	delete(ac.adopted, "human-sess")
+	ac.instance["human-sess"] = ""
+	if rr, err := m.Adopt(req); err != nil || !rr.Replayed {
+		t.Fatalf("replay after old-writer drop: %+v %v", rr, err)
+	}
+	if ac.adopted["human-sess"] != "" {
+		t.Fatal("replay must not re-mark")
+	}
+	ft.calls = nil
+	err = m.Relaunch(r.AgentID, true)
+	if err != nil && strings.Contains(err.Error(), "verify adopted session") {
+		t.Fatalf("relaunch must pass verification after old-writer drop: %v", err)
+	}
+	// Recreated: new id (or no id and a different created_at).
+	ac.instance["human-sess"] = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
+	ac.created["human-sess"] = t0.Add(-time.Hour) // clock rolled back
 	if _, err := m.Adopt(req); err == nil {
 		t.Fatal("replay must not rebind a recreated session")
 	}
-	if ac.adopted["human-sess"] != "" {
-		t.Fatal("replay must not write a marker")
-	}
 	ft.calls = nil
-	if err := m.Relaunch(r.AgentID, true); err == nil {
-		t.Fatal("relaunch must not rebind a recreated session")
-	}
-	if ac.adopted["human-sess"] != "" {
-		t.Fatal("relaunch must not re-mark the session")
+	if err := m.Relaunch(r.AgentID, true); err == nil || !strings.Contains(err.Error(), "verify adopted session") {
+		t.Fatalf("relaunch must refuse a recreated session: %v", err)
 	}
 	for _, c := range ft.calls {
 		if strings.HasPrefix(c, "respawn-pane") || strings.HasPrefix(c, "new-window") {
 			t.Fatalf("ran %q", c)
 		}
 	}
+	ac.instance["human-sess"] = ""
+	ac.created["human-sess"] = t0.Add(time.Microsecond)
+	if err := m.Relaunch(r.AgentID, true); err == nil || !strings.Contains(err.Error(), "verify adopted session") {
+		t.Fatalf("id-less recreated record must not verify: %v", err)
+	}
 	// Even if a marker naming the old agent reappears (hand edit), the
-	// instance id still differs: relaunch refuses.
+	// instance still differs: refused.
+	ac.instance["human-sess"] = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
 	ac.adopted["human-sess"] = r.AgentID
-	if err := m.Relaunch(r.AgentID, true); !errors.Is(err, ErrInstanceMismatch) {
-		t.Fatalf("want ErrInstanceMismatch, got %v", err)
+	if err := m.Relaunch(r.AgentID, true); err == nil || !strings.Contains(err.Error(), "verify adopted session") {
+		t.Fatalf("marker must not override instance: %v", err)
+	}
+	if ac.adopted["human-sess"] != r.AgentID {
+		t.Fatal("verification must not write")
 	}
 }
 

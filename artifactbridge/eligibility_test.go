@@ -143,12 +143,24 @@ func TestEligibleSessionPredicate(t *testing.T) {
 		}, denyUnboundLegacy},
 		{"unbound legacy agent with managed marker naming it", func(f *eligibilityFixture) {
 			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].InstanceID = ""
 			f.sessions["s1"].ManagedAgent = f.agent.ID
 		}, ""},
 		{"unbound legacy agent with local-only marker naming it", func(f *eligibilityFixture) {
 			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].InstanceID = ""
 			f.sessions["s1"].LocalOnly = &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: f.agent.ID}
 		}, ""},
+		{"unbound legacy agent, marker re-written on a RECREATED (newer) session", func(f *eligibilityFixture) {
+			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].InstanceID = ""
+			f.sessions["s1"].ManagedAgent = f.agent.ID
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(time.Hour)
+		}, denyUnboundLegacy},
+		{"unbound legacy agent, marker on a session that already has an id", func(f *eligibilityFixture) {
+			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].ManagedAgent = f.agent.ID
+		}, denyUnboundLegacy},
 
 		// Duplicate claimants and shared worktrees.
 		{"live agent claims same session", func(f *eligibilityFixture) {

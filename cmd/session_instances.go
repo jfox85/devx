@@ -19,10 +19,11 @@ import (
 )
 
 var (
-	instancesApplyPlan string
-	instancesRollback  string
-	instancesJSON      bool
-	instancesPrepare   bool
+	instancesApplyPlan  string
+	instancesRollback   string
+	instancesJSON       bool
+	instancesPrepare    bool
+	instancesForceOlder bool
 )
 
 var sessionInstancesCmd = &cobra.Command{
@@ -58,6 +59,7 @@ func init() {
 	sessionInstancesCmd.Flags().StringVar(&instancesApplyPlan, "apply", "", "apply the plan with this hash (from a dry run)")
 	sessionInstancesCmd.Flags().StringVar(&instancesRollback, "rollback", "", "undo the apply recorded in this backup directory")
 	sessionInstancesCmd.Flags().BoolVar(&instancesJSON, "json", false, "print the plan as JSON")
+	sessionInstancesCmd.Flags().BoolVar(&instancesForceOlder, "force-older", false, "allow --rollback of a run that is not the newest")
 	sessionInstancesCmd.Flags().BoolVar(&instancesPrepare, "prepare", false, "create the private migration key (if missing) and print an applicable dry-run plan; writes no record")
 }
 
@@ -96,10 +98,11 @@ func currentInstancePlan(createKey bool) (*piagent.InstancePlan, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	store := piagent.NewStore(piAgentStateDir())
 	if key == nil {
-		return piagent.PlanInstances(st.Sessions, agents, func(string) string { return "si_<assigned-at-apply>" }), false, nil
+		return piagent.PlanInstancesWithHistory(st.Sessions, agents, func(string) string { return "si_<assigned-at-apply>" }, store.RecordedBinding), false, nil
 	}
-	return piagent.PlanInstances(st.Sessions, agents, deterministicIDs(st.Sessions, key)), true, nil
+	return piagent.PlanInstancesWithHistory(st.Sessions, agents, deterministicIDs(st.Sessions, key), store.RecordedBinding), true, nil
 }
 
 func runSessionInstances(cmd *cobra.Command, _ []string) error {
@@ -176,22 +179,42 @@ func instanceKey(create bool) ([]byte, error) {
 		return nil, nil
 	}
 	b := []byte(session.NewInstanceID()[3:] + session.NewInstanceID()[3:11])
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return instanceKey(false)
-	}
+	// Write a complete temp file, then link it into place: the key file
+	// either does not exist or is complete, and an existing key is never
+	// replaced (link fails with EEXIST if another process won the race).
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".instance-key-*.tmp")
 	if err != nil {
 		return nil, err
 	}
-	if _, err := f.Write(b); err != nil {
-		_ = f.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
 		return nil, err
 	}
-	return b, f.Close()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmp.Name(), p); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	return instanceKey(false)
 }
 
 func printInstancePlan(out io.Writer, p *piagent.InstancePlan, keyed bool) error {
 	if instancesJSON {
+		if !keyed {
+			cp := *p
+			cp.Hash = "" // preview only: placeholder ids, not applicable
+			p = &cp
+		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(p)
@@ -242,8 +265,12 @@ func printInstancePlan(out io.Writer, p *piagent.InstancePlan, keyed bool) error
 // touches into a fresh 0700 directory before anything is written.
 func backupInstanceRecords(p *piagent.InstancePlan) (string, error) {
 	base := filepath.Join(filepath.Dir(config.GetSessionsPath()), "backups")
-	dir := filepath.Join(base, "session-instances-"+time.Now().UTC().Format("20060102T150405Z")+"-"+p.Hash)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	// Unique per run, so concurrent or rapid applies never share a journal.
+	dir, err := os.MkdirTemp(base, "session-instances-"+time.Now().UTC().Format("20060102T150405Z")+"-"+p.Hash+"-")
+	if err != nil {
 		return "", err
 	}
 	copyFile := func(src, dst string) error {
@@ -261,7 +288,7 @@ func backupInstanceRecords(p *piagent.InstancePlan) (string, error) {
 	}
 	store := piagent.NewStore(piAgentStateDir())
 	for _, a := range p.Agents {
-		if a.Action != piagent.ActionBindAgent {
+		if a.Action != piagent.ActionBindAgent && a.Action != piagent.ActionRestoreBinding {
 			continue
 		}
 		src := filepath.Join(store.AgentDir(a.AgentID), "agent.json")
@@ -276,7 +303,34 @@ func backupInstanceRecords(p *piagent.InstancePlan) (string, error) {
 	return dir, nil
 }
 
+// newerApplies lists backup dirs of applies made after dir (by journal
+// modification time). Rolling back an older run could remove ids a newer run
+// wrote with identical (deterministic) values, so that needs --force-older.
+func newerApplies(dir string) ([]string, error) {
+	me, err := os.Stat(filepath.Join(dir, "journal.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Dir(filepath.Clean(dir))
+	matches, _ := filepath.Glob(filepath.Join(base, "session-instances-*", "journal.jsonl"))
+	var out []string
+	for _, m := range matches {
+		if filepath.Dir(m) == filepath.Clean(dir) {
+			continue
+		}
+		if st, err := os.Stat(m); err == nil && st.Size() > 0 && st.ModTime().After(me.ModTime()) {
+			out = append(out, filepath.Dir(m))
+		}
+	}
+	return out, nil
+}
+
 func runInstancesRollback(out io.Writer, dir string) error {
+	if newer, err := newerApplies(dir); err != nil {
+		return err
+	} else if len(newer) > 0 && !instancesForceOlder {
+		return fmt.Errorf("a later migration run wrote records after this one (%s); roll back the newest run first, or pass --force-older", strings.Join(newer, ", "))
+	}
 	f, err := os.Open(filepath.Join(dir, "journal.jsonl"))
 	if err != nil {
 		return fmt.Errorf("no journal in %s: %w", dir, err)

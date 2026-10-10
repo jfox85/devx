@@ -381,3 +381,138 @@ func TestConcurrentApplyIsSafe(t *testing.T) {
 		}
 	}
 }
+
+// P1-b: a marker is not proof. Before instance ids, relaunching an adopted
+// agent re-marked whatever session had the name, so a stale adopted agent can
+// carry a marker on a RECREATED session. Ordering applies to every marker.
+func TestPlanSkipsMarkedButRecreatedSession(t *testing.T) {
+	e := newInstEnv(t)
+	adopted := e.legacy("adopted", "managed", 3*time.Hour) // re-marked recreation
+	local := e.legacy("local", "local", 3*time.Hour)
+	p := e.plan()
+	if it := p.agent(adopted.ID); it.Reason != SkipSessionNewer {
+		t.Fatalf("adopted: %+v", it)
+	}
+	if it := p.agent(local.ID); it.Reason != SkipSessionNewer {
+		t.Fatalf("local: %+v", it)
+	}
+}
+
+// P2-1: an unbound legacy agent never binds to a record that already has an
+// id this migration didn't derive (created by an instance-aware build, i.e.
+// after the agent), even if the clock was rolled back so it looks older.
+func TestPlanSkipsUnboundAgentWhenSessionAlreadyHasForeignID(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "", -time.Hour) // looks older (rolled-back clock)
+	e.sess.recs["s"].InstanceID = session.NewInstanceID()
+	if it := e.plan().agent(a.ID); it.Reason != SkipSessionHasID {
+		t.Fatalf("got %+v", it)
+	}
+}
+
+// P1-c: the session id is written only to the exact reviewed record. A
+// recreation between review and apply aborts BEFORE any session id is
+// written, including the restore of a dropped id.
+func TestApplyWritesSessionIDOnlyToReviewedRecord(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("feat", "local", -time.Second)
+	var j []JournalEntry
+	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	bound := e.sess.recs["feat"].InstanceID
+	// Old writer drops the id (same record): plan restores `bound`.
+	e.sess.recs["feat"].InstanceID = ""
+	p := e.plan()
+	if len(p.Sessions) != 1 || !p.Sessions[0].Existing || p.Sessions[0].InstanceID != bound {
+		t.Fatalf("restore plan: %+v", p.Sessions)
+	}
+	// Before apply, an old binary removes and recreates the session (no id,
+	// new created_at, same path).
+	e.sess.recs["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: "/wt/feat", CreatedAt: e.t0.Add(-time.Hour)}
+	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); !errors.Is(err, ErrPlanStale) {
+		t.Fatalf("want ErrPlanStale, got %v", err)
+	}
+	if e.sess.recs["feat"].InstanceID != "" {
+		t.Fatal("the recreated record must not receive the old instance id")
+	}
+	if got, _ := e.store.LoadAgent(a.ID); got.SessionInstanceID != bound {
+		t.Fatal("agent binding unchanged")
+	}
+	// Fresh-id assignment is likewise bound to the reviewed record.
+	e2 := newInstEnv(t)
+	e2.legacy("x", "local", -time.Second)
+	px := e2.plan()
+	e2.sess.recs["x"].CreatedAt = e2.sess.recs["x"].CreatedAt.Add(time.Nanosecond)
+	if err := ApplyInstancePlan(px, e2.sess.stores(e2.store, &j)); !errors.Is(err, ErrPlanStale) {
+		t.Fatalf("want ErrPlanStale, got %v", err)
+	}
+	if e2.sess.recs["x"].InstanceID != "" {
+		t.Fatal("no id may be written")
+	}
+}
+
+// P2-7: restoring a dropped id needs path/project agreement and a single
+// bound claimant.
+func TestRestoreRequiresConsistentSingleClaimant(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "local", -time.Second)
+	var j []JournalEntry
+	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	e.sess.recs["s"].InstanceID = ""
+	e.sess.recs["s"].Path = "/wt/elsewhere"
+	if it := e.plan().agent(a.ID); it.Reason != SkipPathMismatch {
+		t.Fatalf("moved record: %+v", it)
+	}
+}
+
+func TestPlanToleratesNilAgents(t *testing.T) {
+	e := newInstEnv(t)
+	e.legacy("s", "local", -time.Second)
+	_ = PlanInstances(e.sess.clone(), append(e.list(), nil), func(n string) string { return session.NewInstanceID() })
+}
+
+// P2-2: an older DevX binary rewrites agent.json and drops the binding. The
+// event log still records it; the plan restores THAT binding (not a fresh
+// legacy bind), and only if the session is still the same instance.
+func TestPlanRestoresBindingDroppedFromAgentRecord(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "local", -time.Second)
+	var j []JournalEntry
+	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	bound, _ := e.store.LoadAgent(a.ID)
+	id, at := bound.SessionInstanceID, bound.SessionCreatedAt
+	if rid, rat, err := e.store.RecordedBinding(a.ID); err != nil || rid != id || !rat.Equal(at) {
+		t.Fatalf("event log binding: %q %v %v", rid, rat, err)
+	}
+	// Old writer drops the agent fields.
+	bound.SessionInstanceID, bound.SessionCreatedAt = "", time.Time{}
+	_ = e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(bound) })
+	plan := func() *InstancePlan {
+		return PlanInstancesWithHistory(e.sess.clone(), e.list(), func(n string) string { return session.NewInstanceID() }, e.store.RecordedBinding)
+	}
+	p := plan()
+	if it := p.agent(a.ID); it.Action != ActionRestoreBinding || it.SessionInstanceID != id {
+		t.Fatalf("restore: %+v", it)
+	}
+	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.store.LoadAgent(a.ID); got.SessionInstanceID != id || !got.SessionCreatedAt.Equal(at) {
+		t.Fatalf("not restored: %+v", got)
+	}
+	// Dropped again, and meanwhile the session was recreated: never
+	// restored onto the new instance (skip, fail closed).
+	got, _ := e.store.LoadAgent(a.ID)
+	got.SessionInstanceID, got.SessionCreatedAt = "", time.Time{}
+	_ = e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(got) })
+	e.sess.recs["s"] = &session.Session{Name: "s", ProjectAlias: "proj", Path: "/wt/s", CreatedAt: e.t0.Add(-time.Hour),
+		InstanceID: session.NewInstanceID(), LocalOnly: &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: a.ID}}
+	if it := plan().agent(a.ID); it.Action != ActionSkip || it.Reason != SkipBoundElsewhere {
+		t.Fatalf("recreated: %+v", it)
+	}
+}

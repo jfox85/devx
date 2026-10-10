@@ -53,8 +53,10 @@ type SessionCreator interface {
 	// to someone else: fail.
 	Create(name, project, agentID string) (CreatedSession, error)
 	// EnsureTmux makes sure the session's tmux session exists and belongs
-	// to agentID.
-	EnsureTmux(name, agentID string) error
+	// to agent a. For an agent bound to a session instance the session
+	// record must be that instance (session.MatchesBoundInstance); a
+	// recreated session is refused even if its marker names the agent.
+	EnsureTmux(name string, a *Agent) error
 	// Exists reports whether a DevX session with this name exists.
 	Exists(name string) (bool, error)
 }
@@ -82,12 +84,6 @@ type AdoptedSession struct {
 	InstanceID string
 	CreatedAt  time.Time
 }
-
-// ErrInstanceMismatch reports that an agent's DevX session record is not
-// the session instance the agent was bound to (the session was removed and
-// recreated under the same name). Such an agent is never rebound
-// implicitly.
-var ErrInstanceMismatch = errors.New("session was recreated: it is not the session instance this agent was bound to")
 
 // Config controls how agents are launched.
 type Config struct {
@@ -265,7 +261,7 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 			if err := m.Store.SaveAgent(agent); err != nil {
 				return err
 			}
-			_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_created", Source: "devx", Data: map[string]any{"session": agent.DevxSession, "pi_session_id": agent.PiSessionID}})
+			_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_created", Source: "devx", Data: withInstance(map[string]any{"session": agent.DevxSession, "pi_session_id": agent.PiSessionID}, agent)})
 			return err
 		})
 		if err != nil {
@@ -305,6 +301,52 @@ func (m *Manager) enqueueLocked(agentID, taskID, prompt, idemHash string) error 
 	return err
 }
 
+// withInstance adds the agent's session-instance binding to an event. The
+// append-only event log is the durable record of the binding: an older DevX
+// binary that rewrites agent.json drops the new fields, but never rewrites
+// past events, so the migration can restore the exact binding from here.
+func withInstance(data map[string]any, a *Agent) map[string]any {
+	if a.SessionInstanceID != "" {
+		data["session_instance_id"] = a.SessionInstanceID
+		data["session_created_at"] = a.SessionCreatedAt.Format(time.RFC3339Nano)
+	}
+	return data
+}
+
+// RecordedBinding returns the most recent session-instance binding recorded
+// in the agent's event log (agent_created, agent_adopted or
+// session_instance_bound; cleared by session_instance_unbound), or "" if
+// none.
+func (s *Store) RecordedBinding(agentID string) (string, time.Time, error) {
+	var id string
+	var at time.Time
+	after := int64(0)
+	for {
+		evs, last, err := s.ReadEvents(agentID, after, MaxEventsPage)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		for _, e := range evs {
+			switch e.Type {
+			case "agent_created", "agent_adopted", "session_instance_bound":
+				if v, _ := e.Data["session_instance_id"].(string); v != "" {
+					id = v
+					at = time.Time{}
+					if ts, _ := e.Data["session_created_at"].(string); ts != "" {
+						at, _ = time.Parse(time.RFC3339Nano, ts)
+					}
+				}
+			case "session_instance_unbound":
+				id, at = "", time.Time{}
+			}
+		}
+		if len(evs) == 0 || last <= after {
+			return id, at, nil
+		}
+		after = last
+	}
+}
+
 // launch starts Pi in a dedicated window (or respawns the bound pane) with a
 // fresh launch nonce. Bridges started with an older nonce are fenced out.
 func (m *Manager) launch(agentID string, relaunch bool) error {
@@ -322,14 +364,12 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		// Read-only: never re-mark the session. A session whose marker is
 		// gone (recreated, or dropped by an older writer) needs a fresh,
 		// deliberate `devx agent adopt` or the reviewed migration.
-		sess, err := adopter.VerifyAdopted(agent.DevxSession, agent)
-		if err != nil {
+		// VerifyAdopted enforces the instance binding (including the
+		// created_at witness when an older writer dropped the id).
+		if _, err := adopter.VerifyAdopted(agent.DevxSession, agent); err != nil {
 			return fmt.Errorf("verify adopted session: %w", err)
 		}
-		if agent.SessionInstanceID != "" && sess.InstanceID != agent.SessionInstanceID {
-			return fmt.Errorf("verify adopted session %q: %w", agent.DevxSession, ErrInstanceMismatch)
-		}
-	} else if err := m.Creator.EnsureTmux(agent.DevxSession, agent.ID); err != nil {
+	} else if err := m.Creator.EnsureTmux(agent.DevxSession, agent); err != nil {
 		return fmt.Errorf("ensure tmux session: %w", err)
 	}
 	nonce := randomHex(12)
@@ -679,12 +719,8 @@ func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
 		if a.Adopted && a.Binding.PaneID == req.PaneID && a.PiSessionID == req.PiSessionID {
 			// Replay writes nothing, and never rebinds: the session must
 			// still be the instance this agent adopted.
-			sess, err := adopter.VerifyAdopted(req.Session, a)
-			if err != nil {
+			if _, err := adopter.VerifyAdopted(req.Session, a); err != nil {
 				return nil, fmt.Errorf("adoption replay for agent %s: %w", a.ID, err)
-			}
-			if a.SessionInstanceID != "" && sess.InstanceID != a.SessionInstanceID {
-				return nil, fmt.Errorf("adoption replay for agent %s: %w", a.ID, ErrInstanceMismatch)
 			}
 			return &AdoptResult{AgentID: a.ID, Session: a.DevxSession, Pane: a.Binding.PaneID, Replayed: true}, nil
 		}
@@ -725,8 +761,8 @@ func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
 		if err := m.Store.SaveAgent(agent); err != nil {
 			return err
 		}
-		_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_adopted", Source: "human", Data: map[string]any{
-			"session": agent.DevxSession, "pane": req.PaneID, "window": pane.WindowID, "pi_session_id": req.PiSessionID}})
+		_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_adopted", Source: "human", Data: withInstance(map[string]any{
+			"session": agent.DevxSession, "pane": req.PaneID, "window": pane.WindowID, "pi_session_id": req.PiSessionID}, agent)})
 		return err
 	})
 	if err != nil {

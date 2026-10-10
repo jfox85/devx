@@ -68,19 +68,10 @@ func VerifyManagedAgent(name, agentID, boundInstance string, boundCreatedAt time
 	if !ok || s == nil {
 		return nil, fmt.Errorf("session %q not found: %w", name, ErrAdoptNotAllowed)
 	}
-	sameInstance := func() bool {
-		if boundInstance == "" {
-			return false
-		}
-		if s.InstanceID != "" {
-			return s.InstanceID == boundInstance
-		}
-		return !boundCreatedAt.IsZero() && s.CreatedAt.Equal(boundCreatedAt)
-	}
 	switch {
 	case s.LocalOnly != nil || s.IsContainerized() || (s.ManagedAgent != "" && s.ManagedAgent != agentID):
 		return nil, fmt.Errorf("session %q is not adoptable by agent %s: %w", name, agentID, ErrAdoptNotAllowed)
-	case boundInstance != "" && !sameInstance():
+	case boundInstance != "" && !MatchesBoundInstance(s, boundInstance, boundCreatedAt):
 		return nil, fmt.Errorf("session %q is not the session instance agent %s adopted (it was recreated): %w", name, agentID, ErrAdoptNotAllowed)
 	case s.ManagedAgent == agentID:
 	case boundInstance != "":
