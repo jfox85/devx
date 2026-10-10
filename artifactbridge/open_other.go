@@ -17,7 +17,7 @@ func openUnderArtifacts(string, string) (*os.File, os.FileInfo, error) {
 
 func attachmentsDir(string) (int, error)              { return -1, errUnavailable }
 func closeDir(int)                                    {}
-func writeTemp(int, string, []byte) error             { return errUnavailable }
+func writeTemp(int, string, []byte, uint32) error     { return errUnavailable }
 func linkNoReplace(int, string, string) (bool, error) { return false, errUnavailable }
 func unlinkAt(int, string)                            {}
 func registerNoFollow(string, func([]byte) ([]byte, error)) error {

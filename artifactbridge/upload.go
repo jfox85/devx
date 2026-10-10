@@ -484,7 +484,7 @@ func (s *Service) publish(sc *scope, rec *uploadRecord, data []byte) (string, er
 	}
 	defer closeDir(dirfd)
 	tmp := ".upload-" + rec.KeyHash + ".tmp"
-	if err := writeTemp(dirfd, tmp, data); err != nil {
+	if err := writeTemp(dirfd, tmp, data, 0o644); err != nil {
 		return "", errf(codeFailed, "could not stage the attachment; retry the last chunk")
 	}
 	defer unlinkAt(dirfd, tmp)

@@ -102,8 +102,12 @@ func TestUploadSessionQuota(t *testing.T) {
 	if err := artifactpkg.SaveManifest(s, m); err != nil {
 		t.Fatal(err)
 	}
-	// One more fits.
+	// One more fits, and registering it keeps the manifest at 0600.
+	_ = os.Chmod(filepath.Join(s.Path, ".artifacts", "manifest.json"), 0o600)
 	e.uploadAll(a.ID, "last", "last.txt", "text/plain", []byte("ok"))
+	if fi, err := os.Stat(filepath.Join(s.Path, ".artifacts", "manifest.json")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("manifest mode after remote upload: %v %v", fi.Mode(), err)
+	}
 	// The next is refused, writes nothing, and does not leave the key stuck.
 	before, _ := os.ReadDir(filepath.Join(s.Path, ".artifacts", "attachments"))
 	_, err := e.svc.Upload(uploadReq(a.ID, "over", "over.txt", "text/plain", []byte("no"), 0, true))

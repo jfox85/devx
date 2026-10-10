@@ -117,11 +117,11 @@ func closeDir(fd int) { _ = unix.Close(fd) }
 // O_NOFOLLOW). A pre-existing entry of that name can only be ours from an
 // interrupted attempt; it is unlinked first, which removes a directory entry
 // and never follows a link.
-func writeTemp(dirfd int, name string, data []byte) error {
+func writeTemp(dirfd int, name string, data []byte, mode uint32) error {
 	if err := unix.Unlinkat(dirfd, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		return errUnavailable
 	}
-	fd, err := unix.Openat(dirfd, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o644)
+	fd, err := unix.Openat(dirfd, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, mode)
 	if err != nil {
 		return errUnavailable
 	}
@@ -215,7 +215,9 @@ func registerNoFollow(worktree string, mutate func(current []byte) ([]byte, erro
 		return errUnavailable
 	}
 	tmp := ".manifest-" + hex.EncodeToString(rnd[:]) + ".tmp"
-	if err := writeTemp(dirfd, tmp, next); err != nil {
+	// 0600 like SaveManifest (os.CreateTemp), so a remote upload never
+	// changes the manifest's permissions.
+	if err := writeTemp(dirfd, tmp, next, 0o600); err != nil {
 		return err
 	}
 	if err := unix.Renameat(dirfd, tmp, dirfd, artifactpkg.ManifestName); err != nil {

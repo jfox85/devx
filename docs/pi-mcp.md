@@ -188,7 +188,8 @@ the default scope and explicit lists alike:
   instance. If a session is removed without retiring its agent (for
   example `devx session clear`) and a new session is later created with
   the same name and path, the old agent never gains access to it, not
-  even through an explicit `sessions` list;
+  even through an explicit `sessions` list. An unmarked session or agent
+  record without a creation time can't be bound this way and is denied;
 - no other non-retired agent claims the same session, and no other live
   agent or other session record uses the same worktree.
 
