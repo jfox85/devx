@@ -254,21 +254,10 @@ const (
 	denyContainerized    = "container_session"
 	denyDuplicateClaim   = "another_live_agent_claims_session"
 	denySharedWorktree   = "another_live_agent_or_session_uses_worktree"
-	denyNewerSession     = "unmarked_session_newer_than_agent"
+	denyInstanceMismatch = "session_instance_mismatch"
+	denyInstanceMissing  = "session_instance_id_missing"
+	denyUnboundLegacy    = "legacy_agent_not_bound_to_session_instance"
 )
-
-// sessionBindingSlack is how much later than its agent an UNMARKED session
-// record may have been created and still be considered the agent's session.
-// It is zero: in every flow that binds an agent to a session the session
-// record is written first (pi_start_task creates the session, then the agent
-// record; adoption requires an existing session). So a session record newer
-// than its agent is a different instance that reused the name and path (for
-// example after `devx session clear` left the agent unretired) and never
-// inherits the old agent's access. Both timestamps come from the same host
-// clock; a backwards clock step between the agent's creation and such a
-// recreation is the remaining gap (see docs/pi-mcp.md, "Session
-// eligibility").
-const sessionBindingSlack = time.Duration(0)
 
 // eligibleSession is the single session-binding predicate for artifact
 // access. It decides whether agent a is the unambiguous owner of a live DevX
@@ -276,12 +265,7 @@ const sessionBindingSlack = time.Duration(0)
 // exclusions) is applied separately in Policy. It returns the session and ""
 // when eligible, or a denial reason.
 //
-// It matches how the existing MCP path itself binds agents to sessions:
-// pi_send/pi_status/pi_events act on an agent by its record alone, and
-// neither MCP-created sessions from before local-only mode nor adopted
-// sessions whose marker was dropped carry a marker. So a MISSING marker is
-// not a denial. A marker that names a DIFFERENT agent (or both markers at
-// once) always is, as is anything else that makes ownership ambiguous:
+// Identity is the session INSTANCE, not its name, path or timestamps:
 //
 //   - the agent exists and is not retired, with a project;
 //   - the session named by the agent exists, has the same name, an absolute
@@ -291,9 +275,20 @@ const sessionBindingSlack = time.Duration(0)
 //     by the MCP path);
 //   - a local_only marker, if present, names this agent; a managed_agent
 //     marker, if present, names this agent; never both;
-//   - without any marker, the session record must not be newer than the
-//     agent: a session recreated under the same name and path after the
-//     agent was orphaned is a different instance;
+//   - instance binding:
+//   - an agent bound to a session instance (Agent.SessionInstanceID, set at
+//     start, adoption, or by the reviewed `devx session instances`
+//     migration) requires the session record's instance_id to equal it. A
+//     session removed and recreated under the same name and path has a new
+//     id and is denied, whatever its timestamps.
+//   - if the record has no instance_id because an older DevX writer
+//     dropped the field, the record's created_at must equal, to the
+//     nanosecond, the created_at recorded on the agent at binding (old
+//     writers preserve created_at; a recreated record has a new one). The
+//     migration restores the id.
+//   - an unbound legacy agent (from before instance ids, not yet migrated)
+//     is eligible only while a marker on the session positively names it;
+//     otherwise the owner binds it through the reviewed migration;
 //   - no other non-retired agent claims the same session name, and no other
 //     non-retired agent or other session uses the same worktree path.
 //
@@ -327,11 +322,21 @@ func eligibleSession(a *piagent.Agent, sessions map[string]*session.Session, age
 	if sess.ManagedAgent != "" && sess.ManagedAgent != a.ID {
 		return nil, denyForeignManaged
 	}
-	if sess.LocalOnly == nil && sess.ManagedAgent == "" {
-		// No marker: bind to the session instance by time. Zero times
-		// cannot prove anything and deny.
-		if sess.CreatedAt.IsZero() || a.CreatedAt.IsZero() || sess.CreatedAt.After(a.CreatedAt.Add(sessionBindingSlack)) {
-			return nil, denyNewerSession
+	marked := (sess.LocalOnly != nil && sess.LocalOnly.AgentID == a.ID) || sess.ManagedAgent == a.ID
+	switch {
+	case a.SessionInstanceID != "" && sess.InstanceID != "":
+		if sess.InstanceID != a.SessionInstanceID {
+			return nil, denyInstanceMismatch
+		}
+	case a.SessionInstanceID != "":
+		// Field dropped by an older writer: the exact creation time recorded
+		// at binding witnesses that this is still the same record.
+		if sess.CreatedAt.IsZero() || a.SessionCreatedAt.IsZero() || !sess.CreatedAt.Equal(a.SessionCreatedAt) {
+			return nil, denyInstanceMissing
+		}
+	default:
+		if !marked {
+			return nil, denyUnboundLegacy
 		}
 	}
 	for _, o := range agents {

@@ -31,11 +31,16 @@ func IsPermissionDenied(err error) bool {
 }
 
 // CreatedSession is what a SessionCreator returns for a new DevX session.
+// InstanceID and CreatedAt identify the exact session record; the agent
+// records them as its binding (Agent.SessionInstanceID). Empty means the
+// creator cannot identify instances (test doubles, older builds).
 type CreatedSession struct {
-	Name     string
-	Path     string
-	Project  string
-	TmuxName string
+	Name       string
+	Path       string
+	Project    string
+	TmuxName   string
+	InstanceID string
+	CreatedAt  time.Time
 }
 
 // SessionCreator creates and prepares new DevX sessions. The production
@@ -58,19 +63,31 @@ type SessionCreator interface {
 // existing, human-created DevX session for an adopted agent. Adopt must
 // verify the session exists, is not local-only, and is not already managed,
 // then record agentID on it; ReleaseAdoption undoes that record (used when
-// adoption fails after the marker was written).
+// adoption fails after the marker was written). VerifyAdopted checks,
+// without writing anything, that the session still carries agentID's
+// adoption marker and returns it (used to re-verify before relaunch, so a
+// recreated session is never re-adopted implicitly).
 type SessionAdopter interface {
 	Adopt(name, agentID string) (AdoptedSession, error)
 	ReleaseAdoption(name, agentID string) error
+	VerifyAdopted(name, agentID string) (AdoptedSession, error)
 }
 
 // AdoptedSession describes the existing session an agent was adopted into.
 type AdoptedSession struct {
-	Name     string
-	Path     string
-	Project  string
-	TmuxName string
+	Name       string
+	Path       string
+	Project    string
+	TmuxName   string
+	InstanceID string
+	CreatedAt  time.Time
 }
+
+// ErrInstanceMismatch reports that an agent's DevX session record is not
+// the session instance the agent was bound to (the session was removed and
+// recreated under the same name). Such an agent is never rebound
+// implicitly.
+var ErrInstanceMismatch = errors.New("session was recreated: it is not the session instance this agent was bound to")
 
 // Config controls how agents are launched.
 type Config struct {
@@ -236,6 +253,7 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 		now := m.Store.now()
 		agent = &Agent{
 			ID: rec.AgentID, DevxSession: created.Name, Project: created.Project, Worktree: created.Path,
+			SessionInstanceID: created.InstanceID, SessionCreatedAt: created.CreatedAt,
 			PiSessionID: rec.PiSessionID, Binding: Binding{TmuxSession: created.TmuxName},
 			Lease:     Lease{Holder: LeaseManaged, Generation: 1, Since: now, Reason: "created"},
 			CreatedAt: now, CreatedBy: req.By, StartTaskID: rec.TaskID, StartIdemHash: rec.KeyHash,
@@ -301,8 +319,15 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		if !ok {
 			return fmt.Errorf("this DevX build cannot relaunch adopted agents")
 		}
-		if _, err := adopter.Adopt(agent.DevxSession, agent.ID); err != nil {
+		// Read-only: never re-mark the session. A session whose marker is
+		// gone (recreated, or dropped by an older writer) needs a fresh,
+		// deliberate `devx agent adopt` or the reviewed migration.
+		sess, err := adopter.VerifyAdopted(agent.DevxSession, agent.ID)
+		if err != nil {
 			return fmt.Errorf("verify adopted session: %w", err)
+		}
+		if agent.SessionInstanceID != "" && sess.InstanceID != agent.SessionInstanceID {
+			return fmt.Errorf("verify adopted session %q: %w", agent.DevxSession, ErrInstanceMismatch)
 		}
 	} else if err := m.Creator.EnsureTmux(agent.DevxSession, agent.ID); err != nil {
 		return fmt.Errorf("ensure tmux session: %w", err)
@@ -652,6 +677,15 @@ func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
 			continue
 		}
 		if a.Adopted && a.Binding.PaneID == req.PaneID && a.PiSessionID == req.PiSessionID {
+			// Replay writes nothing, and never rebinds: the session must
+			// still be the instance this agent adopted.
+			sess, err := adopter.VerifyAdopted(req.Session, a.ID)
+			if err != nil {
+				return nil, fmt.Errorf("adoption replay for agent %s: %w", a.ID, err)
+			}
+			if a.SessionInstanceID != "" && sess.InstanceID != a.SessionInstanceID {
+				return nil, fmt.Errorf("adoption replay for agent %s: %w", a.ID, ErrInstanceMismatch)
+			}
 			return &AdoptResult{AgentID: a.ID, Session: a.DevxSession, Pane: a.Binding.PaneID, Replayed: true}, nil
 		}
 		return nil, denied("session %q is already managed by agent %s", req.Session, a.ID)
@@ -679,6 +713,7 @@ func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
 	now := m.Store.now()
 	agent := &Agent{
 		ID: agentID, DevxSession: sess.Name, Project: sess.Project, Worktree: sess.Path, PiSessionID: req.PiSessionID,
+		SessionInstanceID: sess.InstanceID, SessionCreatedAt: sess.CreatedAt,
 		Binding:   Binding{TmuxSession: sess.TmuxName, WindowID: pane.WindowID, PaneID: req.PaneID},
 		Lease:     Lease{Holder: LeaseHuman, Generation: 1, Since: now, Reason: "adopted", By: req.By},
 		CreatedAt: now, CreatedBy: req.By, Adopted: true,

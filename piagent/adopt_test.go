@@ -1,6 +1,7 @@
 package piagent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,9 +13,10 @@ import (
 // adoptCreator is a dirCreator that can also adopt "human" sessions.
 type adoptCreator struct {
 	*dirCreator
-	human   map[string]string // existing human sessions -> worktree path
-	adopted map[string]string // session -> agent id
-	refuse  map[string]bool   // sessions the store refuses (local-only/container)
+	human    map[string]string // existing human sessions -> worktree path
+	adopted  map[string]string // session -> agent id
+	refuse   map[string]bool   // sessions the store refuses (local-only/container)
+	instance map[string]string // session -> instance id (empty: legacy)
 }
 
 func (c *adoptCreator) Adopt(name, agentID string) (AdoptedSession, error) {
@@ -26,7 +28,14 @@ func (c *adoptCreator) Adopt(name, agentID string) (AdoptedSession, error) {
 		return AdoptedSession{}, Denied("session %q is already managed by agent %s", name, cur)
 	}
 	c.adopted[name] = agentID
-	return AdoptedSession{Name: name, Path: path, Project: "proj", TmuxName: name}, nil
+	return AdoptedSession{Name: name, Path: path, Project: "proj", TmuxName: name, InstanceID: c.instance[name]}, nil
+}
+
+func (c *adoptCreator) VerifyAdopted(name, agentID string) (AdoptedSession, error) {
+	if c.adopted[name] != agentID {
+		return AdoptedSession{}, Denied("session %q is not adopted by %s", name, agentID)
+	}
+	return AdoptedSession{Name: name, Path: c.human[name], Project: "proj", TmuxName: name, InstanceID: c.instance[name]}, nil
 }
 
 func (c *adoptCreator) ReleaseAdoption(name, agentID string) error {
@@ -204,5 +213,69 @@ func TestGroupedViewerSessionIsNotStale(t *testing.T) {
 	seed("pa_000000000002", "%3", "@2")
 	if v, _ := m.AgentStatus("pa_000000000002"); v.BindingOK || v.State != AgentStaleBind {
 		t.Fatalf("moved pane not stale: %s", v.State)
+	}
+}
+
+// Stable instance binding: adoption records the session's instance; replay
+// and relaunch only verify (never re-mark); a session removed and recreated
+// under the same name is never rebound to the old agent implicitly.
+func TestAdoptionBindsInstanceAndNeverRebindsRecreatedSession(t *testing.T) {
+	m, ac, ft := newAdoptManager(t)
+	ac.instance = map[string]string{"human-sess": "si_aaaaaaaaaaaaaaaaaaaaaaaa"}
+	req := AdoptRequest{Session: "human-sess", PaneID: "%7", PiSessionID: "01a1-test"}
+	r, err := m.Adopt(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := m.Store.LoadAgent(r.AgentID)
+	if a.SessionInstanceID != "si_aaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("adoption must record the instance: %+v", a)
+	}
+	// Replay of the same adoption is fine while it is the same instance.
+	if rr, err := m.Adopt(req); err != nil || !rr.Replayed {
+		t.Fatalf("replay: %+v %v", rr, err)
+	}
+	// The session is removed and recreated by a human (new instance, no
+	// marker) under the same name and path.
+	ac.instance["human-sess"] = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
+	delete(ac.adopted, "human-sess")
+	if _, err := m.Adopt(req); err == nil {
+		t.Fatal("replay must not rebind a recreated session")
+	}
+	if ac.adopted["human-sess"] != "" {
+		t.Fatal("replay must not write a marker")
+	}
+	ft.calls = nil
+	if err := m.Relaunch(r.AgentID, true); err == nil {
+		t.Fatal("relaunch must not rebind a recreated session")
+	}
+	if ac.adopted["human-sess"] != "" {
+		t.Fatal("relaunch must not re-mark the session")
+	}
+	for _, c := range ft.calls {
+		if strings.HasPrefix(c, "respawn-pane") || strings.HasPrefix(c, "new-window") {
+			t.Fatalf("ran %q", c)
+		}
+	}
+	// Even if a marker naming the old agent reappears (hand edit), the
+	// instance id still differs: relaunch refuses.
+	ac.adopted["human-sess"] = r.AgentID
+	if err := m.Relaunch(r.AgentID, true); !errors.Is(err, ErrInstanceMismatch) {
+		t.Fatalf("want ErrInstanceMismatch, got %v", err)
+	}
+}
+
+// pi_start_task records the instance of the session it created.
+func TestStartRecordsSessionInstance(t *testing.T) {
+	m, dc := newTestManager(t)
+	dc.instance = "si_cccccccccccccccccccccccc"
+	r, err := m.Start(StartRequest{Project: "proj", Prompt: "hi", IdempotencyKey: "k-inst", By: "test"})
+	if err != nil && !strings.Contains(err.Error(), "tmux") {
+		t.Fatal(err)
+	}
+	_ = r
+	agents, _ := m.Store.ListAgents()
+	if len(agents) != 1 || agents[0].SessionInstanceID != "si_cccccccccccccccccccccccc" || agents[0].SessionCreatedAt.IsZero() {
+		t.Fatalf("agent binding: %+v", agents)
 	}
 }

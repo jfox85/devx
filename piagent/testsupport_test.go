@@ -21,6 +21,7 @@ type dirCreator struct {
 	existing map[string]time.Time
 	owner    map[string]string // session -> owning agent id
 	creates  int
+	instance string // instance id reported for created sessions (optional)
 }
 
 func (c *dirCreator) Create(name, project, agentID string) (CreatedSession, error) {
@@ -39,7 +40,7 @@ func (c *dirCreator) Create(name, project, agentID string) (CreatedSession, erro
 		c.existing[name] = time.Now()
 		c.owner[name] = agentID
 	}
-	return CreatedSession{Name: name, Path: p, Project: project, TmuxName: name}, nil
+	return CreatedSession{Name: name, Path: p, Project: project, TmuxName: name, InstanceID: c.instance, CreatedAt: c.existing[name]}, nil
 }
 
 func (c *dirCreator) EnsureTmux(name, agentID string) error {

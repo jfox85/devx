@@ -117,6 +117,15 @@ type Agent struct {
 	// session is the owner's normal session: DevX never creates windows in
 	// it and only ever respawns the exact adopted pane.
 	Adopted bool `json:"adopted,omitempty"`
+	// SessionInstanceID is the instance id of the exact DevX session record
+	// this agent was bound to (at start or adoption, or by the reviewed
+	// `devx session instances` migration). A session recreated under the same
+	// name has a different id, so the agent is never bound to it implicitly.
+	// Empty for agents from before instance ids that were not migrated.
+	SessionInstanceID string `json:"session_instance_id,omitempty"`
+	// SessionCreatedAt is the bound session record's created_at, kept as
+	// evidence for migration and diagnostics (not used for authorization).
+	SessionCreatedAt time.Time `json:"session_created_at,omitempty"`
 }
 
 // Task is one dispatched prompt.

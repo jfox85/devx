@@ -393,7 +393,8 @@ func (localOnlySessionCreator) Create(name, project, agentID string) (piagent.Cr
 		}
 		return piagent.CreatedSession{}, err
 	}
-	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: project, TmuxName: name}, nil
+	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: project, TmuxName: name,
+		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
 }
 
 // Adopt records agentID on an existing human-created host session (see
@@ -411,7 +412,20 @@ func (localOnlySessionCreator) Adopt(name, agentID string) (piagent.AdoptedSessi
 		_ = session.ReleaseManagedAgent(name, agentID)
 		return piagent.AdoptedSession{}, fmt.Errorf("session %q has no running tmux session", name)
 	}
-	return piagent.AdoptedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name}, nil
+	return piagent.AdoptedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name,
+		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
+}
+
+func (localOnlySessionCreator) VerifyAdopted(name, agentID string) (piagent.AdoptedSession, error) {
+	sess, err := session.VerifyManagedAgent(name, agentID)
+	if err != nil {
+		if errors.Is(err, session.ErrAdoptNotAllowed) {
+			return piagent.AdoptedSession{}, piagent.Denied("%v", err)
+		}
+		return piagent.AdoptedSession{}, err
+	}
+	return piagent.AdoptedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name,
+		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
 }
 
 func (localOnlySessionCreator) ReleaseAdoption(name, agentID string) error {

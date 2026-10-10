@@ -29,6 +29,12 @@ func (c *fixtureAdopter) Adopt(name, agentID string) (AdoptedSession, error) {
 	c.adopted[name] = agentID
 	return AdoptedSession{Name: name, Path: p, Project: "proj", TmuxName: name}, nil
 }
+func (c *fixtureAdopter) VerifyAdopted(name, agentID string) (AdoptedSession, error) {
+	if c.adopted[name] != agentID {
+		return AdoptedSession{}, Denied("not adopted by %s", agentID)
+	}
+	return AdoptedSession{Name: name, Path: c.human[name], Project: "proj", TmuxName: name}, nil
+}
 func (c *fixtureAdopter) ReleaseAdoption(name, agentID string) error {
 	delete(c.adopted, name)
 	return nil

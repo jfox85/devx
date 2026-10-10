@@ -8,9 +8,10 @@ import (
 	"github.com/jfox85/devx/session"
 )
 
-// eligibilityFixture is one agent bound to one session, plus helpers to
-// mutate either side. The default fixture is a legacy/adopted-style session
-// with no marker, which must be eligible.
+// eligibilityFixture is one agent bound to one session instance, plus
+// helpers to mutate either side. The default fixture is an agent bound by
+// instance id to a session without a marker (for example an adopted session
+// whose marker an older writer dropped), which must be eligible.
 type eligibilityFixture struct {
 	agent    *piagent.Agent
 	sessions map[string]*session.Session
@@ -19,11 +20,15 @@ type eligibilityFixture struct {
 
 var fixtureT0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
+const fixtureInstance = "si_aaaaaaaaaaaaaaaaaaaaaaaa"
+
 func newEligibilityFixture() *eligibilityFixture {
-	a := &piagent.Agent{ID: "pa_aaaaaaaaaaaa", DevxSession: "s1", Project: "proj", Worktree: "/wt/s1", PiSessionID: "x", CreatedAt: fixtureT0}
+	sessCreated := fixtureT0.Add(-200 * time.Millisecond)
+	a := &piagent.Agent{ID: "pa_aaaaaaaaaaaa", DevxSession: "s1", Project: "proj", Worktree: "/wt/s1", PiSessionID: "x", CreatedAt: fixtureT0,
+		SessionInstanceID: fixtureInstance, SessionCreatedAt: sessCreated}
 	return &eligibilityFixture{
 		agent:    a,
-		sessions: map[string]*session.Session{"s1": {Name: "s1", ProjectAlias: "proj", Path: "/wt/s1", CreatedAt: fixtureT0.Add(-200 * time.Millisecond)}},
+		sessions: map[string]*session.Session{"s1": {Name: "s1", ProjectAlias: "proj", Path: "/wt/s1", CreatedAt: sessCreated, InstanceID: fixtureInstance}},
 		agents:   []*piagent.Agent{a},
 	}
 }
@@ -93,30 +98,56 @@ func TestEligibleSessionPredicate(t *testing.T) {
 		}, denyBothMarkers},
 		{"container target", func(f *eligibilityFixture) { f.sessions["s1"].Target = session.TargetMeta{Type: "docker"} }, denyContainerized},
 
-		// Session instance binding for unmarked sessions.
-		{"adopted: unmarked session much older than agent", func(f *eligibilityFixture) {
+		// Session instance binding (identity, not name/path/timestamps).
+		{"bound agent, same instance, no marker", func(f *eligibilityFixture) {}, ""},
+		{"bound agent, same instance, session much older than agent (adopted)", func(f *eligibilityFixture) {
 			f.sessions["s1"].CreatedAt = fixtureT0.Add(-30 * 24 * time.Hour)
+			f.agent.SessionCreatedAt = f.sessions["s1"].CreatedAt
 		}, ""},
-		{"unmarked session created at the same instant as agent", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0
-		}, ""},
-		{"unmarked session recreated 1ns after agent", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0.Add(time.Nanosecond)
-		}, denyNewerSession},
-		{"unmarked session recreated 30s after agent (within old 1-minute window)", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0.Add(30 * time.Second)
-		}, denyNewerSession},
-		{"unmarked session recreated after agent (orphaned agent)", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0.Add(2 * time.Hour)
-		}, denyNewerSession},
-		{"timezone offsets do not matter", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0.Add(-time.Millisecond).In(time.FixedZone("PDT", -7*3600))
-		}, ""},
-		{"unmarked session with zero created time", func(f *eligibilityFixture) { f.sessions["s1"].CreatedAt = time.Time{} }, denyNewerSession},
-		{"unmarked session, agent with zero created time", func(f *eligibilityFixture) { f.agent.CreatedAt = time.Time{} }, denyNewerSession},
-		{"marked session newer than agent is fine (marker binds instance)", func(f *eligibilityFixture) {
-			f.sessions["s1"].CreatedAt = fixtureT0.Add(2 * time.Hour)
+		{"recreated session (new instance id), timestamps look older (clock rollback)", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(-time.Hour)
+		}, denyInstanceMismatch},
+		{"recreated session (new instance id), restored record with the old created_at", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
+		}, denyInstanceMismatch},
+		{"recreated session even with a marker naming the agent", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = "si_bbbbbbbbbbbbbbbbbbbbbbbb"
 			f.sessions["s1"].ManagedAgent = f.agent.ID
+		}, denyInstanceMismatch},
+		{"instance id dropped by an older writer, same record (created_at exact)", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = ""
+		}, ""},
+		{"instance id missing and created_at differs by 1ns (recreated by an old writer)", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = ""
+			f.sessions["s1"].CreatedAt = f.agent.SessionCreatedAt.Add(time.Nanosecond)
+		}, denyInstanceMissing},
+		{"instance id missing and created_at differs (clock rolled back)", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = ""
+			f.sessions["s1"].CreatedAt = f.agent.SessionCreatedAt.Add(-time.Hour)
+		}, denyInstanceMissing},
+		{"instance id missing, agent has no recorded created_at", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = ""
+			f.agent.SessionCreatedAt = time.Time{}
+		}, denyInstanceMissing},
+		{"timezone offsets do not matter for the created_at witness", func(f *eligibilityFixture) {
+			f.sessions["s1"].InstanceID = ""
+			f.sessions["s1"].CreatedAt = f.agent.SessionCreatedAt.In(time.FixedZone("PDT", -7*3600))
+		}, ""},
+		{"unbound legacy agent, no marker", func(f *eligibilityFixture) {
+			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+		}, denyUnboundLegacy},
+		{"unbound legacy agent, no marker, session has an id", func(f *eligibilityFixture) {
+			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].InstanceID = "si_cccccccccccccccccccccccc"
+		}, denyUnboundLegacy},
+		{"unbound legacy agent with managed marker naming it", func(f *eligibilityFixture) {
+			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].ManagedAgent = f.agent.ID
+		}, ""},
+		{"unbound legacy agent with local-only marker naming it", func(f *eligibilityFixture) {
+			f.agent.SessionInstanceID, f.agent.SessionCreatedAt = "", time.Time{}
+			f.sessions["s1"].LocalOnly = &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: f.agent.ID}
 		}, ""},
 
 		// Duplicate claimants and shared worktrees.
@@ -172,7 +203,15 @@ func TestReadInventoryUsesSamePredicateAndPolicy(t *testing.T) {
 	e.defaultScope()
 	ok, _ := e.agent("ok", "proj")
 	legacy, ls := e.agent("legacy", "proj")
-	ls.ManagedAgent = ""
+	ls.ManagedAgent = "" // bound by instance id; marker dropped: still allowed
+	unbound, us := e.agent("unbound", "proj")
+	unbound.SessionInstanceID, unbound.SessionCreatedAt = "", time.Time{}
+	_ = e.store.WithAgentLock(unbound.ID, func() error { return e.store.SaveAgent(unbound) })
+	us.ManagedAgent, us.InstanceID = "", "" // legacy agent, no marker: needs migration
+	unboundMarked, ums := e.agent("marked-legacy", "proj")
+	unboundMarked.SessionInstanceID, unboundMarked.SessionCreatedAt = "", time.Time{}
+	_ = e.store.WithAgentLock(unboundMarked.ID, func() error { return e.store.SaveAgent(unboundMarked) })
+	ums.InstanceID = "" // legacy agent, marker names it: allowed
 	_, cs := e.agent("conflict", "proj")
 	cs.ManagedAgent = "pa_ffffffffffff"
 	_, _ = e.agent("excluded", "proj")
@@ -192,7 +231,7 @@ func TestReadInventoryUsesSamePredicateAndPolicy(t *testing.T) {
 			got[r.Session] = r.Reason
 		}
 	}
-	want := map[string]string{"ok": "allowed", "legacy": "allowed", "conflict": denyForeignManaged,
+	want := map[string]string{"ok": "allowed", "legacy": "allowed", "unbound": denyUnboundLegacy, "marked-legacy": "allowed", "conflict": denyForeignManaged,
 		"excluded": "policy", "otherproj": "policy", "stale": denyNoSession}
 	for k, v := range want {
 		if got[k] != v {
@@ -262,10 +301,26 @@ func TestOrphanedAgentDoesNotInheritRecreatedSession(t *testing.T) {
 	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
 		t.Fatalf("removed session: %v", err)
 	}
-	e.sessions["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: a.Worktree, CreatedAt: e.now.Add(3 * time.Hour)}
+	// Worst case for timestamps: the clock was rolled back, so the new
+	// record looks OLDER than the agent; and the human even sets a marker
+	// naming the old agent id by hand. The instance id still differs.
+	e.sessions["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: a.Worktree,
+		CreatedAt: e.now.Add(-24 * time.Hour), InstanceID: session.NewInstanceID()}
 	e.register(e.sessions["feat"], "Human", "human.md", []byte("private"))
 	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
 		t.Fatalf("recreated session must not be exposed via the orphaned agent: %v", err)
+	}
+	e.sessions["feat"].ManagedAgent = a.ID
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("a marker naming the old agent must not rebind a recreated session: %v", err)
+	}
+	e.sessions["feat"].ManagedAgent = ""
+	// Recreated by an OLD writer that sets no instance id, with the same
+	// (rolled-back) created_at second but a different instant: denied.
+	e.sessions["feat"].InstanceID = ""
+	e.sessions["feat"].CreatedAt = a.SessionCreatedAt.Add(time.Microsecond)
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("id-less recreated record must not match: %v", err)
 	}
 	// Not even when explicitly listed: the binding itself is invalid.
 	e.pol.Sessions, e.pol.SessionsSet = []string{"feat"}, true

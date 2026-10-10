@@ -31,6 +31,11 @@ func AdoptManagedAgent(name, agentID string) (*Session, error) {
 			return fmt.Errorf("session %q is already managed by agent %s: %w", name, s.ManagedAgent, ErrAdoptNotAllowed)
 		}
 		s.ManagedAgent = agentID
+		// A session from before instance ids gets one now, so the agent can
+		// bind to this exact session instance.
+		if s.InstanceID == "" {
+			s.InstanceID = NewInstanceID()
+		}
 		cp := *s
 		out = &cp
 		return nil
@@ -39,6 +44,27 @@ func AdoptManagedAgent(name, agentID string) (*Session, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// VerifyManagedAgent returns a copy of session name if it still carries
+// agentID's adoption marker. It writes nothing: a session whose marker is
+// gone (removed and recreated, or the field dropped by an older DevX writer)
+// is not re-adopted here.
+func VerifyManagedAgent(name, agentID string) (*Session, error) {
+	store, err := LoadSessions()
+	if err != nil {
+		return nil, err
+	}
+	s, ok := store.Sessions[name]
+	switch {
+	case !ok || s == nil:
+		return nil, fmt.Errorf("session %q not found: %w", name, ErrAdoptNotAllowed)
+	case s.ManagedAgent != agentID:
+		return nil, fmt.Errorf("session %q no longer records agent %s as its managed agent (recreated, or the marker was lost); "+
+			"run `devx session instances` to review, or adopt again: %w", name, agentID, ErrAdoptNotAllowed)
+	}
+	cp := *s
+	return &cp, nil
 }
 
 // ReleaseManagedAgent clears the adoption marker if it still names agentID.

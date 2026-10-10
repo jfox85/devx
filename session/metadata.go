@@ -44,6 +44,12 @@ type Session struct {
 	// LocalOnly marks a managed-agent session that must never be routed or
 	// published (see localonly.go).
 	LocalOnly *LocalOnlyMeta `json:"local_only,omitempty"`
+	// InstanceID identifies this session record, independent of its name,
+	// path and timestamps: a session removed and recreated with the same
+	// name and path gets a new one. It is assigned when the record is
+	// created (see NewInstanceID) and never changed afterwards; records from
+	// before it existed get one through `devx session instances`.
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // TargetMeta describes the execution environment for a session.
@@ -295,12 +301,13 @@ func (s *SessionStore) AddSession(name, branch, path string, ports map[string]in
 
 		now := time.Now()
 		fresh.Sessions[name] = &Session{
-			Name:      name,
-			Branch:    branch,
-			Path:      path,
-			Ports:     ports,
-			CreatedAt: now,
-			UpdatedAt: now,
+			Name:       name,
+			Branch:     branch,
+			Path:       path,
+			Ports:      ports,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+			InstanceID: NewInstanceID(),
 		}
 		return nil
 	})
@@ -323,6 +330,7 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 			Ports:        ports,
 			Routes:       make(map[string]string),
 			CreatedAt:    now,
+			InstanceID:   NewInstanceID(),
 			UpdatedAt:    now,
 		}
 		return nil

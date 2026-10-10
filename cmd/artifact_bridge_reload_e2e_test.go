@@ -83,10 +83,24 @@ func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
 	addSession(1, "alpha", "synth")
 	addSession(2, "beta", "synth")
 	addSession(3, "gamma", "other")
-	// A legacy MCP session (pre-local-only, or an adoption whose marker an
-	// older writer dropped): no marker. Default scope must include it.
+	// An instance-bound agent whose session marker an older writer dropped:
+	// no marker, but the agent's session_instance_id matches. Readable.
 	addSession(5, "legacy", "synth")
 	delete(sessions["legacy"].(map[string]any), "local_only")
+	sessions["legacy"].(map[string]any)["instance_id"] = "si_0123456789abcdef01234567"
+	{
+		p := filepath.Join(cfgDir, "pi-agents", "agents", agents["legacy"], "agent.json")
+		var rec map[string]any
+		b, _ := os.ReadFile(p)
+		_ = json.Unmarshal(b, &rec)
+		rec["session_instance_id"] = "si_0123456789abcdef01234567"
+		b, _ = json.Marshal(rec)
+		_ = os.WriteFile(p, b, 0o600)
+	}
+	// A legacy agent never bound to an instance, with no marker: denied
+	// until the owner binds it through `devx session instances`.
+	addSession(7, "unbound", "synth")
+	delete(sessions["unbound"].(map[string]any), "local_only")
 	// A session whose marker names a different agent: never eligible.
 	addSession(6, "conflict", "synth")
 	sessions["conflict"].(map[string]any)["local_only"] = map[string]any{"owner": "devx-pi-mcp", "agent_id": "pa_999999999999", "created_at": now}
@@ -153,7 +167,7 @@ func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
 	if got := strings.Join(tools(), ","); got != "devx_artifact_list,devx_artifact_read" {
 		t.Fatalf("default tools: %s", got)
 	}
-	expect("default scope", map[string]bool{"alpha": true, "beta": true, "gamma": false, "legacy": true, "conflict": false})
+	expect("default scope", map[string]bool{"alpha": true, "beta": true, "gamma": false, "legacy": true, "unbound": false, "conflict": false})
 
 	// Start a chunked read of alpha, then narrow to an explicit list without it.
 	list := call("devx_artifact_list", map[string]any{"agent_id": agents["alpha"]})

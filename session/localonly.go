@@ -94,7 +94,7 @@ func CreateLocalOnlySession(req LocalOnlyRequest) (*Session, error) {
 		fresh.Sessions[req.Name] = &Session{
 			Name: req.Name, ProjectAlias: req.ProjectAlias, ProjectPath: req.ProjectPath,
 			Branch: req.Name, Path: worktree, Ports: map[string]int{},
-			CreatedAt: now, UpdatedAt: now,
+			CreatedAt: now, UpdatedAt: now, InstanceID: NewInstanceID(),
 			LocalOnly: &LocalOnlyMeta{Owner: LocalOnlyOwnerPiMCP, AgentID: req.AgentID, CreatedAt: now},
 		}
 		created = true

@@ -148,3 +148,30 @@ Activation is one-time:
 
 No relay `allowed_tools` change, gateway Sync, or Jarvis tool refresh is
 needed: the tool definitions are identical.
+
+## Session instance ids (later builds)
+
+From the build that adds `instance_id`, eligibility is bound to the exact
+session instance (see docs/pi-mcp.md, "Session eligibility" and
+"Migration"). Agents from before this build are unbound: each stays
+eligible only while a marker on its session names it.
+
+Owner steps, in order. Each step is separately approved, and nothing here
+runs automatically.
+
+1. **Review the preview.** On a copy of the records, or read-only on the
+   live ones: `devx session instances` (the dry run writes nothing).
+2. **Install the new binary.** Keep the previous one as a backup. Then:
+   - start one fresh relay child, as in "Live reload" above;
+   - restart any long-running old DevX process (for example `devx web`)
+     so it stops dropping new fields;
+   - don't restart Pi or tmux sessions.
+3. **Prepare.** `devx session instances --prepare` creates the private key
+   and prints the applicable plan and its hash. Review every `skip` line.
+4. **Apply.** `devx session instances --apply <hash>`. Note the printed
+   backup directory.
+5. **Verify.** Run the dry run again; it should report nothing to apply.
+   Then check eligibility with a read-only inventory.
+6. **Roll back if needed.** `devx session instances --rollback <dir>`.
+   Restoring the old binary afterwards is safe: older binaries ignore the
+   new fields.

@@ -183,75 +183,71 @@ the default scope and explicit lists alike:
   for sessions created by `pi_start_task`, `managed_agent` for adopted
   sessions. Both markers at once, or either naming another agent, is a
   conflict and always denies; no policy setting overrides it;
-- without a marker, the session record must not have been created after
-  the agent. Every flow that binds an agent writes the session record
-  first: `pi_start_task` creates the session and then the agent, and
-  adoption needs an existing session. This binds the agent to that
-  session instance. If a session is removed without retiring its agent
-  (for example `devx session clear`) and a new session is later created
-  with the same name and path, the old agent never gains access to it,
-  not even through an explicit `sessions` list. An unmarked session or
-  agent record without a creation time can't be bound this way and is
-  denied;
+- **session instance:** every DevX session record has a random,
+  stable `instance_id`, assigned when DevX creates the record and never
+  changed by later saves. Removing a session and creating one with the
+  same name and path gives a different id. Every agent records the
+  instance it was bound to (`session_instance_id`, set by `pi_start_task`,
+  by adoption, or by the reviewed migration below):
+  - a bound agent is eligible only while its session record carries that
+    same id. A recreated session never matches, whatever its name, path,
+    timestamps or markers, even if the clock was rolled back or an old
+    record was restored over it;
+  - if an older DevX binary rewrote the record and dropped the field, the
+    record's `created_at` must equal, to the nanosecond, the
+    `session_created_at` the agent recorded at binding. Old writers keep
+    `created_at`; a recreated record gets a new one. The migration
+    restores the dropped id;
+  - an agent from before instance ids that hasn't been migrated is
+    eligible only while a marker on its session names it. Otherwise it
+    stays denied until the owner binds it with the reviewed migration;
 - no other non-retired agent claims the same session, and no other live
   agent or other session record uses the same worktree.
 
-**Unresolved: orphaned-agent binding (owner decision pending).** For
-sessions without a marker, the binding above compares two timestamps
-from the host clock. It is not a stable identity. Remaining gaps:
-- **Clock steps.** A backwards wall-clock step (manual change, NTP
-  correction, VM restore) between creating an agent and recreating its
-  orphaned session could make the new session look older than the agent.
-  Go's `time.Now()` stores the wall clock in these records, not a
-  monotonic one.
-- **Hand-edited, restored or imported records.** A session record
-  restored from a backup (including `internal/backuprestore`) or copied
-  from another machine keeps its old `created_at`.
+Relaunch and adoption replay only **verify** the binding: they never
+write a marker or rebind. An agent whose session was recreated must be
+adopted again deliberately (which creates a new agent) or retired.
+`devx session rm` retires the marker's agent and every agent bound to
+that exact instance, even if an older writer dropped the marker.
+Sessions removed with `devx session clear` leave their agents unretired,
+but those agents can never match a later session with the same name.
 
-These need an orphaned agent and either a clock step or a restored
-record. A marker-carrying session is not affected: the marker names the
-agent.
+**Migration: `devx session instances`.** Records created before
+instance ids have none. The migration assigns them and binds each agent
+to its session, but only when the evidence is unambiguous:
+- **Dry run by default.** It prints the plan and writes nothing.
+  `--prepare` creates only a private random key, `.instance-key` (0600,
+  next to `sessions.json`). Ids are derived from the record state with
+  that key, so the plan hash stays the same until a record changes.
+- **Binds only clear cases.** An agent is bound only if its session
+  exists at the agent's worktree with the same project, has no marker
+  naming another agent, has no duplicate claimant or shared worktree, and
+  (without a marker) was created no later than the agent. Anything else
+  is listed with its reason and left unchanged.
+- **Apply.** `--apply <plan-hash>` re-plans and refuses unless the hash
+  matches. It then backs up `sessions.json`, every agent record it
+  touches and the plan to `~/.config/devx/backups/session-instances-*`.
+  It journals each write before making it and re-checks every step
+  against the latest records under their locks; anything changed since
+  the review aborts with "records changed".
+- **Repeatable.** Every step skips work that is already done. After an
+  interrupted apply, run the dry run again and apply the new (smaller)
+  plan.
+- **Rollback.** `--rollback <backup-dir>` removes exactly the values the
+  journal records, and only where the record still holds them. Ids that
+  restored an agent's existing binding are kept.
+- **Writes only these fields.** Only `instance_id` on sessions and
+  `session_instance_id` / `session_created_at` on agents are written,
+  plus an agent event. Worktrees, tmux sessions, Pi conversations,
+  leases and markers are never touched. Output contains names, ids,
+  reasons and timing differences, never file contents or secrets.
 
-Ways to close the gap fully, not done here because each changes records
-or behaviour outside the bridge:
-1. **Stable session-instance ID.** DevX writes a random `instance_id` into
-   every new session record and copies it onto the agent when it binds
-   (`pi_start_task`, adopt). The bridge then requires them to match.
-   This needs new record fields and a write path in session creation and
-   adoption. Existing records have no ID and need either a one-time
-   owner-approved backfill or continued use of the timestamp rule for
-   legacy records only.
-2. **Retire agents on session removal.** `devx session clear` and
-   `devx session rm` retire every non-retired agent whose session and
-   worktree match, not just the marker owner. The match must use the
-   agent records, not the session's markers, because the markers may have
-   been dropped. This removes orphaned agents at the source, but changes
-   session-removal behaviour, and agents that are already orphaned stay.
-3. **Repair markers.** Make adoption replay restore `managed_agent`, and
-   stop old writers dropping it. Marked sessions are then bound by
-   identity, and the timestamp rule only covers the pre-local-only
-   canary.
-4. **Require markers in the default scope.** Revert to the stricter
-   41b887d-and-earlier behaviour for unmarked sessions. This closes the
-   gap now, but excludes from default reads the MCP sessions created
-   before local-only mode and any adopted session whose marker was
-   dropped. Those can still be named in an explicit `sessions` list.
-5. **Record the bound session's creation time on the agent.** This is a
-   cheaper version of option 1. When `pi_start_task` or adoption binds an
-   agent, it copies the session's `created_at` onto the agent record (for
-   example as `session_created_at`), and the bridge requires an exact,
-   nanosecond match. Only those two write paths change; session records
-   don't. A recreated session gets a different timestamp even after a
-   clock step, so this closes the gap for new agents. Existing agents
-   would keep the `<=` rule unless backfilled.
-
-A **missing** marker alone is not a denial. The MCP path itself
-(`pi_send`, `pi_status`, `pi_events`) does not require one, and real
-sessions lack it: MCP sessions created before local-only mode, and adopted
-sessions whose `managed_agent` field was dropped by an older DevX writer.
-Agent state (`running`, `idle`, `human_control`,
-`adopted_pending_relaunch`, ...) is not part of eligibility: artifacts are
-files in the session, readable whoever drives the Pi.
+**Old writers.** A `devx` binary from before this change (for example a
+long-running `devx web`) can rewrite `sessions.json` and drop
+`instance_id`. That never grants access: see the created_at rule above.
+Run the dry run again after upgrading every DevX process; it restores
+dropped ids. Upgrade or restart old DevX processes before the
+migration so they stop dropping fields.
 
 `pi_list_sessions` is an **inventory**, not an eligibility list. It returns
 every agent record, including retired agents and agents whose session was

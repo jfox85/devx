@@ -170,10 +170,10 @@ func TestDefaultScopeAcceptsMissingMarkerButNotForeignMarker(t *testing.T) {
 	e.defaultScope()
 	a, s := e.agent("legacy", "proj")
 	e.register(s, "One", "one.md", []byte("one"))
-	// Legacy MCP-created / adopted-with-dropped-marker record: no marker.
+	// Instance-bound agent whose session marker was dropped: no marker.
 	s.ManagedAgent = ""
 	if len(e.list(a.ID)) != 1 {
-		t.Fatal("a missing marker alone must not deny (the MCP path does not require one)")
+		t.Fatal("a missing marker alone must not deny an instance-bound agent")
 	}
 	// A marker naming another agent is a conflict, never overridden.
 	s.ManagedAgent = "pa_ffffffffffff"

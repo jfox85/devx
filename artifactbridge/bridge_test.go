@@ -65,11 +65,14 @@ func (e *env) agent(name, project string) (*piagent.Agent, *session.Session) {
 		e.t.Fatal(err)
 	}
 	id := "pa_" + hex.EncodeToString([]byte(name + "______"))[:12]
-	a := &piagent.Agent{ID: id, DevxSession: name, Project: project, Worktree: wt, PiSessionID: "x", CreatedAt: e.now}
+	inst := session.NewInstanceID()
+	// Bound at creation, as pi_start_task and adoption do.
+	a := &piagent.Agent{ID: id, DevxSession: name, Project: project, Worktree: wt, PiSessionID: "x", CreatedAt: e.now,
+		SessionInstanceID: inst, SessionCreatedAt: e.now}
 	if err := e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(a) }); err != nil {
 		e.t.Fatal(err)
 	}
-	s := &session.Session{Name: name, ProjectAlias: project, Path: wt, ManagedAgent: id, CreatedAt: e.now}
+	s := &session.Session{Name: name, ProjectAlias: project, Path: wt, ManagedAgent: id, CreatedAt: e.now, InstanceID: inst}
 	e.sessions[name] = s
 	e.pol.Sessions = append(e.pol.Sessions, name) // exposed by default in tests
 	return a, s

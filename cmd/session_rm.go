@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
+	"github.com/jfox85/devx/piagent"
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/target"
 	"github.com/spf13/cobra"
@@ -172,10 +173,11 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 	} else if sess.ManagedAgent != "" {
 		retire = sess.ManagedAgent // adopted via `devx agent adopt`
 	}
-	if retire != "" {
-		if m, err := newAgentManager(); err == nil {
-			if err := m.RetireForSession(retire, name); err != nil {
-				fmt.Printf("Warning: failed to retire managed agent %s: %v\n", retire, err)
+	if m, err := newAgentManager(); err == nil {
+		agents, _ := m.Store.ListAgents()
+		for _, id := range agentsToRetire(name, sess, retire, agents) {
+			if err := m.RetireForSession(id, name); err != nil {
+				fmt.Printf("Warning: failed to retire managed agent %s: %v\n", id, err)
 			}
 		}
 	}
@@ -192,6 +194,34 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 	}
 	fmt.Printf("Removed session '%s'\n", name)
 	return nil
+}
+
+// agentsToRetire returns the agents to retire when session name (record
+// sess) is removed: the agent named by its marker, plus any agent BOUND to
+// this exact session instance whose marker an older writer dropped. The
+// match is the agent's recorded instance id (or, for an id-less record, its
+// exact created_at), so only agents of this removed session are retired,
+// never ones bound to an earlier or later session that reused the name.
+func agentsToRetire(name string, sess *session.Session, marker string, agents []*piagent.Agent) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	add(marker)
+	for _, a := range agents {
+		if a == nil || a.RetiredAt != nil || a.DevxSession != name || a.SessionInstanceID == "" {
+			continue
+		}
+		if (sess.InstanceID != "" && a.SessionInstanceID == sess.InstanceID) ||
+			(sess.InstanceID == "" && !a.SessionCreatedAt.IsZero() && a.SessionCreatedAt.Equal(sess.CreatedAt)) {
+			add(a.ID)
+		}
+	}
+	return out
 }
 
 func removeGatepostStateDir(sess *session.Session) error {
