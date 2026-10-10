@@ -1,0 +1,32 @@
+# TEMPORARY validation for the draft PR; removed before ready-for-review.
+name: Windows store flake stress
+on:
+  pull_request:
+    branches: [ main, ci-windows-portability ]
+jobs:
+  stress:
+    name: stress ${{ matrix.label }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: before-fix }
+          - { label: after-fix }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23', cache: false }
+      - name: stress
+        shell: bash
+        run: |
+          if [ "${{ matrix.label }}" = before-fix ]; then
+            # Same tests; production reader reverted to the pre-fix os.Open.
+            printf '//go:build windows\n\npackage session\n\nimport "os"\n\nfunc openSessionsFileForRead(p string) (*os.File, error) { return os.Open(p) }\n' > session/readfile_windows.go
+            git diff --stat
+          fi
+          git log --oneline -1
+          go test -race -count=1 -v -run '^TestWriteSucceedsWhileReaderHoldsFileOpen$' ./session 2>&1 | grep -E -- '^(--- |ok|FAIL)|metadata_concurrency_test' || true
+          go test -race -count=200 -run '^TestConcurrentUpdatesAllSurvive$' -v ./session > iso.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' iso.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' iso.log) accessdenied=$(grep -c 'Access is denied' iso.log)"
