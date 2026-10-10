@@ -10,8 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        label: [before-fix, after-fix]
-        shard: [1, 2]
+        label: [after-fix]
+        shard: [final]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -27,6 +27,7 @@ jobs:
             grep -n 'func releaseDirLock' piagent/lock.go
             git diff --stat
           fi
+          go test -race -count=1 -v ./piagent > full.log 2>&1; echo "FULLPKG exit=$? pass=$(grep -cE -- '--- PASS' full.log) fail=$(grep -cE -- '--- FAIL' full.log) skip=$(grep -cE -- '--- SKIP' full.log)"; grep -E -- '--- (PASS|FAIL): Test(PersistentAccessDenied|OwnedRelease|ReleaseDirLock|DirLock|DeniedTracker)' full.log; grep -E -- '^--- FAIL' full.log || true
           go test -race -count=20 -v -run '^(TestDirLockSurvivesHeavyChurn|TestPersistentAccessDeniedIsNotWaitedOut|TestOwnedReleaseNeverRemovesAnotherHoldersLock)$' ./piagent > churn.log 2>&1 || true
           echo "STRESS ${{ matrix.label }} churn runs=$(grep -cE -- '^--- (PASS|FAIL): TestDirLockSurvivesHeavyChurn ' churn.log) fails=$(grep -cE -- '^--- FAIL: TestDirLockSurvivesHeavyChurn ' churn.log) accessdenied=$(grep -c 'Access is denied' churn.log)"
           go test -race -count=100 -v -run '^TestConcurrentSendsGetDistinctOrderedTasks$' ./piagent > sends.log 2>&1 || true
