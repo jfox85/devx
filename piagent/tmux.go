@@ -1,6 +1,7 @@
 package piagent
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -30,7 +31,10 @@ func (t Tmux) Run(a ...string) (string, error) {
 
 // PaneInfo describes a pane as tmux currently sees it.
 type PaneInfo struct {
-	Exists      bool
+	Exists bool
+	// QueryFailed means tmux could not be asked (server busy or restarting,
+	// timeout, tmux missing). It is NOT evidence that the pane is gone.
+	QueryFailed bool
 	SessionName string
 	WindowID    string
 	Dead        bool
@@ -67,7 +71,10 @@ func (t Tmux) Pane(paneID string) PaneInfo {
 	}
 	out, err := t.Run("display-message", "-p", "-t", paneID, "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_dead}\t#{pane_pid}\t#{window_linked_sessions_list}\t#{pane_current_command}")
 	if err != nil {
-		return PaneInfo{}
+		if paneAbsent(err) {
+			return PaneInfo{}
+		}
+		return PaneInfo{QueryFailed: true}
 	}
 	f := strings.Split(out, "\t")
 	if len(f) < 5 || f[0] != paneID {
@@ -83,6 +90,18 @@ func (t Tmux) Pane(paneID string) PaneInfo {
 		p.Command = f[6]
 	}
 	return p
+}
+
+// ErrTmuxUnavailable means tmux could not be queried, so pane state is
+// unknown. Callers fail closed and change nothing.
+var ErrTmuxUnavailable = errors.New("tmux could not be queried")
+
+// paneAbsent reports whether a display-message error is tmux confirming the
+// target does not exist (as opposed to tmux being unreachable).
+func paneAbsent(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "can't find pane") || strings.Contains(s, "can't find window") ||
+		strings.Contains(s, "can't find session")
 }
 
 // HasSession reports whether an exact tmux session name exists.

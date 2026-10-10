@@ -20,11 +20,20 @@ type recorder struct {
 	envs  [][]string
 	// running simulates which sessions exist for has-session.
 	running map[string]bool
+	// noConfig counts calls that carried the fixed "-f /dev/null".
+	noConfig int
 }
 
 func (r *recorder) exec(argv, env []string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Every executed argv is "-S <sock> -f /dev/null <cmd...>"; record it
+	// without the fixed config flag (asserted in
+	// TestFixtureNeverLoadsUserTmuxConfig) so indexes stay readable.
+	if len(argv) >= 4 && argv[2] == "-f" && argv[3] == os.DevNull {
+		r.noConfig++
+		argv = append(append([]string(nil), argv[:2]...), argv[4:]...)
+	}
 	r.calls = append(r.calls, append([]string(nil), argv...))
 	r.envs = append(r.envs, append([]string(nil), env...))
 	if len(argv) >= 4 && argv[2] == "has-session" {
@@ -224,6 +233,32 @@ func TestCleanupKillsOnlyOwnedSessionsNeverServer(t *testing.T) {
 	}
 	if strings.Join(kills, ",") != "=fx-a,=fx-b" {
 		t.Fatalf("killed %v", kills)
+	}
+}
+
+// CodeRabbit r4238379176: every fixture tmux command runs with -f /dev/null,
+// so the fixture server never loads the developer's tmux.conf or plugins.
+// Callers still can never pass -f themselves.
+func TestFixtureNeverLoadsUserTmuxConfig(t *testing.T) {
+	r := &recorder{running: map[string]bool{}}
+	f, err := New(Options{Exec: r.exec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.NewSession("cfg", t.TempDir(), "sleep 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.calls) == 0 {
+		t.Fatal("nothing executed")
+	}
+	if r.noConfig != len(r.calls) {
+		t.Fatalf("%d of %d calls disabled config loading", r.noConfig, len(r.calls))
+	}
+	if _, err := f.Run("-f", "/tmp/evil.conf", "list-sessions"); !errors.Is(err, ErrRejected) {
+		t.Fatalf("caller-supplied -f must be rejected, got %v", err)
 	}
 }
 

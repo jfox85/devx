@@ -82,7 +82,7 @@ func runWrapper(args []string) int {
 	}
 	logf("%s", jsonArgv(argv))
 	env := scrubWrapperEnv(os.Environ())
-	if err := syscall.Exec(real, append([]string{"tmux"}, argv...), env); err != nil {
+	if err := syscall.Exec(real, append([]string{"tmux"}, withNoConfig(argv)...), env); err != nil {
 		fmt.Fprintf(os.Stderr, "devx test tmux wrapper: exec %s: %v\n", real, err)
 		return 1
 	}

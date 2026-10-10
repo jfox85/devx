@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 )
 
 // ErrIDExists reports that a manifest entry with the requested ID exists.
@@ -34,8 +35,11 @@ func AppendRegistered(m *Manifest, a Artifact) (Artifact, error) {
 	if existing, _ := Find(m, a.ID); existing != nil {
 		return Artifact{}, fmt.Errorf("%w: %q", ErrIDExists, a.ID)
 	}
+	// Compare canonical forms: "a/./b" and "a//b" name the same file, and
+	// removing one entry would delete the file the other still references.
+	a.File = filepath.ToSlash(filepath.Clean(a.File))
 	for _, x := range m.Artifacts {
-		if x.File == a.File {
+		if filepath.ToSlash(filepath.Clean(x.File)) == a.File {
 			return Artifact{}, fmt.Errorf("file %q is already registered", a.File)
 		}
 	}

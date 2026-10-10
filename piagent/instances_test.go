@@ -670,3 +670,32 @@ func TestApplyRechecksBasisAndMarker(t *testing.T) {
 		t.Fatalf("basis-less binding must be refused, got %v", err)
 	}
 }
+
+// CodeRabbit r4238379177: RecordedBinding must read the whole event log, not
+// just the first MaxEventsPage events. A rollback (session_instance_unbound)
+// after more than a page of events must clear the recorded binding, and a
+// later accepted binding must win over an earlier one.
+func TestRecordedBindingReadsBeyondFirstPage(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "", -time.Second)
+	bind := func(id string) {
+		_, _ = e.store.AppendEvent(a.ID, Event{Type: "session_instance_bound", Source: "devx", Data: map[string]any{
+			"session_instance_id": id, "basis": BasisOwnerConfirmed, "session_created_at": e.t0.Format(time.RFC3339Nano)}})
+	}
+	first, second := session.NewInstanceID(), session.NewInstanceID()
+	bind(first)
+	for i := 0; i < MaxEventsPage+50; i++ {
+		_, _ = e.store.AppendEvent(a.ID, Event{Type: "task_queued", Source: "devx"})
+	}
+	bind(second)
+	if id, _, err := e.store.RecordedBinding(a.ID); err != nil || id != second {
+		t.Fatalf("binding after the first page must win: got %q, %v", id, err)
+	}
+	for i := 0; i < MaxEventsPage; i++ {
+		_, _ = e.store.AppendEvent(a.ID, Event{Type: "task_queued", Source: "devx"})
+	}
+	_, _ = e.store.AppendEvent(a.ID, Event{Type: "session_instance_unbound", Source: "devx"})
+	if id, _, err := e.store.RecordedBinding(a.ID); err != nil || id != "" {
+		t.Fatalf("rollback after two pages must clear the binding: got %q, %v", id, err)
+	}
+}

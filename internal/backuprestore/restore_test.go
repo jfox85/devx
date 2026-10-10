@@ -277,6 +277,21 @@ func TestRejectPlantedSymlinkInsideFixture(t *testing.T) {
 	}
 }
 
+// CodeRabbit r4238379172: a planted symlink deeper than the direct parent
+// must be rejected BEFORE MkdirAll can create anything through it.
+func TestRejectDeepPlantedSymlinkCreatesNothingOutside(t *testing.T) {
+	b := makeBackup(t, []member{{name: "files/evil/sub/deeper/x", body: "x"}}, nil)
+	root := newRoot(t)
+	outside := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "restored", "files"), 0o700)
+	_ = os.Symlink(outside, filepath.Join(root, "restored", "files", "evil"))
+	_, err := RestoreFiles(Options{BackupDir: b, FixtureRoot: root})
+	mustReject(t, err, "planted symlink")
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("MkdirAll created %d entries outside the fixture through the symlink", len(entries))
+	}
+}
+
 func TestDestForAlwaysInsideRoot(t *testing.T) {
 	root := "/tmp/r"
 	for _, ok := range []string{"files/a", "files/a/b/c.json"} {

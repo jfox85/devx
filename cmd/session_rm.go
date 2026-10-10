@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,20 +168,7 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 		return fmt.Errorf("failed to save session metadata: %w", err)
 	}
 
-	retire := ""
-	if sess.IsLocalOnly() && sess.LocalOnly.AgentID != "" {
-		retire = sess.LocalOnly.AgentID
-	} else if sess.ManagedAgent != "" {
-		retire = sess.ManagedAgent // adopted via `devx agent adopt`
-	}
-	if m, err := newAgentManager(); err == nil {
-		agents, _ := m.Store.ListAgents()
-		for _, id := range agentsToRetire(name, sess, retire, agents) {
-			if err := m.RetireForSession(id, name); err != nil {
-				fmt.Printf("Warning: failed to retire managed agent %s: %v\n", id, err)
-			}
-		}
-	}
+	retireSessionAgents(os.Stdout, name, sess, newAgentManager)
 	// A local-only session was never in any route config, so removing it
 	// needs no shared route rewrite or tunnel reload.
 	if opts.SyncRoutes && !sess.IsLocalOnly() {
@@ -202,6 +190,33 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 // match is the agent's recorded instance id (or, for an id-less record, its
 // exact created_at), so only agents of this removed session are retired,
 // never ones bound to an earlier or later session that reused the name.
+// retireSessionAgents retires the removed session's managed agents. The
+// removal itself has already happened, so failures are warnings, but they are
+// always printed: a silent failure would leave agents active that still point
+// at the removed session name.
+func retireSessionAgents(out io.Writer, name string, sess *session.Session, open func() (*piagent.Manager, error)) {
+	retire := ""
+	if sess.IsLocalOnly() && sess.LocalOnly.AgentID != "" {
+		retire = sess.LocalOnly.AgentID
+	} else if sess.ManagedAgent != "" {
+		retire = sess.ManagedAgent // adopted via `devx agent adopt`
+	}
+	m, err := open()
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "Warning: could not open the managed-agent store, so no agent of session %q was retired: %v\n", name, err)
+		return
+	}
+	agents, lerr := m.Store.ListAgents()
+	if lerr != nil {
+		_, _ = fmt.Fprintf(out, "Warning: could not list managed agents (agents bound to this session instance may stay active): %v\n", lerr)
+	}
+	for _, id := range agentsToRetire(name, sess, retire, agents) {
+		if err := m.RetireForSession(id, name); err != nil {
+			_, _ = fmt.Fprintf(out, "Warning: failed to retire managed agent %s: %v\n", id, err)
+		}
+	}
+}
+
 func agentsToRetire(name string, sess *session.Session, marker string, agents []*piagent.Agent) []string {
 	seen := map[string]bool{}
 	var out []string

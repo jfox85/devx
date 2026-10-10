@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,5 +155,32 @@ func TestReadOnlyInvocationSkipsUpdateCheck(t *testing.T) {
 		if got := isReadOnlyInvocation(strings.Fields(args)); got != want {
 			t.Errorf("%q: got %v want %v", args, got, want)
 		}
+	}
+}
+
+// CodeRabbit r4238379169: retirement failures after a session is removed
+// must be reported, never swallowed.
+func TestRetireSessionAgentsReportsFailures(t *testing.T) {
+	sess := &session.Session{Name: "s", ManagedAgent: "pa_000000000001"}
+	var out strings.Builder
+	retireSessionAgents(&out, "s", sess, func() (*piagent.Manager, error) { return nil, errors.New("store locked") })
+	if !strings.Contains(out.String(), "Warning: could not open the managed-agent store") || !strings.Contains(out.String(), "store locked") {
+		t.Fatalf("open failure must be reported: %q", out.String())
+	}
+	// ListAgents failure: the agents directory is unreadable.
+	root := t.TempDir()
+	st := piagent.NewStore(root)
+	_ = os.MkdirAll(filepath.Join(root, "agents"), 0o700)
+	_ = os.WriteFile(filepath.Join(root, "agents", "pa_000000000002"), []byte("not a dir"), 0o600)
+	_ = os.Chmod(filepath.Join(root, "agents"), 0o000)
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "agents"), 0o700) })
+	if _, err := st.ListAgents(); err == nil {
+		t.Skip("cannot make ListAgents fail on this platform (running as root?)")
+	}
+	out.Reset()
+	m := piagent.NewManager(st, piagent.Tmux{}, nil, piagent.Config{})
+	retireSessionAgents(&out, "s", sess, func() (*piagent.Manager, error) { return m, nil })
+	if !strings.Contains(out.String(), "Warning: could not list managed agents") {
+		t.Fatalf("list failure must be reported: %q", out.String())
 	}
 }

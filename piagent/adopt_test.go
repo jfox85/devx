@@ -1,6 +1,7 @@
 package piagent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -308,5 +309,22 @@ func TestStartRecordsSessionInstance(t *testing.T) {
 	agents, _ := m.Store.ListAgents()
 	if len(agents) != 1 || agents[0].SessionInstanceID != "si_cccccccccccccccccccccccc" || agents[0].SessionCreatedAt.IsZero() {
 		t.Fatalf("agent binding: %+v", agents)
+	}
+}
+
+func TestAdoptRefusesWhenTmuxUnavailable(t *testing.T) {
+	m, ac, _ := newAdoptManager(t)
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		return "", fmt.Errorf("tmux display-message: exit status 1: server exited unexpectedly")
+	}}
+	_, err := m.Adopt(AdoptRequest{Session: "human-sess", PaneID: "%7", PiSessionID: "01a1229c-a4f8-7005-9d41-c0bf435b403a", By: "jon"})
+	if !errors.Is(err, ErrTmuxUnavailable) {
+		t.Fatalf("want ErrTmuxUnavailable, got %v", err)
+	}
+	if ac.adopted["human-sess"] != "" {
+		t.Fatal("marker must be released")
+	}
+	if as, _ := m.Store.ListAgents(); len(as) != 0 {
+		t.Fatalf("no agent may be registered: %d", len(as))
 	}
 }

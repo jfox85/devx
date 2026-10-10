@@ -277,7 +277,15 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 	} else if err != nil {
 		return err
 	}
-	if agent.Binding.PaneID == "" || !m.Tmux.Pane(agent.Binding.PaneID).Exists {
+	if agent.Binding.PaneID == "" {
+		return m.launch(agent.ID, false)
+	}
+	switch p := m.Tmux.Pane(agent.Binding.PaneID); {
+	case p.QueryFailed:
+		// The task is queued; launching now could start a second Pi next to
+		// a live one. A retry with the same key resumes from here.
+		return fmt.Errorf("%w: pane %s state unknown; retry with the same idempotency_key", ErrTmuxUnavailable, agent.Binding.PaneID)
+	case !p.Exists:
 		return m.launch(agent.ID, false)
 	}
 	return nil
@@ -346,10 +354,15 @@ func (s *Store) RecordedBinding(agentID string) (string, time.Time, error) {
 				id, at = "", time.Time{}
 			}
 		}
-		if len(evs) == 0 || last <= after {
+		// ReadEvents returns the log's highest seq, not the last seq of this
+		// page: advance from the last event actually returned.
+		if len(evs) == 0 {
 			return id, at, nil
 		}
-		after = last
+		after = evs[len(evs)-1].Seq
+		if after >= last {
+			return id, at, nil
+		}
 	}
 }
 
@@ -377,6 +390,11 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		}
 	} else if err := m.Creator.EnsureTmux(agent.DevxSession, agent); err != nil {
 		return fmt.Errorf("ensure tmux session: %w", err)
+	}
+	// Fail closed before changing anything: with the pane's state unknown,
+	// a relaunch could orphan a live turn or open a second Pi window.
+	if agent.Binding.PaneID != "" && m.Tmux.Pane(agent.Binding.PaneID).QueryFailed {
+		return fmt.Errorf("%w: pane %s state unknown; nothing was changed, retry", ErrTmuxUnavailable, agent.Binding.PaneID)
 	}
 	nonce := randomHex(12)
 	bridgePath, err := WriteBridge(m.Store.Root)
@@ -745,6 +763,8 @@ func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
 	}
 	pane := m.Tmux.Pane(req.PaneID)
 	switch {
+	case pane.QueryFailed:
+		return nil, undo(fmt.Errorf("%w: cannot inspect pane %s; nothing was adopted, retry", ErrTmuxUnavailable, req.PaneID))
 	case !pane.Exists || pane.Dead:
 		return nil, undo(fmt.Errorf("pane %s does not exist or is dead", req.PaneID))
 	case !pane.InSession(sess.TmuxName):
@@ -858,7 +878,11 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 				// A different live bridge instance cannot be holding this
 				// turn, and a missing pane cannot finish it.
 				sameInstanceDead := bridgeDead && v.Bridge.Instance == t.BridgeInstance
-				if (v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || (!pane.Exists || pane.Dead) && a.Binding.PaneID != "" {
+				// Only a CONFIRMED absence or dead pane counts: a failed
+				// tmux query (busy/restarting server, timeout, tmux not on
+				// PATH) proves nothing and must not terminalize the task.
+				paneGone := !pane.QueryFailed && (!pane.Exists || pane.Dead) && a.Binding.PaneID != ""
+				if (v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || paneGone {
 					if err := m.markOrphanedLocked(a, "the Pi process that received this task is gone; outcome unknown — inspect the session"); err != nil {
 						return err
 					}
@@ -872,6 +896,8 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 			v.State, v.Detail = AgentRetired, fmt.Sprintf("session %q was removed; records kept for inspection", a.DevxSession)
 		case a.Binding.PaneID == "":
 			v.State, v.Detail = AgentNotLaunched, "start did not finish launching Pi; retry the start with the same idempotency_key"
+		case pane.QueryFailed:
+			v.State, v.Detail = AgentUnknown, "tmux could not be queried (server busy, restarting or unavailable); pane state unknown, nothing was changed"
 		case !pane.Exists:
 			v.State, v.Detail = AgentPaneExited, "the bound tmux pane no longer exists"
 		case !v.BindingOK:
@@ -1003,6 +1029,12 @@ func (m *Manager) Result(taskID string, offset, maxBytes int) (*ResultChunk, err
 	}
 	c.Offset = offset
 	chunk, _ := headExcerpt(text[offset:], maxBytes)
+	if chunk == "" && offset < len(text) {
+		// max_bytes is smaller than the rune at offset: return that one
+		// whole rune so the cursor always advances.
+		_, size := utf8.DecodeRuneInString(text[offset:])
+		chunk = text[offset : offset+size]
+	}
 	c.Text = chunk
 	c.NextOffset = offset + len(chunk)
 	c.EOF = c.NextOffset >= len(text)

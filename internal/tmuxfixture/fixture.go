@@ -122,6 +122,17 @@ func (f *Fixture) Dir() string { return f.dir }
 // Owner returns the current on-disk ownership record.
 func (f *Fixture) Owner() (*Owner, error) { return readOwner(f.dir) }
 
+// withNoConfig inserts "-f /dev/null" after the validated "-S <socket>" so
+// the fixture server never loads the developer's ~/.tmux.conf or
+// $XDG_CONFIG_HOME/tmux/tmux.conf (plugins, run-shell, session restore).
+// It is added only here, after validation: callers can never pass -f.
+// (Pinning HOME instead would change HOME for every pane the server runs.)
+func withNoConfig(argv []string) []string {
+	out := make([]string, 0, len(argv)+2)
+	out = append(out, argv[0], argv[1], "-f", os.DevNull)
+	return append(out, argv[2:]...)
+}
+
 // Env returns the scrubbed environment used for every tmux command.
 func Env() []string {
 	src := os.Environ()
@@ -242,7 +253,7 @@ func (f *Fixture) run(args []string) (string, error) {
 		return "", err
 	}
 	f.audit(argv)
-	return f.exec(argv, Env())
+	return f.exec(withNoConfig(argv), Env())
 }
 
 // CommandLogPath is the durable audit log of every argv this fixture
