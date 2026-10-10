@@ -22,12 +22,8 @@ func skipGatepostTrustOnWindows(t *testing.T) {
 	}
 }
 
-func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
-	skipGatepostTrustOnWindows(t)
-	root := t.TempDir()
-	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
-		t.Fatalf("gatepostAdaptersDir without hook files = %q, %v; want empty with error", got, err)
-	}
+func writeGatepostHookFiles(t *testing.T, root string) {
+	t.Helper()
 	for _, rel := range []string{
 		filepath.Join("adapters", "claude", "gatepost-events.py"),
 		filepath.Join("adapters", "codex", "gatepost-events.py"),
@@ -40,6 +36,28 @@ func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
 			t.Fatalf("write %s: %v", path, err)
 		}
 	}
+}
+
+// On Windows the trust check cannot see ownership or real permissions, so it
+// must refuse to trust any adapter tree. Pin that fail-closed contract.
+func TestGatepostAdaptersDirFailsClosedOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only contract; Unix acceptance is covered by TestGatepostAdaptersDirRequiresHookFiles")
+	}
+	root := t.TempDir()
+	writeGatepostHookFiles(t, root)
+	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
+		t.Fatalf("gatepostAdaptersDir on Windows = %q, %v; want empty with error (fail closed)", got, err)
+	}
+}
+
+func TestGatepostAdaptersDirRequiresHookFiles(t *testing.T) {
+	skipGatepostTrustOnWindows(t)
+	root := t.TempDir()
+	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
+		t.Fatalf("gatepostAdaptersDir without hook files = %q, %v; want empty with error", got, err)
+	}
+	writeGatepostHookFiles(t, root)
 	want, err := filepath.EvalSymlinks(filepath.Join(root, "adapters"))
 	if err != nil {
 		t.Fatal(err)

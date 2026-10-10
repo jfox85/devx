@@ -5,7 +5,8 @@ package target
 import "os"
 
 func validateTrustedGatepostOwner(_ string, _ os.FileInfo) error {
-	// Windows CI/builds do not expose syscall.Stat_t UIDs. Keep the mode and
-	// symlink/path-scope checks portable there.
+	// Windows does not expose syscall.Stat_t UIDs, so there is no owner check.
+	// The mode check in validateTrustedGatepostPath still runs and fails closed
+	// on Windows (directories report 0777), so trust is never granted there.
 	return nil
 }

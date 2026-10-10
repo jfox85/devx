@@ -111,8 +111,9 @@ func TestLoadConfigExternalDomain(t *testing.T) {
 
 func TestUsageConfigRoundTripsThroughSaveConfig(t *testing.T) {
 	viper.Reset()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir()) // os.UserHomeDir reads USERPROFILE on Windows
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 
 	saved := &Config{}
 	saved.Usage.Enabled = false
