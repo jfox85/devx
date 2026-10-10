@@ -11,6 +11,7 @@ import (
 func TestRemoveGatepostStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	stateDir := filepath.Join(home, ".local", "share", "devx", "gatepost", "demo")
 	if err := os.MkdirAll(filepath.Join(stateDir, "agent-home", ".codex"), 0o700); err != nil {
 		t.Fatal(err)
@@ -28,6 +29,7 @@ func TestRemoveGatepostStateDir(t *testing.T) {
 func TestRemoveGatepostStateDirRejectsOutsideRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	sess := &session.Session{Name: "demo"}
 	sess.Target.Gatepost.SessionDir = t.TempDir()
 	if err := removeGatepostStateDir(sess); err == nil {
@@ -38,6 +40,7 @@ func TestRemoveGatepostStateDirRejectsOutsideRoot(t *testing.T) {
 func TestRemoveGatepostStateDirRejectsSymlinkStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	root := filepath.Join(home, ".local", "share", "devx", "gatepost")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)

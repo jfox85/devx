@@ -25,6 +25,7 @@ func TestGenerateTmuxpConfig(t *testing.T) {
 	}()
 	// Prevent host-global templates from affecting this test.
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Test data
 	data := TmuxpData{
