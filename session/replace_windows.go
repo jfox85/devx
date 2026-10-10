@@ -47,7 +47,7 @@ func posixReplace(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 
 	name, err := windows.UTF16FromString(dst)
 	if err != nil {
