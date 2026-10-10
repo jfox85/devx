@@ -231,9 +231,6 @@ func checkDependenciesQuiet() {
 	}
 }
 
-// isStdioServerInvocation reports whether args run a stdio protocol server
-// (`devx [global flags] mcp pi`), which must not print anything to stdout
-// outside the protocol stream.
 // isReadOnlyInvocation reports whether args run a command that promises to
 // write nothing (the `devx session instances` dry run reviews records before
 // any write), so the background update check, which writes its state file,
@@ -267,6 +264,9 @@ func positionalArgs(args []string) []string {
 	return pos
 }
 
+// isStdioServerInvocation reports whether args run a stdio protocol server
+// (`devx [global flags] mcp pi`), which must not print anything to stdout
+// outside the protocol stream.
 func isStdioServerInvocation(args []string) bool {
 	var pos []string
 	for i := 0; i < len(args); i++ {

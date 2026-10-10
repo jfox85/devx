@@ -174,7 +174,9 @@ runs automatically.
    applicable hash. Review every `skip` and `candidate` line.
 4. **Apply.** `devx session instances --apply <hash> [the same --confirm
    ids]`. Note the printed backup directory.
-   - Unconfirmed candidates stay unbound and are denied by the bridge.
+   - Unconfirmed candidates stay unbound. Once their session has an id,
+     the bridge denies them, including adopted ones; relaunch still works
+     through the marker. Confirm them in a later run if wanted.
    - Until the migration runs, an UNBOUND adopted agent whose marker an
      older writer dropped can't be relaunched. Relaunch only verifies; it
      never re-marks. In the preview of the live records, this applied to

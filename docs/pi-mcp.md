@@ -261,8 +261,11 @@ to its session, but only when the evidence is unambiguous:
     and a `marker` binding whose marker changed after review.
     Restoration from the event log ignores binding events without an
     accepted basis.
-  - Unconfirmed candidates stay unbound, so the bridge denies them; the
-    legacy rule needs a marker anyway. Re-adopting gives a fresh binding.
+  - Unconfirmed candidates stay unbound. The bridge's legacy rule needs a
+    marker and a session record without an id, so once `--apply` gives
+    their session an id, the bridge denies them (fail closed).
+    Unconfirmed adopted candidates can still be relaunched through their
+    marker. Confirm them in a later run, or adopt them again.
 - **Restores dropped bindings.** If an older binary rewrote an agent's
   `agent.json` and dropped its binding, the plan restores it from the
   agent's append-only event log (`restore_agent_binding`), but only if
