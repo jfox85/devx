@@ -163,10 +163,14 @@ func InstallWrapper() (*Wrapped, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	// tmux does not exist on Windows, so there is nothing to route: no
-	// wrapper is placed on PATH and any tmux exec simply fails (closed). The
-	// HOME/profile isolation below still applies, so tests never touch the
-	// runner's real profile.
+	// On Windows there is no wrapper (it relies on a symlinked test binary
+	// and exec-in-place), so a tmux found on PATH (MSYS2/Cygwin) would be
+	// reached unpinned: refuse instead of failing open. With no tmux, any
+	// tmux exec simply fails. Profile isolation below still applies.
+	if runtime.GOOS == "windows" && real != "" {
+		cleanup()
+		return nil, nil, fmt.Errorf("tmux found on PATH at %s: the owned-socket wrapper is not supported on Windows; remove tmux from PATH for tests", real)
+	}
 	if runtime.GOOS != "windows" {
 		if err := os.Symlink(self, filepath.Join(w.BinDir, "tmux")); err != nil {
 			cleanup()
@@ -184,8 +188,11 @@ func InstallWrapper() (*Wrapped, func(), error) {
 	set := map[string]string{
 		"PATH": w.BinDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME": w.Home,
-		// os.UserHomeDir reads USERPROFILE on Windows; pin it too.
+		// Windows equivalents: os.UserHomeDir reads USERPROFILE, and
+		// os.UserConfigDir/UserCacheDir read APPDATA/LOCALAPPDATA.
 		"USERPROFILE":     w.Home,
+		"APPDATA":         filepath.Join(w.Home, "AppData", "Roaming"),
+		"LOCALAPPDATA":    filepath.Join(w.Home, "AppData", "Local"),
 		"XDG_CONFIG_HOME": filepath.Join(w.Home, ".config"),
 		"XDG_STATE_HOME":  filepath.Join(w.Home, ".local", "state"),
 		"XDG_CACHE_HOME":  filepath.Join(w.Home, ".cache"),

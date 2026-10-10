@@ -21,6 +21,7 @@ import (
 // removal, exclusions, allowed-project changes, malformed config and
 // recovery all take effect on the next call with no restart.
 func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
+	requireArtifactBridgePlatform(t)
 	w := tmuxfixture.ActiveWrapper()
 	if w == nil || os.Getenv("HOME") != w.Home {
 		t.Skip("isolated test HOME not active")
@@ -30,7 +31,7 @@ func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	repoRoot, _ := filepath.Abs("..")
-	bin := filepath.Join(home, "bin", "devx")
+	bin := filepath.Join(home, "bin", "devx"+exeSuffix())
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Dir = repoRoot
 	build.Env = append(os.Environ(), "GOFLAGS=")
@@ -110,7 +111,7 @@ func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
 	// One long-lived MCP server process.
 	c := exec.Command(bin, "mcp", "pi")
 	c.Dir = home
-	c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "DEVX_DISABLE_CADDY=true")
+	c.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "DEVX_DISABLE_CADDY=true")
 	stdin, _ := c.StdinPipe()
 	stdout, _ := c.StdoutPipe()
 	if err := c.Start(); err != nil {

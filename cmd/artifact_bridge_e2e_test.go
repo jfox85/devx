@@ -30,6 +30,7 @@ import (
 // resolution through `devx artifact`, and cross-session denial. No tmux, Pi,
 // network or real user state is touched.
 func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
+	requireArtifactBridgePlatform(t)
 	w := tmuxfixture.ActiveWrapper()
 	if w == nil || os.Getenv("HOME") != w.Home {
 		t.Skip("isolated test HOME not active")
@@ -39,7 +40,7 @@ func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	repoRoot, _ := filepath.Abs("..")
-	bin := filepath.Join(home, "bin", "devx")
+	bin := filepath.Join(home, "bin", "devx"+exeSuffix())
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Dir = repoRoot
 	build.Env = append(os.Environ(), "GOFLAGS=")
@@ -55,7 +56,7 @@ func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	env := append(os.Environ(), "DEVX_DISABLE_CADDY=true", "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+	env := append(os.Environ(), "DEVX_DISABLE_CADDY=true", "HOME="+home, "USERPROFILE="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"))
 
 	// Two sessions (worktrees) in the allowed project, each with an agent.

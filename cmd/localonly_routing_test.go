@@ -31,6 +31,7 @@ func TestDefaultRouteSyncNeverPublishesLocalOnly(t *testing.T) {
 	requireIsolatedTestEnv(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	cfgDir := filepath.Join(home, ".config", "devx")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -131,6 +132,7 @@ func TestRemoveLocalOnlySessionSkipsSharedRouteSync(t *testing.T) {
 	requireIsolatedTestEnv(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	cfgDir := filepath.Join(home, ".config", "devx")
 	_ = os.MkdirAll(cfgDir, 0o700)
 	tunnelCfg := filepath.Join(home, "cloudflared.yaml")
@@ -178,6 +180,7 @@ func TestSessionCreateRefusesLocalOnlySession(t *testing.T) {
 	requireIsolatedTestEnv(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	_ = os.MkdirAll(filepath.Join(home, ".config", "devx"), 0o700)
 	repo := filepath.Join(home, "repo")
 	mustRun(t, "", "git", "init", "-q", "-b", "main", repo)
