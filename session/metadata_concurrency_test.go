@@ -254,3 +254,34 @@ func TestConcurrentUpdatesCompleteWithinTimeout(t *testing.T) {
 		t.Fatal("concurrent session updates timed out; possible in-process lock deadlock")
 	}
 }
+
+// A writer's atomic rename must succeed while a lock-free reader holds the
+// sessions file open (the reader keeps the old snapshot). On Windows this
+// failed with "Access is denied" because the read handle lacked
+// FILE_SHARE_DELETE; on Unix it always held.
+func TestWriteSucceedsWhileReaderHoldsFileOpen(t *testing.T) {
+	setupTempHome(t)
+	st, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("s1", "b", "/p", nil); err != nil {
+		t.Fatal(err)
+	}
+	release, err := holdSessionsFileOpenForTest(getSessionsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := st.UpdateSession("s1", func(s *Session) { s.Branch = "changed" }); err != nil {
+		t.Fatalf("update while a reader holds the file open: %v", err)
+	}
+	release()
+	got, err := LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := got.GetSession("s1"); s == nil || s.Branch != "changed" {
+		t.Fatalf("update lost: %+v", s)
+	}
+}
