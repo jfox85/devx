@@ -8,16 +8,34 @@
 // in that same manifest. There is no parallel registry: retention, archive
 // and removal remain the existing `devx artifact` semantics.
 //
-// Scope: every operation names a managed agent (pa_...) and is re-authorized
-// on every call: the agent must exist, not be retired, belong to a project in
-// pi_mcp.allowed_projects, and its DevX session record must still point at
-// the agent's worktree and not be owned by another agent. Artifact IDs are
-// opaque and derived from (agent, session, manifest id), so an ID observed in
-// one session does not resolve in any other.
+// Trust boundary (read this before granting access)
 //
-// Capabilities: reading (list + read) and uploading are enabled separately in
-// the DevX config; a disabled capability's tools are neither listed nor
-// callable.
+// `devx mcp pi` receives NO caller identity. The Agent Shed gateway
+// authenticates the calling principal (assistant), checks that principal's
+// reviewed grant for the relay app (which tools), and passes only the tool
+// name and arguments; the relay forwards them over stdio. The agent_id in the
+// arguments is chosen by the caller. So this package cannot prove that a given
+// caller may read a given session; it can only enforce what the local owner
+// has opted in to. Concretely, any principal granted a bridge tool on the
+// devx-pi app can use it on every session the owner exposed, and nothing more.
+//
+// The local scope therefore is an owner allowlist, re-checked on every call:
+//   - the capability (read / upload) is enabled in the DevX config;
+//   - the agent's session is listed in pi_mcp.artifacts.sessions (exact
+//     DevX session names; empty = no session is exposed). Being a managed
+//     agent, or being in pi_mcp.allowed_projects, is NOT enough;
+//   - the agent exists, is not retired, its project is in
+//     pi_mcp.allowed_projects, its DevX session record still points at the
+//     agent's worktree with the same project, and no other agent owns it.
+//
+// Removing a session from the list, disabling a capability, retiring the
+// agent or removing the session takes effect on the next call (config is read
+// at process start; the relay starts a fresh `devx mcp pi` per local session,
+// and the session record/agent record are re-read on every call).
+//
+// Artifact IDs are opaque and derived from (agent, session, manifest id), so
+// an ID observed in one session does not resolve in any other. They are not
+// secrets or capabilities: possession of an ID grants nothing.
 package artifactbridge
 
 import (
@@ -103,11 +121,16 @@ func errf(code, format string, a ...any) *Error {
 
 var errUnavailable = errf(codeUnavailable, "artifact file is missing, not a regular file, or not reachable without following a link")
 
-// Config controls the bridge. Both capabilities default to off.
+var errNotExist = errf(codeNotFound, "not found")
+
+// Config controls the bridge. Both capabilities default to off, and no
+// session is exposed unless listed in Sessions.
 type Config struct {
 	Read            bool
 	Upload          bool
 	AllowedProjects []string
+	// Sessions are the DevX session names the owner exposes to the bridge.
+	Sessions []string
 	// StateDir holds upload staging state (outside every worktree).
 	StateDir       string
 	MaxUploadBytes int64
@@ -129,6 +152,9 @@ func New(cfg Config, agents *piagent.Store) *Service {
 	}
 	if cfg.MaxUploadBytes > MaxUploadBytesCeiling {
 		cfg.MaxUploadBytes = MaxUploadBytesCeiling
+	}
+	if !platformSupported {
+		cfg.Read, cfg.Upload = false, false
 	}
 	return &Service{Cfg: cfg, Agents: agents, Now: func() time.Time { return time.Now().UTC() },
 		Sessions: func() (map[string]*session.Session, error) {
@@ -158,6 +184,9 @@ func (s *Service) authorize(agentID string) (*scope, error) {
 	if err != nil || a.RetiredAt != nil || a.ID != agentID {
 		return nil, deny
 	}
+	if !contains(s.Cfg.Sessions, a.DevxSession) {
+		return nil, deny
+	}
 	if a.Project == "" || !contains(s.Cfg.AllowedProjects, a.Project) {
 		return nil, deny
 	}
@@ -181,7 +210,35 @@ func (s *Service) authorize(agentID string) (*scope, error) {
 	if sess.ManagedAgent != "" && sess.ManagedAgent != a.ID {
 		return nil, deny
 	}
+	// Exactly one live agent may claim the session; otherwise the scope is
+	// ambiguous and nothing is served.
+	agents, err := s.Agents.ListAgents()
+	if err != nil {
+		return nil, errf(codeFailed, "agent records are unavailable")
+	}
+	for _, o := range agents {
+		if o.ID != a.ID && o.RetiredAt == nil && o.DevxSession == a.DevxSession {
+			return nil, deny
+		}
+	}
 	return &scope{agent: a, sess: sess}, nil
+}
+
+// manifest loads the session's artifact manifest without following any
+// symlink (.artifacts or manifest.json), with the standard validation.
+func (s *Service) manifest(sc *scope) (*artifactpkg.Manifest, error) {
+	data, err := readManifestNoFollow(sc.sess.Path)
+	if errors.Is(err, errNotExist) {
+		return artifactpkg.NewManifest(sc.sess.Name), nil
+	}
+	if err != nil {
+		return nil, errf(codeUnavailable, "the session's artifact manifest is unreadable")
+	}
+	m, err := artifactpkg.ParseManifest(data, sc.sess.Name)
+	if err != nil {
+		return nil, errf(codeUnavailable, "the session's artifact manifest is unreadable")
+	}
+	return m, nil
 }
 
 func contains(list []string, v string) bool {

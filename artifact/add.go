@@ -25,15 +25,6 @@ type AddOptions struct {
 	Tags        []string
 	Focus       bool
 	Now         time.Time
-	// NoAssetDiscovery skips scanning HTML/Markdown/CSS for referenced
-	// files. Use it for untrusted content (e.g. remote uploads): discovered
-	// assets are deleted with the artifact on removal, so untrusted
-	// references must never be recorded.
-	NoAssetDiscovery bool
-	// SuffixOnConflict picks a numbered destination (name-2.ext, ...) when
-	// the destination exists, even when ID is set. Without it, an explicit
-	// ID makes an existing destination an error.
-	SuffixOnConflict bool
 }
 
 func Add(sess *session.Session, opts AddOptions) (out Artifact, err error) {
@@ -119,7 +110,7 @@ func addLocked(sess *session.Session, opts AddOptions) (Artifact, error) {
 		return Artifact{}, fmt.Errorf("failed to write default artifact theme: %w", err)
 	}
 
-	finalRel, finalAbs, err := uniqueDestination(sess, destRel, opts.ID != "" && !opts.SuffixOnConflict)
+	finalRel, finalAbs, err := uniqueDestination(sess, destRel, opts.ID != "")
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -138,10 +129,6 @@ func addLocked(sess *session.Session, opts AddOptions) (Artifact, error) {
 		s := opts.Summary
 		summary = &s
 	}
-	var assets []string
-	if !opts.NoAssetDiscovery {
-		assets = DiscoverAssetBundle(sess, finalRel)
-	}
 	artifact := Artifact{
 		ID:        id,
 		Type:      artifactType,
@@ -153,7 +140,7 @@ func addLocked(sess *session.Session, opts AddOptions) (Artifact, error) {
 		Retention: retention,
 		Summary:   summary,
 		Tags:      opts.Tags,
-		Assets:    assets,
+		Assets:    DiscoverAssetBundle(sess, finalRel),
 		Focus:     opts.Focus,
 	}
 	if err := ValidateArtifact(artifact); err != nil {

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/piagent"
 )
 
@@ -223,7 +222,7 @@ func (s *Service) TaskArtifacts(agent *piagent.Agent, task *piagent.TaskView) []
 	if err != nil {
 		return nil
 	}
-	m, err := artifactpkg.LoadManifest(sc.sess)
+	m, err := s.manifest(sc)
 	if err != nil {
 		return nil
 	}

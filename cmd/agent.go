@@ -318,12 +318,14 @@ func piAgentStateDir() string {
 // newArtifactBridge returns the artifact bridge tool provider. Reading and
 // uploading are separate, opt-in capabilities (pi_mcp.artifacts.read /
 // pi_mcp.artifacts.upload, both default false); with both off no artifact
-// tool is listed or callable.
+// tool is listed or callable. Only sessions named in
+// pi_mcp.artifacts.sessions are ever exposed.
 func newArtifactBridge(m *piagent.Manager) piagent.ToolProvider {
 	return artifactbridge.New(artifactbridge.Config{
 		Read:            viper.GetBool("pi_mcp.artifacts.read"),
 		Upload:          viper.GetBool("pi_mcp.artifacts.upload"),
 		AllowedProjects: m.Config.AllowedProjects,
+		Sessions:        viper.GetStringSlice("pi_mcp.artifacts.sessions"),
 		StateDir:        filepath.Join(piAgentStateDir(), "artifact-bridge"),
 		MaxUploadBytes:  viper.GetInt64("pi_mcp.artifacts.max_upload_bytes"),
 	}, m.Store)

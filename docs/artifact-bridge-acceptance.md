@@ -56,13 +56,17 @@ owner.
    - No shared service needs a restart for the MCP tools, because the relay
      starts `devx mcp pi` per local session.
 2. **Enable capabilities** in `~/.config/devx/config.yaml`. Start with read
-   only:
+   only, exposing just the synthetic fixture session:
    ```yaml
    pi_mcp:
      artifacts:
        read: true
        upload: false
+       sessions: [artifact-bridge-fixture]   # nothing else is exposed
    ```
+   Every principal granted these tools in the gateway can read every listed
+   session. DevX receives no caller identity (see docs/pi-mcp.md, "Trust
+   boundary").
 3. **Allow the tools in the relay** (Agent Shed relay config,
    `services[id=devx-pi].allowed_tools`): add `devx_artifact_list` and
    `devx_artifact_read`. Add `devx_attachment_upload` only when upload is

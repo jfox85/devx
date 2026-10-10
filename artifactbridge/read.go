@@ -49,9 +49,11 @@ type ArtifactInfo struct {
 
 func versionOf(sum string) string { return "c_" + sum[:24] }
 
-// hashCache avoids re-hashing unchanged files on every list. Entries are
-// keyed by file identity, size and nanosecond mtime; any change misses.
-// Reads never use it: they always hash the bytes they return.
+// hashCache avoids re-hashing unchanged files. Entries are keyed by path,
+// device+inode, ctime, size and nanosecond mtime. Any write to the file
+// changes ctime (which user space cannot set back), so a hit means the bytes
+// are the ones that were hashed. Reads that hit the cache read only their
+// window and still require identical fstat before and after the read.
 type hashKey struct {
 	file  string
 	size  int64
@@ -68,6 +70,54 @@ const hashCacheMax = 1024
 
 func cacheKey(name string, fi os.FileInfo) hashKey {
 	return hashKey{file: name, size: fi.Size(), mtime: fi.ModTime().UnixNano(), sys: fileIdentity(fi)}
+}
+
+func cachedSum(k hashKey) (string, bool) {
+	if k.sys == "" {
+		return "", false
+	}
+	hashCache.Lock()
+	defer hashCache.Unlock()
+	s, ok := hashCache.m[k]
+	return s, ok
+}
+
+func storeSum(k hashKey, sum string) {
+	if k.sys == "" {
+		return
+	}
+	hashCache.Lock()
+	defer hashCache.Unlock()
+	if len(hashCache.m) >= hashCacheMax {
+		hashCache.m = map[hashKey]string{}
+	}
+	hashCache.m[k] = sum
+}
+
+// readWindow reads [off, off+n) with ReadAt plus the 512-byte head, then
+// requires the file's identity (incl. ctime) to be unchanged, so the window
+// belongs to the content whose hash was cached under that identity.
+func readWindow(f *os.File, before os.FileInfo, off, n int64) (*hashed, error) {
+	out := &hashed{size: before.Size()}
+	if off < before.Size() && n > 0 {
+		if off+n > before.Size() {
+			n = before.Size() - off
+		}
+		out.chunk = make([]byte, n)
+		if _, err := f.ReadAt(out.chunk, off); err != nil {
+			return nil, errf(codeChanged, "artifact changed while it was being read; retry")
+		}
+	}
+	head := minI64(512, before.Size())
+	out.head = make([]byte, head)
+	if _, err := f.ReadAt(out.head, 0); err != nil {
+		return nil, errf(codeChanged, "artifact changed while it was being read; retry")
+	}
+	after, err := f.Stat()
+	if err != nil || cacheKey("", after) != cacheKey("", before) {
+		return nil, errf(codeChanged, "artifact changed while it was being read; retry")
+	}
+	return out, nil
 }
 
 // hashed is one consistent pass over an open artifact file.
@@ -121,12 +171,39 @@ func hashFile(f *os.File, before os.FileInfo, chunkOff, chunkLen int64) (*hashed
 		}
 	}
 	after, err := f.Stat()
-	if err != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) || pos != before.Size() {
+	if err != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) || pos != before.Size() ||
+		fileIdentity(after) != fileIdentity(before) {
 		return nil, errf(codeChanged, "artifact changed while it was being read; retry")
 	}
 	out.size = pos
 	out.sha256 = hex.EncodeToString(h.Sum(nil))
 	return out, nil
+}
+
+// maxTextEncodedBytes bounds the JSON-escaped size of one copy of a text
+// chunk. Two copies plus metadata stay under MaxResultBytes.
+const maxTextEncodedBytes = (MaxResultBytes - 6000) / 2
+
+// fitEscaped returns the longest prefix length of valid UTF-8 data whose
+// encoding/json string encoding (default HTML escaping) is <= budget bytes.
+func fitEscaped(data []byte, budget int) int {
+	n := 0
+	for i := 0; i < len(data); {
+		r, size := utf8.DecodeRune(data[i:])
+		w := size
+		switch {
+		case r == '"' || r == '\\' || r == '\n' || r == '\r' || r == '\t':
+			w = 2
+		case r < 0x20 || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029':
+			w = 6
+		}
+		if n+w > budget {
+			return i
+		}
+		n += w
+		i += size
+	}
+	return len(data)
 }
 
 func minI64(a, b int64) int64 {
@@ -172,9 +249,7 @@ func (s *Service) info(sc *scope, a artifactpkg.Artifact, withHash bool) Artifac
 	it.Available = true
 	if withHash {
 		key := cacheKey(sc.sess.Path+"\x00"+a.File, fi)
-		hashCache.Lock()
-		sum, ok := hashCache.m[key]
-		hashCache.Unlock()
+		sum, ok := cachedSum(key)
 		if !ok {
 			h, err := hashFile(f, fi, 0, 0)
 			if err != nil {
@@ -182,12 +257,7 @@ func (s *Service) info(sc *scope, a artifactpkg.Artifact, withHash bool) Artifac
 				return it
 			}
 			sum = h.sha256
-			hashCache.Lock()
-			if len(hashCache.m) >= hashCacheMax {
-				hashCache.m = map[hashKey]string{}
-			}
-			hashCache.m[key] = sum
-			hashCache.Unlock()
+			storeSum(key, sum)
 		}
 		it.Version = versionOf(sum)
 		it.Checksums = map[string]string{"sha256": sum}
@@ -221,7 +291,7 @@ func (s *Service) List(req ListRequest) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := artifactpkg.LoadManifest(sc.sess)
+	m, err := s.manifest(sc)
 	if err != nil {
 		return nil, errf(codeUnavailable, "the session's artifact manifest is unreadable")
 	}
@@ -263,7 +333,7 @@ func (s *Service) resolve(sc *scope, id string) (artifactpkg.Artifact, error) {
 	if !strings.HasPrefix(id, "dxa_") || len(id) != 28 {
 		return artifactpkg.Artifact{}, errf(codeInvalid, "artifact_id must be an id returned by devx_artifact_list")
 	}
-	m, err := artifactpkg.LoadManifest(sc.sess)
+	m, err := s.manifest(sc)
 	if err != nil {
 		return artifactpkg.Artifact{}, errf(codeUnavailable, "the session's artifact manifest is unreadable")
 	}
@@ -364,9 +434,23 @@ func (s *Service) Read(req ReadRequest) (*ReadResult, error) {
 	if enc == "text" {
 		capture += 3
 	}
-	h, err := hashFile(f, fi, req.Offset, capture)
-	if err != nil {
-		return nil, err
+	if fi.Size() > MaxReadableBytes {
+		return nil, errf(codeTooLarge, "artifact is %d bytes; the bridge reads at most %d", fi.Size(), MaxReadableBytes)
+	}
+	key := cacheKey(sc.sess.Path+"\x00"+a.File, fi)
+	var h *hashed
+	if sum, ok := cachedSum(key); ok {
+		h, err = readWindow(f, fi, req.Offset, capture)
+		if err != nil {
+			return nil, err
+		}
+		h.sha256 = sum
+	} else {
+		h, err = hashFile(f, fi, req.Offset, capture)
+		if err != nil {
+			return nil, err
+		}
+		storeSum(key, h.sha256)
 	}
 	info := s.info(sc, a, false)
 	info.Size, info.Version, info.Checksums, info.Available = h.size, versionOf(h.sha256), map[string]string{"sha256": h.sha256}, true
@@ -405,6 +489,11 @@ func (s *Service) Read(req ReadRequest) (*ReadResult, error) {
 		if !utf8.Valid(data) || strings.IndexByte(string(data), 0) >= 0 {
 			return nil, errf(codeUnsupportedType, "artifact is not valid UTF-8 text; use encoding=base64")
 		}
+		// The text travels twice (content block and structuredContent.text),
+		// JSON-escaped. Shorten the chunk on a character boundary so the
+		// encoded result always fits the transport budget, even for text
+		// that escapes heavily (control characters, <, >, &).
+		data = data[:fitEscaped(data, maxTextEncodedBytes)]
 		t := string(data)
 		res.Text = &t
 	case "base64":

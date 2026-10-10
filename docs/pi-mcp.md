@@ -152,8 +152,33 @@ pi_mcp:
   artifacts:
     read: false            # devx_artifact_list + devx_artifact_read
     upload: false          # devx_attachment_upload
+    sessions: []           # exact DevX session names exposed; empty = none
     max_upload_bytes: 10485760   # default 10 MiB, ceiling 25 MiB
 ```
+
+**Trust boundary.** `devx mcp pi` receives no caller identity. The Agent
+Shed gateway authenticates the principal and checks that principal's
+reviewed per-tool grant on the `devx-pi` relay app, then forwards only the
+tool name and arguments. The `agent_id` argument is chosen by the caller.
+DevX cannot tell whether a particular caller may see a particular session.
+It enforces only the owner's explicit exposure list:
+
+- Any principal granted a bridge tool can use it on every session in
+  `pi_mcp.artifacts.sessions`.
+- It can't use it on any other session.
+- Being a managed agent, or being in `allowed_projects`, grants nothing.
+
+Per-principal, per-session separation would need the gateway to pass a
+verified principal (or a per-binding scope) to the relay, and that doesn't
+exist today. Until it does, grant the bridge tools only to principals that
+may see every exposed session.
+
+On every call DevX also checks:
+- the agent exists and isn't retired;
+- its project is allowlisted;
+- its session record still points at the agent's worktree with the same
+  project;
+- no other agent owns or claims that session.
 
 A disabled capability's tools are neither listed nor callable. Changes take
 effect on the next `devx mcp pi` start; the Agent Shed relay starts one per
@@ -201,19 +226,41 @@ changed since, the read fails with `version_mismatch` and reports
 `current_version`, so chunks of different contents are never mixed.
 Earlier contents are not retrievable. Each read hashes the file and slices
 the chunk in the same pass, with `fstat` before and after; a concurrent
-change returns `changed_during_read`.
+change returns `changed_during_read`. Checksums are cached in-process by
+path, device, inode, ctime, size and mtime. Any write changes ctime, so
+cached data can't describe changed bytes. A read that hits the cache reads
+only its window with `pread` and requires an identical `fstat` before and
+after. A full 32 MiB download takes 2,048 calls of about 1.5 ms each
+locally (measured); a cold hash takes about 25 ms.
 
-**Path safety.** Files are opened component by component with
-`openat(O_NOFOLLOW)` from the worktree, so a symlink anywhere fails,
-including `.artifacts` itself or a directory swapped in after validation.
+Text chunks are shortened on a character boundary so the JSON-escaped text
+(sent twice: in the content block and `structuredContent.text`) stays
+within budget. Text made entirely of escape-heavy characters (`<`, control
+characters) yields about 4,500 bytes per call; ordinary text yields 16 KiB.
+Images larger than 40 KiB aren't returned inline. Read them with
+`encoding: base64` (a 300 KB screenshot takes 19 calls). Nothing is ever
+resized or substituted.
+
+**Path safety.** The manifest and every file are opened component by
+component with `openat(O_NOFOLLOW)` from the worktree, so a symlink
+anywhere fails, including `.artifacts`, `manifest.json`, or a directory
+swapped in after validation. A race test flips a parent directory to an
+outside symlink thousands of times and never reads outside content.
+Uploads are published the same way:
+- the attachments directory is opened without following links;
+- bytes go to an `O_EXCL|O_NOFOLLOW` temp file;
+- the temp file is published with `linkat`, which fails instead of
+  replacing an existing name, so the next free `name-N.ext` is used;
+- the file is then registered through `artifact.RegisterExisting`, which
+  never writes content.
 The leaf must also be:
 - a regular file with one link (no FIFOs, devices or hard links to files
   elsewhere);
 - at most 32 MiB.
 
-Error messages contain no absolute paths or file contents. On Windows the
-fallback validates with `Lstat` and `SameFile`; the bridge is supported on
-macOS and Linux.
+Error messages contain no absolute paths or file contents. On platforms
+without `openat`/`O_NOFOLLOW`/`linkat` (Windows), both capabilities are
+forced off and the bridge fails closed.
 
 **Uploads.** `devx_attachment_upload`:
 - **Chunking.** Each call carries at most 8 KiB, keeping base64 arguments

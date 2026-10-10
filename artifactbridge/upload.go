@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -342,47 +343,84 @@ func (s *Service) finish(sc *scope, rec *uploadRecord, recPath, partPath string)
 		return fail(errf(codeUnsupportedType, "file content is not valid %s; the upload was discarded", rec.MIMEType))
 	}
 	mid := attachmentManifestID(rec.KeyHash)
-	if m, err := artifactpkg.LoadManifest(sc.sess); err == nil {
-		if existing, _ := artifactpkg.Find(m, mid); existing != nil {
-			// Registered by an earlier attempt that crashed before
-			// recording completion. Adopt it only if the bytes match.
-			if got, err := s.fileSHA(sc, existing.File); err != nil || got != rec.SHA256 {
-				return nil, errf(codeConflict, "an attachment for this key exists with different content")
-			}
-			return s.markComplete(sc, rec, recPath, partPath, mid)
-		}
-	} else {
-		return nil, errf(codeUnavailable, "the session's artifact manifest is unreadable")
+	m, err := s.manifest(sc)
+	if err != nil {
+		return nil, err
 	}
-	_, err = artifactpkg.Add(sc.sess, artifactpkg.AddOptions{
-		Reader:           bytes.NewReader(data),
-		Destination:      rec.Filename,
-		Folder:           AttachmentsFolder,
-		ID:               mid,
-		Type:             artifactpkg.DetectType(rec.Filename),
-		Title:            rec.Title,
-		Summary:          rec.Summary,
-		Agent:            attachmentAgent,
-		Tags:             []string{AttachmentTag},
-		NoAssetDiscovery: true,
-		SuffixOnConflict: true,
-		Now:              s.Now(),
+	if existing, _ := artifactpkg.Find(m, mid); existing != nil {
+		// Registered by an earlier attempt whose completion record was
+		// lost (crash or dropped response). Adopt it only if the bytes match.
+		if got, err := s.fileSHA(sc, existing.File); err != nil || got != rec.SHA256 {
+			return nil, errf(codeConflict, "an attachment for this key exists with different content")
+		}
+		return s.markComplete(sc, rec, recPath, partPath, mid)
+	}
+	file, err := s.publish(sc, rec, data)
+	if err != nil {
+		return nil, err
+	}
+	_, err = artifactpkg.RegisterExisting(sc.sess, artifactpkg.Artifact{
+		ID: mid, Type: artifactpkg.DetectType(rec.Filename), Title: rec.Title, File: AttachmentsFolder + "/" + file,
+		Folder: AttachmentsFolder, Created: s.Now(), Agent: attachmentAgent, Summary: optional(rec.Summary),
+		Tags: []string{AttachmentTag},
 	})
 	if err != nil {
 		return nil, errf(codeFailed, "could not register the attachment; retry the last chunk")
 	}
-	m, err := artifactpkg.LoadManifest(sc.sess)
-	if err != nil {
-		return nil, errf(codeUnavailable, "the session's artifact manifest is unreadable")
-	}
-	a, _ := artifactpkg.Find(m, mid)
-	if a == nil {
-		return nil, errf(codeFailed, "attachment registration was not recorded; retry the last chunk")
-	}
-	if got, err := s.fileSHA(sc, a.File); err != nil || got != rec.SHA256 {
+	if got, err := s.fileSHA(sc, AttachmentsFolder+"/"+file); err != nil || got != rec.SHA256 {
 		return nil, errf(codeIntegrity, "stored attachment failed read-back verification")
 	}
 	return s.markComplete(sc, rec, recPath, partPath, mid)
+}
+
+func optional(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// publish writes the verified bytes into .artifacts/attachments without ever
+// following a symlink or replacing an existing entry:
+//   - the directory chain is opened with openat(O_NOFOLLOW) from the worktree
+//     (a symlinked .artifacts or attachments fails);
+//   - bytes go to a temp name created with O_EXCL|O_NOFOLLOW;
+//   - the temp file is published with linkat, which fails with EEXIST rather
+//     than replacing; on a collision the next name-N.ext is tried.
+//
+// If a file with the chosen name already holds exactly these bytes from an
+// earlier interrupted attempt for this key (temp name embeds the key hash), it
+// is reused only when no manifest entry already names it.
+func (s *Service) publish(sc *scope, rec *uploadRecord, data []byte) (string, error) {
+	dirfd, err := attachmentsDir(sc.sess.Path)
+	if err != nil {
+		return "", errf(codeUnavailable, "the session's attachment area is not usable")
+	}
+	defer closeDir(dirfd)
+	tmp := ".upload-" + rec.KeyHash + ".tmp"
+	if err := writeTemp(dirfd, tmp, data); err != nil {
+		return "", errf(codeFailed, "could not stage the attachment; retry the last chunk")
+	}
+	defer unlinkAt(dirfd, tmp)
+	ext := path.Ext(rec.Filename)
+	stem := strings.TrimSuffix(rec.Filename, ext)
+	for i := 1; i < 1000; i++ {
+		name := rec.Filename
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		exists, err := linkNoReplace(dirfd, tmp, name)
+		if err != nil {
+			return "", errf(codeFailed, "could not publish the attachment; retry the last chunk")
+		}
+		if !exists {
+			// Drop the temp link now so the published file has exactly one
+			// link (reads refuse multiply-linked files).
+			unlinkAt(dirfd, tmp)
+			return name, nil
+		}
+	}
+	return "", errf(codeLimit, "too many attachments named %q", rec.Filename)
 }
 
 func (s *Service) fileSHA(sc *scope, rel string) (string, error) {
@@ -408,9 +446,9 @@ func (s *Service) markComplete(sc *scope, rec *uploadRecord, recPath, partPath, 
 }
 
 func (s *Service) completedResult(sc *scope, rec *uploadRecord, replayed bool) (map[string]any, error) {
-	m, err := artifactpkg.LoadManifest(sc.sess)
+	m, err := s.manifest(sc)
 	if err != nil {
-		return nil, errf(codeUnavailable, "the session's artifact manifest is unreadable")
+		return nil, err
 	}
 	a, _ := artifactpkg.Find(m, rec.ManifestID)
 	if a == nil {

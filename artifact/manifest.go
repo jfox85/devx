@@ -89,6 +89,14 @@ func LoadManifest(sess *session.Session) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read artifact manifest: %w", err)
 	}
+	return ParseManifest(data, sess.Name)
+}
+
+// ParseManifest parses and validates manifest bytes for sessionName. Callers
+// that must not follow symlinks (e.g. the MCP artifact bridge) read the bytes
+// themselves and use this for the same validation as LoadManifest.
+func ParseManifest(data []byte, sessionName string) (*Manifest, error) {
+	sess := &session.Session{Name: sessionName}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("failed to parse artifact manifest: %w", err)

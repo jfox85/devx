@@ -55,6 +55,7 @@ func (e *env) agent(name, project string) (*piagent.Agent, *session.Session) {
 	}
 	s := &session.Session{Name: name, ProjectAlias: project, Path: wt, ManagedAgent: id}
 	e.sessions[name] = s
+	e.svc.Cfg.Sessions = append(e.svc.Cfg.Sessions, name) // exposed by default in tests
 	return a, s
 }
 

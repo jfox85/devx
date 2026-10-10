@@ -48,8 +48,9 @@ func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
 	}
 	cfgDir := filepath.Join(home, ".config", "devx")
 	_ = os.MkdirAll(cfgDir, 0o700)
+	exposed := "bridge-a"
 	writeCfg := func(read, upload bool) {
-		cfg := fmt.Sprintf("disable_caddy: true\nauto_check_updates: false\nweb_autostart: false\nusage:\n  enabled: false\npi_mcp:\n  allowed_projects: [synth]\n  artifacts:\n    read: %v\n    upload: %v\n    max_upload_bytes: 100000\n", read, upload)
+		cfg := fmt.Sprintf("disable_caddy: true\nauto_check_updates: false\nweb_autostart: false\nusage:\n  enabled: false\npi_mcp:\n  allowed_projects: [synth]\n  artifacts:\n    read: %v\n    upload: %v\n    max_upload_bytes: 100000\n    sessions: [%s]\n", read, upload, exposed)
 		if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(cfg), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +208,7 @@ func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
 		t.Fatal("markdown reassembly differs")
 	}
 	// Cross-session: agent B cannot read agent A's artifact id.
-	if sc, _ := mcp("devx_artifact_read", map[string]any{"agent_id": agentB, "artifact_id": si["id"]}); sc["error"] != "not_found" {
+	if sc, _ := mcp("devx_artifact_read", map[string]any{"agent_id": agentB, "artifact_id": si["id"]}); sc["error"] != "permission_denied" {
 		t.Fatalf("cross-session: %v", sc)
 	}
 	// Upload denied while only read is enabled.
@@ -261,13 +262,25 @@ func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
 	if !strings.HasPrefix(local["path"].(string), ".artifacts/attachments/") {
 		t.Fatalf("attachment path: %v", local)
 	}
-	// Agent B sees nothing of A's.
-	lb, _ := mcp("devx_artifact_list", map[string]any{"agent_id": agentB})
-	if len(lb["artifacts"].([]any)) != 0 {
+	// Agent B is a registered managed agent in the same allowed project but
+	// its session is not exposed: denied, even with a valid agent id.
+	if lb, _ := mcp("devx_artifact_list", map[string]any{"agent_id": agentB}); lb["error"] != "permission_denied" {
+		t.Fatalf("unexposed session: %v", lb)
+	}
+	// Exposing B shows only B's (empty) artifacts, never A's.
+	exposed = "bridge-a, bridge-b"
+	writeCfg(true, true)
+	if lb, _ := mcp("devx_artifact_list", map[string]any{"agent_id": agentB}); len(lb["artifacts"].([]any)) != 0 {
 		t.Fatalf("agent B list leaked: %v", lb)
 	}
+	// Reducing exposure again denies B on the next process start.
+	exposed = "bridge-a"
+	writeCfg(true, true)
+	if lb, _ := mcp("devx_artifact_list", map[string]any{"agent_id": agentB}); lb["error"] != "permission_denied" {
+		t.Fatalf("re-reduced exposure: %v", lb)
+	}
 	// Project removed from the allowlist: everything denied on the next call.
-	_ = os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte("pi_mcp:\n  allowed_projects: [other]\n  artifacts:\n    read: true\n    upload: true\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte("pi_mcp:\n  allowed_projects: [other]\n  artifacts:\n    read: true\n    upload: true\n    sessions: [bridge-a]\n"), 0o600)
 	if sc, _ := mcp("devx_artifact_list", map[string]any{"agent_id": agentA}); sc["error"] != "permission_denied" {
 		t.Fatalf("de-allowlisted project: %v", sc)
 	}
