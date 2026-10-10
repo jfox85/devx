@@ -17,9 +17,10 @@ import (
 )
 
 // TestSessionInstancesMigrationEndToEnd drives the real binary against a fake
-// HOME holding pre-instance-id records: dry run writes nothing, --prepare
-// creates only the private key, --apply requires the reviewed hash, backs
-// up, journals, binds only unambiguous agents, is idempotent, and
+// HOME holding pre-instance-id records: the dry run is read-only (no file is
+// created or changed) and already shows the exact applicable plan hash;
+// unmarked agents are candidates that bind only with --confirm; --apply
+// requires the reviewed hash, backs up, journals, is idempotent, and
 // --rollback restores exactly the previous field values.
 func TestSessionInstancesMigrationEndToEnd(t *testing.T) {
 	w := tmuxfixture.ActiveWrapper()
@@ -103,43 +104,70 @@ func TestSessionInstancesMigrationEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 1. Plain dry run: preview, writes nothing (not even the key).
+	listFiles := func() string {
+		var fs []string
+		_ = filepath.Walk(cfgDir, func(p string, info os.FileInfo, err error) error {
+			if err == nil {
+				fs = append(fs, p+"|"+info.Mode().String())
+			}
+			return nil
+		})
+		return strings.Join(fs, "\n")
+	}
+	tree := listFiles()
+	// 1. Dry run: read-only (no file created, not even a key or lock) and
+	// shows the exact applicable hash. The unmarked agent is a candidate.
 	out, err := run()
-	if err != nil || !strings.Contains(out, "DRY RUN") || !strings.Contains(out, "Preview only") {
+	if err != nil || !strings.Contains(out, "read-only, nothing written") {
 		t.Fatalf("dry run: %v\n%s", err, out)
 	}
 	unchanged("dry run")
-	if _, err := os.Stat(filepath.Join(cfgDir, ".instance-key")); !os.IsNotExist(err) {
-		t.Fatal("dry run must not create the key")
+	if listFiles() != tree {
+		t.Fatal("dry run must not create or change any file")
 	}
-	// 2. --prepare: creates only the key; plan hash is printed and stable.
-	out, err = run("--prepare")
-	if err != nil {
-		t.Fatalf("prepare: %v\n%s", err, out)
-	}
-	unchanged("prepare")
 	m := regexp.MustCompile(`Plan hash: ([0-9a-f]{16})`).FindStringSubmatch(out)
 	if m == nil {
 		t.Fatalf("no plan hash:\n%s", out)
 	}
-	planHash := m[1]
-	if out2, _ := run("--prepare"); !strings.Contains(out2, planHash) {
+	if out2, _ := run(); !strings.Contains(out2, m[1]) {
 		t.Fatal("plan hash must be stable across dry runs")
+	}
+	if !regexp.MustCompile(`pa_000000000002\s+legacy\s+candidate_needs_owner_confirmation`).MatchString(out) {
+		t.Fatalf("unmarked agent must be an owner-confirmation candidate:\n%s", out)
 	}
 	if !strings.Contains(out, "pa_000000000003") || !strings.Contains(out, "newer than the agent") {
 		t.Fatalf("recreated case must be reported as skipped:\n%s", out)
 	}
-	key, _ := os.ReadFile(filepath.Join(cfgDir, ".instance-key"))
-	if len(key) != 32 || strings.Contains(out, string(key)) {
-		t.Fatal("key must exist and never be printed")
+	// 2. Owner confirms the candidate: a different, still read-only plan.
+	if out, err := run("--confirm", "pa_000000000003"); err != nil || !strings.Contains(out, "NOT CANDIDATES") {
+		t.Fatalf("confirming a skipped agent must be reported: %v\n%s", err, out)
 	}
+	if out, err := run("--apply", m[1], "--confirm", "pa_000000000003"); err == nil || !strings.Contains(out, "not candidates") {
+		t.Fatalf("apply with a bad confirmation must be refused: %v\n%s", err, out)
+	}
+	unchanged("bad confirm")
+	out, err = run("--confirm", "pa_000000000002")
+	if err != nil {
+		t.Fatalf("confirm dry run: %v\n%s", err, out)
+	}
+	unchanged("confirm dry run")
+	m = regexp.MustCompile(`Plan hash: ([0-9a-f]{16})`).FindStringSubmatch(out)
+	planHash := m[1]
+	if !strings.Contains(out, "--apply "+planHash+" --confirm pa_000000000002") {
+		t.Fatalf("apply hint must carry the confirmation:\n%s", out)
+	}
+	// The confirmed hash is not valid without the same confirmation.
+	if out, err := run("--apply", planHash); err == nil || !strings.Contains(out, "does not match") {
+		t.Fatalf("confirmed plan hash must not apply without --confirm: %v\n%s", err, out)
+	}
+	unchanged("hash without confirm")
 	// 3. Wrong hash: refused, nothing written.
 	if out, err := run("--apply", "0000000000000000"); err == nil || !strings.Contains(out, "does not match") {
 		t.Fatalf("wrong hash must be refused: %v\n%s", err, out)
 	}
 	unchanged("wrong hash")
 	// 4. Apply the reviewed hash.
-	out, err = run("--apply", planHash)
+	out, err = run("--apply", planHash, "--confirm", "pa_000000000002")
 	if err != nil {
 		t.Fatalf("apply: %v\n%s", err, out)
 	}
@@ -183,13 +211,13 @@ func TestSessionInstancesMigrationEndToEnd(t *testing.T) {
 		t.Fatal("ambiguous (recreated) agent must not be bound")
 	}
 	// 5. Idempotent: nothing left to apply; same hash re-apply is a no-op.
-	out, _ = run("--prepare")
+	out, _ = run()
 	if !strings.Contains(out, "Nothing to apply") {
 		t.Fatalf("second plan should be empty:\n%s", out)
 	}
 	// 5b. A wrong-hash or no-op apply creates no journal; two backups are
 	// distinct directories even within one second.
-	if out, _ := run("--prepare"); strings.Contains(out, "--apply ") {
+	if out, _ := run(); strings.Contains(out, "--apply ") {
 		t.Fatalf("no further apply should be offered:\n%s", out)
 	}
 	// 5c. An older run cannot be rolled back over a newer one without

@@ -1,7 +1,6 @@
 package session
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -43,13 +42,16 @@ func MatchesBoundInstance(s *Session, boundID string, boundCreatedAt time.Time) 
 	return !boundCreatedAt.IsZero() && s.CreatedAt.Equal(boundCreatedAt)
 }
 
-// DeriveInstanceID returns an instance id for an EXISTING record that has
-// none, derived with a secret random key so the same record state yields the
-// same id (a reviewed migration plan stays valid until something changes)
-// while ids are not guessable from names or paths. key must be random and
-// kept private to the owner.
-func DeriveInstanceID(key []byte, name, path string, createdAt time.Time) string {
-	m := hmac.New(sha256.New, key)
-	_, _ = fmt.Fprintf(m, "devx-session-instance|v1|%s|%s|%s", name, path, createdAt.UTC().Format(time.RFC3339Nano))
-	return "si_" + hex.EncodeToString(m.Sum(nil))[:24]
+// DeriveInstanceID returns the instance id the migration assigns to an
+// EXISTING record that has none. It is a deterministic hash of the record's
+// identity (name, path, exact created_at), so a read-only dry run shows the
+// exact ids and plan hash that --apply will write, with no key or other state.
+// Instance ids are identifiers, not secrets or capabilities: no caller ever
+// supplies one, they are only compared against DevX's own records. A record
+// recreated under the same name and path has a different created_at (to the
+// nanosecond), hence a different id. New records get random ids
+// (NewInstanceID).
+func DeriveInstanceID(name, path string, createdAt time.Time) string {
+	h := sha256.Sum256([]byte("devx-session-instance|v1|" + name + "|" + path + "|" + createdAt.UTC().Format(time.RFC3339Nano)))
+	return "si_" + hex.EncodeToString(h[:])[:24]
 }

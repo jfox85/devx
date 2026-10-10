@@ -3,7 +3,6 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,8 +21,8 @@ var (
 	instancesApplyPlan  string
 	instancesRollback   string
 	instancesJSON       bool
-	instancesPrepare    bool
 	instancesForceOlder bool
+	instancesConfirm    []string
 )
 
 var sessionInstancesCmd = &cobra.Command{
@@ -32,17 +31,22 @@ var sessionInstancesCmd = &cobra.Command{
 	Long: `Assign a stable instance id to every session record that has none, and
 bind each managed Pi agent to the exact session instance it belongs to.
 
-Without flags this is a DRY RUN: it reads the records, prints the plan and a
-plan hash, and writes nothing.
+Without --apply/--rollback this is a READ-ONLY DRY RUN: it reads the
+records, prints the exact plan and its hash, and writes nothing at all (no
+key, no lock, no backup). The ids it shows are the ids --apply writes.
 
-  devx session instances                     # review the plan
-  devx session instances --apply <plan-hash> # apply exactly that plan
-  devx session instances --rollback <dir>    # undo a previous apply
+  devx session instances                                     # review the plan
+  devx session instances --confirm <agent-id> ...            # plan that also binds confirmed candidates
+  devx session instances --apply <plan-hash> [--confirm ...] # apply exactly that plan
+  devx session instances --rollback <dir>                    # undo a previous apply
 
-An agent is bound only when the evidence identifies exactly one session
-record and nothing contradicts it. Anything ambiguous (a recreated session,
-a marker naming another agent, duplicate claimants, shared worktrees,
-missing timestamps) is listed with a reason and left unchanged.
+An agent is bound automatically only when its session carries a marker
+naming it and nothing contradicts it (ordering, path, project, claimants,
+worktree, existing ids). Agents whose session has NO marker are listed as
+candidates: name, path and creation-time ordering alone are ambiguous, so
+they are bound only if the owner confirms each one with --confirm (recorded
+as basis owner_confirmed). Anything else ambiguous is listed with a reason
+and left unchanged.
 
 --apply re-plans, refuses unless the hash matches the reviewed plan, backs up
 sessions.json and every agent record it will touch, journals each write, and
@@ -60,7 +64,7 @@ func init() {
 	sessionInstancesCmd.Flags().StringVar(&instancesRollback, "rollback", "", "undo the apply recorded in this backup directory")
 	sessionInstancesCmd.Flags().BoolVar(&instancesJSON, "json", false, "print the plan as JSON")
 	sessionInstancesCmd.Flags().BoolVar(&instancesForceOlder, "force-older", false, "allow --rollback of a run that is not the newest")
-	sessionInstancesCmd.Flags().BoolVar(&instancesPrepare, "prepare", false, "create the private migration key (if missing) and print an applicable dry-run plan; writes no record")
+	sessionInstancesCmd.Flags().StringSliceVar(&instancesConfirm, "confirm", nil, "owner-confirmed candidate agent ids (no marker) to bind; part of the plan hash")
 }
 
 func instanceStores(journal func(piagent.JournalEntry) error) piagent.InstanceStores {
@@ -80,29 +84,22 @@ func instanceStores(journal func(piagent.JournalEntry) error) piagent.InstanceSt
 	}
 }
 
-// currentInstancePlan plans against the live records. Proposed ids are
-// derived from the record state with the owner-private key, so the plan hash
-// reviewed in a dry run still matches at apply time unless a record changed.
-// A dry run never creates the key: without one it shows placeholder ids and
-// cannot be applied.
-func currentInstancePlan(createKey bool) (*piagent.InstancePlan, bool, error) {
+// currentInstancePlan plans against the live records. It only reads: proposed
+// ids are a deterministic hash of each record's identity, so the plan hash
+// reviewed in a dry run still matches at apply time unless a record (or the
+// confirmation set) changed.
+func currentInstancePlan() (*piagent.InstancePlan, error) {
 	st, err := session.LoadSessions()
 	if err != nil {
-		return nil, false, err
-	}
-	agents, err := piagent.NewStore(piAgentStateDir()).ListAgents()
-	if err != nil {
-		return nil, false, err
-	}
-	key, err := instanceKey(createKey)
-	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	store := piagent.NewStore(piAgentStateDir())
-	if key == nil {
-		return piagent.PlanInstancesWithHistory(st.Sessions, agents, func(string) string { return "si_<assigned-at-apply>" }, store.RecordedBinding), false, nil
+	agents, err := store.ListAgents()
+	if err != nil {
+		return nil, err
 	}
-	return piagent.PlanInstancesWithHistory(st.Sessions, agents, deterministicIDs(st.Sessions, key), store.RecordedBinding), true, nil
+	return piagent.PlanInstancesWithOptions(st.Sessions, agents, derivedIDs(st.Sessions),
+		piagent.PlanOptions{Recorded: store.RecordedBinding, Confirmed: instancesConfirm}), nil
 }
 
 func runSessionInstances(cmd *cobra.Command, _ []string) error {
@@ -110,12 +107,15 @@ func runSessionInstances(cmd *cobra.Command, _ []string) error {
 	if instancesRollback != "" {
 		return runInstancesRollback(out, instancesRollback)
 	}
-	plan, keyed, err := currentInstancePlan(instancesApplyPlan != "" || instancesPrepare)
+	plan, err := currentInstancePlan()
 	if err != nil {
 		return err
 	}
 	if instancesApplyPlan == "" {
-		return printInstancePlan(out, plan, keyed)
+		return printInstancePlan(out, plan)
+	}
+	if len(plan.UnknownConfirmations) > 0 {
+		return fmt.Errorf("--confirm names agents that are not candidates in this plan: %s; re-run the dry run", strings.Join(plan.UnknownConfirmations, ", "))
 	}
 	if instancesApplyPlan != plan.Hash {
 		return fmt.Errorf("plan hash %s does not match the current plan %s: the records changed or a different plan was reviewed; re-run the dry run", instancesApplyPlan, plan.Hash)
@@ -144,87 +144,36 @@ func runSessionInstances(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("apply stopped (backup and journal in %s; re-run the dry run to see what remains, or --rollback %s): %w", dir, dir, err)
 	}
 	_, _ = fmt.Fprintf(out, "Applied plan %s. Backup and journal: %s\nUndo with: devx session instances --rollback %s\n", plan.Hash, dir, dir)
-	after, _, err := currentInstancePlan(false)
+	after, err := currentInstancePlan()
 	if err == nil && after.HasWork() {
 		_, _ = fmt.Fprintln(out, "Warning: records changed during apply; re-run the dry run.")
 	}
 	return nil
 }
 
-// deterministicIDs proposes the same id for the same record state, so the
-// plan hash a human reviewed still matches at apply time unless something
-// changed. The id is derived from a random per-store salt persisted next to
-// sessions.json (never from secrets), so ids are not guessable from names.
-func deterministicIDs(sessions map[string]*session.Session, key []byte) func(name string) string {
+// derivedIDs proposes, for a record without an id, the deterministic id of
+// that exact record (session.DeriveInstanceID): same record, same id.
+func derivedIDs(sessions map[string]*session.Session) func(name string) string {
 	return func(name string) string {
 		s := sessions[name]
-		return session.DeriveInstanceID(key, name, s.Path, s.CreatedAt)
+		return session.DeriveInstanceID(name, s.Path, s.CreatedAt)
 	}
 }
 
-// instanceKey returns the owner-private random key used to derive migration
-// ids, creating it (0600, exclusive create) on first use. It is not a
-// credential: it only keeps derived ids unguessable.
-func instanceKey(create bool) ([]byte, error) {
-	p := filepath.Join(filepath.Dir(config.GetSessionsPath()), ".instance-key")
-	if b, err := os.ReadFile(p); err == nil {
-		if len(b) != 32 {
-			return nil, fmt.Errorf("%s is malformed", p)
-		}
-		return b, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	if !create {
-		return nil, nil
-	}
-	b := []byte(session.NewInstanceID()[3:] + session.NewInstanceID()[3:11])
-	// Write a complete temp file, then link it into place: the key file
-	// either does not exist or is complete, and an existing key is never
-	// replaced (link fails with EEXIST if another process won the race).
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".instance-key-*.tmp")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return nil, err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return nil, err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return nil, err
-	}
-	if err := tmp.Close(); err != nil {
-		return nil, err
-	}
-	if err := os.Link(tmp.Name(), p); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
-	return instanceKey(false)
-}
-
-func printInstancePlan(out io.Writer, p *piagent.InstancePlan, keyed bool) error {
+func printInstancePlan(out io.Writer, p *piagent.InstancePlan) error {
 	if instancesJSON {
-		if !keyed {
-			cp := *p
-			cp.Hash = "" // preview only: placeholder ids, not applicable
-			p = &cp
-		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(p)
 	}
-	if keyed {
-		_, _ = fmt.Fprintf(out, "DRY RUN - nothing written. Plan hash: %s\n\n", p.Hash)
-	} else {
-		_, _ = fmt.Fprintf(out, "DRY RUN - nothing written. Preview only (no migration key yet): ids are placeholders.\n"+
-			"Run `devx session instances --prepare` to create the key and get an applicable plan hash.\n\n")
+	_, _ = fmt.Fprintf(out, "DRY RUN - read-only, nothing written. Plan hash: %s\n", p.Hash)
+	if len(p.OwnerConfirmed) > 0 {
+		_, _ = fmt.Fprintf(out, "Owner-confirmed candidates in this plan: %s\n", strings.Join(p.OwnerConfirmed, ", "))
 	}
+	if len(p.UnknownConfirmations) > 0 {
+		_, _ = fmt.Fprintf(out, "NOT CANDIDATES (cannot be confirmed; plan not applicable): %s\n", strings.Join(p.UnknownConfirmations, ", "))
+	}
+	_, _ = fmt.Fprintln(out)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "SESSION\tACTION\tINSTANCE ID\tNOTE")
 	n := 0
@@ -242,19 +191,23 @@ func printInstancePlan(out io.Writer, p *piagent.InstancePlan, keyed bool) error
 	_ = tw.Flush()
 	_, _ = fmt.Fprintln(out)
 	tw = tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "AGENT\tSESSION\tACTION\tMARKER\tSESSION-AGENT CREATED\tREASON")
+	_, _ = fmt.Fprintln(tw, "AGENT\tSESSION\tACTION\tBASIS\tMARKER\tSESSION-AGENT CREATED\tREASON")
 	for _, a := range p.Agents {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", a.AgentID, a.Session, a.Action, a.Marker, a.SessionVsAgent, a.Reason)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.AgentID, a.Session, a.Action, a.Basis, a.Marker, a.SessionVsAgent, a.Reason)
 	}
 	_ = tw.Flush()
 	_, _ = fmt.Fprintf(out, "\nSummary: %v\n", p.Summary)
 	for _, note := range p.Notes {
 		_, _ = fmt.Fprintln(out, "- "+note)
 	}
-	if p.HasWork() && keyed {
-		_, _ = fmt.Fprintf(out, "\nTo apply exactly this plan: devx session instances --apply %s\n", p.Hash)
+	confirm := ""
+	for _, id := range p.OwnerConfirmed {
+		confirm += " --confirm " + id
+	}
+	if p.HasWork() && len(p.UnknownConfirmations) == 0 {
+		_, _ = fmt.Fprintf(out, "\nTo apply exactly this plan: devx session instances --apply %s%s\n", p.Hash, confirm)
 	} else if p.HasWork() {
-		_, _ = fmt.Fprintln(out, "\nNot applicable yet (preview).")
+		_, _ = fmt.Fprintln(out, "\nNot applicable: fix the --confirm list.")
 	} else {
 		_, _ = fmt.Fprintln(out, "\nNothing to apply.")
 	}

@@ -40,7 +40,24 @@ const (
 	// ActionRestoreBinding re-writes a binding an older writer dropped from
 	// agent.json, from the agent's own event log (never a new binding).
 	ActionRestoreBinding = "restore_agent_binding"
+	// ActionCandidate is an agent whose session carries no marker naming
+	// it. The only evidence linking them is name, path and creation-time
+	// ordering, which is ambiguous, so it is NEVER bound automatically: it
+	// is bound only if the owner lists it with --confirm (and then recorded
+	// with basis owner_confirmed).
+	ActionCandidate = "candidate_needs_owner_confirmation"
 )
+
+// Binding basis recorded on a plan item, in the journal and in the agent's
+// session_instance_bound event.
+const (
+	BasisMarker         = "marker"          // session marker names this agent, plus ordering
+	BasisOwnerConfirmed = "owner_confirmed" // no marker; owner confirmed the candidate explicitly
+	BasisEventLog       = "event_log"       // restores the agent's own recorded binding
+)
+
+// ReasonNoMarker explains a candidate.
+const ReasonNoMarker = "session has no marker naming this agent; only name/path/creation-time ordering link them (ambiguous). Bind only after owner confirmation: --confirm <agent-id>"
 
 // Reasons an agent is not bound automatically.
 const (
@@ -67,8 +84,14 @@ type InstancePlan struct {
 	Sessions []SessionPlanItem `json:"sessions"`
 	Agents   []AgentPlanItem   `json:"agents"`
 	Summary  map[string]int    `json:"summary"`
-	Hash     string            `json:"plan_hash"`
-	Notes    []string          `json:"notes,omitempty"`
+	// OwnerConfirmed lists the candidate agent ids the owner confirmed
+	// (part of the hash: a different confirmation set is a different plan).
+	OwnerConfirmed []string `json:"owner_confirmed,omitempty"`
+	// UnknownConfirmations are --confirm ids that are not candidates in
+	// this plan; the command refuses to apply such a plan.
+	UnknownConfirmations []string `json:"unknown_confirmations,omitempty"`
+	Hash                 string   `json:"plan_hash"`
+	Notes                []string `json:"notes,omitempty"`
 }
 
 // SessionPlanItem is one session record.
@@ -99,6 +122,8 @@ type AgentPlanItem struct {
 	Adopted         bool   `json:"adopted,omitempty"`
 	Retired         bool   `json:"retired,omitempty"`
 	CurrentBindings string `json:"current_binding,omitempty"`
+	// Basis is what the binding rests on (see Basis* constants).
+	Basis string `json:"basis,omitempty"`
 }
 
 // PlanInstances computes the migration plan. sessions and agents are the
@@ -117,7 +142,27 @@ type RecordedBindingFunc func(agentID string) (string, time.Time, error)
 // restores the binding recorded in their event log, instead of treating
 // them as unbound legacy agents.
 func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Agent, newID func(name string) string, recorded RecordedBindingFunc) *InstancePlan {
-	p := &InstancePlan{Version: 1, Summary: map[string]int{}}
+	return PlanInstancesWithOptions(sessions, agents, newID, PlanOptions{Recorded: recorded})
+}
+
+// PlanOptions configures PlanInstancesWithOptions.
+type PlanOptions struct {
+	// Recorded looks up an agent's binding in its event log (optional).
+	Recorded RecordedBindingFunc
+	// Confirmed is the set of candidate agent ids (no marker) the owner
+	// explicitly confirmed. Nothing else turns a candidate into a binding.
+	Confirmed []string
+}
+
+// PlanInstancesWithOptions computes the migration plan; see PlanInstances.
+func PlanInstancesWithOptions(sessions map[string]*session.Session, agents []*Agent, newID func(name string) string, opts PlanOptions) *InstancePlan {
+	recorded := opts.Recorded
+	confirmed := map[string]bool{}
+	for _, id := range opts.Confirmed {
+		confirmed[id] = true
+	}
+	usedConfirm := map[string]bool{}
+	p := &InstancePlan{Version: 2, Summary: map[string]int{}}
 	names := make([]string, 0, len(sessions))
 	for n := range sessions {
 		names = append(names, n)
@@ -201,7 +246,7 @@ func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Ag
 					(restoredBy[a.DevxSession] != "" && restoredBy[a.DevxSession] != rid)
 				if !conflict && session.MatchesBoundInstance(s, rid, rat) &&
 					filepath.Clean(s.Path) == filepath.Clean(a.Worktree) {
-					it.Action, it.SessionInstanceID, it.SessionCreatedAt = ActionRestoreBinding, rid, rat
+					it.Action, it.SessionInstanceID, it.SessionCreatedAt, it.Basis = ActionRestoreBinding, rid, rat, BasisEventLog
 					if s.InstanceID == "" {
 						restoredBy[a.DevxSession] = rid
 						for i := range p.Sessions {
@@ -291,7 +336,7 @@ func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Ag
 			continue
 		}
 		// A record that already has an id was either given it by THIS
-		// migration (an earlier, interrupted apply: the id is the keyed
+		// migration (an earlier, interrupted apply: the id is the
 		// derivation of this exact record) or created by an instance-aware
 		// build after this legacy agent existed (a recreation). Only the
 		// former may be bound.
@@ -304,9 +349,28 @@ func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Ag
 			skip(SkipInvalidSessionID)
 			continue
 		}
-		it.Action, it.SessionInstanceID, it.SessionCreatedAt = ActionBindAgent, id, s.CreatedAt
+		it.SessionInstanceID, it.SessionCreatedAt = id, s.CreatedAt
+		switch {
+		case it.Marker != "none":
+			it.Action, it.Basis = ActionBindAgent, BasisMarker
+		case confirmed[a.ID]:
+			usedConfirm[a.ID] = true
+			it.Action, it.Basis = ActionBindAgent, BasisOwnerConfirmed
+		default:
+			// Name/path/time ordering alone is not proof of identity.
+			it.Action, it.Reason = ActionCandidate, ReasonNoMarker
+		}
 		p.Agents = append(p.Agents, it)
 	}
+	for _, id := range opts.Confirmed {
+		if usedConfirm[id] {
+			p.OwnerConfirmed = append(p.OwnerConfirmed, id)
+		} else {
+			p.UnknownConfirmations = append(p.UnknownConfirmations, id)
+		}
+	}
+	sort.Strings(p.OwnerConfirmed)
+	sort.Strings(p.UnknownConfirmations)
 	for _, it := range p.Sessions {
 		p.Summary["sessions_"+it.Action]++
 	}
@@ -317,6 +381,7 @@ func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Ag
 		"Only the fields listed are written: session.instance_id, agent.session_instance_id and agent.session_created_at.",
 		"No worktree, tmux session, Pi conversation, lease, marker or other field is changed.",
 		"Skipped agents are left unchanged; resolve them explicitly (retire, adopt again, or fix the record) and re-plan.",
+		"Candidates (no marker) are never bound automatically: creation-time ordering is ambiguous evidence. Confirm each one explicitly with --confirm <agent-id> after checking it, or leave it unbound (it stays denied by the artifact bridge).",
 	}
 	p.Hash = p.computeHash()
 	return p
@@ -355,6 +420,7 @@ type JournalEntry struct {
 	Name       string    `json:"name"`
 	InstanceID string    `json:"instance_id"`
 	Restored   bool      `json:"restored_existing_id,omitempty"`
+	Basis      string    `json:"basis,omitempty"`
 }
 
 // ErrPlanStale means the records changed since the plan was made.
@@ -458,7 +524,7 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 			filepath.Clean(cur.Path) != filepath.Clean(a.Worktree) {
 			return fmt.Errorf("agent %s session %q: %w", it.AgentID, it.Session, ErrPlanStale)
 		}
-		if err := st.Journal(JournalEntry{Time: now(), Kind: "agent", Name: it.AgentID, InstanceID: it.SessionInstanceID}); err != nil {
+		if err := st.Journal(JournalEntry{Time: now(), Kind: "agent", Name: it.AgentID, InstanceID: it.SessionInstanceID, Basis: it.Basis}); err != nil {
 			return err
 		}
 		a.SessionInstanceID, a.SessionCreatedAt = it.SessionInstanceID, it.SessionCreatedAt
@@ -467,7 +533,7 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 		}
 		_, err = st.Agents.AppendEvent(a.ID, Event{Type: "session_instance_bound", Source: "devx", Data: map[string]any{
 			"session": it.Session, "session_instance_id": it.SessionInstanceID,
-			"session_created_at": it.SessionCreatedAt.Format(time.RFC3339Nano), "via": "devx session instances"}})
+			"session_created_at": it.SessionCreatedAt.Format(time.RFC3339Nano), "basis": it.Basis, "via": "devx session instances"}})
 		return err
 	})
 }

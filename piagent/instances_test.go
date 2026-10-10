@@ -64,6 +64,8 @@ type instEnv struct {
 	sess   *memSessions
 	t0     time.Time
 	agents map[string]*Agent
+	// confirm is the owner-confirmed candidate list passed to the planner.
+	confirm []string
 }
 
 func newInstEnv(t *testing.T) *instEnv {
@@ -104,9 +106,9 @@ func (e *instEnv) list() []*Agent {
 }
 
 func (e *instEnv) plan() *InstancePlan {
-	return PlanInstances(e.sess.clone(), e.list(), func(n string) string {
-		return session.DeriveInstanceID([]byte("0123456789abcdef0123456789abcdef"), n, e.sess.recs[n].Path, e.sess.recs[n].CreatedAt)
-	})
+	return PlanInstancesWithOptions(e.sess.clone(), e.list(), func(n string) string {
+		return session.DeriveInstanceID(n, e.sess.recs[n].Path, e.sess.recs[n].CreatedAt)
+	}, PlanOptions{Confirmed: e.confirm})
 }
 
 func (p *InstancePlan) agent(id string) AgentPlanItem {
@@ -147,7 +149,7 @@ func TestPlanBindsOnlyUnambiguousLegacyAgents(t *testing.T) {
 
 	p := e.plan()
 	want := map[string]string{
-		ok1.ID: ActionBindAgent, ok2.ID: ActionBindAgent, ok3.ID: ActionBindAgent,
+		ok1.ID: ActionBindAgent, ok2.ID: ActionBindAgent, ok3.ID: ActionCandidate,
 		newer.ID: SkipSessionNewer, noTime.ID: SkipNoTimes, foreign.ID: SkipForeignMarker, both.ID: SkipBothMarkers,
 		moved.ID: SkipPathMismatch, gone.ID: SkipNoSession, dupA.ID: SkipDuplicateClaim, dupB.ID: SkipPathMismatch,
 		retired.ID: SkipRetired, shared.ID: SkipSharedWorktree,
@@ -190,6 +192,7 @@ func TestApplyIdempotentResumableAndStaleSafe(t *testing.T) {
 	e := newInstEnv(t)
 	a := e.legacy("one", "local", -time.Second)
 	b := e.legacy("two", "", -time.Second)
+	e.confirm = []string{b.ID} // unmarked: bound only because the owner confirmed it
 	p := e.plan()
 	var journal []JournalEntry
 
@@ -532,5 +535,72 @@ func TestRestoreFromEventLogRespectsConflicts(t *testing.T) {
 	p := PlanInstancesWithHistory(e.sess.clone(), e.list(), func(string) string { return session.NewInstanceID() }, e.store.RecordedBinding)
 	if it := p.agent(a.ID); it.Action != ActionSkip {
 		t.Fatalf("foreign marker must block restore: %+v", it)
+	}
+}
+
+// Unmarked legacy agents: name/path/creation-time ordering alone is
+// ambiguous, so they are candidates and NEVER bound without explicit owner
+// confirmation. Confirmation is part of the plan hash, is recorded as the
+// binding basis, and cannot confirm an agent that isn't a clean candidate.
+func TestUnmarkedAgentsNeedOwnerConfirmation(t *testing.T) {
+	e := newInstEnv(t)
+	cand := e.legacy("cand", "", -time.Second)
+	marked := e.legacy("marked", "local", -time.Second)
+	newer := e.legacy("newer", "", time.Hour)
+
+	p := e.plan()
+	if it := p.agent(cand.ID); it.Action != ActionCandidate || it.Reason != ReasonNoMarker || it.Basis != "" {
+		t.Fatalf("unmarked must be a candidate: %+v", it)
+	}
+	if it := p.agent(marked.ID); it.Action != ActionBindAgent || it.Basis != BasisMarker {
+		t.Fatalf("marked: %+v", it)
+	}
+	var j []JournalEntry
+	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.store.LoadAgent(cand.ID); got.SessionInstanceID != "" {
+		t.Fatal("candidate must not be bound without confirmation")
+	}
+	for _, en := range j {
+		if en.Kind == "agent" && en.Name == cand.ID {
+			t.Fatal("candidate must not be journaled")
+		}
+	}
+	// The session still got its id; the candidate is still a candidate.
+	if after := e.plan(); after.agent(cand.ID).Action != ActionCandidate || after.HasWork() {
+		t.Fatalf("after apply: %+v", after.agent(cand.ID))
+	}
+
+	// Confirming a skipped (non-candidate) agent or an unknown id does not
+	// bind anything and is reported.
+	e.confirm = []string{newer.ID, "pa_ffffffffffff"}
+	p2 := e.plan()
+	if p2.agent(newer.ID).Action != ActionSkip || len(p2.UnknownConfirmations) != 2 || len(p2.OwnerConfirmed) != 0 {
+		t.Fatalf("bad confirm: %+v / %v / %v", p2.agent(newer.ID), p2.UnknownConfirmations, p2.OwnerConfirmed)
+	}
+
+	// Explicit confirmation binds with basis owner_confirmed and changes the hash.
+	e.confirm = nil
+	h0 := e.plan().Hash
+	e.confirm = []string{cand.ID}
+	p3 := e.plan()
+	if p3.Hash == h0 || p3.agent(cand.ID).Action != ActionBindAgent || p3.agent(cand.ID).Basis != BasisOwnerConfirmed ||
+		len(p3.OwnerConfirmed) != 1 {
+		t.Fatalf("confirmed: %+v hash %s/%s", p3.agent(cand.ID), p3.Hash, h0)
+	}
+	j = nil
+	if err := ApplyInstancePlan(p3, e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.store.LoadAgent(cand.ID); got.SessionInstanceID != e.sess.recs["cand"].InstanceID {
+		t.Fatal("confirmed candidate must be bound")
+	}
+	if len(j) != 1 || j[0].Basis != BasisOwnerConfirmed {
+		t.Fatalf("journal must record basis: %+v", j)
+	}
+	evs, _, _ := e.store.ReadEvents(cand.ID, 0, 0)
+	if last := evs[len(evs)-1]; last.Type != "session_instance_bound" || last.Data["basis"] != BasisOwnerConfirmed {
+		t.Fatalf("event must record basis: %+v", last)
 	}
 }

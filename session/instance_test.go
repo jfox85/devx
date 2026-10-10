@@ -108,16 +108,17 @@ func TestAdoptAssignsInstanceToLegacyRecordOnly(t *testing.T) {
 	}
 }
 
-// Derived migration ids are deterministic for the same record state and key,
-// differ for a recreated record (new created_at) and for another key.
+// Derived migration ids are deterministic for the same record identity and
+// differ for a recreated record (new created_at), another name or path.
 func TestDeriveInstanceID(t *testing.T) {
-	k := []byte("0123456789abcdef0123456789abcdef")
 	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	a := DeriveInstanceID(k, "s", "/w/s", t0)
-	if !ValidInstanceID(a) || a != DeriveInstanceID(k, "s", "/w/s", t0.In(time.FixedZone("X", 3600))) {
+	a := DeriveInstanceID("s", "/w/s", t0)
+	if !ValidInstanceID(a) || a != DeriveInstanceID("s", "/w/s", t0.In(time.FixedZone("X", 3600))) {
 		t.Fatal("must be valid and zone-independent")
 	}
-	if a == DeriveInstanceID(k, "s", "/w/s", t0.Add(time.Nanosecond)) || a == DeriveInstanceID([]byte("other-key-other-key-other-key-xx"), "s", "/w/s", t0) {
-		t.Fatal("must change with created_at and key")
+	for _, b := range []string{DeriveInstanceID("s", "/w/s", t0.Add(time.Nanosecond)), DeriveInstanceID("t", "/w/s", t0), DeriveInstanceID("s", "/w/t", t0)} {
+		if a == b {
+			t.Fatal("must change with created_at, name and path")
+		}
 	}
 }

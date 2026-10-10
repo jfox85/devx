@@ -160,17 +160,21 @@ Owner steps, in order. Each step is separately approved, and nothing here
 runs automatically.
 
 1. **Review the preview.** On a copy of the records, or read-only on the
-   live ones: `devx session instances` (the dry run writes nothing).
+   live ones: `devx session instances`. The dry run reads only and
+   creates no file, not even a key. Decide each
+   `candidate_needs_owner_confirmation` line yourself.
 2. **Install the new binary.** Keep the previous one as a backup. Then:
    - start one fresh relay child, as in "Live reload" above;
    - restart every long-running old DevX process (`devx web`, and old
      relay `devx mcp pi` children through the one relay restart) so none
      of them keeps dropping the new fields;
    - don't restart Pi or tmux sessions.
-3. **Prepare.** `devx session instances --prepare` creates the private key
-   and prints the applicable plan and its hash. Review every `skip` line.
-4. **Apply.** `devx session instances --apply <hash>`. Note the printed
-   backup directory.
+3. **Re-plan read-only.** `devx session instances [--confirm <agent-id> ...]`.
+   Name only the candidates you've confirmed yourself. It prints the
+   applicable hash. Review every `skip` and `candidate` line.
+4. **Apply.** `devx session instances --apply <hash> [the same --confirm
+   ids]`. Note the printed backup directory.
+   - Unconfirmed candidates stay unbound and are denied by the bridge.
    - Until the migration runs, an UNBOUND adopted agent whose marker an
      older writer dropped can't be relaunched. Relaunch only verifies; it
      never re-marks. In the preview of the live records, this applied to
