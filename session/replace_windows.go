@@ -3,6 +3,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"unsafe"
 
@@ -30,10 +31,15 @@ type fileRenameInfo struct {
 // readers keep the old contents. Filesystems without POSIX rename support
 // (e.g. FAT, some network shares) fall back to os.Rename.
 func replaceFile(src, dst string) error {
-	if err := posixReplace(src, dst); err == nil {
+	perr := posixReplace(src, dst)
+	if perr == nil {
 		return nil
 	}
-	return os.Rename(src, dst)
+	// The POSIX rename is all-or-nothing, so src is still in place here.
+	if err := os.Rename(src, dst); err != nil {
+		return errors.Join(perr, err)
+	}
+	return nil
 }
 
 func posixReplace(src, dst string) error {
@@ -54,8 +60,7 @@ func posixReplace(src, dst string) error {
 		return err
 	}
 	nameBytes := (len(name) - 1) * 2 // without the terminating NUL
-	var probe fileRenameInfo
-	size := int(unsafe.Offsetof(probe.FileName)) + nameBytes + 2
+	size := int(unsafe.Offsetof(fileRenameInfo{}.FileName)) + nameBytes + 2
 	buf := make([]byte, size)
 	info := (*fileRenameInfo)(unsafe.Pointer(&buf[0]))
 	info.Flags = windows.FILE_RENAME_REPLACE_IF_EXISTS | windows.FILE_RENAME_POSIX_SEMANTICS

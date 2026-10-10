@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -268,13 +269,25 @@ func TestWriteSucceedsWhileReaderHoldsFileOpen(t *testing.T) {
 	if err := st.AddSession("s1", "b", "/p", nil); err != nil {
 		t.Fatal(err)
 	}
-	release, err := holdSessionsFileOpenForTest(getSessionsPath())
+	held, release, err := holdSessionsFileOpenForTest(getSessionsPath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 	if err := st.UpdateSession("s1", func(s *Session) { s.Branch = "changed" }); err != nil {
 		t.Fatalf("update while a reader holds the file open: %v", err)
+	}
+	// The open reader keeps a consistent snapshot of the old store.
+	old, err := readAllForTest(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap SessionStore
+	if err := json.Unmarshal(old, &snap); err != nil {
+		t.Fatalf("held reader saw a torn file: %v", err)
+	}
+	if s := snap.Sessions["s1"]; s == nil || s.Branch != "b" {
+		t.Fatalf("held reader should see the old snapshot, got %+v", s)
 	}
 	release()
 	got, err := LoadSessions()

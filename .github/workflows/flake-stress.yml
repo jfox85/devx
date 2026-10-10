@@ -1,0 +1,34 @@
+# TEMPORARY validation for the draft PR; removed before ready-for-review.
+name: Windows store flake stress
+on:
+  pull_request:
+    branches: [ main, ci-windows-portability ]
+jobs:
+  stress:
+    name: stress ${{ matrix.label }} ${{ matrix.shard }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [before-fix, after-fix]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23', cache: false }
+      - name: stress
+        shell: bash
+        run: |
+          if [ "${{ matrix.label }}" = before-fix ]; then
+            # Same tests; production reader AND writer reverted to pre-fix behaviour.
+            printf '//go:build windows\n\npackage session\n\nimport "os"\n\nfunc openSessionsFileForRead(p string) (*os.File, error) { return os.Open(p) }\n' > session/readfile_windows.go
+            printf '//go:build windows\n\npackage session\n\nimport "os"\n\nfunc replaceFile(src, dst string) error { return os.Rename(src, dst) }\n' > session/replace_windows.go
+            git diff --stat
+          fi
+          git log --oneline -1
+          go test -race -count=1 -v -run '^TestWriteSucceedsWhileReaderHoldsFileOpen$' ./session 2>&1 | grep -E -- '^(--- |ok|FAIL)|metadata_concurrency_test' || true
+          go test -race -count=300 -run '^TestConcurrentUpdatesAllSurvive$' -v ./session > iso.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} iso runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' iso.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' iso.log) accessdenied=$(grep -c 'Access is denied' iso.log)"
+          go test -race -count=15 -v ./session > pkg.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} pkg runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' pkg.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' pkg.log) accessdenied=$(grep -c 'Access is denied' pkg.log) allfails=$(grep -cE -- '^--- FAIL' pkg.log)"

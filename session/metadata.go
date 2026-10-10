@@ -221,7 +221,10 @@ func withSessionsLock(fn func() error) error {
 // running containers/worktrees, not a system of record. On Windows the publish
 // uses a POSIX-semantics rename (replace_windows.go) so it succeeds while a
 // lock-free reader has the file open; it falls back to os.Rename where the
-// filesystem lacks POSIX rename.
+// filesystem lacks POSIX rename. Writers can still be blocked on Windows by
+// the fallback path (FAT, some network shares) or by any other process that
+// opens sessions.json without FILE_SHARE_DELETE (an older devx, an editor,
+// antivirus).
 // Callers must already hold the sessions lock.
 func (s *SessionStore) writeStoreAtomic() error {
 	sessionsPath := getSessionsPath()
