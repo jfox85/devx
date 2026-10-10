@@ -1,0 +1,31 @@
+# TEMPORARY validation for the draft PR; removed before ready-for-review.
+name: Windows piagent lock flake stress
+on:
+  pull_request:
+    branches: [ main, devx-artifacts-opus55-oct9 ]
+jobs:
+  stress:
+    name: lock ${{ matrix.label }} ${{ matrix.shard }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [before-fix, after-fix]
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23', cache: false }
+      - name: stress
+        shell: bash
+        run: |
+          if [ "${{ matrix.label }}" = before-fix ]; then
+            # Same tests; contention check reverted to the pre-fix os.IsExist.
+            printf '//go:build windows\n\npackage piagent\n\nimport "os"\n\nfunc lockContended(err error) bool { return os.IsExist(err) }\n' > piagent/lockerr_windows.go
+            git diff --stat
+          fi
+          go test -race -count=20 -v -run '^TestDirLockSurvivesHeavyChurn$' ./piagent > churn.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} churn runs=$(grep -cE -- '^--- (PASS|FAIL): TestDirLockSurvivesHeavyChurn ' churn.log) fails=$(grep -cE -- '^--- FAIL: TestDirLockSurvivesHeavyChurn ' churn.log) accessdenied=$(grep -c 'Access is denied' churn.log)"
+          go test -race -count=100 -v -run '^TestConcurrentSendsGetDistinctOrderedTasks$' ./piagent > sends.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} sends runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentSendsGetDistinctOrderedTasks ' sends.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentSendsGetDistinctOrderedTasks ' sends.log) accessdenied=$(grep -c 'Access is denied' sends.log)"
+          grep -m2 'Access is denied' churn.log sends.log | cut -c1-240 || true
