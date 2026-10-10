@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -138,7 +139,7 @@ func InstallWrapper() (*Wrapped, func(), error) {
 			real = abs
 		}
 	}
-	dir, err := os.MkdirTemp("/tmp", "dxtw-")
+	dir, err := os.MkdirTemp(ShortTempBase(), "dxtw-")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -162,9 +163,15 @@ func InstallWrapper() (*Wrapped, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	if err := os.Symlink(self, filepath.Join(w.BinDir, "tmux")); err != nil {
-		cleanup()
-		return nil, nil, err
+	// tmux does not exist on Windows, so there is nothing to route: no
+	// wrapper is placed on PATH and any tmux exec simply fails (closed). The
+	// HOME/profile isolation below still applies, so tests never touch the
+	// runner's real profile.
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(self, filepath.Join(w.BinDir, "tmux")); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
 	}
 	nonce := randomHex(16)
 	if err := writeOwner(dir, &Owner{Nonce: nonce, Socket: w.Socket, Dir: dir, PID: os.Getpid(), Sessions: []string{}}); err != nil {
@@ -175,8 +182,10 @@ func InstallWrapper() (*Wrapped, func(), error) {
 		_ = os.Unsetenv(k)
 	}
 	set := map[string]string{
-		"PATH":            w.BinDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"HOME":            w.Home,
+		"PATH": w.BinDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME": w.Home,
+		// os.UserHomeDir reads USERPROFILE on Windows; pin it too.
+		"USERPROFILE":     w.Home,
 		"XDG_CONFIG_HOME": filepath.Join(w.Home, ".config"),
 		"XDG_STATE_HOME":  filepath.Join(w.Home, ".local", "state"),
 		"XDG_CACHE_HOME":  filepath.Join(w.Home, ".cache"),

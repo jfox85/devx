@@ -93,7 +93,9 @@ func TestLoadPolicyFile(t *testing.T) {
 	}
 	unreadable := filepath.Join(dir, "u.yaml")
 	_ = os.WriteFile(unreadable, []byte("pi_mcp: {}\n"), 0o000)
-	if os.Getuid() != 0 {
+	// Unix only: Windows ignores the 0o000 mode (ACLs control access), and
+	// the bridge is disabled there anyway (platformSupported=false).
+	if unixPerms := platformSupported; unixPerms && os.Getuid() != 0 {
 		if _, err := LoadPolicyFile(unreadable); err == nil {
 			t.Fatal("unreadable file must fail")
 		}
@@ -104,8 +106,14 @@ func TestLoadPolicyFile(t *testing.T) {
 		t.Fatal("oversized config must fail")
 	}
 	// Writable by group or others: another local user could widen scope.
+	// The owner/mode check (policy_unix.go) exists only where the bridge
+	// runs; on Windows mode bits are not enforced and the bridge is disabled.
 	good := "pi_mcp:\n  allowed_projects: [proj]\n"
-	for _, mode := range []os.FileMode{0o620, 0o602, 0o666} {
+	modes := []os.FileMode{0o620, 0o602, 0o666}
+	if !platformSupported {
+		modes = nil
+	}
+	for _, mode := range modes {
 		p := filepath.Join(dir, fmt.Sprintf("w%o.yaml", mode))
 		_ = os.WriteFile(p, []byte(good), 0o600)
 		_ = os.Chmod(p, mode)

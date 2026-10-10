@@ -74,6 +74,18 @@ type Fixture struct {
 	mu     sync.Mutex
 }
 
+// ShortTempBase returns the directory fixture and wrapper dirs are created
+// in: "/tmp" where it exists (short, because macOS limits socket paths to 104
+// bytes), otherwise the platform temp dir (e.g. on Windows, which has no
+// /tmp; there are no tmux sockets there, but packages still install the
+// guard in TestMain and must not fail before any test runs).
+func ShortTempBase() string {
+	if st, err := os.Stat("/tmp"); err == nil && st.IsDir() {
+		return "/tmp"
+	}
+	return os.TempDir()
+}
+
 // Options configures New.
 type Options struct {
 	// BaseDir is where the fixture directory is created. Default "/tmp"
@@ -90,7 +102,7 @@ const ownerFile = "owner.json"
 func New(opts Options) (*Fixture, error) {
 	base := opts.BaseDir
 	if base == "" {
-		base = "/tmp"
+		base = ShortTempBase()
 	}
 	dir, err := os.MkdirTemp(base, "dxtf-")
 	if err != nil {

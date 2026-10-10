@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +38,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	requireBridgePlatform(t)
 	e := &env{t: t, store: piagent.NewStore(filepath.Join(t.TempDir(), "state")), sessions: map[string]*session.Session{},
 		now: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)}
 	// Tests start from an explicit-allowlist policy with uploads on, then
@@ -848,5 +850,16 @@ func TestTaskArtifacts(t *testing.T) {
 	e.pol.Read = false
 	if e.svc.TaskArtifacts(a, tv) != nil {
 		t.Fatal("read disabled must not expose artifacts")
+	}
+}
+
+// requireBridgePlatform skips tests that exercise a LIVE bridge where the
+// bridge cannot run. Reason: the bridge relies on openat/O_NOFOLLOW/linkat
+// (open_unix.go), which Windows lacks; there it is disabled by design and
+// fails closed (TestBridgeFailsClosedWithoutPlatformSupport asserts that).
+func requireBridgePlatform(t *testing.T) {
+	t.Helper()
+	if !platformSupported {
+		t.Skipf("artifact bridge is disabled on %s (no openat/O_NOFOLLOW/linkat); fail-closed behavior is tested instead", runtime.GOOS)
 	}
 }

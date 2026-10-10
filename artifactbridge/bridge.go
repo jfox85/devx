@@ -47,9 +47,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	artifactpkg "github.com/jfox85/devx/artifact"
@@ -433,24 +431,6 @@ func contains(list []string, v string) bool {
 func opaqueID(agentID, sessionName, manifestID string) string {
 	h := sha256.Sum256([]byte("devx-artifact|v1|" + agentID + "|" + sessionName + "|" + manifestID))
 	return "dxa_" + hex.EncodeToString(h[:12])
-}
-
-// splitRel validates a manifest-relative file path and returns its segments.
-func splitRel(rel string) ([]string, error) {
-	if err := artifactpkg.ValidateRelativePath(rel); err != nil {
-		return nil, errf(codeUnavailable, "artifact path is invalid")
-	}
-	clean := path.Clean(filepath.ToSlash(rel))
-	if strings.HasPrefix(clean, "/") || clean == "." {
-		return nil, errf(codeUnavailable, "artifact path is invalid")
-	}
-	parts := strings.Split(clean, "/")
-	for _, p := range parts {
-		if p == "" || p == "." || p == ".." {
-			return nil, errf(codeUnavailable, "artifact path is invalid")
-		}
-	}
-	return parts, nil
 }
 
 func asError(err error) *Error {

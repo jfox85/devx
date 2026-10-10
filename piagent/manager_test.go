@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -899,5 +900,23 @@ func TestLiveSameInstanceBridgeIsNeverOrphaned(t *testing.T) {
 	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: 999999, Pane: "%5", Heartbeat: time.Now().Add(-time.Hour)})
 	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskUnknown {
 		t.Fatalf("dead pane with stale bridge must orphan: %+v", tv)
+	}
+}
+
+// processAlive must tell a running process from an exited one on every
+// platform (Windows has no signal 0): stale-lock reclamation depends on it.
+func TestProcessAliveDistinguishesExitedProcess(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Fatal("this process must be alive")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if processAlive(cmd.Process.Pid) {
+		t.Fatalf("exited process %d reported alive", cmd.Process.Pid)
+	}
+	if processAlive(0) || processAlive(-1) {
+		t.Fatal("non-positive pids are never alive")
 	}
 }

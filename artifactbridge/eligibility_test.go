@@ -1,6 +1,8 @@
 package artifactbridge
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,11 +26,11 @@ const fixtureInstance = "si_aaaaaaaaaaaaaaaaaaaaaaaa"
 
 func newEligibilityFixture() *eligibilityFixture {
 	sessCreated := fixtureT0.Add(-200 * time.Millisecond)
-	a := &piagent.Agent{ID: "pa_aaaaaaaaaaaa", DevxSession: "s1", Project: "proj", Worktree: "/wt/s1", PiSessionID: "x", CreatedAt: fixtureT0,
+	a := &piagent.Agent{ID: "pa_aaaaaaaaaaaa", DevxSession: "s1", Project: "proj", Worktree: wtPath("s1"), PiSessionID: "x", CreatedAt: fixtureT0,
 		SessionInstanceID: fixtureInstance, SessionCreatedAt: sessCreated}
 	return &eligibilityFixture{
 		agent:    a,
-		sessions: map[string]*session.Session{"s1": {Name: "s1", ProjectAlias: "proj", Path: "/wt/s1", CreatedAt: sessCreated, InstanceID: fixtureInstance}},
+		sessions: map[string]*session.Session{"s1": {Name: "s1", ProjectAlias: "proj", Path: wtPath("s1"), CreatedAt: sessCreated, InstanceID: fixtureInstance}},
 		agents:   []*piagent.Agent{a},
 	}
 }
@@ -41,7 +43,7 @@ func (f *eligibilityFixture) check() string {
 func TestEligibleSessionPredicate(t *testing.T) {
 	now := time.Now()
 	other := func(mod func(o *piagent.Agent)) *piagent.Agent {
-		o := &piagent.Agent{ID: "pa_bbbbbbbbbbbb", DevxSession: "s2", Project: "proj", Worktree: "/wt/s2", PiSessionID: "y"}
+		o := &piagent.Agent{ID: "pa_bbbbbbbbbbbb", DevxSession: "s2", Project: "proj", Worktree: wtPath("s2"), PiSessionID: "y"}
 		mod(o)
 		return o
 	}
@@ -57,9 +59,9 @@ func TestEligibleSessionPredicate(t *testing.T) {
 			f.sessions["s1"].LocalOnly = &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: f.agent.ID}
 		}, ""},
 		{"session without project alias", func(f *eligibilityFixture) { f.sessions["s1"].ProjectAlias = "" }, ""},
-		{"trailing slash in path", func(f *eligibilityFixture) { f.sessions["s1"].Path = "/wt/s1/" }, ""},
+		{"trailing slash in path", func(f *eligibilityFixture) { f.sessions["s1"].Path = wtPath("s1") + string(filepath.Separator) }, ""},
 		{"retired duplicate claimant ignored", func(f *eligibilityFixture) {
-			f.agents = append(f.agents, other(func(o *piagent.Agent) { o.DevxSession, o.Worktree, o.RetiredAt = "s1", "/wt/s1", &now }))
+			f.agents = append(f.agents, other(func(o *piagent.Agent) { o.DevxSession, o.Worktree, o.RetiredAt = "s1", wtPath("s1"), &now }))
 		}, ""},
 		{"unrelated live agent", func(f *eligibilityFixture) { f.agents = append(f.agents, other(func(*piagent.Agent) {})) }, ""},
 
@@ -74,12 +76,12 @@ func TestEligibleSessionPredicate(t *testing.T) {
 		{"record name differs from key", func(f *eligibilityFixture) { f.sessions["s1"].Name = "s1-renamed" }, denyNoSession},
 
 		// Path changes.
-		{"session path moved", func(f *eligibilityFixture) { f.sessions["s1"].Path = "/wt/elsewhere" }, denyPathMismatch},
-		{"agent worktree moved", func(f *eligibilityFixture) { f.agent.Worktree = "/wt/elsewhere" }, denyPathMismatch},
+		{"session path moved", func(f *eligibilityFixture) { f.sessions["s1"].Path = wtPath("elsewhere") }, denyPathMismatch},
+		{"agent worktree moved", func(f *eligibilityFixture) { f.agent.Worktree = wtPath("elsewhere") }, denyPathMismatch},
 		{"relative session path", func(f *eligibilityFixture) { f.sessions["s1"].Path = "wt/s1" }, denyPathMismatch},
 		{"relative agent worktree", func(f *eligibilityFixture) { f.agent.Worktree = "wt/s1" }, denyPathMismatch},
 		{"empty session path", func(f *eligibilityFixture) { f.sessions["s1"].Path = "" }, denyPathMismatch},
-		{"parent-of path", func(f *eligibilityFixture) { f.sessions["s1"].Path = "/wt" }, denyPathMismatch},
+		{"parent-of path", func(f *eligibilityFixture) { f.sessions["s1"].Path = filepath.Dir(wtPath("s1")) }, denyPathMismatch},
 
 		// Project mismatch.
 		{"session project differs", func(f *eligibilityFixture) { f.sessions["s1"].ProjectAlias = "other" }, denyProjectMismatch},
@@ -171,10 +173,10 @@ func TestEligibleSessionPredicate(t *testing.T) {
 			f.agents = append(f.agents, other(func(o *piagent.Agent) { o.DevxSession = "s1" }))
 		}, denyDuplicateClaim},
 		{"live agent of another session uses same worktree", func(f *eligibilityFixture) {
-			f.agents = append(f.agents, other(func(o *piagent.Agent) { o.Worktree = "/wt/s1" }))
+			f.agents = append(f.agents, other(func(o *piagent.Agent) { o.Worktree = wtPath("s1") }))
 		}, denySharedWorktree},
 		{"another session record uses same worktree", func(f *eligibilityFixture) {
-			f.sessions["s2"] = &session.Session{Name: "s2", ProjectAlias: "proj", Path: "/wt/s1/"}
+			f.sessions["s2"] = &session.Session{Name: "s2", ProjectAlias: "proj", Path: wtPath("s1") + string(filepath.Separator)}
 		}, denySharedWorktree},
 	}
 	for _, c := range cases {
@@ -339,4 +341,16 @@ func TestOrphanedAgentDoesNotInheritRecreatedSession(t *testing.T) {
 	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
 		t.Fatalf("explicit list must not revive an orphaned agent: %v", err)
 	}
+}
+
+// wtPath returns an absolute worktree path for test fixtures on every
+// platform ("/wt/<name>" on Unix, "<volume>\\wt\\<name>" on Windows): the
+// code under test requires absolute paths, and "/wt/x" is not absolute on
+// Windows.
+func wtPath(name string) string {
+	root := string(filepath.Separator)
+	if v := filepath.VolumeName(os.TempDir()); v != "" {
+		root = v + root
+	}
+	return filepath.Join(root, "wt", name)
 }

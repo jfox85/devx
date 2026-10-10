@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -248,4 +249,22 @@ func readManifestNoFollow(worktree string) ([]byte, error) {
 		return nil, errUnavailable
 	}
 	return io.ReadAll(io.LimitReader(f, 8<<20))
+}
+
+// splitRel validates a manifest-relative file path and returns its segments.
+func splitRel(rel string) ([]string, error) {
+	if err := artifactpkg.ValidateRelativePath(rel); err != nil {
+		return nil, errf(codeUnavailable, "artifact path is invalid")
+	}
+	clean := path.Clean(filepath.ToSlash(rel))
+	if strings.HasPrefix(clean, "/") || clean == "." {
+		return nil, errf(codeUnavailable, "artifact path is invalid")
+	}
+	parts := strings.Split(clean, "/")
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." {
+			return nil, errf(codeUnavailable, "artifact path is invalid")
+		}
+	}
+	return parts, nil
 }

@@ -3,6 +3,7 @@ package piagent
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -77,7 +78,7 @@ func newInstEnv(t *testing.T) *instEnv {
 func (e *instEnv) legacy(name, marker string, sessOffset time.Duration) *Agent {
 	e.t.Helper()
 	id := fmt.Sprintf("pa_%012x", len(e.agents)+1)
-	wt := "/wt/" + name
+	wt := wtPath(name)
 	s := &session.Session{Name: name, ProjectAlias: "proj", Path: wt, CreatedAt: e.t0.Add(sessOffset)}
 	switch marker {
 	case "local":
@@ -137,7 +138,7 @@ func TestPlanBindsOnlyUnambiguousLegacyAgents(t *testing.T) {
 	gone := e.legacy("gone", "local", -time.Second)
 	delete(e.sess.recs, "gone")
 	dupA := e.legacy("dup", "", -time.Second)
-	dupB := &Agent{ID: "pa_dddddddddddd", DevxSession: "dup", Project: "proj", Worktree: "/wt/dup2", PiSessionID: "y", CreatedAt: e.t0}
+	dupB := &Agent{ID: "pa_dddddddddddd", DevxSession: "dup", Project: "proj", Worktree: wtPath("dup2"), PiSessionID: "y", CreatedAt: e.t0}
 	_ = e.store.ensureAgentDirs(dupB.ID)
 	_ = e.store.WithAgentLock(dupB.ID, func() error { return e.store.SaveAgent(dupB) })
 	retired := e.legacy("retired", "local", -time.Second)
@@ -145,7 +146,7 @@ func TestPlanBindsOnlyUnambiguousLegacyAgents(t *testing.T) {
 	retired.RetiredAt = &now
 	_ = e.store.WithAgentLock(retired.ID, func() error { return e.store.SaveAgent(retired) })
 	shared := e.legacy("shared", "local", -time.Second)
-	e.sess.recs["shared-twin"] = &session.Session{Name: "shared-twin", Path: "/wt/shared", CreatedAt: e.t0}
+	e.sess.recs["shared-twin"] = &session.Session{Name: "shared-twin", Path: wtPath("shared"), CreatedAt: e.t0}
 
 	p := e.plan()
 	want := map[string]string{
@@ -264,7 +265,7 @@ func TestApplyRefusesWhenSessionRecreatedBetweenReviewAndApply(t *testing.T) {
 	p := e.plan()
 	// Session removed and recreated (same name and path) after review, with
 	// the clock rolled back so it even looks older.
-	e.sess.recs["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: "/wt/feat", CreatedAt: e.t0.Add(-time.Hour)}
+	e.sess.recs["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: wtPath("feat"), CreatedAt: e.t0.Add(-time.Hour)}
 	var j []JournalEntry
 	err := ApplyInstancePlan(p, e.sess.stores(e.store, &j))
 	if !errors.Is(err, ErrPlanStale) {
@@ -301,7 +302,7 @@ func TestOldWriterDroppedIDIsRestoredNotReplaced(t *testing.T) {
 		t.Fatal("restored id differs")
 	}
 	// Old writer recreated it instead (new created_at): NOT restored.
-	e.sess.recs["s"] = &session.Session{Name: "s", ProjectAlias: "proj", Path: "/wt/s", CreatedAt: e.t0.Add(-5 * time.Minute)}
+	e.sess.recs["s"] = &session.Session{Name: "s", ProjectAlias: "proj", Path: wtPath("s"), CreatedAt: e.t0.Add(-5 * time.Minute)}
 	p = e.plan()
 	if p.agent(a.ID).Reason != SkipBoundIDMissing {
 		t.Fatalf("recreated id-less record must not inherit: %+v", p.agent(a.ID))
@@ -317,7 +318,7 @@ func TestRollbackRemovesOnlyWhatMigrationWrote(t *testing.T) {
 	b := e.legacy("b", "local", -time.Second)
 	// A session that already had an id before the migration.
 	pre := session.NewInstanceID()
-	e.sess.recs["pre"] = &session.Session{Name: "pre", Path: "/wt/pre", CreatedAt: e.t0, InstanceID: pre}
+	e.sess.recs["pre"] = &session.Session{Name: "pre", Path: wtPath("pre"), CreatedAt: e.t0, InstanceID: pre}
 	var j []JournalEntry
 	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
 		t.Fatal(err)
@@ -432,7 +433,7 @@ func TestApplyWritesSessionIDOnlyToReviewedRecord(t *testing.T) {
 	}
 	// Before apply, an old binary removes and recreates the session (no id,
 	// new created_at, same path).
-	e.sess.recs["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: "/wt/feat", CreatedAt: e.t0.Add(-time.Hour)}
+	e.sess.recs["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: wtPath("feat"), CreatedAt: e.t0.Add(-time.Hour)}
 	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); !errors.Is(err, ErrPlanStale) {
 		t.Fatalf("want ErrPlanStale, got %v", err)
 	}
@@ -465,7 +466,7 @@ func TestRestoreRequiresConsistentSingleClaimant(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.sess.recs["s"].InstanceID = ""
-	e.sess.recs["s"].Path = "/wt/elsewhere"
+	e.sess.recs["s"].Path = wtPath("elsewhere")
 	if it := e.plan().agent(a.ID); it.Reason != SkipPathMismatch {
 		t.Fatalf("moved record: %+v", it)
 	}
@@ -513,7 +514,7 @@ func TestPlanRestoresBindingDroppedFromAgentRecord(t *testing.T) {
 	got, _ := e.store.LoadAgent(a.ID)
 	got.SessionInstanceID, got.SessionCreatedAt = "", time.Time{}
 	_ = e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(got) })
-	e.sess.recs["s"] = &session.Session{Name: "s", ProjectAlias: "proj", Path: "/wt/s", CreatedAt: e.t0.Add(-time.Hour),
+	e.sess.recs["s"] = &session.Session{Name: "s", ProjectAlias: "proj", Path: wtPath("s"), CreatedAt: e.t0.Add(-time.Hour),
 		InstanceID: session.NewInstanceID(), LocalOnly: &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: a.ID}}
 	if it := plan().agent(a.ID); it.Action != ActionSkip || it.Reason != SkipBoundElsewhere {
 		t.Fatalf("recreated: %+v", it)
@@ -626,7 +627,7 @@ func TestAdoptedMarkerIsCandidateUntilConfirmed(t *testing.T) {
 func TestRecordedBindingIgnoresBasislessMigrationEvents(t *testing.T) {
 	e := newInstEnv(t)
 	a := e.legacy("s", "", -time.Second)
-	e.sess.recs["s"].InstanceID = session.DeriveInstanceID("s", "/wt/s", e.sess.recs["s"].CreatedAt)
+	e.sess.recs["s"].InstanceID = session.DeriveInstanceID("s", wtPath("s"), e.sess.recs["s"].CreatedAt)
 	_, _ = e.store.AppendEvent(a.ID, Event{Type: "session_instance_bound", Source: "devx", Data: map[string]any{
 		"session_instance_id": e.sess.recs["s"].InstanceID, "session_created_at": e.sess.recs["s"].CreatedAt.Format(time.RFC3339Nano)}})
 	if id, _, _ := e.store.RecordedBinding(a.ID); id != "" {
@@ -698,4 +699,16 @@ func TestRecordedBindingReadsBeyondFirstPage(t *testing.T) {
 	if id, _, err := e.store.RecordedBinding(a.ID); err != nil || id != "" {
 		t.Fatalf("rollback after two pages must clear the binding: got %q, %v", id, err)
 	}
+}
+
+// wtPath returns an absolute worktree path for test fixtures on every
+// platform ("/wt/<name>" on Unix, "<volume>\\wt\\<name>" on Windows): the
+// code under test requires absolute paths, and "/wt/x" is not absolute on
+// Windows.
+func wtPath(name string) string {
+	root := string(filepath.Separator)
+	if v := filepath.VolumeName(os.TempDir()); v != "" {
+		root = v + root
+	}
+	return filepath.Join(root, "wt", name)
 }

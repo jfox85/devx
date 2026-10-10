@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,8 +26,9 @@ type wrapperRig struct {
 
 func newWrapperRig(t *testing.T) *wrapperRig {
 	t.Helper()
+	requireWrapperExec(t)
 	base := t.TempDir()
-	dir, err := os.MkdirTemp("/tmp", "dxtw-t-")
+	dir, err := os.MkdirTemp(ShortTempBase(), "dxtw-t-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +168,7 @@ func TestInstallWrapperEnvironment(t *testing.T) {
 	t.Setenv("TMUX_TMPDIR", "/private/tmp")
 	t.Setenv("PATH", os.Getenv("PATH"))
 	t.Setenv("HOME", os.Getenv("HOME"))
-	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", wrapOwnerEnv, wrapNonceEnv, wrapRealEnv} {
+	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "USERPROFILE", wrapOwnerEnv, wrapNonceEnv, wrapRealEnv} {
 		t.Setenv(k, os.Getenv(k))
 	}
 	w, cleanup, err := InstallWrapper()
@@ -182,13 +184,19 @@ func TestInstallWrapperEnvironment(t *testing.T) {
 	if os.Getenv("HOME") != w.Home || !strings.HasPrefix(w.Home, w.Dir) {
 		t.Errorf("HOME=%s not the fake home", os.Getenv("HOME"))
 	}
-	if p, _ := exec.LookPath("tmux"); p != filepath.Join(w.BinDir, "tmux") {
+	if runtime.GOOS == "windows" {
+		// No wrapper on Windows (no tmux to route); profile isolation must
+		// still hold because os.UserHomeDir reads USERPROFILE there.
+		if h, _ := os.UserHomeDir(); h != w.Home {
+			t.Errorf("os.UserHomeDir()=%s, not the fake home", h)
+		}
+	} else if p, _ := exec.LookPath("tmux"); p != filepath.Join(w.BinDir, "tmux") {
 		t.Errorf("tmux on PATH resolves to %s, not the wrapper", p)
 	}
 	if w.RealTmux != "" && strings.HasPrefix(w.RealTmux, w.Dir) {
 		t.Errorf("real tmux points into the wrapper dir")
 	}
-	if !strings.HasPrefix(w.Socket, w.Dir+"/") {
+	if !strings.HasPrefix(w.Socket, w.Dir+string(filepath.Separator)) {
 		t.Errorf("socket %s outside owned dir", w.Socket)
 	}
 }
@@ -207,5 +215,16 @@ func TestWrapperWithoutOwnerEnvFailsClosed(t *testing.T) {
 	}
 	if len(r.shimLines()) != 0 {
 		t.Fatal("real tmux reached")
+	}
+}
+
+// requireWrapperExec skips tests that execute the wrapper as a child
+// process. Reason: wrapper mode is reached by running this test binary via a
+// symlink named "tmux" and records argv through a /bin/sh shim; tmux and
+// /bin/sh do not exist on Windows, where InstallWrapper installs no wrapper.
+func requireWrapperExec(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux wrapper exec is Unix-only (symlinked test binary + /bin/sh shim; no tmux on Windows)")
 	}
 }
