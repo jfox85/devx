@@ -751,7 +751,7 @@ func TestTmuxUnavailableFailsClosed(t *testing.T) {
 	var calls []string
 	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
 		calls = append(calls, args[0])
-		return "", fmt.Errorf("tmux %s: exit status 1: no server running on /tmp/x", args[0])
+		return "", fmt.Errorf("tmux %s: exit status 1: server exited unexpectedly", args[0])
 	}}
 	if err := m.launch(a.ID, false); !errors.Is(err, ErrTmuxUnavailable) {
 		t.Fatalf("launch with tmux unreachable: want ErrTmuxUnavailable, got %v", err)
@@ -774,3 +774,87 @@ func TestTmuxUnavailableFailsClosed(t *testing.T) {
 type okTmuxCreator struct{ SessionCreator }
 
 func (okTmuxCreator) EnsureTmux(string, *Agent) error { return nil }
+
+// Review M2: a missing tmux server is a confirmed absence (panes cannot
+// outlive their server), not a query failure; otherwise Start's resume could
+// never relaunch.
+func TestNoTmuxServerIsAbsenceNotFailure(t *testing.T) {
+	for _, msg := range []string{
+		"tmux display-message: exit status 1: no server running on /tmp/tmux-501/default",
+		"tmux display-message: exit status 1: error connecting to /tmp/x/sock (No such file or directory)",
+		"tmux display-message: exit status 1: can't find pane: %5",
+	} {
+		p := Tmux{Exec: func(...string) (string, error) { return "", errors.New(msg) }}.Pane("%5")
+		if p.Exists || p.QueryFailed {
+			t.Errorf("%q: want confirmed absence, got %+v", msg, p)
+		}
+	}
+	p := Tmux{Exec: func(...string) (string, error) { return "", errors.New("signal: killed") }}.Pane("%5")
+	if !p.QueryFailed {
+		t.Errorf("unknown failure must be QueryFailed: %+v", p)
+	}
+}
+
+// Review M1: launch queries the pane once. A tmux failure on a later call
+// must not turn a relaunch into a second Pi window.
+func TestRelaunchUsesSinglePaneAnswer(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%5"}
+		return m.Store.SaveAgent(a)
+	})
+	m.Creator = okTmuxCreator{m.Creator}
+	n := 0
+	var cmds []string
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		cmds = append(cmds, args[0])
+		if args[0] == "display-message" {
+			n++
+			if n == 1 {
+				return "%5\ts1\t@1\t0\t1\ts1\tpi", nil
+			}
+			return "", errors.New("tmux display-message: exit status 1: server exited unexpectedly")
+		}
+		return "", nil
+	}}
+	_ = m.launch(a.ID, true)
+	for _, c := range cmds {
+		if c == "new-window" {
+			t.Fatalf("relaunch opened a second window after a transient failure: %v", cmds)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("pane queried %d times, want 1: %v", n, cmds)
+	}
+}
+
+// Review L1: invalid UTF-8 never moves the cursor backwards or stalls.
+func TestResultChunkAdvancesOnInvalidUTF8(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	r, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k1"})
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		tk, _ := m.Store.LoadTask(a.ID, r.TaskID)
+		tk.State = TaskCompleted
+		return m.Store.SaveTask(tk)
+	})
+	text := "a\x80\x80x"
+	_ = os.WriteFile(m.Store.resultPath(a.ID, r.TaskID), []byte(text), 0o600)
+	off := 1
+	for i := 0; i < 10; i++ {
+		c, err := m.Result(r.TaskID, off, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.NextOffset <= off {
+			t.Fatalf("chunk at %d did not advance: %+v", off, c)
+		}
+		off = c.NextOffset
+		if c.EOF {
+			return
+		}
+	}
+	t.Fatal("did not reach EOF")
+}

@@ -97,11 +97,18 @@ func (t Tmux) Pane(paneID string) PaneInfo {
 var ErrTmuxUnavailable = errors.New("tmux could not be queried")
 
 // paneAbsent reports whether a display-message error is tmux confirming the
-// target does not exist (as opposed to tmux being unreachable).
+// target does not exist (as opposed to tmux being unreachable). No server on
+// the socket also counts: panes cannot outlive their server, and treating it
+// as a query failure would block Start's resume (which restarts the server)
+// forever.
 func paneAbsent(err error) bool {
 	s := err.Error()
-	return strings.Contains(s, "can't find pane") || strings.Contains(s, "can't find window") ||
-		strings.Contains(s, "can't find session")
+	for _, m := range []string{"can't find pane", "can't find window", "can't find session", "no server running", "error connecting to"} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasSession reports whether an exact tmux session name exists.

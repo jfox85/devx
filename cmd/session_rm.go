@@ -184,12 +184,6 @@ func removeSessionByName(name string, opts removeSessionOptions) error {
 	return nil
 }
 
-// agentsToRetire returns the agents to retire when session name (record
-// sess) is removed: the agent named by its marker, plus any agent BOUND to
-// this exact session instance whose marker an older writer dropped. The
-// match is the agent's recorded instance id (or, for an id-less record, its
-// exact created_at), so only agents of this removed session are retired,
-// never ones bound to an earlier or later session that reused the name.
 // retireSessionAgents retires the removed session's managed agents. The
 // removal itself has already happened, so failures are warnings, but they are
 // always printed: a silent failure would leave agents active that still point
@@ -217,6 +211,12 @@ func retireSessionAgents(out io.Writer, name string, sess *session.Session, open
 	}
 }
 
+// agentsToRetire returns the agents to retire when session name (record
+// sess) is removed: the agent named by its marker, plus any agent BOUND to
+// this exact session instance whose marker an older writer dropped. The
+// match is the agent's recorded instance id (or, for an id-less record, its
+// exact created_at), so only agents of this removed session are retired,
+// never ones bound to an earlier or later session that reused the name.
 func agentsToRetire(name string, sess *session.Session, marker string, agents []*piagent.Agent) []string {
 	seen := map[string]bool{}
 	var out []string

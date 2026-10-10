@@ -391,10 +391,14 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 	} else if err := m.Creator.EnsureTmux(agent.DevxSession, agent); err != nil {
 		return fmt.Errorf("ensure tmux session: %w", err)
 	}
-	// Fail closed before changing anything: with the pane's state unknown,
-	// a relaunch could orphan a live turn or open a second Pi window.
-	if agent.Binding.PaneID != "" && m.Tmux.Pane(agent.Binding.PaneID).QueryFailed {
-		return fmt.Errorf("%w: pane %s state unknown; nothing was changed, retry", ErrTmuxUnavailable, agent.Binding.PaneID)
+	// Query the pane ONCE and use that answer for the whole launch. Fail
+	// closed before changing anything: with the pane's state unknown, a
+	// relaunch could orphan a live turn or open a second Pi window.
+	var pane PaneInfo
+	if agent.Binding.PaneID != "" {
+		if pane = m.Tmux.Pane(agent.Binding.PaneID); pane.QueryFailed {
+			return fmt.Errorf("%w: pane %s state unknown; nothing was changed, retry", ErrTmuxUnavailable, agent.Binding.PaneID)
+		}
 	}
 	nonce := randomHex(12)
 	bridgePath, err := WriteBridge(m.Store.Root)
@@ -425,7 +429,6 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 	if err != nil {
 		return err
 	}
-	pane := m.Tmux.Pane(agent.Binding.PaneID)
 	tmuxName := agent.Binding.TmuxSession
 	if tmuxName == "" {
 		tmuxName = agent.DevxSession
@@ -1024,8 +1027,18 @@ func (m *Manager) Result(taskID string, offset, maxBytes int) (*ResultChunk, err
 	if offset < 0 || offset > len(text) {
 		return nil, fmt.Errorf("offset %d is outside the result (0..%d)", offset, len(text))
 	}
-	for offset > 0 && offset < len(text) && !utf8.RuneStart(text[offset]) {
+	// Back up to the start of the rune containing offset. If offset is not
+	// inside a valid rune (stray continuation bytes), keep the requested
+	// offset: backing up would return the client's cursor to an earlier
+	// position and loop it.
+	requested := offset
+	for back := 0; back < utf8.UTFMax-1 && offset > 0 && offset < len(text) && !utf8.RuneStart(text[offset]); back++ {
 		offset--
+	}
+	if offset != requested {
+		if _, size := utf8.DecodeRuneInString(text[offset:]); offset+size <= requested {
+			offset = requested
+		}
 	}
 	c.Offset = offset
 	chunk, _ := headExcerpt(text[offset:], maxBytes)
