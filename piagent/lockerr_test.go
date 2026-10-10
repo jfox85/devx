@@ -117,3 +117,13 @@ func TestOwnedReleaseRemovesOwnLock(t *testing.T) {
 		t.Fatalf("own lock not released: %v", err)
 	}
 }
+
+// The persistence tracker never fires for errors that are not ACCESS_DENIED
+// (so Unix behaviour is unchanged).
+func TestDeniedTrackerIgnoresOtherErrors(t *testing.T) {
+	var d deniedTracker
+	d.since = time.Now().Add(-time.Hour)
+	if d.persistent(os.ErrExist) || !d.since.IsZero() {
+		t.Fatal("non-ACCESS_DENIED errors must reset and never be persistent")
+	}
+}
