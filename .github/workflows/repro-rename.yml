@@ -11,9 +11,9 @@ jobs:
       matrix:
         include:
           - { label: main,        ref: e22869dd }
-          - { label: pr73,        ref: d55d859c }
-          - { label: pr72,        ref: 7d52ebe }
-          - { label: pr72+pr73,   ref: b2f8927 }
+          - { label: pr73,        ref: d55d859cf92cad7f2686acd445a182d611a2926d }
+          - { label: pr72,        ref: 7d52ebe414c24cb9d1cbf4ac10b269b2f770a3ca }
+          - { label: pr72+pr73,   ref: b2f892780478edce269a4f3cd23e7f5124b2349d }
     steps:
       - uses: actions/checkout@v4
         with: { path: harness }
