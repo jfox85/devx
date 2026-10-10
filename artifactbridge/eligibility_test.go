@@ -17,11 +17,13 @@ type eligibilityFixture struct {
 	agents   []*piagent.Agent
 }
 
+var fixtureT0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
 func newEligibilityFixture() *eligibilityFixture {
-	a := &piagent.Agent{ID: "pa_aaaaaaaaaaaa", DevxSession: "s1", Project: "proj", Worktree: "/wt/s1", PiSessionID: "x"}
+	a := &piagent.Agent{ID: "pa_aaaaaaaaaaaa", DevxSession: "s1", Project: "proj", Worktree: "/wt/s1", PiSessionID: "x", CreatedAt: fixtureT0}
 	return &eligibilityFixture{
 		agent:    a,
-		sessions: map[string]*session.Session{"s1": {Name: "s1", ProjectAlias: "proj", Path: "/wt/s1"}},
+		sessions: map[string]*session.Session{"s1": {Name: "s1", ProjectAlias: "proj", Path: "/wt/s1", CreatedAt: fixtureT0.Add(-200 * time.Millisecond)}},
 		agents:   []*piagent.Agent{a},
 	}
 }
@@ -90,6 +92,23 @@ func TestEligibleSessionPredicate(t *testing.T) {
 			f.sessions["s1"].LocalOnly = &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: f.agent.ID}
 		}, denyBothMarkers},
 		{"container target", func(f *eligibilityFixture) { f.sessions["s1"].Target = session.TargetMeta{Type: "docker"} }, denyContainerized},
+
+		// Session instance binding for unmarked sessions.
+		{"adopted: unmarked session much older than agent", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(-30 * 24 * time.Hour)
+		}, ""},
+		{"unmarked session created within slack after agent", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(sessionBindingSlack - time.Second)
+		}, ""},
+		{"unmarked session recreated after agent (orphaned agent)", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(2 * time.Hour)
+		}, denyNewerSession},
+		{"unmarked session with zero created time", func(f *eligibilityFixture) { f.sessions["s1"].CreatedAt = time.Time{} }, denyNewerSession},
+		{"unmarked session, agent with zero created time", func(f *eligibilityFixture) { f.agent.CreatedAt = time.Time{} }, denyNewerSession},
+		{"marked session newer than agent is fine (marker binds instance)", func(f *eligibilityFixture) {
+			f.sessions["s1"].CreatedAt = fixtureT0.Add(2 * time.Hour)
+			f.sessions["s1"].ManagedAgent = f.agent.ID
+		}, ""},
 
 		// Duplicate claimants and shared worktrees.
 		{"live agent claims same session", func(f *eligibilityFixture) {
@@ -212,5 +231,36 @@ func TestMarkerlessSessionsHonorPolicy(t *testing.T) {
 	e.pol.Upload = true
 	if _, err := e.svc.Upload(uploadReq(a.ID, "k", "n.txt", "text/plain", []byte("x"), 0, true)); codeOf(err) != codeDenied {
 		t.Fatalf("upload via default scope: %v", err)
+	}
+}
+
+// Review finding: a session removed without retiring its agent (for example
+// `devx session clear`, or `rm` of a session whose marker was lost) and then
+// recreated by a human under the same deterministic name/path must not be
+// readable through the orphaned agent.
+func TestOrphanedAgentDoesNotInheritRecreatedSession(t *testing.T) {
+	e := newEnv(t)
+	e.defaultScope()
+	a, s := e.agent("feat", "proj")
+	s.ManagedAgent = "" // unmarked, as for legacy/adopted sessions
+	e.register(s, "Old", "old.md", []byte("old"))
+	if len(e.list(a.ID)) != 1 {
+		t.Fatal("original unmarked session should be readable")
+	}
+	// Session removed (agent left unretired), then recreated later with the
+	// same name and worktree path and a new artifact.
+	delete(e.sessions, "feat")
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("removed session: %v", err)
+	}
+	e.sessions["feat"] = &session.Session{Name: "feat", ProjectAlias: "proj", Path: a.Worktree, CreatedAt: e.now.Add(3 * time.Hour)}
+	e.register(e.sessions["feat"], "Human", "human.md", []byte("private"))
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("recreated session must not be exposed via the orphaned agent: %v", err)
+	}
+	// Not even when explicitly listed: the binding itself is invalid.
+	e.pol.Sessions, e.pol.SessionsSet = []string{"feat"}, true
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("explicit list must not revive an orphaned agent: %v", err)
 	}
 }

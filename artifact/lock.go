@@ -13,7 +13,7 @@ func withManifestLock(sess *session.Session, fn func() error) error {
 	if err := EnsureArtifactDir(dir); err != nil {
 		return fmt.Errorf("failed to create artifact directory: %w", err)
 	}
-	lockPath := filepath.Join(dir, ".manifest.lock")
+	lockPath := filepath.Join(dir, LockFileName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to open artifact manifest lock: %w", err)

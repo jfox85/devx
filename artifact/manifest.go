@@ -126,23 +126,14 @@ func SaveManifest(sess *session.Session, m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("manifest is nil")
 	}
-	m.Version = ManifestVersion
-	m.Session = sess.Name
-	if m.Artifacts == nil {
-		m.Artifacts = []Artifact{}
-	}
-	if err := ValidateManifest(m); err != nil {
+	data, err := EncodeManifest(m, sess.Name)
+	if err != nil {
 		return err
 	}
 	dir := DirForSession(sess)
 	if err := EnsureArtifactDir(dir); err != nil {
 		return fmt.Errorf("failed to create artifact directory: %w", err)
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal artifact manifest: %w", err)
-	}
-	data = append(data, '\n')
 	tmp, err := os.CreateTemp(dir, ".manifest-*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp manifest: %w", err)

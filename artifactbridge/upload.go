@@ -262,7 +262,7 @@ func stagedEquals(partPath string, off int64, chunk []byte) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, len(chunk))
 	if _, err := f.ReadAt(buf, off); err != nil {
 		return false, err
@@ -277,7 +277,7 @@ func appendAt(partPath string, off int64, chunk []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := f.Truncate(off); err != nil {
 		return err
 	}
@@ -299,8 +299,9 @@ func (s *Service) pendingCount(dir string) int {
 }
 
 // expireStale drops staged bytes of incomplete uploads with no progress for
-// UploadExpiry. Registered attachments are never touched here; they follow
-// normal DevX artifact retention.
+// UploadExpiry, and completion records after CompletedRecordExpiry (after
+// that, repeating a finished upload's key starts a new upload). Registered
+// attachments are never touched here; they follow normal DevX retention.
 func (s *Service) expireStale(dir string, now time.Time) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -309,7 +310,15 @@ func (s *Service) expireStale(dir string, now time.Time) {
 		}
 		p := filepath.Join(dir, e.Name())
 		r, err := readRecord(p)
-		if err != nil || r.State == "complete" || now.Sub(r.UpdatedAt) < UploadExpiry {
+		if err != nil {
+			continue
+		}
+		// Completion records (replay results) are kept much longer than
+		// staged bytes, but not forever.
+		if r.State == "complete" && now.Sub(r.UpdatedAt) < CompletedRecordExpiry {
+			continue
+		}
+		if r.State != "complete" && now.Sub(r.UpdatedAt) < UploadExpiry {
 			continue
 		}
 		_ = os.Remove(strings.TrimSuffix(p, ".json") + ".part")
@@ -348,26 +357,104 @@ func (s *Service) finish(sc *scope, rec *uploadRecord, recPath, partPath string)
 		// Registered by an earlier attempt whose completion record was
 		// lost (crash or dropped response). Adopt it only if the bytes match.
 		if got, err := s.fileSHA(sc, existing.File); err != nil || got != rec.SHA256 {
-			return nil, errf(codeConflict, "an attachment for this key exists with different content")
+			// Discard the staged attempt so the key does not hold a pending
+			// slot until expiry; the existing entry is left untouched.
+			return fail(errf(codeConflict, "an attachment for this key exists with different content; the upload was discarded, retry with a new idempotency_key"))
 		}
 		return s.markComplete(sc, rec, recPath, partPath, mid)
+	}
+	// Quota check before writing anything into the worktree. It is checked
+	// again under the manifest lock at registration.
+	if err := s.checkQuota(sc, m, rec.Size); err != nil {
+		return fail(asError(err))
 	}
 	file, err := s.publish(sc, rec, data)
 	if err != nil {
 		return nil, err
 	}
-	_, err = artifactpkg.RegisterExisting(sc.sess, artifactpkg.Artifact{
-		ID: mid, Type: artifactpkg.DetectType(rec.Filename), Title: rec.Title, File: AttachmentsFolder + "/" + file,
+	rel := AttachmentsFolder + "/" + file
+	entry := artifactpkg.Artifact{
+		ID: mid, Type: artifactpkg.DetectType(rec.Filename), Title: rec.Title, File: rel,
 		Folder: AttachmentsFolder, Created: s.Now(), Agent: attachmentAgent, Summary: optional(rec.Summary),
 		Tags: []string{AttachmentTag},
+	}
+	var quotaErr *Error
+	err = registerNoFollow(sc.sess.Path, func(current []byte) ([]byte, error) {
+		cur := artifactpkg.NewManifest(sc.sess.Name)
+		if current != nil {
+			parsed, err := artifactpkg.ParseManifest(current, sc.sess.Name)
+			if err != nil {
+				return nil, err
+			}
+			cur = parsed
+		}
+		if e := s.checkQuota(sc, cur, rec.Size); e != nil {
+			quotaErr = asError(e)
+			return nil, e
+		}
+		if _, err := artifactpkg.AppendRegistered(cur, entry); err != nil {
+			return nil, err
+		}
+		return artifactpkg.EncodeManifest(cur, sc.sess.Name)
 	})
 	if err != nil {
+		// Not registered: remove the file this call published (linkat never
+		// replaces, so it is ours) so it does not linger unregistered.
+		s.unpublish(sc, file)
+		if quotaErr != nil {
+			return fail(quotaErr)
+		}
 		return nil, errf(codeFailed, "could not register the attachment; retry the last chunk")
 	}
-	if got, err := s.fileSHA(sc, AttachmentsFolder+"/"+file); err != nil || got != rec.SHA256 {
-		return nil, errf(codeIntegrity, "stored attachment failed read-back verification")
+	if got, err := s.fileSHA(sc, rel); err != nil || got != rec.SHA256 {
+		// Registered, but the stored bytes do not verify (changed under us).
+		// Discard this attempt so the key is not stuck; the entry stays
+		// visible, with its real checksum, for the owner to inspect.
+		return fail(errf(codeIntegrity, "stored attachment failed read-back verification; the upload was discarded, retry with a new idempotency_key"))
 	}
 	return s.markComplete(sc, rec, recPath, partPath, mid)
+}
+
+// checkQuota bounds what remote uploads can add to one session: the number
+// and total bytes of registered remote attachments (measured on disk without
+// following links) plus the new one.
+func (s *Service) checkQuota(sc *scope, m *artifactpkg.Manifest, add int64) error {
+	count, total := 0, add
+	for _, a := range m.Artifacts {
+		if !isRemoteAttachment(a) {
+			continue
+		}
+		count++
+		if f, fi, err := openUnderArtifacts(sc.sess.Path, a.File); err == nil {
+			total += fi.Size()
+			_ = f.Close()
+		}
+	}
+	if count+1 > MaxSessionAttachments || total > MaxSessionAttachmentBytes {
+		return errf(codeLimit, "this session's remote attachment quota is full (at most %d files and %d bytes); remove attachments with `devx artifact rm` first",
+			MaxSessionAttachments, MaxSessionAttachmentBytes)
+	}
+	return nil
+}
+
+func isRemoteAttachment(a artifactpkg.Artifact) bool {
+	for _, t := range a.Tags {
+		if t == AttachmentTag {
+			return true
+		}
+	}
+	return false
+}
+
+// unpublish removes a just-published attachment that could not be
+// registered. Only that directory entry is removed (no-follow).
+func (s *Service) unpublish(sc *scope, name string) {
+	dirfd, err := attachmentsDir(sc.sess.Path)
+	if err != nil {
+		return
+	}
+	defer closeDir(dirfd)
+	unlinkAt(dirfd, name)
 }
 
 func optional(s string) *string {
@@ -385,9 +472,11 @@ func optional(s string) *string {
 //   - the temp file is published with linkat, which fails with EEXIST rather
 //     than replacing; on a collision the next name-N.ext is tried.
 //
-// If a file with the chosen name already holds exactly these bytes from an
-// earlier interrupted attempt for this key (temp name embeds the key hash), it
-// is reused only when no manifest entry already names it.
+// Registration follows (registerNoFollow); if it fails the published file is
+// removed again (unpublish). A crash between publish and registration can
+// leave one unregistered file in attachments/: it is never listed or readable
+// through the bridge (only registered entries are), and the retry publishes
+// under the next free name.
 func (s *Service) publish(sc *scope, rec *uploadRecord, data []byte) (string, error) {
 	dirfd, err := attachmentsDir(sc.sess.Path)
 	if err != nil {
@@ -425,7 +514,7 @@ func (s *Service) fileSHA(sc *scope, rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h, err := hashFile(f, fi, 0, 0)
 	if err != nil {
 		return "", err

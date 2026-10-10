@@ -69,7 +69,7 @@ func (e *env) agent(name, project string) (*piagent.Agent, *session.Session) {
 	if err := e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(a) }); err != nil {
 		e.t.Fatal(err)
 	}
-	s := &session.Session{Name: name, ProjectAlias: project, Path: wt, ManagedAgent: id}
+	s := &session.Session{Name: name, ProjectAlias: project, Path: wt, ManagedAgent: id, CreatedAt: e.now}
 	e.sessions[name] = s
 	e.pol.Sessions = append(e.pol.Sessions, name) // exposed by default in tests
 	return a, s
@@ -292,7 +292,7 @@ func TestHashFileDetectsChangeDuringRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := os.Open(p)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	before, _ := f.Stat()
 	// Simulate a writer appending after the reader captured its stat.
 	if err := os.WriteFile(p, bytes.Repeat([]byte("y"), 2000), 0o644); err != nil {

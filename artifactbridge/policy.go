@@ -3,6 +3,7 @@ package artifactbridge
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -60,19 +61,33 @@ func LoadPolicyFile(path string) (Policy, error) {
 	if path == "" {
 		return p, fmt.Errorf("no policy file configured")
 	}
-	info, err := os.Stat(path)
+	// Open once and check the opened file (not the path), then read through a
+	// limit, so a file swapped or grown after the check cannot be read
+	// unbounded. O_NONBLOCK keeps a FIFO from blocking the open.
+	f, err := openPolicy(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return p, nil
 	}
 	if err != nil {
 		return p, err
 	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return p, err
+	}
 	if !info.Mode().IsRegular() || info.Size() > maxPolicyFileBytes {
 		return p, fmt.Errorf("config is not a regular file of at most %d bytes", maxPolicyFileBytes)
 	}
-	data, err := os.ReadFile(path)
+	if err := policyFileTrusted(info); err != nil {
+		return p, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxPolicyFileBytes+1))
 	if err != nil {
 		return p, err
+	}
+	if len(data) > maxPolicyFileBytes {
+		return p, fmt.Errorf("config is not a regular file of at most %d bytes", maxPolicyFileBytes)
 	}
 	return ParsePolicy(data)
 }

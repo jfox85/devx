@@ -495,3 +495,39 @@ func TestRemoveAndSetRetention(t *testing.T) {
 		t.Fatalf("expected empty manifest, got %#v", m.Artifacts)
 	}
 }
+
+// Review finding: when another writer takes the chosen name between
+// uniqueDestination and the O_EXCL create, Add picks the next free name
+// instead of failing (file sources only), and never overwrites.
+func TestAddRetriesWhenDestinationAppearsConcurrently(t *testing.T) {
+	sess := &session.Session{Name: "s", Path: t.TempDir()}
+	src := filepath.Join(t.TempDir(), "n.md")
+	if err := os.WriteFile(src, []byte("# n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := DirForSession(sess)
+	raced := 0
+	beforeCreateHook = func(abs string) {
+		// Another writer takes the name first, twice.
+		if raced < 2 {
+			raced++
+			_ = os.WriteFile(abs, []byte("other writer"), 0o644)
+		}
+	}
+	defer func() { beforeCreateHook = nil }()
+	a, err := Add(sess, AddOptions{Source: src, Destination: "n.md", Title: "n", Type: "report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raced != 2 || a.File != "n-3.md" {
+		t.Fatalf("raced=%d file=%s", raced, a.File)
+	}
+	for _, f := range []string{"n.md", "n-2.md"} {
+		if b, _ := os.ReadFile(filepath.Join(dir, f)); string(b) != "other writer" {
+			t.Fatalf("%s overwritten", f)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "n-3.md")); string(b) != "# n" {
+		t.Fatal("content not written")
+	}
+}

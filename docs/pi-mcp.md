@@ -183,6 +183,12 @@ the default scope and explicit lists alike:
   for sessions created by `pi_start_task`, `managed_agent` for adopted
   sessions. Both markers at once, or either naming another agent, is a
   conflict and always denies; no policy setting overrides it;
+- without a marker, the session record must not have been created more
+  than a minute after the agent. This binds the agent to that session
+  instance. If a session is removed without retiring its agent (for
+  example `devx session clear`) and a new session is later created with
+  the same name and path, the old agent never gains access to it, not
+  even through an explicit `sessions` list;
 - no other non-retired agent claims the same session, and no other live
   agent or other session record uses the same worktree.
 
@@ -240,7 +246,9 @@ defaults:
 - a duplicate key;
 - a YAML alias or merge key;
 - unparseable YAML;
-- an oversized file.
+- an oversized file, or a FIFO or other non-regular file;
+- a file not owned by the current user, or writable by group or others
+  (another local user could otherwise widen the scope).
 
 Project-level `.devx/config.yaml` files and `DEVX_*` environment variables
 never affect the bridge policy.
@@ -342,8 +350,13 @@ Uploads are published the same way:
 - bytes go to an `O_EXCL|O_NOFOLLOW` temp file;
 - the temp file is published with `linkat`, which fails instead of
   replacing an existing name, so the next free `name-N.ext` is used;
-- the file is then registered through `artifact.RegisterExisting`, which
-  never writes content.
+- the manifest entry is then added through the same no-follow chain: one
+  descriptor for `.artifacts`, the shared `.manifest.lock` flock (the same
+  lock `devx artifact add` takes), the manifest read with
+  `openat(O_NOFOLLOW)`, and the new manifest written to an
+  `O_EXCL|O_NOFOLLOW` temp file and swapped in with `renameat`. Swapping
+  `.artifacts` for a symlink at any point cannot redirect any of these
+  writes. If registration fails, the just-published file is removed.
 The leaf must also be:
 - a regular file with one link (no FIFOs, devices or hard links to files
   elsewhere);
@@ -364,15 +377,25 @@ forced off and the bridge fails closed.
 - **Staging.** Partial bytes are staged under
   `~/.config/devx/pi-agents/artifact-bridge/uploads/<agent>/`, never inside
   a worktree.
-- **Limits.** At most 8 incomplete uploads per agent. Staged bytes with no
-  progress for 24 hours are dropped.
+- **Limits.**
+  - At most 8 incomplete uploads per agent. Staged bytes with no progress
+    for 24 hours are dropped.
+  - Per session, at most 200 remote attachments and 512 MiB of them in
+    total (registered entries tagged `remote-attachment`, measured on
+    disk). The quota is checked under the manifest lock; when it's full,
+    uploads fail with `limit` until attachments are removed with
+    `devx artifact rm`.
+  - Completion records (which let a finished upload be replayed) are kept
+    for 30 days.
 - **Verification.** When the last byte arrives, the declared size and
   SHA-256 are checked, then the content: PNG/JPEG/GIF/WebP/PDF magic bytes,
   UTF-8 with no NULs for text/Markdown/CSV, and valid JSON for JSON. Only
-  then is the file registered through `artifact.Add`, which never
-  overwrites (a name collision gets a `-2` suffix, created with `O_EXCL`)
-  and records no "assets" from uploaded Markdown. If any check fails, the
-  staged bytes are discarded.
+  then is the file published and registered (see "Path safety"). Publishing
+  never overwrites: a name collision gets a `-2` suffix. No "assets" are
+  recorded from uploaded Markdown. If any check fails, the staged bytes are
+  discarded. If the stored file fails read-back verification, the upload
+  attempt is discarded (retry with a new key) and the registered entry
+  stays visible with its actual checksum.
 - **Allowed types.** HTML, SVG, scripts and archives are refused.
 - **Idempotency.** Reusing a key with different metadata is `conflict`.
   After completion, the same call returns the same artifact

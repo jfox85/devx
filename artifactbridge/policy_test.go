@@ -3,6 +3,7 @@ package artifactbridge
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,28 @@ func TestLoadPolicyFile(t *testing.T) {
 	_ = os.WriteFile(big, []byte(strings.Repeat("#", maxPolicyFileBytes+1)), 0o600)
 	if _, err := LoadPolicyFile(big); err == nil {
 		t.Fatal("oversized config must fail")
+	}
+	// Writable by group or others: another local user could widen scope.
+	good := "pi_mcp:\n  allowed_projects: [proj]\n"
+	for _, mode := range []os.FileMode{0o620, 0o602, 0o666} {
+		p := filepath.Join(dir, fmt.Sprintf("w%o.yaml", mode))
+		_ = os.WriteFile(p, []byte(good), 0o600)
+		_ = os.Chmod(p, mode)
+		if _, err := LoadPolicyFile(p); err == nil {
+			t.Fatalf("mode %o must fail", mode)
+		}
+	}
+	ok := filepath.Join(dir, "ok.yaml")
+	_ = os.WriteFile(ok, []byte(good), 0o644)
+	if p, err := LoadPolicyFile(ok); err != nil || len(p.AllowedProjects) != 1 {
+		t.Fatalf("0644 owner config must load: %+v %v", p, err)
+	}
+	// A FIFO must not block the loader.
+	fifo := filepath.Join(dir, "fifo.yaml")
+	if err := mkfifo(fifo); err == nil {
+		if _, err := LoadPolicyFile(fifo); err == nil {
+			t.Fatal("fifo config must fail")
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -110,16 +111,29 @@ func addLocked(sess *session.Session, opts AddOptions) (Artifact, error) {
 		return Artifact{}, fmt.Errorf("failed to write default artifact theme: %w", err)
 	}
 
-	finalRel, finalAbs, err := uniqueDestination(sess, destRel, opts.ID != "")
-	if err != nil {
-		return Artifact{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(finalAbs), 0o755); err != nil {
-		return Artifact{}, err
-	}
-	if created, err := copyTo(finalAbs, opts); err != nil {
+	// uniqueDestination picks a free name, but another writer (for example a
+	// remote upload publishing into the same folder) can take it before
+	// copyTo's O_EXCL create; then pick again rather than fail. A stdin
+	// source can only be consumed once, and an explicit destination (custom
+	// ID) must not silently change, so those fail as before.
+	var finalRel, finalAbs string
+	for attempt := 0; ; attempt++ {
+		finalRel, finalAbs, err = uniqueDestination(sess, destRel, opts.ID != "")
+		if err != nil {
+			return Artifact{}, err
+		}
+		if err := os.MkdirAll(filepath.Dir(finalAbs), 0o755); err != nil {
+			return Artifact{}, err
+		}
+		created, err := copyTo(finalAbs, opts)
+		if err == nil {
+			break
+		}
 		if created {
 			_ = os.Remove(finalAbs)
+		}
+		if errors.Is(err, os.ErrExist) && !created && opts.Reader == nil && opts.ID == "" && attempt < 5 {
+			continue
 		}
 		return Artifact{}, err
 	}
@@ -203,9 +217,16 @@ func uniqueDestination(sess *session.Session, rel string, allowOverwrite bool) (
 	return "", "", fmt.Errorf("could not find unique artifact destination for %q", rel)
 }
 
+// beforeCreateHook lets tests simulate another writer taking the chosen name
+// between uniqueDestination and the create. Nil in production.
+var beforeCreateHook func(destAbs string)
+
 // copyTo writes the artifact to destAbs. created reports whether destAbs was
 // created by this call (and so may be removed on failure).
 func copyTo(destAbs string, opts AddOptions) (created bool, err error) {
+	if beforeCreateHook != nil {
+		beforeCreateHook(destAbs)
+	}
 	// O_EXCL: uniqueDestination already chose a path that did not exist, so
 	// never truncate a file (or follow a symlink) that appeared since.
 	out, err := os.OpenFile(destAbs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)

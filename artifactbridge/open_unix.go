@@ -3,7 +3,7 @@
 package artifactbridge
 
 import (
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,6 +14,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	artifactpkg "github.com/jfox85/devx/artifact"
 )
 
 // platformSupported: the bridge relies on openat/O_NOFOLLOW/linkat. Other
@@ -77,7 +79,7 @@ func openUnderArtifacts(worktree, rel string) (*os.File, os.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer unix.Close(dirfd)
+	defer closeDir(dirfd)
 	return openLeaf(dirfd, parts[len(parts)-1], strings.Join(parts, "/"))
 }
 
@@ -153,18 +155,74 @@ func linkNoReplace(dirfd int, from, to string) (exists bool, err error) {
 
 func unlinkAt(dirfd int, name string) { _ = unix.Unlinkat(dirfd, name, 0) }
 
-// shaAt hashes a regular, single-link, non-symlink file in dirfd.
-func shaAt(dirfd int, name string) (string, error) {
-	f, _, err := openLeaf(dirfd, name, name)
+// registerNoFollow appends an entry to .artifacts/manifest.json without any
+// path-based (symlink-following) access. Everything happens relative to ONE
+// descriptor for .artifacts opened through the no-follow chain, so replacing
+// .artifacts (or any component) with a symlink at any moment cannot redirect
+// the lock, the read, the temp file or the rename outside the worktree:
+//   - the lock file is opened with openat(O_CREAT|O_NOFOLLOW) and flocked,
+//     the same lock `devx artifact add` takes (so writers serialize);
+//   - the manifest is read with openat(O_NOFOLLOW) and must be a regular,
+//     single-link file;
+//   - the new manifest is written to an O_EXCL|O_NOFOLLOW temp file and
+//     renamed over manifest.json with renameat in the same directory.
+//
+// mutate receives the current manifest bytes (nil if absent) and returns the
+// new bytes.
+func registerNoFollow(worktree string, mutate func(current []byte) ([]byte, error)) error {
+	dirfd, err := openDirChain(worktree, []string{artifactsDirName}, true)
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, MaxUploadBytesCeiling+1)); err != nil {
-		return "", errUnavailable
+	defer closeDir(dirfd)
+	lfd, err := unix.Openat(dirfd, artifactpkg.LockFileName, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return errUnavailable
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	defer func() { _ = unix.Close(lfd) }()
+	var lst unix.Stat_t
+	if err := unix.Fstat(lfd, &lst); err != nil || lst.Mode&unix.S_IFMT != unix.S_IFREG {
+		return errUnavailable
+	}
+	if err := unix.Flock(lfd, unix.LOCK_EX); err != nil {
+		return errUnavailable
+	}
+	defer func() { _ = unix.Flock(lfd, unix.LOCK_UN) }()
+
+	var current []byte
+	f, fi, err := openLeaf(dirfd, artifactpkg.ManifestName, artifactpkg.ManifestName)
+	switch {
+	case err == nil:
+		if fi.Size() > 8<<20 {
+			_ = f.Close()
+			return errUnavailable
+		}
+		current, err = io.ReadAll(io.LimitReader(f, 8<<20))
+		_ = f.Close()
+		if err != nil {
+			return errUnavailable
+		}
+	case errors.Is(err, errNotExist):
+	default:
+		return err
+	}
+	next, err := mutate(current)
+	if err != nil {
+		return err
+	}
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return errUnavailable
+	}
+	tmp := ".manifest-" + hex.EncodeToString(rnd[:]) + ".tmp"
+	if err := writeTemp(dirfd, tmp, next); err != nil {
+		return err
+	}
+	if err := unix.Renameat(dirfd, tmp, dirfd, artifactpkg.ManifestName); err != nil {
+		unlinkAt(dirfd, tmp)
+		return errUnavailable
+	}
+	return nil
 }
 
 // readManifestNoFollow reads .artifacts/manifest.json through the same
@@ -178,12 +236,12 @@ func readManifestNoFollow(worktree string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer unix.Close(dirfd)
+	defer closeDir(dirfd)
 	f, fi, err := openLeaf(dirfd, "manifest.json", "manifest.json")
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if fi.Size() > 8<<20 {
 		return nil, errUnavailable
 	}

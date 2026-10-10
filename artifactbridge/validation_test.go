@@ -465,7 +465,13 @@ func TestHashCacheNotFooledBySameSizeSameMtimeRewrite(t *testing.T) {
 	a, s := e.agent("s1", "proj")
 	e.register(s, "Doc", "d.md", bytes.Repeat([]byte("A"), 50000))
 	p := filepath.Join(s.Path, ".artifacts", "d.md")
+	// Old enough, with a sub-second mtime, so the hash is cached.
+	old := time.Now().Add(-time.Hour).Add(123456789 * time.Nanosecond)
+	_ = os.Chtimes(p, old, old)
 	it := e.list(a.ID)[0] // populates the cache
+	if _, ok := cachedSum(cacheKey(s.Path+"\x00d.md", mustStat(t, p))); !ok {
+		t.Fatal("precondition: hash should be cached")
+	}
 	st, _ := os.Stat(p)
 	// Rewrite in place with same size, then restore the old mtime.
 	_ = os.WriteFile(p, bytes.Repeat([]byte("B"), 50000), 0o644)
@@ -475,6 +481,38 @@ func TestHashCacheNotFooledBySameSizeSameMtimeRewrite(t *testing.T) {
 	}
 	if again := e.list(a.ID)[0]; again.Checksums["sha256"] != shaHex(bytes.Repeat([]byte("B"), 50000)) {
 		t.Fatal("list served a stale checksum")
+	}
+}
+
+func mustStat(t *testing.T, p string) os.FileInfo {
+	t.Helper()
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi
+}
+
+// Review finding: on whole-second timestamp filesystems a same-size rewrite
+// within one second keeps the same key, so such files are never cached; nor
+// are files changed in the last cacheMinAge.
+func TestHashCacheSkipsCoarseOrRecentTimestamps(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f")
+	_ = os.WriteFile(p, []byte("x"), 0o644)
+	for name, c := range map[string]struct {
+		mtime time.Time
+		want  bool
+	}{
+		"whole-second mtime": {now.Add(-time.Hour).Truncate(time.Second), false},
+		"recent mtime":       {now.Add(-500 * time.Millisecond), false},
+		"old sub-second":     {now.Add(-time.Hour).Truncate(time.Second).Add(7 * time.Millisecond), true},
+	} {
+		_ = os.Chtimes(p, c.mtime, c.mtime)
+		if got := cacheable(mustStat(t, p), now); got != c.want {
+			t.Errorf("%s: cacheable=%v want %v", name, got, c.want)
+		}
 	}
 }
 

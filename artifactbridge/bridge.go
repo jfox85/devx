@@ -85,6 +85,14 @@ const (
 	// UploadExpiry is how long an incomplete upload's staged bytes are kept
 	// without progress. Completed attachments are never expired here.
 	UploadExpiry = 24 * time.Hour
+	// CompletedRecordExpiry is how long a finished upload's completion record
+	// (used to replay its result) is kept in DevX state.
+	CompletedRecordExpiry = 30 * 24 * time.Hour
+	// MaxSessionAttachments / MaxSessionAttachmentBytes bound the remote
+	// attachments registered in one session, so a granted principal cannot
+	// fill the worktree's disk with fresh idempotency keys.
+	MaxSessionAttachments     = 200
+	MaxSessionAttachmentBytes = 512 << 20
 	// MaxListPage bounds one list page.
 	MaxListPage = 50
 	// MaxTaskArtifacts bounds artifacts attached to a task status.
@@ -246,7 +254,17 @@ const (
 	denyContainerized    = "container_session"
 	denyDuplicateClaim   = "another_live_agent_claims_session"
 	denySharedWorktree   = "another_live_agent_or_session_uses_worktree"
+	denyNewerSession     = "unmarked_session_newer_than_agent"
 )
+
+// sessionBindingSlack is how much later than its agent an UNMARKED session
+// record may have been created and still be considered the agent's session.
+// pi_start_task creates the session just before the agent record (observed
+// gap <= ~1s); adopted sessions predate their agent by far. A session record
+// created later than this is a different session instance that reused the
+// name and path (for example after `devx session clear` left the agent
+// unretired), and must never inherit the old agent's access.
+const sessionBindingSlack = time.Minute
 
 // eligibleSession is the single session-binding predicate for artifact
 // access. It decides whether agent a is the unambiguous owner of a live DevX
@@ -269,6 +287,9 @@ const (
 //     by the MCP path);
 //   - a local_only marker, if present, names this agent; a managed_agent
 //     marker, if present, names this agent; never both;
+//   - without any marker, the session record must not be newer than the
+//     agent (sessionBindingSlack): a session recreated under the same name
+//     and path after the agent was orphaned is a different instance;
 //   - no other non-retired agent claims the same session name, and no other
 //     non-retired agent or other session uses the same worktree path.
 //
@@ -301,6 +322,13 @@ func eligibleSession(a *piagent.Agent, sessions map[string]*session.Session, age
 	}
 	if sess.ManagedAgent != "" && sess.ManagedAgent != a.ID {
 		return nil, denyForeignManaged
+	}
+	if sess.LocalOnly == nil && sess.ManagedAgent == "" {
+		// No marker: bind to the session instance by time. Zero times
+		// cannot prove anything and deny.
+		if sess.CreatedAt.IsZero() || a.CreatedAt.IsZero() || sess.CreatedAt.After(a.CreatedAt.Add(sessionBindingSlack)) {
+			return nil, denyNewerSession
+		}
 	}
 	for _, o := range agents {
 		if o == nil || o.ID == a.ID || o.RetiredAt != nil {

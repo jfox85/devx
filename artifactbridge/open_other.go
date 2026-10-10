@@ -20,5 +20,7 @@ func closeDir(int)                                    {}
 func writeTemp(int, string, []byte) error             { return errUnavailable }
 func linkNoReplace(int, string, string) (bool, error) { return false, errUnavailable }
 func unlinkAt(int, string)                            {}
-func shaAt(int, string) (string, error)               { return "", errUnavailable }
-func readManifestNoFollow(string) ([]byte, error)     { return nil, errUnavailable }
+func registerNoFollow(string, func([]byte) ([]byte, error)) error {
+	return errUnavailable
+}
+func readManifestNoFollow(string) ([]byte, error) { return nil, errUnavailable }

@@ -68,8 +68,22 @@ var hashCache = struct {
 
 const hashCacheMax = 1024
 
+// cacheMinAge: files changed this recently are never cached. Together with
+// the coarse-timestamp rule below, a later same-size rewrite always changes
+// the key: on filesystems whose timestamps have whole-second (or coarser)
+// granularity, two writes within the same tick would otherwise share it.
+const cacheMinAge = 2 * time.Second
+
 func cacheKey(name string, fi os.FileInfo) hashKey {
 	return hashKey{file: name, size: fi.Size(), mtime: fi.ModTime().UnixNano(), sys: fileIdentity(fi)}
+}
+
+// cacheable reports whether a hash for fi may be cached: never for a file
+// whose mtime has no sub-second part (a coarse-granularity filesystem, where
+// identical keys do not prove identical bytes) or that changed very recently.
+func cacheable(fi os.FileInfo, now time.Time) bool {
+	mt := fi.ModTime()
+	return mt.Nanosecond() != 0 && now.Sub(mt) >= cacheMinAge
 }
 
 func cachedSum(k hashKey) (string, bool) {
@@ -240,7 +254,7 @@ func (s *Service) info(sc *scope, a artifactpkg.Artifact, withHash bool) Artifac
 		it.Unavailable = asError(err).Msg
 		return it
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	it.Size = fi.Size()
 	if fi.Size() > MaxReadableBytes {
 		it.Unavailable = "artifact is larger than the bridge read limit"
@@ -257,7 +271,9 @@ func (s *Service) info(sc *scope, a artifactpkg.Artifact, withHash bool) Artifac
 				return it
 			}
 			sum = h.sha256
-			storeSum(key, sum)
+			if cacheable(fi, time.Now()) {
+				storeSum(key, sum)
+			}
 		}
 		it.Version = versionOf(sum)
 		it.Checksums = map[string]string{"sha256": sum}
@@ -397,7 +413,7 @@ func (s *Service) Read(req ReadRequest) (*ReadResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	mimeType := mimeForFile(a.File)
 	if enc == "auto" {
 		switch {
@@ -444,7 +460,9 @@ func (s *Service) Read(req ReadRequest) (*ReadResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		storeSum(key, h.sha256)
+		if cacheable(fi, time.Now()) {
+			storeSum(key, h.sha256)
+		}
 	}
 	info := s.info(sc, a, false)
 	info.Size, info.Version, info.Checksums, info.Available = h.size, versionOf(h.sha256), map[string]string{"sha256": h.sha256}, true
