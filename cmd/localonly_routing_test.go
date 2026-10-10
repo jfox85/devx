@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,7 +41,7 @@ func TestDefaultRouteSyncNeverPublishesLocalOnly(t *testing.T) {
 	bin := filepath.Join(home, "bin")
 	_ = os.MkdirAll(bin, 0o700)
 	caddyLog := filepath.Join(home, "caddy-argv.log")
-	_ = os.WriteFile(filepath.Join(bin, "caddy"), []byte("#!/bin/sh\necho \"$@\" >> "+caddyLog+"\nexit 0\n"), 0o700)
+	writeFakeCaddy(t, bin, caddyLog)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var apiHits atomic.Int64
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -209,5 +210,20 @@ func TestSessionCreateRefusesLocalOnlySession(t *testing.T) {
 	st, _ := session.LoadSessions()
 	if s, _ := st.GetSession("managed"); !s.IsLocalOnly() || len(s.Ports) != 0 {
 		t.Fatalf("record changed: %+v", s)
+	}
+}
+
+// writeFakeCaddy puts a `caddy` on PATH that only records its argv. Caddy
+// reload is supported on Windows too, so the fake must be runnable there:
+// Windows executes only PATHEXT extensions, hence caddy.cmd instead of a
+// #!/bin/sh script.
+func writeFakeCaddy(t *testing.T, bin, log string) {
+	t.Helper()
+	name, body := "caddy", "#!/bin/sh\necho \"$@\" >> "+log+"\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		name, body = "caddy.cmd", "@echo off\r\necho %*>> \""+log+"\"\r\nexit /b 0\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+		t.Fatal(err)
 	}
 }
