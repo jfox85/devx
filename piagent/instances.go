@@ -192,7 +192,14 @@ func PlanInstancesWithHistory(sessions map[string]*session.Session, agents []*Ag
 			if rid, rat, err := recorded(a.ID); err == nil && rid != "" {
 				// The binding was dropped from agent.json. Restore it only if
 				// the session record is still that exact instance.
-				if s != nil && session.MatchesBoundInstance(s, rid, rat) &&
+				conflict := s == nil || s.IsContainerized() ||
+					(s.ProjectAlias != "" && s.ProjectAlias != a.Project) ||
+					(s.LocalOnly != nil && s.ManagedAgent != "") ||
+					(s.LocalOnly != nil && s.LocalOnly.AgentID != a.ID) ||
+					(s.ManagedAgent != "" && s.ManagedAgent != a.ID) ||
+					len(live[a.DevxSession]) != 1 ||
+					(restoredBy[a.DevxSession] != "" && restoredBy[a.DevxSession] != rid)
+				if !conflict && session.MatchesBoundInstance(s, rid, rat) &&
 					filepath.Clean(s.Path) == filepath.Clean(a.Worktree) {
 					it.Action, it.SessionInstanceID, it.SessionCreatedAt = ActionRestoreBinding, rid, rat
 					if s.InstanceID == "" {

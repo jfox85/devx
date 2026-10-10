@@ -244,6 +244,10 @@ to its session, but only when the evidence is unambiguous:
   It journals each write before making it and re-checks every step
   against the latest records under their locks; anything changed since
   the review aborts with "records changed".
+- **Skipped agents lose legacy access.** A marked legacy agent that the
+  migration skips loses bridge access once its session gets an id: the
+  legacy rule requires an id-less record. That's intended (fail closed).
+  Resolve skipped agents before applying, or adopt them again afterwards.
 - **Repeatable.** Every step skips work that is already done. After an
   interrupted apply, run the dry run again and apply the new (smaller)
   plan.
@@ -251,8 +255,8 @@ to its session, but only when the evidence is unambiguous:
   journal records, and only where the record still holds them. Ids that
   restored an agent's existing binding are kept. Roll back the newest
   run first: a later run may have written identical values, so rolling
-  back an older run needs `--force-older`. Every apply gets its own
-  backup directory.
+  back an older run needs `--force-older` (runs already rolled back don't
+  count). Every apply gets its own backup directory.
 - **Writes only these fields.** Only `instance_id` on sessions and
   `session_instance_id` / `session_created_at` on agents are written,
   plus an agent event. Worktrees, tmux sessions, Pi conversations,

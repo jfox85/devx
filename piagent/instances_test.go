@@ -516,3 +516,21 @@ func TestPlanRestoresBindingDroppedFromAgentRecord(t *testing.T) {
 		t.Fatalf("recreated: %+v", it)
 	}
 }
+
+// L1: the event-log restore path applies the same conflict checks.
+func TestRestoreFromEventLogRespectsConflicts(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "local", -time.Second)
+	var j []JournalEntry
+	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.store.LoadAgent(a.ID)
+	got.SessionInstanceID, got.SessionCreatedAt = "", time.Time{}
+	_ = e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(got) })
+	e.sess.recs["s"].LocalOnly.AgentID = "pa_ffffffffffff" // foreign marker
+	p := PlanInstancesWithHistory(e.sess.clone(), e.list(), func(string) string { return session.NewInstanceID() }, e.store.RecordedBinding)
+	if it := p.agent(a.ID); it.Action != ActionSkip {
+		t.Fatalf("foreign marker must block restore: %+v", it)
+	}
+}

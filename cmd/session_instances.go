@@ -318,6 +318,9 @@ func newerApplies(dir string) ([]string, error) {
 		if filepath.Dir(m) == filepath.Clean(dir) {
 			continue
 		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(m), "rolled-back")); err == nil {
+			continue // already undone
+		}
 		if st, err := os.Stat(m); err == nil && st.Size() > 0 && st.ModTime().After(me.ModTime()) {
 			out = append(out, filepath.Dir(m))
 		}
@@ -355,6 +358,7 @@ func runInstancesRollback(out io.Writer, dir string) error {
 	if err != nil {
 		return err
 	}
+	_ = os.WriteFile(filepath.Join(dir, "rolled-back"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 	_, _ = fmt.Fprintf(out, "Rolled back %d change(s) from %s.\n", n, dir)
 	for _, s := range skipped {
 		_, _ = fmt.Fprintln(out, "  left unchanged: "+s)

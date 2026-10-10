@@ -222,5 +222,8 @@ func TestSessionInstancesMigrationEndToEnd(t *testing.T) {
 			t.Fatalf("%s still bound after rollback", id)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(backup, "rolled-back")); err != nil {
+		t.Fatal("rolled-back marker missing")
+	}
 	fmt.Fprintln(os.Stderr, "instances e2e ok")
 }

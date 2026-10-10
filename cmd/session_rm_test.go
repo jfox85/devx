@@ -102,3 +102,37 @@ func TestValidateManualWorktreeRemovalRejectsUnmanagedPath(t *testing.T) {
 		t.Fatal("expected unmanaged path to be rejected")
 	}
 }
+
+// A bound MCP agent never relaunches into a recreated session, even when a
+// restored or hand-edited record carries a local-only marker naming it.
+// The check fails before any tmux command runs.
+func TestEnsureTmuxRefusesRecreatedInstance(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 123456789, time.UTC)
+	const id = "pa_000000000001"
+	write := func(inst string, created time.Time) {
+		t.Helper()
+		if err := (&session.SessionStore{}).Mutate(func(s *session.SessionStore) error {
+			s.Sessions["mcp"] = &session.Session{Name: "mcp", Path: filepath.Join(home, "wt"), CreatedAt: created, InstanceID: inst,
+				LocalOnly: &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: id, CreatedAt: created}}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &piagent.Agent{ID: id, DevxSession: "mcp", SessionInstanceID: "si_aaaaaaaaaaaaaaaaaaaaaaaa", SessionCreatedAt: t0}
+	for name, c := range map[string]struct {
+		inst    string
+		created time.Time
+	}{
+		"recreated with new id":                     {"si_bbbbbbbbbbbbbbbbbbbbbbbb", t0.Add(-time.Hour)},
+		"recreated by old writer (no id, new time)": {"", t0.Add(time.Microsecond)},
+	} {
+		write(c.inst, c.created)
+		err := localOnlySessionCreator{}.EnsureTmux("mcp", a)
+		if !piagent.IsPermissionDenied(err) || !strings.Contains(err.Error(), "recreated") {
+			t.Fatalf("%s: want instance denial, got %v", name, err)
+		}
+	}
+}
