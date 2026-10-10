@@ -99,7 +99,17 @@ func releaseDirLock(path string, remove func(string) error) {
 // delete a lock that a waiter reclaimed in between (it saw no pid file); a
 // plain directory removal instead fails on the new holder's pid file.
 func releaseOwnedDirLock(path string) {
-	releaseDirLock(filepath.Join(path, "pid"), os.Remove)
+	pidPath := filepath.Join(path, "pid")
+	if data, err := os.ReadFile(pidPath); err == nil {
+		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid != os.Getpid() {
+			return // a waiter reclaimed it: the lock is no longer ours to remove
+		}
+		releaseDirLock(pidPath, os.Remove)
+	}
+	// Remaining (documented, low-risk) window: a reclaiming waiter's lock is
+	// an empty directory between its mkdir and its pid write; a retry here
+	// could remove it. That needs the waiter's no-pid reclaim (>2s without a
+	// pid file) to fire inside this retry window.
 	releaseDirLock(path, os.Remove)
 }
 

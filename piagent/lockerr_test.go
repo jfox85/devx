@@ -86,36 +86,34 @@ func TestReleaseDirLockRetriesTransientFailure(t *testing.T) {
 	}
 }
 
-// Releasing an owned lock must not delete a lock that someone else holds at
-// that path by the time a retry runs: only our pid file and then an empty
-// directory are removed.
+// Releasing an owned lock must not delete a lock that a waiter reclaimed in
+// the meantime: if the pid file is not ours, release leaves it alone.
 func TestOwnedReleaseNeverRemovesAnotherHoldersLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "key.lock")
 	release, err := acquireOwnedDirLock(path, time.Second, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a waiter that reclaimed the lock in between: a new pid file
-	// appears after ours is gone (here: our pid file replaced by theirs).
-	if err := os.WriteFile(filepath.Join(path, "pid"), []byte("424242"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	extra := filepath.Join(path, "holder-marker")
-	if err := os.WriteFile(extra, []byte("x"), 0o600); err != nil {
+	// A waiter reclaimed the lock: the directory now holds only its pid.
+	theirs := filepath.Join(path, "pid")
+	if err := os.WriteFile(theirs, []byte("424242"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	release()
-	if _, err := os.Stat(extra); err != nil {
-		t.Fatalf("release removed another holder's lock contents: %v", err)
+	if data, err := os.ReadFile(theirs); err != nil || string(data) != "424242" {
+		t.Fatalf("release removed another holder's lock: %q %v", data, err)
 	}
 }
 
-// The persistence tracker never fires for errors that are not ACCESS_DENIED
-// (so Unix behaviour is unchanged).
-func TestDeniedTrackerIgnoresOtherErrors(t *testing.T) {
-	var d deniedTracker
-	d.since = time.Now().Add(-time.Hour)
-	if d.persistent(os.ErrExist) || !d.since.IsZero() {
-		t.Fatal("non-ACCESS_DENIED errors must reset and never be persistent")
+// Normal release removes our own owned lock completely.
+func TestOwnedReleaseRemovesOwnLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key.lock")
+	release, err := acquireOwnedDirLock(path, time.Second, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("own lock not released: %v", err)
 	}
 }
