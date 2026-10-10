@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -125,8 +126,13 @@ func TestRestoreHappyPathWritesOnlyUnderFixture(t *testing.T) {
 	}
 	p := filepath.Join(root, "restored", "files", "Users", "x", ".config", "devx", "sessions.json")
 	st, err := os.Stat(p)
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("restored file perms: %v %v", err, st.Mode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mode bits are only enforced on Unix; Windows reports 0666 for every
+	// writable file (ACLs control access there).
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Fatalf("restored file perms: %v", st.Mode())
 	}
 }
 
@@ -293,10 +299,10 @@ func TestRejectDeepPlantedSymlinkCreatesNothingOutside(t *testing.T) {
 }
 
 func TestDestForAlwaysInsideRoot(t *testing.T) {
-	root := "/tmp/r"
+	root := filepath.Join(t.TempDir(), "r")
 	for _, ok := range []string{"files/a", "files/a/b/c.json"} {
 		d, err := DestFor(root, ok)
-		if err != nil || !strings.HasPrefix(d, root+"/restored/files/") {
+		if err != nil || !strings.HasPrefix(d, filepath.Join(root, "restored", "files")+string(filepath.Separator)) {
 			t.Fatalf("%s -> %s %v", ok, d, err)
 		}
 	}
@@ -321,6 +327,7 @@ func TestGitRunRefusesOutsideFixture(t *testing.T) {
 }
 
 func TestRewriteRemovesRealPathsAndConfig(t *testing.T) {
+	requireUnixHomeLayout(t)
 	root := newRoot(t)
 	cfgDir := filepath.Join(root, "restored", "files", "Users", "x", ".config", "devx")
 	_ = os.MkdirAll(cfgDir, 0o700)
@@ -346,6 +353,7 @@ func TestRewriteRemovesRealPathsAndConfig(t *testing.T) {
 
 // Hostile project aliases cannot inject YAML keys into the fixture config.
 func TestRewriteQuotesAllowProject(t *testing.T) {
+	requireUnixHomeLayout(t)
 	root := newRoot(t)
 	cfgDir := filepath.Join(root, "restored", "files", "Users", "x", ".config", "devx")
 	_ = os.MkdirAll(cfgDir, 0o700)
@@ -391,5 +399,17 @@ func TestUntrackedWriteRefusesSymlinks(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "victim")); !os.IsNotExist(err) {
 		t.Fatal("file created outside the fixture")
+	}
+}
+
+// requireUnixHomeLayout skips config-rewrite tests on Windows. Reason: the
+// verifier restores backups made by create-private-backup.py on macOS, whose
+// archive members and config values are absolute Unix paths ("/Users/x/..."),
+// and RewriteForFixture requires the real home to be such a path; a Windows
+// home ("C:\\Users\\x") is not a supported backup source.
+func requireUnixHomeLayout(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("backup rewrite handles macOS/Unix home paths only (backups are made on macOS)")
 	}
 }

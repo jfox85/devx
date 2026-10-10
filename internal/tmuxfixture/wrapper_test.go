@@ -168,7 +168,7 @@ func TestInstallWrapperEnvironment(t *testing.T) {
 	t.Setenv("TMUX_TMPDIR", "/private/tmp")
 	t.Setenv("PATH", os.Getenv("PATH"))
 	t.Setenv("HOME", os.Getenv("HOME"))
-	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "USERPROFILE", wrapOwnerEnv, wrapNonceEnv, wrapRealEnv} {
+	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", wrapOwnerEnv, wrapNonceEnv, wrapRealEnv} {
 		t.Setenv(k, os.Getenv(k))
 	}
 	w, cleanup, err := InstallWrapper()
@@ -189,6 +189,11 @@ func TestInstallWrapperEnvironment(t *testing.T) {
 		// still hold because os.UserHomeDir reads USERPROFILE there.
 		if h, _ := os.UserHomeDir(); h != w.Home {
 			t.Errorf("os.UserHomeDir()=%s, not the fake home", h)
+		}
+		for _, f := range []func() (string, error){os.UserConfigDir, os.UserCacheDir} {
+			if d, _ := f(); !strings.HasPrefix(d, w.Home) {
+				t.Errorf("%s is outside the fake home", d)
+			}
 		}
 	} else if p, _ := exec.LookPath("tmux"); p != filepath.Join(w.BinDir, "tmux") {
 		t.Errorf("tmux on PATH resolves to %s, not the wrapper", p)
