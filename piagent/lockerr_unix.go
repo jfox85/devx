@@ -8,3 +8,5 @@ import "os"
 // else holds (or is just releasing) the lock", so the caller should wait and
 // retry.
 func lockContended(_ string, err error) bool { return os.IsExist(err) }
+
+func isAccessDenied(error) bool { return false }

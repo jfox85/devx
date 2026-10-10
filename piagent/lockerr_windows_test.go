@@ -3,21 +3,25 @@
 package piagent
 
 import (
-	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
 
-// ACCESS_DENIED for a lock path that does not exist is a real permission
-// problem, not a delete-pending lock: it must not be retried until timeout.
-func TestAccessDeniedOnAbsentPathIsNotContention(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "no-such.lock")
-	if lockContended(missing, windows.ERROR_ACCESS_DENIED) {
-		t.Fatal("ACCESS_DENIED with the lock path absent must not count as contention")
+// ACCESS_DENIED is contention while it is brief (delete-pending lock dir),
+// but an uninterrupted run longer than accessDeniedGrace is a real
+// permission problem and must stop waiting.
+func TestPersistentAccessDeniedIsNotWaitedOut(t *testing.T) {
+	var d deniedTracker
+	if d.persistent(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("first ACCESS_DENIED must be treated as contention")
 	}
-	present := t.TempDir()
-	if !lockContended(present, windows.ERROR_ACCESS_DENIED) {
-		t.Fatal("ACCESS_DENIED with the lock path present (delete-pending) must count as contention")
+	d.since = time.Now().Add(-accessDeniedGrace - time.Millisecond)
+	if !d.persistent(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("ACCESS_DENIED lasting past the grace must be reported")
+	}
+	if d.persistent(windows.ERROR_ALREADY_EXISTS) || !d.since.IsZero() {
+		t.Fatal("any other result must reset the run")
 	}
 }

@@ -15,17 +15,13 @@ import (
 //
 // On Windows, a lock directory its holder has just removed stays
 // delete-pending until every open handle to it closes; mkdir on that name
-// then fails with ERROR_ACCESS_DENIED rather than ERROR_ALREADY_EXISTS. That
-// is contention. A genuine permission problem (e.g. a read-only parent) also
-// reports ACCESS_DENIED, but then the lock path itself is absent, so it is
-// returned at once instead of being retried until the timeout.
-func lockContended(path string, err error) bool {
-	if os.IsExist(err) {
-		return true
-	}
-	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-		return false
-	}
-	_, statErr := os.Lstat(path)
-	return !os.IsNotExist(statErr) // present or delete-pending (stat also denied)
+// then fails with ERROR_ACCESS_DENIED rather than ERROR_ALREADY_EXISTS, and
+// the name may already look absent to a stat by the time we check. That is
+// contention. A genuine permission problem (e.g. a read-only parent) also
+// reports ACCESS_DENIED, and is told apart by persistence: see
+// accessDeniedGrace in lock.go.
+func lockContended(_ string, err error) bool {
+	return os.IsExist(err) || isAccessDenied(err)
 }
+
+func isAccessDenied(err error) bool { return errors.Is(err, windows.ERROR_ACCESS_DENIED) }

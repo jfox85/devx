@@ -27,14 +27,36 @@ const (
 
 var errLockTimeout = errors.New("timed out waiting for agent lock")
 
+// accessDeniedGrace bounds how long an uninterrupted run of ACCESS_DENIED
+// mkdir failures is treated as contention (Windows delete-pending lock dirs
+// clear within milliseconds). Longer means a real permission problem, which
+// is returned instead of waiting out the full lock timeout.
+const accessDeniedGrace = 2 * time.Second
+
+// deniedTracker tells transient ACCESS_DENIED (contention) from a persistent
+// one (permission problem) by how long it lasts without interruption.
+type deniedTracker struct{ since time.Time }
+
+func (d *deniedTracker) persistent(err error) bool {
+	if !isAccessDenied(err) {
+		d.since = time.Time{}
+		return false
+	}
+	if d.since.IsZero() {
+		d.since = time.Now()
+	}
+	return time.Since(d.since) > accessDeniedGrace
+}
+
 func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
+	var denied deniedTracker
 	for {
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
 			return func() { releaseDirLock(path, os.Remove) }, nil
 		}
-		if !lockContended(path, err) {
+		if !lockContended(path, err) || denied.persistent(err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 		}
 		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > stale {
@@ -95,13 +117,14 @@ func AcquireOwnedLock(path string) (func(), error) {
 // mkdir lock.
 func acquireOwnedDirLock(path string, timeout, stale time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
+	var denied deniedTracker
 	for {
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
 			_ = os.WriteFile(filepath.Join(path, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 			return func() { releaseOwnedDirLock(path) }, nil
 		}
-		if !lockContended(path, err) {
+		if !lockContended(path, err) || denied.persistent(err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 		}
 		info, statErr := os.Stat(path)
