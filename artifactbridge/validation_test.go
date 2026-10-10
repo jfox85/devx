@@ -27,7 +27,7 @@ func TestRegisteredButUnexposedSessionIsDenied(t *testing.T) {
 	a2, s2 := e.agent("registered-only", "proj")
 	e.register(s1, "One", "one.md", []byte("one"))
 	e.register(s2, "Two", "two.md", []byte("two"))
-	e.svc.Cfg.Sessions = []string{"exposed"}
+	e.pol.Sessions = []string{"exposed"}
 
 	// a2 is a valid, live, managed agent in an allowlisted project, but its
 	// session was not exposed by the owner: every operation is denied.
@@ -47,7 +47,7 @@ func TestRegisteredButUnexposedSessionIsDenied(t *testing.T) {
 		t.Fatalf("cross-agent id: %v", err)
 	}
 	// No exposure list at all: nothing is served.
-	e.svc.Cfg.Sessions = nil
+	e.pol.Sessions = nil
 	if _, err := e.svc.List(ListRequest{AgentID: a1.ID}); codeOf(err) != codeDenied {
 		t.Fatalf("empty exposure list: %v", err)
 	}
@@ -67,9 +67,9 @@ func TestAccessReductionTakesEffectOnNextCall(t *testing.T) {
 		reduce func()
 		undo   func()
 	}{
-		{"session unexposed", func() { e.svc.Cfg.Sessions = nil }, func() { e.svc.Cfg.Sessions = []string{"s1"} }},
-		{"read capability off", func() { e.svc.Cfg.Read = false }, func() { e.svc.Cfg.Read = true }},
-		{"project de-allowlisted", func() { e.svc.Cfg.AllowedProjects = []string{"other"} }, func() { e.svc.Cfg.AllowedProjects = []string{"proj", "other"} }},
+		{"session unexposed", func() { e.pol.Sessions = nil }, func() { e.pol.Sessions = []string{"s1"} }},
+		{"read capability off", func() { e.pol.Read = false }, func() { e.pol.Read = true }},
+		{"project de-allowlisted", func() { e.pol.AllowedProjects = []string{"other"} }, func() { e.pol.AllowedProjects = []string{"proj", "other"} }},
 		{"session removed", func() { delete(e.sessions, "s1") }, func() { e.sessions["s1"] = s }},
 	}
 	for _, st := range steps {

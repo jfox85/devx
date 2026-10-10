@@ -169,7 +169,7 @@ func TestPiStatusIncludesProducedArtifacts(t *testing.T) {
 		t.Fatalf("pi_status artifacts: %v", st["artifacts"])
 	}
 	// Read disabled: pi_status carries no artifacts key (compatible shape).
-	e.svc.Cfg.Read = false
+	e.pol.Read = false
 	st = structured(t, rpc(t, srv, call(1, "pi_status", map[string]any{"task_id": r.TaskID}))[1])
 	if _, present := st["artifacts"]; present {
 		t.Fatal("artifacts must be omitted when reading is disabled")

@@ -82,17 +82,14 @@ func (s *Service) uploadsDir(agentID string) string {
 
 // Upload processes one chunk (or a progress probe) of an attachment upload.
 func (s *Service) Upload(req UploadRequest) (map[string]any, error) {
-	if !s.Cfg.Upload {
-		return nil, errf(codeDenied, "attachment upload is not enabled")
-	}
 	if s.Cfg.StateDir == "" || !filepath.IsAbs(s.Cfg.StateDir) {
 		return nil, errf(codeFailed, "upload staging is not configured")
 	}
-	sc, err := s.authorize(req.AgentID)
+	sc, err := s.authorize(req.AgentID, capUpload)
 	if err != nil {
 		return nil, err
 	}
-	want, err := s.validateUpload(req)
+	want, err := s.validateUpload(req, sc.policy.MaxUploadBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +126,7 @@ func keyHash(agentID, key string) string {
 	return hex.EncodeToString(h[:16])
 }
 
-func (s *Service) validateUpload(req UploadRequest) (*uploadRecord, error) {
+func (s *Service) validateUpload(req UploadRequest, maxBytes int64) (*uploadRecord, error) {
 	k := req.IdempotencyKey
 	if strings.TrimSpace(k) == "" || len(k) > 200 {
 		return nil, errf(codeInvalid, "idempotency_key is required (max 200 chars)")
@@ -151,8 +148,8 @@ func (s *Service) validateUpload(req UploadRequest) (*uploadRecord, error) {
 	if !okExt {
 		return nil, errf(codeUnsupportedType, "filename extension %q does not match mime_type %s", ext, mt)
 	}
-	if req.Size <= 0 || req.Size > s.Cfg.MaxUploadBytes {
-		return nil, errf(codeTooLarge, "size must be 1..%d bytes", s.Cfg.MaxUploadBytes)
+	if req.Size <= 0 || req.Size > maxBytes {
+		return nil, errf(codeTooLarge, "size must be 1..%d bytes", maxBytes)
 	}
 	if !sha256Re.MatchString(req.SHA256) {
 		return nil, errf(codeInvalid, "sha256 must be 64 lowercase hex digits")

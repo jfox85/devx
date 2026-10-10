@@ -315,20 +315,30 @@ func piAgentStateDir() string {
 	return filepath.Join(filepath.Dir(config.GetSessionsPath()), "pi-agents")
 }
 
-// newArtifactBridge returns the artifact bridge tool provider. Reading and
-// uploading are separate, opt-in capabilities (pi_mcp.artifacts.read /
-// pi_mcp.artifacts.upload, both default false); with both off no artifact
-// tool is listed or callable. Only sessions named in
-// pi_mcp.artifacts.sessions are ever exposed.
+// newArtifactBridge returns the artifact bridge tool provider. Its policy
+// (pi_mcp.allowed_projects and pi_mcp.artifacts) is re-read from the owner's
+// global DevX config on every tools/list and tool call, so edits apply
+// without restarting this process or the relay; an unreadable or invalid
+// config disables the bridge for that call. Project-level .devx configs and
+// DEVX_* environment variables never widen it: the bridge reads only the
+// owner's global file, or the file named by an explicit --config flag.
 func newArtifactBridge(m *piagent.Manager) piagent.ToolProvider {
-	return artifactbridge.New(artifactbridge.Config{
-		Read:            viper.GetBool("pi_mcp.artifacts.read"),
-		Upload:          viper.GetBool("pi_mcp.artifacts.upload"),
-		AllowedProjects: m.Config.AllowedProjects,
-		Sessions:        viper.GetStringSlice("pi_mcp.artifacts.sessions"),
-		StateDir:        filepath.Join(piAgentStateDir(), "artifact-bridge"),
-		MaxUploadBytes:  viper.GetInt64("pi_mcp.artifacts.max_upload_bytes"),
-	}, m.Store)
+	path := artifactPolicyPath()
+	return artifactbridge.New(artifactbridge.Config{StateDir: filepath.Join(piAgentStateDir(), "artifact-bridge")}, m.Store,
+		func() (artifactbridge.Policy, error) { return artifactbridge.LoadPolicyFile(path) })
+}
+
+// artifactPolicyPath is the owner's global DevX config file, the same file
+// pi_mcp.allowed_projects is administered in.
+func artifactPolicyPath() string {
+	if cfgFile != "" {
+		return cfgFile
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "devx", "config.yaml")
 }
 
 func newAgentManager() (*piagent.Manager, error) {

@@ -284,10 +284,7 @@ type ListRequest struct {
 
 // List returns registered artifacts, newest first.
 func (s *Service) List(req ListRequest) (map[string]any, error) {
-	if !s.Cfg.Read {
-		return nil, errf(codeDenied, "artifact reading is not enabled")
-	}
-	sc, err := s.authorize(req.AgentID)
+	sc, err := s.authorize(req.AgentID, capRead)
 	if err != nil {
 		return nil, err
 	}
@@ -374,10 +371,7 @@ type ReadResult struct {
 // Read returns one bounded chunk of a registered artifact, verified against
 // the requested version, plus a full-content checksum from the same pass.
 func (s *Service) Read(req ReadRequest) (*ReadResult, error) {
-	if !s.Cfg.Read {
-		return nil, errf(codeDenied, "artifact reading is not enabled")
-	}
-	sc, err := s.authorize(req.AgentID)
+	sc, err := s.authorize(req.AgentID, capRead)
 	if err != nil {
 		return nil, err
 	}

@@ -141,49 +141,106 @@ pi_mcp:
 
 MCP client config: `{"mcpServers": {"devx-pi": {"command": "devx", "args": ["mcp", "pi"]}}}`
 
-## Artifact bridge (optional)
+## Artifact bridge
 
 Remote clients can exchange explicitly registered files with a managed
-agent's session through three extra tools. Both capabilities are **off by
-default** and enabled separately in the DevX config:
+agent's session through three extra tools. The policy lives in the owner's
+global DevX config (`~/.config/devx/config.yaml`, or the file given with
+`--config`):
 
 ```yaml
 pi_mcp:
-  artifacts:
-    read: false            # devx_artifact_list + devx_artifact_read
-    upload: false          # devx_attachment_upload
-    sessions: []           # exact DevX session names exposed; empty = none
+  allowed_projects: [...]        # shared with pi_start_task
+  artifacts:                     # optional block; every key optional
+    read: true                   # default true: devx_artifact_list + devx_artifact_read
+    upload: false                # default false: devx_attachment_upload
+    sessions: [name, ...]        # optional restrictive allowlist (present, even [], = only these)
+    exclude_sessions: [name]     # optional, always subtracted
+    exclude_projects: [alias]    # optional, always subtracted
     max_upload_bytes: 10485760   # default 10 MiB, ceiling 25 MiB
 ```
+
+**Defaults.**
+- **Read is on.** If `sessions` is absent, every MCP-visible managed session
+  in an allowed project is eligible, minus the exclusions. MCP-visible means
+  a live (not retired) managed agent whose DevX session record still names
+  it: a `local_only` marker for sessions created by `pi_start_task`, or a
+  `managed_agent` marker for adopted sessions. Legacy records without a
+  marker can only be exposed by listing them in `sessions`.
+- **An explicit `sessions` list restricts.** Only the listed sessions are
+  eligible. An empty list exposes nothing. Exclusions still apply.
+- **Upload is off.** Even with `upload: true`, uploads need an explicit
+  `sessions` list naming the session. Uploads never use the default-wide
+  read scope.
+- **No allowed projects, nothing eligible.** With no `pi_mcp` block or an
+  empty `allowed_projects`, nothing is eligible.
+
+**Reload, no restart.** The policy is re-read and validated on every
+`tools/list` and every tool call, and the agent and session records are
+re-read on every call. Changes apply on the next call without restarting
+`devx mcp pi` or the Agent Shed relay. That includes:
+- enabling or disabling read or upload;
+- adding or removing sessions and exclusions;
+- changing `allowed_projects`;
+- retiring agents and removing sessions.
+
+Revoking access between two chunks of a read stops the next chunk.
+Exceptions:
+- **Gateway approval.** Turning a capability on adds tool definitions,
+  which the Agent Shed gateway (and the relay's `allowed_tools`) must
+  separately allow and approve. Tool definitions are fixed text and never
+  depend on policy values, so changing session scope never invalidates an
+  approved definition.
+- **Separate settings.** `pi_start_task`/`pi_send` settings (`pi_command`,
+  `pi_args`, and so on) are still read once at process start.
+
+**Fails closed.** If the config can't be read or doesn't validate, the
+bridge lists no tools and answers every bridge call with `unavailable`
+until the file is fixed. These are all errors, never a fallback to
+defaults:
+- an unknown key under `pi_mcp.artifacts` (for example, `session:`);
+- a wrong type, or null;
+- a duplicate key;
+- a YAML alias or merge key;
+- unparseable YAML;
+- an oversized file.
+
+Project-level `.devx/config.yaml` files and `DEVX_*` environment variables
+never affect the bridge policy.
+
+**Migration from 39e4a9a.** In 39e4a9a, read and upload defaulted to off
+and `sessions` was required. Now:
+- **Configs with an explicit `sessions` list keep exactly their scope.**
+  The fixture-only live config behaves identically.
+- **Configs with no `artifacts` block** now get read access across all
+  MCP-visible sessions in allowed projects. To keep the bridge off, set
+  `read: false` or `sessions: []` before upgrading.
+- **`read: false` or `upload: false`** behave as before.
+- **Exclusions and live reload** (`exclude_sessions`, `exclude_projects`)
+  are new.
 
 **Trust boundary.** `devx mcp pi` receives no caller identity. The Agent
 Shed gateway authenticates the principal and checks that principal's
 reviewed per-tool grant on the `devx-pi` relay app, then forwards only the
 tool name and arguments. The `agent_id` argument is chosen by the caller.
 DevX cannot tell whether a particular caller may see a particular session.
-It enforces only the owner's explicit exposure list:
+It enforces only the owner's policy:
+- Any principal granted a bridge tool can use it on every eligible
+  session, and on no others.
+- Under the default-wide scope, "eligible" means every MCP-visible managed
+  session in every allowed project.
 
-- Any principal granted a bridge tool can use it on every session in
-  `pi_mcp.artifacts.sessions`.
-- It can't use it on any other session.
-- Being a managed agent, or being in `allowed_projects`, grants nothing.
-
-Per-principal, per-session separation would need the gateway to pass a
+Per-principal or per-session separation would need the gateway to pass a
 verified principal (or a per-binding scope) to the relay, and that doesn't
-exist today. Until it does, grant the bridge tools only to principals that
-may see every exposed session.
+exist today. Grant the bridge tools only to principals that may see every
+eligible session.
 
 On every call DevX also checks:
 - the agent exists and isn't retired;
-- its project is allowlisted;
+- its project is allowlisted and not excluded;
 - its session record still points at the agent's worktree with the same
   project;
 - no other agent owns or claims that session.
-
-A disabled capability's tools are neither listed nor callable. Changes take
-effect on the next `devx mcp pi` start; the Agent Shed relay starts one per
-session, so restart only that service (not shared services) or wait for its
-idle session to be recycled.
 
 **Eligible files.** Only files registered in the session's existing artifact
 manifest (`<worktree>/.artifacts/manifest.json`, the same store as

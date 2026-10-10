@@ -23,11 +23,17 @@ func integer(d string, min, max int64) map[string]any {
 	return map[string]any{"type": "integer", "description": d, "minimum": min, "maximum": max}
 }
 
-// Tools lists only the enabled capabilities.
+// Tools lists the capabilities enabled by the current policy (re-read on
+// every tools/list). Definitions are constant text so a policy change never
+// alters an approved tool definition; an unreadable policy lists nothing.
 func (s *Service) Tools() []piagent.Tool {
+	p, err := s.policy()
+	if err != nil {
+		return nil
+	}
 	ro := map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
 	var out []piagent.Tool
-	if s.Cfg.Read {
+	if p.Read {
 		out = append(out,
 			piagent.Tool{Name: ToolList, Annotations: ro,
 				Description: "List files explicitly registered as DevX artifacts (reports, screenshots, attachments) in one managed agent's session. Returns opaque artifact ids (dxa_...), title, MIME type, size, content version and SHA-256. Only registered artifacts are visible; there is no general file access.",
@@ -49,10 +55,10 @@ func (s *Service) Tools() []piagent.Tool {
 					"encoding":    map[string]any{"type": "string", "enum": []string{"auto", "text", "base64", "image"}, "description": "auto (default), text, base64 or image"},
 				}, "agent_id", "artifact_id")})
 	}
-	if s.Cfg.Upload {
+	if p.Upload {
 		out = append(out, piagent.Tool{Name: ToolUpload,
 			Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-			Description: fmt.Sprintf("Upload a reference file (PNG, JPEG, GIF, WebP, PDF, text, Markdown, CSV or JSON; max %d bytes) into a managed agent's session attachments (.artifacts/attachments/, never repository files). Send sequential chunks of <= %d bytes as base64, each with the same idempotency_key, filename, mime_type, size and sha256 and the offset it starts at. The file is verified (size, SHA-256, content type) and registered when the last byte arrives; the response gives the artifact id and the manifest id the local Pi agent can resolve. Retrying any call is safe; call without data_base64 to get next_offset after an interruption.", s.Cfg.MaxUploadBytes, MaxUploadChunk),
+			Description: fmt.Sprintf("Upload a reference file (PNG, JPEG, GIF, WebP, PDF, text, Markdown, CSV or JSON; up to the owner's configured limit, at most %d bytes) into a managed agent's session attachments (.artifacts/attachments/, never repository files). Only sessions the owner explicitly listed for uploads accept them. Send sequential chunks of <= %d bytes as base64, each with the same idempotency_key, filename, mime_type, size and sha256 and the offset it starts at. The file is verified (size, SHA-256, content type) and registered when the last byte arrives; the response gives the artifact id and the manifest id the local Pi agent can resolve. Retrying any call is safe; call without data_base64 to get next_offset after an interruption.", MaxUploadBytesCeiling, MaxUploadChunk),
 			InputSchema: piagent.Obj(map[string]any{
 				"agent_id":        str("Managed agent id (pa_...)"),
 				"idempotency_key": str("Caller-chosen unique key for this file; reuse it for every chunk and on retry"),
@@ -71,17 +77,29 @@ func (s *Service) Tools() []piagent.Tool {
 
 // Instructions describes the artifact tools when any are enabled.
 func (s *Service) Instructions() string {
-	if !s.Cfg.Read && !s.Cfg.Upload {
+	p, err := s.policy()
+	if err != nil || (!p.Read && !p.Upload) {
 		return ""
 	}
 	return "Exchange files with an agent only through registered DevX artifacts: list them with devx_artifact_list, read by id with devx_artifact_read, and send reference files with devx_attachment_upload. pi_status lists artifacts produced during a task."
 }
 
-// CallTool routes the bridge tools. Unknown or disabled tools are not handled
-// here (the server then denies them as unknown).
+// CallTool routes the bridge tools. A bridge tool whose capability is off, or
+// any bridge tool while the policy is unreadable, is answered with an error
+// (never executed); non-bridge names are not handled here.
 func (s *Service) CallTool(name string, raw json.RawMessage) (map[string]any, bool) {
-	switch {
-	case name == ToolList && s.Cfg.Read:
+	if name != ToolList && name != ToolRead && name != ToolUpload {
+		return nil, false
+	}
+	p, err := s.policy()
+	if err != nil {
+		return errorResult(err), true
+	}
+	if (name == ToolUpload && !p.Upload) || (name != ToolUpload && !p.Read) {
+		return errorResult(errf(codeDenied, "tool %s is not enabled", name)), true
+	}
+	switch name {
+	case ToolList:
 		var w struct {
 			AgentID string `json:"agent_id"`
 			Type    string `json:"type"`
@@ -98,7 +116,7 @@ func (s *Service) CallTool(name string, raw json.RawMessage) (map[string]any, bo
 		}
 		return jsonResult(out), true
 
-	case name == ToolRead && s.Cfg.Read:
+	case ToolRead:
 		var w struct {
 			AgentID    string `json:"agent_id"`
 			ArtifactID string `json:"artifact_id"`
@@ -116,7 +134,7 @@ func (s *Service) CallTool(name string, raw json.RawMessage) (map[string]any, bo
 		}
 		return readResult(r), true
 
-	case name == ToolUpload && s.Cfg.Upload:
+	case ToolUpload:
 		var w struct {
 			AgentID        string  `json:"agent_id"`
 			IdempotencyKey string  `json:"idempotency_key"`
@@ -215,10 +233,10 @@ func readResult(r *ReadResult) map[string]any {
 // remote attachments. It returns nil when reading is disabled, the agent is
 // not authorized, or the task was never delivered.
 func (s *Service) TaskArtifacts(agent *piagent.Agent, task *piagent.TaskView) []map[string]any {
-	if !s.Cfg.Read || agent == nil || task == nil || task.DeliveredAt == nil {
+	if agent == nil || task == nil || task.DeliveredAt == nil {
 		return nil
 	}
-	sc, err := s.authorize(agent.ID)
+	sc, err := s.authorize(agent.ID, capRead)
 	if err != nil {
 		return nil
 	}

@@ -121,3 +121,12 @@ Then, in Jarvis:
 Record the results (including the rendering observation) in an artifact.
 Then roll back: set the capabilities back to false, or remove the tools from
 `allowed_tools`, if the test is not meant to stay enabled.
+
+## Live reload (later builds)
+
+From the build after 39e4a9a on, the bridge re-reads `pi_mcp.artifacts` and
+`pi_mcp.allowed_projects` on every call. Editing the owner config needs no
+relay or `devx mcp pi` restart. The explicit
+`sessions: [artifact-bridge-fixture]` list keeps the scope fixture-only.
+Removing the list switches to the default-wide read scope; see
+docs/pi-mcp.md, "Artifact bridge", for the defaults and the trust boundary.

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -29,13 +30,28 @@ type env struct {
 	store    *piagent.Store
 	sessions map[string]*session.Session
 	now      time.Time
+	polMu    sync.Mutex
+	pol      Policy
+	polErr   error
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{t: t, store: piagent.NewStore(filepath.Join(t.TempDir(), "state")), sessions: map[string]*session.Session{},
 		now: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)}
-	e.svc = New(Config{Read: true, Upload: true, AllowedProjects: []string{"proj", "other"}, StateDir: filepath.Join(t.TempDir(), "bridge")}, e.store)
+	// Tests start from an explicit-allowlist policy with uploads on, then
+	// mutate e.pol at runtime; the service re-reads it on every call.
+	e.pol = Policy{Read: true, Upload: true, AllowedProjects: []string{"proj", "other"}, SessionsSet: true, MaxUploadBytes: DefaultMaxUploadBytes}
+	e.svc = New(Config{StateDir: filepath.Join(t.TempDir(), "bridge")}, e.store, func() (Policy, error) {
+		e.polMu.Lock()
+		defer e.polMu.Unlock()
+		if e.polErr != nil {
+			return Policy{}, e.polErr
+		}
+		p := e.pol
+		p.Sessions = append([]string(nil), e.pol.Sessions...)
+		return p, nil
+	})
 	e.svc.Sessions = func() (map[string]*session.Session, error) { return e.sessions, nil }
 	e.svc.Now = func() time.Time { return e.now }
 	return e
@@ -55,7 +71,7 @@ func (e *env) agent(name, project string) (*piagent.Agent, *session.Session) {
 	}
 	s := &session.Session{Name: name, ProjectAlias: project, Path: wt, ManagedAgent: id}
 	e.sessions[name] = s
-	e.svc.Cfg.Sessions = append(e.svc.Cfg.Sessions, name) // exposed by default in tests
+	e.pol.Sessions = append(e.pol.Sessions, name) // exposed by default in tests
 	return a, s
 }
 
@@ -361,21 +377,26 @@ func TestCapabilitiesAreSeparate(t *testing.T) {
 		}
 		return m
 	}
-	e.svc.Cfg.Read, e.svc.Cfg.Upload = false, false
+	e.pol.Read, e.pol.Upload = false, false
 	if len(names()) != 0 || e.svc.Instructions() != "" {
 		t.Fatal("no tools when both capabilities are off")
 	}
-	if _, handled := e.svc.CallTool(ToolList, json.RawMessage(`{"agent_id":"`+a.ID+`"}`)); handled {
-		t.Fatal("disabled tool must not be handled")
+	// A disabled bridge tool is refused by the bridge (never executed).
+	if res, handled := e.svc.CallTool(ToolList, json.RawMessage(`{"agent_id":"`+a.ID+`"}`)); !handled || res["isError"] != true ||
+		res["structuredContent"].(map[string]any)["error"] != codeDenied {
+		t.Fatalf("disabled tool must be refused: %v", res)
 	}
-	e.svc.Cfg.Upload = true
+	if _, handled := e.svc.CallTool("pi_status", json.RawMessage(`{}`)); handled {
+		t.Fatal("non-bridge tools must not be handled by the bridge")
+	}
+	e.pol.Upload = true
 	if n := names(); !n[ToolUpload] || n[ToolList] || n[ToolRead] {
 		t.Fatalf("upload-only: %v", n)
 	}
 	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
 		t.Fatal("read must be denied when only upload is enabled")
 	}
-	e.svc.Cfg.Read, e.svc.Cfg.Upload = true, false
+	e.pol.Read, e.pol.Upload = true, false
 	if n := names(); n[ToolUpload] || !n[ToolList] || !n[ToolRead] {
 		t.Fatalf("read-only: %v", n)
 	}
@@ -692,12 +713,12 @@ func TestUploadValidationAndLimits(t *testing.T) {
 		}
 	}
 	// Declared size above the limit.
-	e.svc.Cfg.MaxUploadBytes = 1000
+	e.pol.MaxUploadBytes = 1000
 	big := uploadReq(a.ID, "big", "x.txt", "text/plain", bytes.Repeat([]byte("x"), 1001), 0, true)
 	if _, err := e.svc.Upload(big); codeOf(err) != codeTooLarge {
 		t.Errorf("oversize: %v", err)
 	}
-	e.svc.Cfg.MaxUploadBytes = DefaultMaxUploadBytes
+	e.pol.MaxUploadBytes = DefaultMaxUploadBytes
 	// Oversized chunk.
 	r := uploadReq(a.ID, "oc", "x.txt", "text/plain", bytes.Repeat([]byte("x"), 20000), 0, false)
 	b := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), MaxUploadChunk+1))
@@ -821,7 +842,7 @@ func TestTaskArtifacts(t *testing.T) {
 	if e.svc.TaskArtifacts(a, &piagent.TaskView{}) != nil {
 		t.Fatal("undelivered task should have no artifacts")
 	}
-	e.svc.Cfg.Read = false
+	e.pol.Read = false
 	if e.svc.TaskArtifacts(a, tv) != nil {
 		t.Fatal("read disabled must not expose artifacts")
 	}

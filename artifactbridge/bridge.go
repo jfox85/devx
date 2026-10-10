@@ -19,19 +19,21 @@
 // has opted in to. Concretely, any principal granted a bridge tool on the
 // devx-pi app can use it on every session the owner exposed, and nothing more.
 //
-// The local scope therefore is an owner allowlist, re-checked on every call:
-//   - the capability (read / upload) is enabled in the DevX config;
-//   - the agent's session is listed in pi_mcp.artifacts.sessions (exact
-//     DevX session names; empty = no session is exposed). Being a managed
-//     agent, or being in pi_mcp.allowed_projects, is NOT enough;
-//   - the agent exists, is not retired, its project is in
-//     pi_mcp.allowed_projects, its DevX session record still points at the
-//     agent's worktree with the same project, and no other agent owns it.
+// The local scope is the owner's policy (policy.go), re-read from the owner's
+// global DevX config and re-evaluated on every tools/list and tool call, so
+// edits take effect on the next call with no restart:
+//   - read (default on): every MCP-visible managed session in
+//     pi_mcp.allowed_projects, unless pi_mcp.artifacts.sessions is present,
+//     in which case only those sessions; exclude_sessions/exclude_projects
+//     always subtract;
+//   - upload (default off): only sessions named in an explicit
+//     pi_mcp.artifacts.sessions list, never the default-wide read scope;
+//   - the agent exists, is not retired, its DevX session record still points
+//     at the agent's worktree with the same project, and no other agent owns
+//     or claims it. With the default-wide scope the session record must also
+//     positively name this agent (local-only marker or adoption marker).
 //
-// Removing a session from the list, disabling a capability, retiring the
-// agent or removing the session takes effect on the next call (config is read
-// at process start; the relay starts a fresh `devx mcp pi` per local session,
-// and the session record/agent record are re-read on every call).
+// An unreadable or invalid config denies everything for that call.
 //
 // Artifact IDs are opaque and derived from (agent, session, manifest id), so
 // an ID observed in one session does not resolve in any other. They are not
@@ -123,17 +125,10 @@ var errUnavailable = errf(codeUnavailable, "artifact file is missing, not a regu
 
 var errNotExist = errf(codeNotFound, "not found")
 
-// Config controls the bridge. Both capabilities default to off, and no
-// session is exposed unless listed in Sessions.
+// Config holds the bridge's static settings.
 type Config struct {
-	Read            bool
-	Upload          bool
-	AllowedProjects []string
-	// Sessions are the DevX session names the owner exposes to the bridge.
-	Sessions []string
 	// StateDir holds upload staging state (outside every worktree).
-	StateDir       string
-	MaxUploadBytes int64
+	StateDir string
 }
 
 // Service implements the bridge operations.
@@ -142,21 +137,16 @@ type Service struct {
 	Agents *piagent.Store
 	// Sessions returns the current DevX session records.
 	Sessions func() (map[string]*session.Session, error)
-	Now      func() time.Time
+	// Policy returns the current owner policy; it is called for every
+	// tools/list and tool call. An error disables the bridge for that call.
+	Policy func() (Policy, error)
+	Now    func() time.Time
 }
 
-// New returns a Service backed by the real DevX session metadata.
-func New(cfg Config, agents *piagent.Store) *Service {
-	if cfg.MaxUploadBytes <= 0 {
-		cfg.MaxUploadBytes = DefaultMaxUploadBytes
-	}
-	if cfg.MaxUploadBytes > MaxUploadBytesCeiling {
-		cfg.MaxUploadBytes = MaxUploadBytesCeiling
-	}
-	if !platformSupported {
-		cfg.Read, cfg.Upload = false, false
-	}
-	return &Service{Cfg: cfg, Agents: agents, Now: func() time.Time { return time.Now().UTC() },
+// New returns a Service backed by the real DevX session metadata and the
+// given policy source.
+func New(cfg Config, agents *piagent.Store, policy func() (Policy, error)) *Service {
+	return &Service{Cfg: cfg, Agents: agents, Policy: policy, Now: func() time.Time { return time.Now().UTC() },
 		Sessions: func() (map[string]*session.Session, error) {
 			st, err := session.LoadSessions()
 			if err != nil {
@@ -166,28 +156,65 @@ func New(cfg Config, agents *piagent.Store) *Service {
 		}}
 }
 
-// scope is an authorized (agent, session) pair for one operation.
-type scope struct {
-	agent *piagent.Agent
-	sess  *session.Session
+// policy returns the current, normalized policy or errPolicy (fail closed).
+// Platforms without the no-follow primitives never enable the bridge.
+func (s *Service) policy() (Policy, error) {
+	if !platformSupported || s.Policy == nil {
+		return Policy{}, errPolicy
+	}
+	p, err := s.Policy()
+	if err != nil {
+		return Policy{}, errPolicy
+	}
+	if p.MaxUploadBytes <= 0 {
+		p.MaxUploadBytes = DefaultMaxUploadBytes
+	}
+	if p.MaxUploadBytes > MaxUploadBytesCeiling {
+		p.MaxUploadBytes = MaxUploadBytesCeiling
+	}
+	return p, nil
 }
 
-// authorize re-checks the agent and its session on every call. Every denial
-// is reported the same way whether the agent is unknown or merely not
-// authorized, so callers cannot probe for other agents.
-func (s *Service) authorize(agentID string) (*scope, error) {
+// scope is an authorized (agent, session) pair for one operation.
+type scope struct {
+	agent  *piagent.Agent
+	sess   *session.Session
+	policy Policy
+}
+
+type capability int
+
+const (
+	capRead capability = iota
+	capUpload
+)
+
+// authorize re-reads the policy, the agent and its session on every call.
+// Every denial is reported the same way whether the agent is unknown or
+// merely not authorized, so callers cannot probe for other agents.
+func (s *Service) authorize(agentID string, want capability) (*scope, error) {
 	deny := errf(codeDenied, "agent %q is not available to this artifact bridge", agentID)
 	if !piagent.ValidAgentID(agentID) {
 		return nil, errf(codeInvalid, "agent_id must look like pa_<12 hex>")
 	}
+	p, err := s.policy()
+	if err != nil {
+		return nil, err
+	}
 	a, err := s.Agents.LoadAgent(agentID)
-	if err != nil || a.RetiredAt != nil || a.ID != agentID {
+	if err != nil || a.RetiredAt != nil || a.ID != agentID || a.Project == "" {
 		return nil, deny
 	}
-	if !contains(s.Cfg.Sessions, a.DevxSession) {
-		return nil, deny
-	}
-	if a.Project == "" || !contains(s.Cfg.AllowedProjects, a.Project) {
+	switch want {
+	case capRead:
+		if !p.readEligible(a.DevxSession, a.Project) {
+			return nil, deny
+		}
+	case capUpload:
+		if !p.uploadEligible(a.DevxSession, a.Project) {
+			return nil, deny
+		}
+	default:
 		return nil, deny
 	}
 	sessions, err := s.Sessions()
@@ -210,6 +237,13 @@ func (s *Service) authorize(agentID string) (*scope, error) {
 	if sess.ManagedAgent != "" && sess.ManagedAgent != a.ID {
 		return nil, deny
 	}
+	// The default-wide read scope only covers sessions whose DevX record
+	// positively names this agent. Legacy agents without a marker are
+	// reachable only through an explicit sessions list.
+	owned := (sess.LocalOnly != nil && sess.LocalOnly.AgentID == a.ID) || sess.ManagedAgent == a.ID
+	if !p.SessionsSet && !owned {
+		return nil, deny
+	}
 	// Exactly one live agent may claim the session; otherwise the scope is
 	// ambiguous and nothing is served.
 	agents, err := s.Agents.ListAgents()
@@ -221,7 +255,7 @@ func (s *Service) authorize(agentID string) (*scope, error) {
 			return nil, deny
 		}
 	}
-	return &scope{agent: a, sess: sess}, nil
+	return &scope{agent: a, sess: sess, policy: p}, nil
 }
 
 // manifest loads the session's artifact manifest without following any
