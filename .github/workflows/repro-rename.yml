@@ -14,6 +14,8 @@ jobs:
           - { label: pr73,        ref: d55d859cf92cad7f2686acd445a182d611a2926d }
           - { label: pr72,        ref: 7d52ebe414c24cb9d1cbf4ac10b269b2f770a3ca }
           - { label: pr72+pr73,   ref: b2f892780478edce269a4f3cd23e7f5124b2349d }
+          - { label: pr71,        ref: db59690f30fa994c54a11d5c6e8baf4aa36cbae3 }
+          - { label: pr72+pr73new, ref: 8806865ce1260b8e1a0eae5308c3111fda495a5a }
     steps:
       - uses: actions/checkout@v4
         with: { path: harness }
@@ -33,3 +35,8 @@ jobs:
           go test -race -count=5 -v ./session > pkg.log 2>&1 || true
           echo "PACKAGE ref=${{ matrix.ref }} runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' pkg.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' pkg.log) accessdenied=$(grep -c 'Access is denied' pkg.log) otherfails=$(grep -E -- '^--- FAIL' pkg.log | grep -vc TestConcurrentUpdatesAllSurvive)"
           grep -m3 -B1 'Access is denied' iso.log pkg.log | cut -c1-300 || true
+          if [ -f piagent/manager_test.go ]; then
+            go test -race -count=50 -v -run '^TestConcurrentSendsGetDistinctOrderedTasks$' ./piagent > pa.log 2>&1 || true
+            echo "PIAGENT ref=${{ matrix.ref }} runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentSendsGetDistinctOrderedTasks ' pa.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentSendsGetDistinctOrderedTasks ' pa.log) accessdenied=$(grep -c 'Access is denied' pa.log)"
+            grep -m2 'Access is denied' pa.log | cut -c1-300 || true
+          else echo "PIAGENT ref=${{ matrix.ref }} n/a (no piagent)"; fi
