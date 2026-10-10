@@ -136,3 +136,23 @@ func TestEnsureTmuxRefusesRecreatedInstance(t *testing.T) {
 		}
 	}
 }
+
+// The `session instances` dry run promises to write nothing, so the
+// background update check (which writes its state file) is skipped for it,
+// but not for --apply/--rollback or other commands.
+func TestReadOnlyInvocationSkipsUpdateCheck(t *testing.T) {
+	for args, want := range map[string]bool{
+		"session instances":                        true,
+		"session instances --json":                 true,
+		"--config x session instances --confirm a": true,
+		"session instances --apply abc":            false,
+		"session instances --apply=abc":            false,
+		"session instances --rollback /d":          false,
+		"session list":                             false,
+		"agent list":                               false,
+	} {
+		if got := isReadOnlyInvocation(strings.Fields(args)); got != want {
+			t.Errorf("%q: got %v want %v", args, got, want)
+		}
+	}
+}

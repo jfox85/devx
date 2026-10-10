@@ -41,6 +41,8 @@ func TestSessionInstancesMigrationEndToEnd(t *testing.T) {
 	}
 	cfgDir := filepath.Join(home, ".config", "devx")
 	_ = os.MkdirAll(cfgDir, 0o700)
+	// auto_check_updates is off here to avoid network I/O; the dry run's
+	// update-check skip is covered by TestReadOnlyInvocationSkipsUpdateCheck.
 	_ = os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte("disable_caddy: true\nauto_check_updates: false\nweb_autostart: false\n"), 0o600)
 	env := append(os.Environ(), "DEVX_DISABLE_CADDY=true", "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
 	run := func(args ...string) (string, error) {

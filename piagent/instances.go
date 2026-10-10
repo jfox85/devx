@@ -40,24 +40,34 @@ const (
 	// ActionRestoreBinding re-writes a binding an older writer dropped from
 	// agent.json, from the agent's own event log (never a new binding).
 	ActionRestoreBinding = "restore_agent_binding"
-	// ActionCandidate is an agent whose session carries no marker naming
-	// it. The only evidence linking them is name, path and creation-time
-	// ordering, which is ambiguous, so it is NEVER bound automatically: it
-	// is bound only if the owner lists it with --confirm (and then recorded
-	// with basis owner_confirmed).
+	// ActionCandidate is an agent whose link to its session rests on
+	// ambiguous evidence, so it is NEVER bound automatically: it is bound
+	// only if the owner lists it with --confirm (recorded with basis
+	// owner_confirmed). Two cases:
+	//   - no marker names it: only name, path and creation-time ordering
+	//     link them;
+	//   - an adoption (managed_agent) marker names it: before instance ids,
+	//     relaunching an adopted agent re-marked whatever session had the
+	//     name, so the marker may be an artifact of a stale agent and only
+	//     timestamp ordering would remain.
+	// Only local-only markers (written into the record by the agent's own
+	// start, never re-written onto another record) bind automatically.
 	ActionCandidate = "candidate_needs_owner_confirmation"
 )
 
 // Binding basis recorded on a plan item, in the journal and in the agent's
 // session_instance_bound event.
 const (
-	BasisMarker         = "marker"          // session marker names this agent, plus ordering
+	BasisMarker         = "marker"          // local-only marker written at the agent's own start, plus ordering
 	BasisOwnerConfirmed = "owner_confirmed" // no marker; owner confirmed the candidate explicitly
 	BasisEventLog       = "event_log"       // restores the agent's own recorded binding
 )
 
-// ReasonNoMarker explains a candidate.
-const ReasonNoMarker = "session has no marker naming this agent; only name/path/creation-time ordering link them (ambiguous). Bind only after owner confirmation: --confirm <agent-id>"
+// Reasons explaining a candidate.
+const (
+	ReasonNoMarker      = "session has no marker naming this agent; only name/path/creation-time ordering link them (ambiguous). Bind only after owner confirmation: --confirm <agent-id>"
+	ReasonAdoptedMarker = "adoption marker may have been re-written by a pre-instance relaunch onto a recreated session, so only creation-time ordering would remain (ambiguous). Bind only after owner confirmation: --confirm <agent-id>"
+)
 
 // Reasons an agent is not bound automatically.
 const (
@@ -158,8 +168,12 @@ type PlanOptions struct {
 func PlanInstancesWithOptions(sessions map[string]*session.Session, agents []*Agent, newID func(name string) string, opts PlanOptions) *InstancePlan {
 	recorded := opts.Recorded
 	confirmed := map[string]bool{}
+	var confirmList []string
 	for _, id := range opts.Confirmed {
-		confirmed[id] = true
+		if !confirmed[id] {
+			confirmed[id] = true
+			confirmList = append(confirmList, id)
+		}
 	}
 	usedConfirm := map[string]bool{}
 	p := &InstancePlan{Version: 2, Summary: map[string]int{}}
@@ -351,18 +365,20 @@ func PlanInstancesWithOptions(sessions map[string]*session.Session, agents []*Ag
 		}
 		it.SessionInstanceID, it.SessionCreatedAt = id, s.CreatedAt
 		switch {
-		case it.Marker != "none":
+		case it.Marker == "local_only":
 			it.Action, it.Basis = ActionBindAgent, BasisMarker
 		case confirmed[a.ID]:
 			usedConfirm[a.ID] = true
 			it.Action, it.Basis = ActionBindAgent, BasisOwnerConfirmed
+		case it.Marker == "managed_agent":
+			it.Action, it.Reason = ActionCandidate, ReasonAdoptedMarker
 		default:
 			// Name/path/time ordering alone is not proof of identity.
 			it.Action, it.Reason = ActionCandidate, ReasonNoMarker
 		}
 		p.Agents = append(p.Agents, it)
 	}
-	for _, id := range opts.Confirmed {
+	for _, id := range confirmList {
 		if usedConfirm[id] {
 			p.OwnerConfirmed = append(p.OwnerConfirmed, id)
 		} else {
@@ -523,6 +539,17 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 			(!it.SessionCreatedAt.IsZero() && !cur.CreatedAt.Equal(it.SessionCreatedAt)) ||
 			filepath.Clean(cur.Path) != filepath.Clean(a.Worktree) {
 			return fmt.Errorf("agent %s session %q: %w", it.AgentID, it.Session, ErrPlanStale)
+		}
+		// A new binding must carry a basis; a marker-based one must still
+		// have that marker.
+		switch it.Basis {
+		case BasisMarker:
+			if cur.LocalOnly == nil || cur.LocalOnly.AgentID != a.ID || cur.ManagedAgent != "" {
+				return fmt.Errorf("agent %s marker changed: %w", it.AgentID, ErrPlanStale)
+			}
+		case BasisOwnerConfirmed, BasisEventLog:
+		default:
+			return fmt.Errorf("agent %s: binding without an accepted basis: %w", it.AgentID, ErrPlanStale)
 		}
 		if err := st.Journal(JournalEntry{Time: now(), Kind: "agent", Name: it.AgentID, InstanceID: it.SessionInstanceID, Basis: it.Basis}); err != nil {
 			return err

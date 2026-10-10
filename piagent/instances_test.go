@@ -149,7 +149,7 @@ func TestPlanBindsOnlyUnambiguousLegacyAgents(t *testing.T) {
 
 	p := e.plan()
 	want := map[string]string{
-		ok1.ID: ActionBindAgent, ok2.ID: ActionBindAgent, ok3.ID: ActionCandidate,
+		ok1.ID: ActionBindAgent, ok2.ID: ActionCandidate, ok3.ID: ActionCandidate,
 		newer.ID: SkipSessionNewer, noTime.ID: SkipNoTimes, foreign.ID: SkipForeignMarker, both.ID: SkipBothMarkers,
 		moved.ID: SkipPathMismatch, gone.ID: SkipNoSession, dupA.ID: SkipDuplicateClaim, dupB.ID: SkipPathMismatch,
 		retired.ID: SkipRetired, shared.ID: SkipSharedWorktree,
@@ -602,5 +602,71 @@ func TestUnmarkedAgentsNeedOwnerConfirmation(t *testing.T) {
 	evs, _, _ := e.store.ReadEvents(cand.ID, 0, 0)
 	if last := evs[len(evs)-1]; last.Type != "session_instance_bound" || last.Data["basis"] != BasisOwnerConfirmed {
 		t.Fatalf("event must record basis: %+v", last)
+	}
+}
+
+// M2: an adoption (managed_agent) marker may be an artifact of a
+// pre-instance relaunch, so a marked adopted agent is also only a candidate;
+// --confirm binds it with basis owner_confirmed.
+func TestAdoptedMarkerIsCandidateUntilConfirmed(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("adopted", "managed", -time.Hour)
+	if it := e.plan().agent(a.ID); it.Action != ActionCandidate || it.Reason != ReasonAdoptedMarker {
+		t.Fatalf("adopted marker must be a candidate: %+v", it)
+	}
+	e.confirm = []string{a.ID, a.ID} // duplicates are collapsed
+	p := e.plan()
+	if it := p.agent(a.ID); it.Action != ActionBindAgent || it.Basis != BasisOwnerConfirmed || len(p.OwnerConfirmed) != 1 {
+		t.Fatalf("confirmed: %+v %v", it, p.OwnerConfirmed)
+	}
+}
+
+// M1: a basis-less session_instance_bound event (written by a pre-release
+// migration build that bound from timestamps) is never restored.
+func TestRecordedBindingIgnoresBasislessMigrationEvents(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "", -time.Second)
+	e.sess.recs["s"].InstanceID = session.DeriveInstanceID("s", "/wt/s", e.sess.recs["s"].CreatedAt)
+	_, _ = e.store.AppendEvent(a.ID, Event{Type: "session_instance_bound", Source: "devx", Data: map[string]any{
+		"session_instance_id": e.sess.recs["s"].InstanceID, "session_created_at": e.sess.recs["s"].CreatedAt.Format(time.RFC3339Nano)}})
+	if id, _, _ := e.store.RecordedBinding(a.ID); id != "" {
+		t.Fatalf("basis-less event must not count, got %q", id)
+	}
+	p := PlanInstancesWithOptions(e.sess.clone(), e.list(), func(n string) string {
+		return session.DeriveInstanceID(n, e.sess.recs[n].Path, e.sess.recs[n].CreatedAt)
+	}, PlanOptions{Recorded: e.store.RecordedBinding})
+	if it := p.agent(a.ID); it.Action != ActionCandidate {
+		t.Fatalf("must remain a candidate: %+v", it)
+	}
+	_, _ = e.store.AppendEvent(a.ID, Event{Type: "session_instance_bound", Source: "devx", Data: map[string]any{
+		"session_instance_id": e.sess.recs["s"].InstanceID, "basis": BasisOwnerConfirmed,
+		"session_created_at": e.sess.recs["s"].CreatedAt.Format(time.RFC3339Nano)}})
+	if id, _, _ := e.store.RecordedBinding(a.ID); id != e.sess.recs["s"].InstanceID {
+		t.Fatal("event with an accepted basis must count")
+	}
+}
+
+// L2: apply refuses a binding without an accepted basis, and a marker-based
+// binding whose marker changed after planning.
+func TestApplyRechecksBasisAndMarker(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "local", -time.Second)
+	p := e.plan()
+	var j []JournalEntry
+	e.sess.recs["s"].LocalOnly.AgentID = "pa_ffffffffffff"
+	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); !errors.Is(err, ErrPlanStale) {
+		t.Fatalf("marker change must be stale, got %v", err)
+	}
+	if got, _ := e.store.LoadAgent(a.ID); got.SessionInstanceID != "" {
+		t.Fatal("must not bind")
+	}
+	e.sess.recs["s"].LocalOnly.AgentID = a.ID
+	p = e.plan()
+	for i := range p.Agents {
+		p.Agents[i].Basis = ""
+	}
+	p.Hash = p.computeHash()
+	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); !errors.Is(err, ErrPlanStale) {
+		t.Fatalf("basis-less binding must be refused, got %v", err)
 	}
 }

@@ -40,13 +40,14 @@ key, no lock, no backup). The ids it shows are the ids --apply writes.
   devx session instances --apply <plan-hash> [--confirm ...] # apply exactly that plan
   devx session instances --rollback <dir>                    # undo a previous apply
 
-An agent is bound automatically only when its session carries a marker
-naming it and nothing contradicts it (ordering, path, project, claimants,
-worktree, existing ids). Agents whose session has NO marker are listed as
-candidates: name, path and creation-time ordering alone are ambiguous, so
-they are bound only if the owner confirms each one with --confirm (recorded
-as basis owner_confirmed). Anything else ambiguous is listed with a reason
-and left unchanged.
+An agent is bound automatically only when its session carries a local-only
+marker naming it and nothing contradicts it (ordering, path, project,
+claimants, worktree, existing ids). Agents whose session has NO marker, and
+adopted agents (whose adoption marker an old relaunch may have re-written),
+are listed as candidates: name, path and creation-time ordering alone are
+ambiguous, so they are bound only if the owner confirms each one with
+--confirm (recorded as basis owner_confirmed). Anything else ambiguous is
+listed with a reason and left unchanged.
 
 --apply re-plans, refuses unless the hash matches the reviewed plan, backs up
 sessions.json and every agent record it will touch, journals each write, and

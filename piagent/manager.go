@@ -316,7 +316,10 @@ func withInstance(data map[string]any, a *Agent) map[string]any {
 // RecordedBinding returns the most recent session-instance binding recorded
 // in the agent's event log (agent_created, agent_adopted or
 // session_instance_bound; cleared by session_instance_unbound), or "" if
-// none.
+// none. A session_instance_bound event counts only if it records an accepted
+// basis (marker, owner_confirmed or event_log): pre-release migration builds
+// wrote basis-less events for bindings inferred from timestamps alone, and
+// those must never be restored as trusted bindings.
 func (s *Store) RecordedBinding(agentID string) (string, time.Time, error) {
 	var id string
 	var at time.Time
@@ -329,6 +332,9 @@ func (s *Store) RecordedBinding(agentID string) (string, time.Time, error) {
 		for _, e := range evs {
 			switch e.Type {
 			case "agent_created", "agent_adopted", "session_instance_bound":
+				if b, _ := e.Data["basis"].(string); e.Type == "session_instance_bound" && !acceptedBindingBasis(b) {
+					continue
+				}
 				if v, _ := e.Data["session_instance_id"].(string); v != "" {
 					id = v
 					at = time.Time{}
@@ -1107,4 +1113,10 @@ func (m *Manager) RetireForSession(agentID, session string) error {
 		_, err = m.Store.AppendEvent(agentID, Event{Type: "agent_retired", Source: "devx", Data: map[string]any{"session": session}})
 		return err
 	})
+}
+
+// acceptedBindingBasis reports whether a migration binding event records a
+// basis this build trusts.
+func acceptedBindingBasis(b string) bool {
+	return b == BasisMarker || b == BasisOwnerConfirmed || b == BasisEventLog
 }

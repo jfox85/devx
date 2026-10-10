@@ -221,7 +221,8 @@ but those agents can never match a later session with the same name.
 instance ids have none. The migration assigns them and binds each agent
 to its session, but only when the evidence is unambiguous:
 - **Read-only dry run by default.** It only reads the records. It creates
-  no key, lock, backup or other file, and changes none. It prints the
+  no key, lock, backup or other file, and changes none; the background
+  update check is skipped for it. It prints the
   exact applicable plan and its hash. There's no key: the id for a record
   without one is a hash of that record's own name, path and exact
   `created_at` (`DeriveInstanceID`). The dry run therefore shows the ids
@@ -229,19 +230,25 @@ to its session, but only when the evidence is unambiguous:
   changes. Instance ids are identifiers, not secrets: callers never
   supply them, and they're only compared with DevX's own records.
 - **Binds only clear cases.** An agent is bound automatically only if its
-  session carries a marker naming it and all of these hold; anything else
-  is listed with its reason and left unchanged:
+  session carries a **local-only** marker naming it and all of these hold.
+  That marker is written into the record by the agent's own start and was
+  never re-written onto another record. Anything else is listed with its
+  reason and left unchanged:
   - its session exists at the agent's worktree with the same project;
   - no marker names another agent;
   - there's no duplicate claimant or shared worktree;
   - the session record was created no later than the agent, whatever the
     marker;
   - the record carries no instance id the migration didn't derive itself.
-- **Unmarked agents are candidates, never automatic.** If an agent's
-  session has no marker naming it, the agent is listed as
-  `candidate_needs_owner_confirmation`. Only name, path and creation-time
-  ordering link them, and that's ambiguous: the timing check is evidence,
-  not proof.
+- **Unmarked and adopted agents are candidates, never automatic.** These
+  agents are listed as `candidate_needs_owner_confirmation`:
+  - an agent whose session has no marker naming it. Only name, path and
+    creation-time ordering link them, and that's ambiguous: the timing
+    check is evidence, not proof.
+  - an adopted agent whose session has an adoption (`managed_agent`)
+    marker naming it. Before instance ids, relaunching an adopted agent
+    re-marked whatever session had the name, so the marker may be an
+    artifact and only timing would remain.
   - The owner binds a candidate only by naming it: `--confirm
     <agent-id>`, for the dry run and again for `--apply`.
   - Confirmation is part of the plan hash, so a hash reviewed with one
@@ -250,7 +257,10 @@ to its session, but only when the evidence is unambiguous:
     unknown) is reported, and `--apply` refuses it.
   - The binding records its basis (`marker`, `owner_confirmed` or
     `event_log`) in the journal and in the agent's
-    `session_instance_bound` event.
+    `session_instance_bound` event. Apply refuses a binding without one,
+    and a `marker` binding whose marker changed after review.
+    Restoration from the event log ignores binding events without an
+    accepted basis.
   - Unconfirmed candidates stay unbound, so the bridge denies them; the
     legacy rule needs a marker anyway. Re-adopting gives a fresh binding.
 - **Restores dropped bindings.** If an older binary rewrote an agent's
