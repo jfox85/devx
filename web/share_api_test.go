@@ -29,6 +29,7 @@ func setupEmptySessionStoreForTest(t *testing.T) {
 	invalidateSessionListCache()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	if err := os.MkdirAll(filepath.Join(home, ".config", "devx"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -660,6 +660,8 @@ func validateTrustedGatepostPath(path string, wantDir bool) error {
 	if !wantDir && info.IsDir() {
 		return fmt.Errorf("trusted Gatepost adapter is a directory: %s", path)
 	}
+	// Must stay fail-closed on every platform. On Windows, directories always
+	// report 0777, so this rejects the trust root there by design.
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("trusted Gatepost path is group/world-writable: %s", path)
 	}

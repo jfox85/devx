@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -359,7 +360,10 @@ func shareTempDir() (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("share temp path is not a directory")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	// Not checked on Windows: directories there always report 0777 and access
+	// is governed by ACLs. The dir relies on the per-user ACL of its base
+	// (%LocalAppData% from os.UserCacheDir) instead.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("share temp directory permissions are too open")
 	}
 	return dir, nil
