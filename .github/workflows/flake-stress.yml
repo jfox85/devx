@@ -28,4 +28,5 @@ jobs:
           echo "STRESS ${{ matrix.label }} churn runs=$(grep -cE -- '^--- (PASS|FAIL): TestDirLockSurvivesHeavyChurn ' churn.log) fails=$(grep -cE -- '^--- FAIL: TestDirLockSurvivesHeavyChurn ' churn.log) accessdenied=$(grep -c 'Access is denied' churn.log)"
           go test -race -count=100 -v -run '^TestConcurrentSendsGetDistinctOrderedTasks$' ./piagent > sends.log 2>&1 || true
           echo "STRESS ${{ matrix.label }} sends runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentSendsGetDistinctOrderedTasks ' sends.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentSendsGetDistinctOrderedTasks ' sends.log) accessdenied=$(grep -c 'Access is denied' sends.log)"
-          grep -m2 'Access is denied' churn.log sends.log | cut -c1-240 || true
+          echo "--- churn failure detail"; grep -E 'lockerr_test.go:[0-9]+|panic:|test timed out' churn.log | sed -E 's/[A-Z]:\\[^ ]*//g' | cut -c1-220 | sort | uniq -c | sort -rn | head -8 || true
+          echo "--- sends failure detail"; grep -E 'manager_test.go:[0-9]+|panic:|test timed out' sends.log | sed -E 's/[A-Z]:\\[^ ]*//g' | cut -c1-220 | sort | uniq -c | sort -rn | head -8 || true
