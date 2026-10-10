@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,7 +140,12 @@ func loadSessionsUnlocked() (*SessionStore, error) {
 		}, nil
 	}
 
-	data, err := os.ReadFile(sessionsPath)
+	f, err := openSessionsFileForRead(sessionsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sessions file: %w", err)
+	}
+	data, err := io.ReadAll(f)
+	_ = f.Close()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read sessions file: %w", err)
 	}
