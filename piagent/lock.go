@@ -32,7 +32,7 @@ func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 	for {
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
-			return func() { _ = os.Remove(path) }, nil
+			return func() { releaseDirLock(path, os.Remove) }, nil
 		}
 		if !lockContended(err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
@@ -48,6 +48,25 @@ func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 			return nil, fmt.Errorf("%w: %s (last error: %v)", errLockTimeout, path, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// lockReleaseRetry bounds how long a release keeps retrying the removal.
+const lockReleaseRetry = 2 * time.Second
+
+// releaseDirLock removes a held lock directory, retrying transient failures.
+// A release that silently fails leaks the lock until the stale timeout, so
+// every waiter times out. On Windows removal fails transiently while another
+// process or goroutine has the directory (or its pid file) open for a moment
+// to probe the lock; on Unix the first attempt succeeds.
+func releaseDirLock(path string, remove func(string) error) {
+	deadline := time.Now().Add(lockReleaseRetry)
+	for {
+		err := remove(path)
+		if err == nil || os.IsNotExist(err) || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -69,7 +88,7 @@ func acquireOwnedDirLock(path string, timeout, stale time.Duration) (func(), err
 		err := os.Mkdir(path, 0o700)
 		if err == nil {
 			_ = os.WriteFile(filepath.Join(path, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
-			return func() { _ = os.RemoveAll(path) }, nil
+			return func() { releaseDirLock(path, os.RemoveAll) }, nil
 		}
 		if !lockContended(err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)

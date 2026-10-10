@@ -63,3 +63,23 @@ func TestDirLockTimeoutKeepsSentinelAndPath(t *testing.T) {
 		t.Fatalf("err = %v, want errLockTimeout", err)
 	}
 }
+
+// A release whose first removal attempt fails transiently (as on Windows when
+// a waiter is probing the lock) must keep trying, not leak the lock.
+func TestReleaseDirLockRetriesTransientFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.lock")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	releaseDirLock(path, func(p string) error {
+		calls++
+		if calls < 3 {
+			return errors.New("transient sharing violation")
+		}
+		return os.Remove(p)
+	})
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("lock leaked after release (calls=%d): %v", calls, err)
+	}
+}
