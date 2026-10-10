@@ -46,8 +46,9 @@ func TestGatepostAdaptersDirFailsClosedOnWindows(t *testing.T) {
 	}
 	root := t.TempDir()
 	writeGatepostHookFiles(t, root)
-	if got, err := gatepostAdaptersDir(root); err == nil || got != "" {
-		t.Fatalf("gatepostAdaptersDir on Windows = %q, %v; want empty with error (fail closed)", got, err)
+	got, err := gatepostAdaptersDir(root)
+	if err == nil || got != "" || !strings.Contains(err.Error(), errGatepostTrustUnsupported) {
+		t.Fatalf("gatepostAdaptersDir on Windows = %q, %v; want empty with the explicit unsupported-trust error (fail closed)", got, err)
 	}
 }
 

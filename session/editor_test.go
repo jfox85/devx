@@ -170,8 +170,15 @@ func TestIsProcessRunning(t *testing.T) {
 		t.Errorf("Our own process PID %d should be running", myPid)
 	}
 
-	// Test with a non-existent PID (very high number)
-	if IsProcessRunning(999999) {
-		t.Error("Very high PID should not be running")
+	// A process that has exited (and been reaped) must not be running. This
+	// exercises the real exit path on every platform instead of guessing an
+	// unused PID (Windows also ignores a PID's low two bits).
+	child := exec.Command(os.Args[0], "-test.run=^$")
+	_ = child.Run() // exit status is irrelevant; only that it has exited
+	if child.Process == nil {
+		t.Fatal("short-lived child did not start")
+	}
+	if IsProcessRunning(child.Process.Pid) {
+		t.Errorf("exited child PID %d should not be running", child.Process.Pid)
 	}
 }
