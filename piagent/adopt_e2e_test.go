@@ -87,12 +87,16 @@ func TestE2EAdoptExistingHumanPiKeepsConversation(t *testing.T) {
 		out, _ := f.tmux.Capture(pane, 80)
 		t.Fatalf("pane never showed %q:\n%s", want, out)
 	}
-	time.Sleep(1500 * time.Millisecond) // TUI start
+	// Type like a person who looks at the screen: wait until Pi's editor is
+	// drawn (its status line shows the worktree path), type, wait until the
+	// text is visibly in the editor, then press Enter. Fixed sleeps here lost
+	// the Enter under full-suite load: the text sat in the editor unsent.
+	waitPane(wt)
 	type_ := func(text string) {
 		if _, err := f.tmux.Run("send-keys", "-t", pane, "-l", text); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(150 * time.Millisecond)
+		waitPane(text)
 		if _, err := f.tmux.Run("send-keys", "-t", pane, "Enter"); err != nil {
 			t.Fatal(err)
 		}

@@ -34,7 +34,7 @@ func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 		if err == nil {
 			return func() { _ = os.Remove(path) }, nil
 		}
-		if !os.IsExist(err) {
+		if !lockContended(err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 		}
 		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > stale {
@@ -43,7 +43,9 @@ func acquireDirLock(path string, timeout, stale time.Duration) (func(), error) {
 			continue
 		}
 		if time.Now().After(deadline) {
-			return nil, errLockTimeout
+			// Keep the last mkdir error: on Windows a persistent permission
+			// problem is retried like contention and surfaces here.
+			return nil, fmt.Errorf("%w: %s (last error: %v)", errLockTimeout, path, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -69,7 +71,7 @@ func acquireOwnedDirLock(path string, timeout, stale time.Duration) (func(), err
 			_ = os.WriteFile(filepath.Join(path, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 			return func() { _ = os.RemoveAll(path) }, nil
 		}
-		if !os.IsExist(err) {
+		if !lockContended(err) {
 			return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 		}
 		info, statErr := os.Stat(path)
@@ -86,7 +88,7 @@ func acquireOwnedDirLock(path string, timeout, stale time.Duration) (func(), err
 			}
 		}
 		if time.Now().After(deadline) {
-			return nil, errLockTimeout
+			return nil, fmt.Errorf("%w: %s (last error: %v)", errLockTimeout, path, err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
