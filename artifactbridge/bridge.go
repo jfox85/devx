@@ -22,16 +22,18 @@
 // The local scope is the owner's policy (policy.go), re-read from the owner's
 // global DevX config and re-evaluated on every tools/list and tool call, so
 // edits take effect on the next call with no restart:
-//   - read (default on): every MCP-visible managed session in
+//   - read (default on): every session available through the MCP path in
 //     pi_mcp.allowed_projects, unless pi_mcp.artifacts.sessions is present,
 //     in which case only those sessions; exclude_sessions/exclude_projects
 //     always subtract;
 //   - upload (default off): only sessions named in an explicit
 //     pi_mcp.artifacts.sessions list, never the default-wide read scope;
-//   - the agent exists, is not retired, its DevX session record still points
-//     at the agent's worktree with the same project, and no other agent owns
-//     or claims it. With the default-wide scope the session record must also
-//     positively name this agent (local-only marker or adoption marker).
+//   - in every case the agent must be the unambiguous owner of a live
+//     session (eligibleSession): not retired, session exists at the agent's
+//     worktree with the same project, no marker naming another agent, no
+//     duplicate claimant or shared worktree. A missing ownership marker is
+//     not a denial (the MCP path does not require one); a contradictory one
+//     always is.
 //
 // An unreadable or invalid config denies everything for that call.
 //
@@ -221,41 +223,142 @@ func (s *Service) authorize(agentID string, want capability) (*scope, error) {
 	if err != nil {
 		return nil, errf(codeFailed, "session metadata is unavailable")
 	}
-	sess, ok := sessions[a.DevxSession]
-	if !ok || sess == nil || sess.Name != a.DevxSession {
-		return nil, deny
-	}
-	if sess.Path == "" || !filepath.IsAbs(sess.Path) || filepath.Clean(sess.Path) != filepath.Clean(a.Worktree) {
-		return nil, deny
-	}
-	if sess.ProjectAlias != "" && sess.ProjectAlias != a.Project {
-		return nil, deny
-	}
-	if sess.LocalOnly != nil && sess.LocalOnly.AgentID != a.ID {
-		return nil, deny
-	}
-	if sess.ManagedAgent != "" && sess.ManagedAgent != a.ID {
-		return nil, deny
-	}
-	// The default-wide read scope only covers sessions whose DevX record
-	// positively names this agent. Legacy agents without a marker are
-	// reachable only through an explicit sessions list.
-	owned := (sess.LocalOnly != nil && sess.LocalOnly.AgentID == a.ID) || sess.ManagedAgent == a.ID
-	if !p.SessionsSet && !owned {
-		return nil, deny
-	}
-	// Exactly one live agent may claim the session; otherwise the scope is
-	// ambiguous and nothing is served.
 	agents, err := s.Agents.ListAgents()
 	if err != nil {
 		return nil, errf(codeFailed, "agent records are unavailable")
 	}
-	for _, o := range agents {
-		if o.ID != a.ID && o.RetiredAt == nil && o.DevxSession == a.DevxSession {
-			return nil, deny
-		}
+	sess, reason := eligibleSession(a, sessions, agents)
+	if reason != "" {
+		return nil, deny
 	}
 	return &scope{agent: a, sess: sess, policy: p}, nil
+}
+
+// Session-binding denial reasons (internal; callers see one generic denial).
+const (
+	denyRetired          = "agent_retired_or_invalid"
+	denyNoSession        = "session_missing"
+	denyPathMismatch     = "worktree_mismatch"
+	denyProjectMismatch  = "project_mismatch"
+	denyForeignLocalOnly = "local_only_marker_names_other_agent"
+	denyForeignManaged   = "managed_marker_names_other_agent"
+	denyBothMarkers      = "contradictory_markers"
+	denyContainerized    = "container_session"
+	denyDuplicateClaim   = "another_live_agent_claims_session"
+	denySharedWorktree   = "another_live_agent_or_session_uses_worktree"
+)
+
+// eligibleSession is the single session-binding predicate for artifact
+// access. It decides whether agent a is the unambiguous owner of a live DevX
+// session; the owner policy (projects, capability, explicit lists and
+// exclusions) is applied separately in Policy. It returns the session and ""
+// when eligible, or a denial reason.
+//
+// It matches how the existing MCP path itself binds agents to sessions:
+// pi_send/pi_status/pi_events act on an agent by its record alone, and
+// neither MCP-created sessions from before local-only mode nor adopted
+// sessions whose marker was dropped carry a marker. So a MISSING marker is
+// not a denial. A marker that names a DIFFERENT agent (or both markers at
+// once) always is, as is anything else that makes ownership ambiguous:
+//
+//   - the agent exists and is not retired, with a project;
+//   - the session named by the agent exists, has the same name, an absolute
+//     path equal to the agent's worktree, and the same project (a session
+//     without a project alias is accepted only by name+path);
+//   - it is a host session (container targets are never adopted or created
+//     by the MCP path);
+//   - a local_only marker, if present, names this agent; a managed_agent
+//     marker, if present, names this agent; never both;
+//   - no other non-retired agent claims the same session name, and no other
+//     non-retired agent or other session uses the same worktree path.
+//
+// Agent state (idle, running, human_control, adopted_pending_relaunch, ...)
+// is deliberately not part of the predicate: artifacts are files in the
+// session, readable regardless of who currently drives the Pi.
+func eligibleSession(a *piagent.Agent, sessions map[string]*session.Session, agents []*piagent.Agent) (*session.Session, string) {
+	if a == nil || a.RetiredAt != nil || a.Project == "" || a.DevxSession == "" {
+		return nil, denyRetired
+	}
+	sess, ok := sessions[a.DevxSession]
+	if !ok || sess == nil || sess.Name != a.DevxSession {
+		return nil, denyNoSession
+	}
+	wt := filepath.Clean(a.Worktree)
+	if sess.Path == "" || !filepath.IsAbs(sess.Path) || !filepath.IsAbs(a.Worktree) || filepath.Clean(sess.Path) != wt {
+		return nil, denyPathMismatch
+	}
+	if sess.ProjectAlias != "" && sess.ProjectAlias != a.Project {
+		return nil, denyProjectMismatch
+	}
+	if sess.IsContainerized() {
+		return nil, denyContainerized
+	}
+	if sess.LocalOnly != nil && sess.ManagedAgent != "" {
+		return nil, denyBothMarkers
+	}
+	if sess.LocalOnly != nil && sess.LocalOnly.AgentID != a.ID {
+		return nil, denyForeignLocalOnly
+	}
+	if sess.ManagedAgent != "" && sess.ManagedAgent != a.ID {
+		return nil, denyForeignManaged
+	}
+	for _, o := range agents {
+		if o == nil || o.ID == a.ID || o.RetiredAt != nil {
+			continue
+		}
+		if o.DevxSession == a.DevxSession {
+			return nil, denyDuplicateClaim
+		}
+		if filepath.Clean(o.Worktree) == wt {
+			return nil, denySharedWorktree
+		}
+	}
+	for name, other := range sessions {
+		if other != nil && name != a.DevxSession && filepath.Clean(other.Path) == wt {
+			return nil, denySharedWorktree
+		}
+	}
+	return sess, ""
+}
+
+// EligibleRead reports, for every agent record, whether default artifact
+// reads would be allowed now and why not. It is an inventory/diagnostic
+// helper with the same predicate and policy as authorize; it serves no data.
+type EligibleRead struct {
+	AgentID string `json:"agent_id"`
+	Session string `json:"session"`
+	Project string `json:"project"`
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// ReadInventory evaluates read eligibility for every agent record.
+func (s *Service) ReadInventory() ([]EligibleRead, error) {
+	p, err := s.policy()
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := s.Sessions()
+	if err != nil {
+		return nil, err
+	}
+	agents, err := s.Agents.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EligibleRead, 0, len(agents))
+	for _, a := range agents {
+		r := EligibleRead{AgentID: a.ID, Session: a.DevxSession, Project: a.Project}
+		if _, reason := eligibleSession(a, sessions, agents); reason != "" {
+			r.Reason = reason
+		} else if !p.readEligible(a.DevxSession, a.Project) {
+			r.Reason = "policy"
+		} else {
+			r.Allowed = true
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // manifest loads the session's artifact manifest without following any

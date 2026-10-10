@@ -53,8 +53,9 @@ owner.
      both use.
    - Already-running `devx web` keeps running the old binary until it
      restarts.
-   - No shared service needs a restart for the MCP tools, because the relay
-     starts `devx mcp pi` per local session.
+   - An already-running `devx mcp pi` child of the relay also keeps the old
+     binary. The relay must start one fresh child (see "Live reload" below)
+     before the new build serves any call.
 2. **Enable capabilities** in `~/.config/devx/config.yaml`. Start with read
    only, exposing just the synthetic fixture session:
    ```yaml
@@ -125,8 +126,25 @@ Then roll back: set the capabilities back to false, or remove the tools from
 ## Live reload (later builds)
 
 From the build after 39e4a9a on, the bridge re-reads `pi_mcp.artifacts` and
-`pi_mcp.allowed_projects` on every call. Editing the owner config needs no
-relay or `devx mcp pi` restart. The explicit
+`pi_mcp.allowed_projects` on every call. The explicit
 `sessions: [artifact-bridge-fixture]` list keeps the scope fixture-only.
 Removing the list switches to the default-wide read scope; see
-docs/pi-mcp.md, "Artifact bridge", for the defaults and the trust boundary.
+docs/pi-mcp.md, "Artifact bridge", for the defaults, the session
+eligibility predicate, and the trust boundary.
+
+Activation is one-time:
+
+1. Install the new binary, keeping the previous one as a backup. Running
+   `devx mcp pi` children are not changed by the install.
+2. Start exactly one fresh relay child: restart the relay in its tmux pane,
+   or, with owner approval, end only the relay's `devx mcp pi` child. Idle
+   eviction is not a reliable substitute.
+3. Verify that the new child started after the install. Then prove reload
+   without a restart: add `exclude_sessions: [artifact-bridge-fixture]`,
+   confirm the next read is `permission_denied`, remove it, and confirm the
+   next read succeeds. Do not claim live reload before this passes.
+4. From then on, scope edits reload dynamically. Every later binary install
+   needs one fresh child again.
+
+No relay `allowed_tools` change, gateway Sync, or Jarvis tool refresh is
+needed: the tool definitions are identical.

@@ -161,12 +161,9 @@ pi_mcp:
 ```
 
 **Defaults.**
-- **Read is on.** If `sessions` is absent, every MCP-visible managed session
-  in an allowed project is eligible, minus the exclusions. MCP-visible means
-  a live (not retired) managed agent whose DevX session record still names
-  it: a `local_only` marker for sessions created by `pi_start_task`, or a
-  `managed_agent` marker for adopted sessions. Legacy records without a
-  marker can only be exposed by listing them in `sessions`.
+- **Read is on.** If `sessions` is absent, every session available through
+  the MCP path in an allowed project is eligible, minus the exclusions (see
+  "Session eligibility" below).
 - **An explicit `sessions` list restricts.** Only the listed sessions are
   eligible. An empty list exposes nothing. Exclusions still apply.
 - **Upload is off.** Even with `upload: true`, uploads need an explicit
@@ -175,10 +172,39 @@ pi_mcp:
 - **No allowed projects, nothing eligible.** With no `pi_mcp` block or an
   empty `allowed_projects`, nothing is eligible.
 
-**Reload, no restart.** The policy is re-read and validated on every
-`tools/list` and every tool call, and the agent and session records are
-re-read on every call. Changes apply on the next call without restarting
-`devx mcp pi` or the Agent Shed relay. That includes:
+**Session eligibility.** One predicate decides whether an agent is the
+unambiguous owner of a live session. It is re-evaluated on every call, for
+the default scope and explicit lists alike:
+- the agent record exists, is not retired, and has a project and session;
+- the DevX session record with that name exists, its absolute path equals
+  the agent's worktree, and its project (if recorded) equals the agent's;
+- it is a host session (not a container target);
+- an ownership marker, if present, names this agent: `local_only.agent_id`
+  for sessions created by `pi_start_task`, `managed_agent` for adopted
+  sessions. Both markers at once, or either naming another agent, is a
+  conflict and always denies; no policy setting overrides it;
+- no other non-retired agent claims the same session, and no other live
+  agent or other session record uses the same worktree.
+
+A **missing** marker alone is not a denial. The MCP path itself
+(`pi_send`, `pi_status`, `pi_events`) does not require one, and real
+sessions lack it: MCP sessions created before local-only mode, and adopted
+sessions whose `managed_agent` field was dropped by an older DevX writer.
+Agent state (`running`, `idle`, `human_control`,
+`adopted_pending_relaunch`, ...) is not part of eligibility: artifacts are
+files in the session, readable whoever drives the Pi.
+
+`pi_list_sessions` is an **inventory**, not an eligibility list. It returns
+every agent record, including retired agents and agents whose session was
+removed, moved, or is claimed by another agent, plus `allowed_projects` for
+information only. The bridge never widens to those records; only agents
+passing the predicate above and the owner policy are eligible.
+
+**Reload, no restart (once running a build with reload).** The policy is
+re-read and validated on every `tools/list` and every tool call, and the
+agent and session records are re-read on every call. Once a `devx mcp pi`
+process from a reload-capable build is running, changes apply on the next
+call without restarting it or the Agent Shed relay. That includes:
 - enabling or disabling read or upload;
 - adding or removing sessions and exclusions;
 - changing `allowed_projects`;
@@ -191,8 +217,19 @@ Exceptions:
   separately allow and approve. Tool definitions are fixed text and never
   depend on policy values, so changing session scope never invalidates an
   approved definition.
+- **New binary.** Installing a new `devx` binary does not change a
+  `devx mcp pi` process that is already running. The relay keeps reusing
+  its existing child, and its idle eviction only happens when it starts
+  another child, so it is not a reliable way to switch. After installing,
+  start exactly one fresh child (restart the relay, or end only its
+  `devx mcp pi` child), then confirm that the new child started after the
+  install before relying on live reload. After that, scope edits reload
+  dynamically.
 - **Separate settings.** `pi_start_task`/`pi_send` settings (`pi_command`,
-  `pi_args`, and so on) are still read once at process start.
+  `pi_args`, and so on) are still read once at process start. That includes
+  the `allowed_projects` value that `pi_start_task` enforces and
+  `pi_list_sessions` reports. Until the child restarts, these can differ
+  from the bridge's live value.
 
 **Fails closed.** If the config can't be read or doesn't validate, the
 bridge lists no tools and answers every bridge call with `unavailable`
@@ -213,8 +250,9 @@ and `sessions` was required. Now:
 - **Configs with an explicit `sessions` list keep exactly their scope.**
   The fixture-only live config behaves identically.
 - **Configs with no `artifacts` block** now get read access across all
-  MCP-visible sessions in allowed projects. To keep the bridge off, set
-  `read: false` or `sessions: []` before upgrading.
+  sessions available through MCP in allowed projects, including marker-less
+  legacy and adopted sessions. To keep the bridge off, set `read: false` or
+  `sessions: []` before upgrading.
 - **`read: false` or `upload: false`** behave as before.
 - **Exclusions and live reload** (`exclude_sessions`, `exclude_projects`)
   are new.
@@ -227,20 +265,16 @@ DevX cannot tell whether a particular caller may see a particular session.
 It enforces only the owner's policy:
 - Any principal granted a bridge tool can use it on every eligible
   session, and on no others.
-- Under the default-wide scope, "eligible" means every MCP-visible managed
-  session in every allowed project.
+- Under the default-wide scope, "eligible" means every session available
+  through MCP in every allowed project (see "Session eligibility").
 
 Per-principal or per-session separation would need the gateway to pass a
 verified principal (or a per-binding scope) to the relay, and that doesn't
 exist today. Grant the bridge tools only to principals that may see every
 eligible session.
 
-On every call DevX also checks:
-- the agent exists and isn't retired;
-- its project is allowlisted and not excluded;
-- its session record still points at the agent's worktree with the same
-  project;
-- no other agent owns or claims that session.
+On every call DevX also checks the session eligibility predicate and that
+the project is allowlisted and not excluded.
 
 **Eligible files.** Only files registered in the session's existing artifact
 manifest (`<worktree>/.artifacts/manifest.json`, the same store as

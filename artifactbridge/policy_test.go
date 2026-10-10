@@ -10,6 +10,7 @@ import (
 
 	artifactpkg "github.com/jfox85/devx/artifact"
 	"github.com/jfox85/devx/piagent"
+	"github.com/jfox85/devx/session"
 )
 
 // --- parsing --------------------------------------------------------------------
@@ -141,19 +142,30 @@ func TestDefaultScopeFollowsMCPVisibleSessionsAtRuntime(t *testing.T) {
 	}
 }
 
-func TestDefaultScopeRequiresOwnershipMarker(t *testing.T) {
+func TestDefaultScopeAcceptsMissingMarkerButNotForeignMarker(t *testing.T) {
 	e := newEnv(t)
 	e.defaultScope()
 	a, s := e.agent("legacy", "proj")
 	e.register(s, "One", "one.md", []byte("one"))
-	s.ManagedAgent = "" // a legacy record that does not name its agent
-	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
-		t.Fatalf("unmarked session must not be in the default scope: %v", err)
-	}
-	// It can still be exposed deliberately by name.
-	e.pol.Sessions, e.pol.SessionsSet = []string{"legacy"}, true
+	// Legacy MCP-created / adopted-with-dropped-marker record: no marker.
+	s.ManagedAgent = ""
 	if len(e.list(a.ID)) != 1 {
-		t.Fatal("explicitly listed session should be readable")
+		t.Fatal("a missing marker alone must not deny (the MCP path does not require one)")
+	}
+	// A marker naming another agent is a conflict, never overridden.
+	s.ManagedAgent = "pa_ffffffffffff"
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("foreign managed marker: %v", err)
+	}
+	s.ManagedAgent = ""
+	s.LocalOnly = &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: "pa_ffffffffffff"}
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("foreign local-only marker: %v", err)
+	}
+	// Explicit lists do not override a conflict either.
+	e.pol.Sessions, e.pol.SessionsSet = []string{"legacy"}, true
+	if _, err := e.svc.List(ListRequest{AgentID: a.ID}); codeOf(err) != codeDenied {
+		t.Fatalf("explicit list must not override a foreign marker: %v", err)
 	}
 }
 
@@ -225,7 +237,8 @@ func TestRevocationBetweenChunks(t *testing.T) {
 		{"read disabled", func() { e.pol.Read = false }, func() { e.pol.Read = true }},
 		{"project removed", func() { e.pol.AllowedProjects = []string{"other"} }, func() { e.pol.AllowedProjects = []string{"proj", "other"} }},
 		{"config unreadable", func() { e.polErr = errors.New("boom") }, func() { e.polErr = nil }},
-		{"marker removed", func() { s.ManagedAgent = "" }, func() { s.ManagedAgent = a.ID }},
+		{"marker reassigned", func() { s.ManagedAgent = "pa_ffffffffffff" }, func() { s.ManagedAgent = a.ID }},
+		{"worktree moved", func() { s.Path = s.Path + "-moved" }, func() { s.Path = a.Worktree }},
 	}
 	for _, c := range cases {
 		c.revoke()

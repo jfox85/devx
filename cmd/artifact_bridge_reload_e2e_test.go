@@ -83,6 +83,14 @@ func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
 	addSession(1, "alpha", "synth")
 	addSession(2, "beta", "synth")
 	addSession(3, "gamma", "other")
+	// A legacy MCP session (pre-local-only, or an adoption whose marker an
+	// older writer dropped): no marker. Default scope must include it.
+	addSession(5, "legacy", "synth")
+	delete(sessions["legacy"].(map[string]any), "local_only")
+	// A session whose marker names a different agent: never eligible.
+	addSession(6, "conflict", "synth")
+	sessions["conflict"].(map[string]any)["local_only"] = map[string]any{"owner": "devx-pi-mcp", "agent_id": "pa_999999999999", "created_at": now}
+	writeSessions()
 	writeCfg("pi_mcp:\n  allowed_projects: [synth]\n") // default scope: read on, upload off
 
 	// One long-lived MCP server process.
@@ -145,7 +153,7 @@ func TestArtifactBridgeReloadsWithoutRestart(t *testing.T) {
 	if got := strings.Join(tools(), ","); got != "devx_artifact_list,devx_artifact_read" {
 		t.Fatalf("default tools: %s", got)
 	}
-	expect("default scope", map[string]bool{"alpha": true, "beta": true, "gamma": false})
+	expect("default scope", map[string]bool{"alpha": true, "beta": true, "gamma": false, "legacy": true, "conflict": false})
 
 	// Start a chunked read of alpha, then narrow to an explicit list without it.
 	list := call("devx_artifact_list", map[string]any{"agent_id": agents["alpha"]})
