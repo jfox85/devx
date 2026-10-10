@@ -100,7 +100,12 @@ func releaseDirLock(path string, remove func(string) error) {
 // plain directory removal instead fails on the new holder's pid file.
 func releaseOwnedDirLock(path string) {
 	pidPath := filepath.Join(path, "pid")
-	if data, err := os.ReadFile(pidPath); err == nil {
+	// Read the pid with retries: on Windows the read fails transiently while
+	// a waiter has the file open to probe the lock. A failed read used to
+	// skip the pid removal, so the directory could not be removed and the
+	// lock leaked until the stale timeout (seen on windows-latest).
+	data, err := readFileRetry(pidPath, lockReleaseRetry)
+	if err == nil {
 		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid != os.Getpid() {
 			return // a waiter reclaimed it: the lock is no longer ours to remove
 		}
@@ -111,6 +116,19 @@ func releaseOwnedDirLock(path string) {
 	// could remove it. That needs the waiter's no-pid reclaim (>2s without a
 	// pid file) to fire inside this retry window.
 	releaseDirLock(path, os.Remove)
+}
+
+// readFileRetry reads path, retrying transient failures for up to d. A
+// missing file is returned at once.
+func readFileRetry(path string, d time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(d)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil || os.IsNotExist(err) || time.Now().After(deadline) {
+			return data, err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // AcquireOwnedLock takes a Go-only, cross-process mkdir lock at path (with
