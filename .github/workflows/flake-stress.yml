@@ -5,14 +5,13 @@ on:
     branches: [ main, ci-windows-portability ]
 jobs:
   stress:
-    name: stress ${{ matrix.label }}
+    name: stress ${{ matrix.label }} ${{ matrix.shard }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { label: before-fix }
-          - { label: after-fix }
+        label: [before-fix, after-fix]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -29,5 +28,7 @@ jobs:
           fi
           git log --oneline -1
           go test -race -count=1 -v -run '^TestWriteSucceedsWhileReaderHoldsFileOpen$' ./session 2>&1 | grep -E -- '^(--- |ok|FAIL)|metadata_concurrency_test' || true
-          go test -race -count=200 -run '^TestConcurrentUpdatesAllSurvive$' -v ./session > iso.log 2>&1 || true
-          echo "STRESS ${{ matrix.label }} runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' iso.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' iso.log) accessdenied=$(grep -c 'Access is denied' iso.log)"
+          go test -race -count=300 -run '^TestConcurrentUpdatesAllSurvive$' -v ./session > iso.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} iso runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' iso.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' iso.log) accessdenied=$(grep -c 'Access is denied' iso.log)"
+          go test -race -count=15 -v ./session > pkg.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} pkg runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentUpdatesAllSurvive ' pkg.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentUpdatesAllSurvive ' pkg.log) accessdenied=$(grep -c 'Access is denied' pkg.log) allfails=$(grep -cE -- '^--- FAIL' pkg.log)"
