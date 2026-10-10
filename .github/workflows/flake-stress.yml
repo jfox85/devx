@@ -22,6 +22,9 @@ jobs:
           if [ "${{ matrix.label }}" = before-fix ]; then
             # Same tests; contention check reverted to the pre-fix os.IsExist.
             printf '//go:build windows\n\npackage piagent\n\nimport "os"\n\nfunc lockContended(err error) bool { return os.IsExist(err) }\n' > piagent/lockerr_windows.go
+            # ...and release reverted to the old single removal attempt.
+            perl -0pi -e 's/func releaseDirLock\(path string, remove func\(string\) error\) \{.*?\n\}\n/func releaseDirLock(path string, remove func(string) error) { _ = remove(path) }\n/s' piagent/lock.go
+            grep -n 'func releaseDirLock' piagent/lock.go
             git diff --stat
           fi
           go test -race -count=20 -v -run '^TestDirLockSurvivesHeavyChurn$' ./piagent > churn.log 2>&1 || true
