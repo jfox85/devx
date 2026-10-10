@@ -416,8 +416,8 @@ func (localOnlySessionCreator) Adopt(name, agentID string) (piagent.AdoptedSessi
 		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
 }
 
-func (localOnlySessionCreator) VerifyAdopted(name, agentID string) (piagent.AdoptedSession, error) {
-	sess, err := session.VerifyManagedAgent(name, agentID)
+func (localOnlySessionCreator) VerifyAdopted(name string, a *piagent.Agent) (piagent.AdoptedSession, error) {
+	sess, err := session.VerifyManagedAgent(name, a.ID, a.SessionInstanceID, a.SessionCreatedAt)
 	if err != nil {
 		if errors.Is(err, session.ErrAdoptNotAllowed) {
 			return piagent.AdoptedSession{}, piagent.Denied("%v", err)

@@ -31,9 +31,9 @@ func (c *adoptCreator) Adopt(name, agentID string) (AdoptedSession, error) {
 	return AdoptedSession{Name: name, Path: path, Project: "proj", TmuxName: name, InstanceID: c.instance[name]}, nil
 }
 
-func (c *adoptCreator) VerifyAdopted(name, agentID string) (AdoptedSession, error) {
-	if c.adopted[name] != agentID {
-		return AdoptedSession{}, Denied("session %q is not adopted by %s", name, agentID)
+func (c *adoptCreator) VerifyAdopted(name string, a *Agent) (AdoptedSession, error) {
+	if c.adopted[name] != a.ID {
+		return AdoptedSession{}, Denied("session %q is not adopted by %s", name, a.ID)
 	}
 	return AdoptedSession{Name: name, Path: c.human[name], Project: "proj", TmuxName: name, InstanceID: c.instance[name]}, nil
 }

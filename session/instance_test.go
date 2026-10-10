@@ -66,15 +66,44 @@ func TestAdoptAssignsInstanceToLegacyRecordOnly(t *testing.T) {
 	if err != nil || m.InstanceID != "si_aaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("existing id must be kept: %+v %v", m, err)
 	}
-	// Verify is read-only and refuses once the marker is gone.
-	if _, err := VerifyManagedAgent("legacy", "pa_111111111111"); err != nil {
+	// Verify is read-only. Unbound (legacy) agent: marker required.
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", "", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	_ = ReleaseManagedAgent("legacy", "pa_111111111111")
-	if _, err := VerifyManagedAgent("legacy", "pa_111111111111"); err == nil {
-		t.Fatal("verify must refuse without the marker")
+	inst := l.InstanceID
+	_ = ReleaseManagedAgent("legacy", "pa_111111111111") // marker dropped
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", "", time.Time{}); err == nil {
+		t.Fatal("unbound agent: verify must refuse without the marker")
 	}
-	if got, _ := LoadSessions(); got.Sessions["legacy"].ManagedAgent != "" {
+	// Bound agent: the instance proves identity even without the marker.
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", inst, now); err != nil {
+		t.Fatalf("bound agent, marker dropped: %v", err)
+	}
+	// Old writer also dropped the id: exact created_at witness.
+	_ = (&SessionStore{}).Mutate(func(s *SessionStore) error { s.Sessions["legacy"].InstanceID = ""; return nil })
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", inst, now); err != nil {
+		t.Fatalf("id dropped, created_at matches: %v", err)
+	}
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", inst, now.Add(time.Nanosecond)); err == nil {
+		t.Fatal("created_at mismatch must refuse")
+	}
+	// Recreated (new id), even with the marker naming the agent: refuse.
+	_ = (&SessionStore{}).Mutate(func(s *SessionStore) error {
+		s.Sessions["legacy"] = &Session{Name: "legacy", Path: "/w/legacy", CreatedAt: now.Add(-time.Hour), InstanceID: NewInstanceID(), ManagedAgent: "pa_111111111111"}
+		return nil
+	})
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", inst, now); err == nil {
+		t.Fatal("recreated session must not verify")
+	}
+	// Foreign marker: refuse even if the instance matched.
+	_ = (&SessionStore{}).Mutate(func(s *SessionStore) error {
+		s.Sessions["legacy"].InstanceID, s.Sessions["legacy"].ManagedAgent = inst, "pa_999999999999"
+		return nil
+	})
+	if _, err := VerifyManagedAgent("legacy", "pa_111111111111", inst, now); err == nil {
+		t.Fatal("foreign marker must refuse")
+	}
+	if got, _ := LoadSessions(); got.Sessions["legacy"].ManagedAgent != "pa_999999999999" {
 		t.Fatal("verify must not write")
 	}
 }

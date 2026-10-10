@@ -205,7 +205,9 @@ the default scope and explicit lists alike:
   agent or other session record uses the same worktree.
 
 Relaunch and adoption replay only **verify** the binding: they never
-write a marker or rebind. An agent whose session was recreated must be
+write a marker or rebind. A bound adopted agent verifies by instance,
+even if an older writer dropped its marker. An unbound legacy agent needs
+its marker until it's migrated. An agent whose session was recreated must be
 adopted again deliberately (which creates a new agent) or retired.
 `devx session rm` retires the marker's agent and every agent bound to
 that exact instance, even if an older writer dropped the marker.

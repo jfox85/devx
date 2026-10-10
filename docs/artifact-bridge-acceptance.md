@@ -170,6 +170,12 @@ runs automatically.
    and prints the applicable plan and its hash. Review every `skip` line.
 4. **Apply.** `devx session instances --apply <hash>`. Note the printed
    backup directory.
+   - Until the migration runs, an UNBOUND adopted agent whose marker an
+     older writer dropped can't be relaunched. Relaunch only verifies; it
+     never re-marks. In the preview of the live records, this applied to
+     one agent (the adopted session for this branch). After the migration
+     binds it, relaunch is verified by instance and doesn't need the
+     marker. Running Pi processes aren't affected either way.
 5. **Verify.** Run the dry run again; it should report nothing to apply.
    Then check eligibility with a read-only inventory.
 6. **Roll back if needed.** `devx session instances --rollback <dir>`.

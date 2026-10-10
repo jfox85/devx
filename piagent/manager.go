@@ -70,7 +70,7 @@ type SessionCreator interface {
 type SessionAdopter interface {
 	Adopt(name, agentID string) (AdoptedSession, error)
 	ReleaseAdoption(name, agentID string) error
-	VerifyAdopted(name, agentID string) (AdoptedSession, error)
+	VerifyAdopted(name string, a *Agent) (AdoptedSession, error)
 }
 
 // AdoptedSession describes the existing session an agent was adopted into.
@@ -322,7 +322,7 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		// Read-only: never re-mark the session. A session whose marker is
 		// gone (recreated, or dropped by an older writer) needs a fresh,
 		// deliberate `devx agent adopt` or the reviewed migration.
-		sess, err := adopter.VerifyAdopted(agent.DevxSession, agent.ID)
+		sess, err := adopter.VerifyAdopted(agent.DevxSession, agent)
 		if err != nil {
 			return fmt.Errorf("verify adopted session: %w", err)
 		}
@@ -679,7 +679,7 @@ func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
 		if a.Adopted && a.Binding.PaneID == req.PaneID && a.PiSessionID == req.PiSessionID {
 			// Replay writes nothing, and never rebinds: the session must
 			// still be the instance this agent adopted.
-			sess, err := adopter.VerifyAdopted(req.Session, a.ID)
+			sess, err := adopter.VerifyAdopted(req.Session, a)
 			if err != nil {
 				return nil, fmt.Errorf("adoption replay for agent %s: %w", a.ID, err)
 			}

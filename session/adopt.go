@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrAdoptNotAllowed is returned when a session cannot be adopted for an agent.
@@ -46,20 +47,45 @@ func AdoptManagedAgent(name, agentID string) (*Session, error) {
 	return out, nil
 }
 
-// VerifyManagedAgent returns a copy of session name if it still carries
-// agentID's adoption marker. It writes nothing: a session whose marker is
-// gone (removed and recreated, or the field dropped by an older DevX writer)
-// is not re-adopted here.
-func VerifyManagedAgent(name, agentID string) (*Session, error) {
+// VerifyManagedAgent returns a copy of session name if it is still the
+// session agentID adopted. It writes nothing and never re-adopts. Accepted:
+//   - the adoption marker names agentID (and, when boundInstance is set,
+//     the record's instance id equals it, or is missing with createdAt
+//     matching exactly); or
+//   - the marker is gone (an older DevX writer dropped the field) but the
+//     record is provably the bound instance: instance id equals
+//     boundInstance (or is missing with created_at equal to boundCreatedAt
+//     to the nanosecond), it is a host session, and no marker names anyone
+//     else.
+//
+// A removed and recreated session never matches.
+func VerifyManagedAgent(name, agentID, boundInstance string, boundCreatedAt time.Time) (*Session, error) {
 	store, err := LoadSessions()
 	if err != nil {
 		return nil, err
 	}
 	s, ok := store.Sessions[name]
-	switch {
-	case !ok || s == nil:
+	if !ok || s == nil {
 		return nil, fmt.Errorf("session %q not found: %w", name, ErrAdoptNotAllowed)
-	case s.ManagedAgent != agentID:
+	}
+	sameInstance := func() bool {
+		if boundInstance == "" {
+			return false
+		}
+		if s.InstanceID != "" {
+			return s.InstanceID == boundInstance
+		}
+		return !boundCreatedAt.IsZero() && s.CreatedAt.Equal(boundCreatedAt)
+	}
+	switch {
+	case s.LocalOnly != nil || s.IsContainerized() || (s.ManagedAgent != "" && s.ManagedAgent != agentID):
+		return nil, fmt.Errorf("session %q is not adoptable by agent %s: %w", name, agentID, ErrAdoptNotAllowed)
+	case boundInstance != "" && !sameInstance():
+		return nil, fmt.Errorf("session %q is not the session instance agent %s adopted (it was recreated): %w", name, agentID, ErrAdoptNotAllowed)
+	case s.ManagedAgent == agentID:
+	case boundInstance != "":
+		// Marker dropped by an older writer; the instance proves identity.
+	default:
 		return nil, fmt.Errorf("session %q no longer records agent %s as its managed agent (recreated, or the marker was lost); "+
 			"run `devx session instances` to review, or adopt again: %w", name, agentID, ErrAdoptNotAllowed)
 	}
