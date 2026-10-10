@@ -884,7 +884,12 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 				// Only a CONFIRMED absence or dead pane counts: a failed
 				// tmux query (busy/restarting server, timeout, tmux not on
 				// PATH) proves nothing and must not terminalize the task.
-				paneGone := !pane.QueryFailed && (!pane.Exists || pane.Dead) && a.Binding.PaneID != ""
+				// A fresh heartbeat from the very Pi instance holding this
+				// turn proves it is alive, whatever tmux says (wrong socket,
+				// misclassified error): never orphan it. If the pane really
+				// died, the heartbeat goes stale and this re-evaluates.
+				sameInstanceLive := v.BridgeOnline && v.Bridge.Instance == t.BridgeInstance
+				paneGone := !sameInstanceLive && !pane.QueryFailed && (!pane.Exists || pane.Dead) && a.Binding.PaneID != ""
 				if (v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || paneGone {
 					if err := m.markOrphanedLocked(a, "the Pi process that received this task is gone; outcome unknown — inspect the session"); err != nil {
 						return err

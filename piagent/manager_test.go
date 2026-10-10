@@ -694,10 +694,15 @@ func TestTransientTmuxErrorDoesNotOrphanRunningTask(t *testing.T) {
 	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskRunning {
 		t.Fatalf("after recovery: %+v", tv)
 	}
-	// A confirmed absence still orphans it.
+	// A confirmed absence still orphans it once the bridge is no longer
+	// heartbeating (a live same-instance heartbeat proves Pi is alive).
 	mode = "absent"
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskRunning {
+		t.Fatalf("live heartbeat must outweigh tmux: %+v", tv)
+	}
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: os.Getpid(), Pane: "%5", Heartbeat: time.Now().Add(-time.Hour)})
 	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskUnknown {
-		t.Fatalf("confirmed pane absence must orphan: %+v", tv)
+		t.Fatalf("confirmed pane absence with a stale bridge must orphan: %+v", tv)
 	}
 }
 
@@ -789,9 +794,15 @@ func TestNoTmuxServerIsAbsenceNotFailure(t *testing.T) {
 			t.Errorf("%q: want confirmed absence, got %+v", msg, p)
 		}
 	}
-	p := Tmux{Exec: func(...string) (string, error) { return "", errors.New("signal: killed") }}.Pane("%5")
-	if !p.QueryFailed {
-		t.Errorf("unknown failure must be QueryFailed: %+v", p)
+	for _, msg := range []string{
+		"signal: killed",
+		"tmux display-message: exit status 1: error connecting to /tmp/x/sock (Permission denied)",
+		"tmux display-message: exit status 1: error connecting to /tmp/x/sock (File name too long)",
+	} {
+		p := Tmux{Exec: func(...string) (string, error) { return "", errors.New(msg) }}.Pane("%5")
+		if !p.QueryFailed {
+			t.Errorf("%q says nothing about the pane: must be QueryFailed, got %+v", msg, p)
+		}
 	}
 }
 
@@ -857,4 +868,36 @@ func TestResultChunkAdvancesOnInvalidUTF8(t *testing.T) {
 		}
 	}
 	t.Fatal("did not reach EOF")
+}
+
+// Review round 2: a confirmed-absent pane (e.g. a wrong socket in the MCP
+// process) must not orphan a task while the same Pi instance is heartbeating;
+// once the heartbeat is stale it may.
+func TestLiveSameInstanceBridgeIsNeverOrphaned(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%5"}
+		a.LaunchNonce = "n"
+		return m.Store.SaveAgent(a)
+	})
+	run, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k1"})
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		tk, _ := m.Store.LoadTask(a.ID, run.TaskID)
+		tk.State, tk.BridgeInstance = TaskRunning, "inst"
+		return m.Store.SaveTask(tk)
+	})
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		return "", fmt.Errorf("tmux display-message: exit status 1: error connecting to /tmp/wrong/default (No such file or directory)")
+	}}
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: os.Getpid(), Pane: "%5", Heartbeat: time.Now()})
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskRunning {
+		t.Fatalf("live same-instance bridge must keep the task running: %+v", tv)
+	}
+	// Heartbeat stale and its process gone: now it is orphaned.
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: 999999, Pane: "%5", Heartbeat: time.Now().Add(-time.Hour)})
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskUnknown {
+		t.Fatalf("dead pane with stale bridge must orphan: %+v", tv)
+	}
 }
