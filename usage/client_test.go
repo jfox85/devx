@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -362,6 +363,9 @@ func TestDiscoverToken(t *testing.T) {
 
 func TestDiscoverTokenRefusesAnUnsafeTokenFile(t *testing.T) {
 	t.Run("group or world readable", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix permission bits are not enforced on Windows (FileMode is always 0666; ACLs govern access)")
+		}
 		dir := t.TempDir()
 		path := filepath.Join(dir, "api-token")
 		if err := os.WriteFile(path, []byte("leaky-token\n"), 0o600); err != nil {

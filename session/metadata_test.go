@@ -18,9 +18,8 @@ func TestSessionStore(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Override home directory for test
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Test loading empty store
 	store, err := LoadSessions()
@@ -98,9 +97,8 @@ func TestSessionStoreUpdate(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Override home directory for test
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 	updatePorts := map[string]int{"UPDATE_PORT": 5000}
@@ -132,9 +130,8 @@ func TestSessionLastAttached(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 	_ = store.AddSession("test-sess", "main", "/path", map[string]int{"PORT": 3000})
@@ -259,9 +256,8 @@ func TestNumberedSlots_AssignSlot(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 	_ = store.AddSession("sess-a", "main", "/a", map[string]int{})
@@ -302,9 +298,8 @@ func TestNumberedSlots_EvictLRU(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 
@@ -346,9 +341,8 @@ func TestNumberedSlots_Reconcile(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 	_ = store.AddSession("sess-a", "main", "/a", map[string]int{})
@@ -370,9 +364,8 @@ func TestRecordAttach_NonexistentSession(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 
@@ -389,9 +382,8 @@ func TestAssignSlot_NonexistentSession(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 
@@ -408,9 +400,8 @@ func TestNumberedSlots_EvictAllZeroLastAttached(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 
@@ -446,9 +437,8 @@ func TestNumberedSlots_StaleSlotReuse(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 
@@ -487,9 +477,8 @@ func TestNumberedSlots_GetSessionForSlot(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	store, _ := LoadSessions()
 	_ = store.AddSession("sess-a", "main", "/a", map[string]int{})

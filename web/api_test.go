@@ -101,6 +101,7 @@ func TestGetSettingsReportsUsageDisabledFromServerState(t *testing.T) {
 func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // os.UserHomeDir reads USERPROFILE on Windows
 
 	projectDir := filepath.Join(tmp, "nibit")
 	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
@@ -152,6 +153,7 @@ func TestListProjectsReturnsProjectDefaultTargets(t *testing.T) {
 func TestListProjectsRejectsInvalidProjectTarget(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // os.UserHomeDir reads USERPROFILE on Windows
 
 	projectDir := filepath.Join(tmp, "bad")
 	if err := os.MkdirAll(filepath.Join(projectDir, ".devx"), 0755); err != nil {
@@ -945,6 +947,7 @@ func TestHandleUploadImageRejectsInvalidSession(t *testing.T) {
 func TestHandleUploadImageAcceptsValidSession(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // os.UserHomeDir reads USERPROFILE on Windows
 	w := httptest.NewRecorder()
 	handleUploadImage(w, uploadImageRequest(t, "my-session"))
 	if w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "invalid session") {

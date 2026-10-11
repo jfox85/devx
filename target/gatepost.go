@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -660,11 +661,17 @@ func validateTrustedGatepostPath(path string, wantDir bool) error {
 	if !wantDir && info.IsDir() {
 		return fmt.Errorf("trusted Gatepost adapter is a directory: %s", path)
 	}
-	if info.Mode().Perm()&0o022 != 0 {
+	// Must stay fail-closed on every platform. On Windows the owner check
+	// below refuses explicitly (trust is unsupported there).
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("trusted Gatepost path is group/world-writable: %s", path)
 	}
 	return validateTrustedGatepostOwner(path, info)
 }
+
+// errGatepostTrustUnsupported prefixes every trust refusal on platforms that
+// cannot verify ownership or permission bits (Windows).
+const errGatepostTrustUnsupported = "Gatepost adapter trust is not supported on Windows (no owner/permission check available)"
 
 func removeGatepostRuntimeState(r gatepostRuntime) error {
 	if r.sessionDir == "" {

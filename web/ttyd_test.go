@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,9 @@ func TestTtydArgsUseExactMatchTarget(t *testing.T) {
 }
 
 func TestApplyMobileTmuxOptionsAttemptsBaseAndWebTargets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux (and this #!/bin/sh tmux stub) is Unix-only; mobile tmux options do not apply on Windows")
+	}
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "tmux.log")
 	scriptPath := filepath.Join(tmpDir, "tmux")
