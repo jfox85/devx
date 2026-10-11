@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,7 +37,7 @@ key, no lock, no backup). The ids it shows are the ids --apply writes.
   devx session instances                                     # review the plan
   devx session instances --confirm <agent-id> ...            # plan that also binds confirmed candidates
   devx session instances --apply <plan-hash> [--confirm ...] # apply exactly that plan
-  devx session instances --rollback <dir>                    # undo a previous apply
+  devx session instances --rollback <dir>                    # undo a previous apply (run dir printed by --apply)
 
 An agent is bound automatically only when its session carries a local-only
 marker naming it and nothing contradicts it (ordering, path, project,
@@ -54,7 +53,18 @@ sessions.json and every agent record it will touch, journals each write, and
 re-validates every step under the record locks. Re-running after an
 interrupted apply completes it. Only instance_id (sessions) and
 session_instance_id / session_created_at (agents) are written; worktrees,
-tmux sessions, Pi conversations, leases and markers are never touched.`,
+tmux sessions, Pi conversations, leases and markers are never touched.
+
+--rollback accepts only a session-instances-* run directory created by
+--apply in the backups directory next to sessions.json (real directories and
+regular files owned by you, not writable by others; no symlinks), whose
+plan.json is intact and is the plan named by the directory, and whose every
+journal entry is a write in that plan; otherwise nothing is rolled back. A
+value is removed only from the exact record it was written to and only while
+the record still holds it; anything changed since is left alone and listed.
+Newest run first (or --force-older). Re-running an interrupted rollback
+finishes it. These checks stop a mistaken or crafted directory; a process
+running as you that can write your backups directory is outside them.`,
 	Args: cobra.NoArgs,
 	RunE: runSessionInstances,
 }
@@ -218,12 +228,13 @@ func printInstancePlan(out io.Writer, p *piagent.InstancePlan) error {
 // backupInstanceRecords copies sessions.json and every agent record the plan
 // touches into a fresh 0700 directory before anything is written.
 func backupInstanceRecords(p *piagent.InstancePlan) (string, error) {
-	base := filepath.Join(filepath.Dir(config.GetSessionsPath()), "backups")
+	base := instanceRunsBase()
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
 	// Unique per run, so concurrent or rapid applies never share a journal.
-	dir, err := os.MkdirTemp(base, "session-instances-"+time.Now().UTC().Format("20060102T150405Z")+"-"+p.Hash+"-")
+	// The name carries the plan hash; --rollback requires plan.json to match.
+	dir, err := os.MkdirTemp(base, instanceRunPrefix+time.Now().UTC().Format("20060102T150405Z")+"-"+p.Hash+"-")
 	if err != nil {
 		return "", err
 	}
@@ -260,13 +271,15 @@ func backupInstanceRecords(p *piagent.InstancePlan) (string, error) {
 // newerApplies lists backup dirs of applies made after dir (by journal
 // modification time). Rolling back an older run could remove ids a newer run
 // wrote with identical (deterministic) values, so that needs --force-older.
+// Equal times count as newer: on coarse-timestamp filesystems two runs can
+// share an mtime, and refusing is the safe side.
 func newerApplies(dir string) ([]string, error) {
-	me, err := os.Stat(filepath.Join(dir, "journal.jsonl"))
+	me, err := os.Lstat(filepath.Join(dir, "journal.jsonl"))
 	if err != nil {
 		return nil, err
 	}
 	base := filepath.Dir(filepath.Clean(dir))
-	matches, _ := filepath.Glob(filepath.Join(base, "session-instances-*", "journal.jsonl"))
+	matches, _ := filepath.Glob(filepath.Join(base, instanceRunPrefix+"*", "journal.jsonl"))
 	var out []string
 	for _, m := range matches {
 		if filepath.Dir(m) == filepath.Clean(dir) {
@@ -275,45 +288,34 @@ func newerApplies(dir string) ([]string, error) {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(m), "rolled-back")); err == nil {
 			continue // already undone
 		}
-		if st, err := os.Stat(m); err == nil && st.Size() > 0 && st.ModTime().After(me.ModTime()) {
+		if st, err := os.Stat(m); err == nil && st.Size() > 0 && !st.ModTime().Before(me.ModTime()) {
 			out = append(out, filepath.Dir(m))
 		}
 	}
 	return out, nil
 }
 
+// runInstancesRollback undoes one --apply run. The directory must be a run
+// --apply created (see loadTrustedInstanceRun); every journal entry must be
+// a write in its verified plan, or nothing is rolled back. Values are then
+// removed only from the exact records the plan wrote, and only while they
+// still hold them, so an interrupted rollback is completed by re-running it.
 func runInstancesRollback(out io.Writer, dir string) error {
-	if newer, err := newerApplies(dir); err != nil {
+	run, err := loadTrustedInstanceRun(dir)
+	if err != nil {
+		return fmt.Errorf("refusing --rollback: %w", err)
+	}
+	if newer, err := newerApplies(run.Dir); err != nil {
 		return err
 	} else if len(newer) > 0 && !instancesForceOlder {
 		return fmt.Errorf("a later migration run wrote records after this one (%s); roll back the newest run first, or pass --force-older", strings.Join(newer, ", "))
 	}
-	f, err := os.Open(filepath.Join(dir, "journal.jsonl"))
+	n, skipped, err := piagent.RollbackInstancePlan(run.Plan, run.Entries, instanceStores(nil))
 	if err != nil {
-		return fmt.Errorf("no journal in %s: %w", dir, err)
+		return fmt.Errorf("rollback stopped (re-run --rollback %s to finish; values already removed are skipped): %w", run.Dir, err)
 	}
-	defer func() { _ = f.Close() }()
-	var entries []piagent.JournalEntry
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var e piagent.JournalEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			// A torn last line from a crash mid-append: that write did not
-			// happen (journal is written before the record), stop here.
-			break
-		}
-		entries = append(entries, e)
-	}
-	n, skipped, err := piagent.RollbackInstances(entries, instanceStores(nil))
-	if err != nil {
-		return err
-	}
-	_ = os.WriteFile(filepath.Join(dir, "rolled-back"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
-	_, _ = fmt.Fprintf(out, "Rolled back %d change(s) from %s.\n", n, dir)
+	_ = os.WriteFile(filepath.Join(run.Dir, "rolled-back"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
+	_, _ = fmt.Fprintf(out, "Rolled back %d change(s) of plan %s from %s.\n", n, run.Plan.Hash, run.Dir)
 	for _, s := range skipped {
 		_, _ = fmt.Fprintln(out, "  left unchanged: "+s)
 	}

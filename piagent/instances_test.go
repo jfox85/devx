@@ -320,14 +320,15 @@ func TestRollbackRemovesOnlyWhatMigrationWrote(t *testing.T) {
 	pre := session.NewInstanceID()
 	e.sess.recs["pre"] = &session.Session{Name: "pre", Path: wtPath("pre"), CreatedAt: e.t0, InstanceID: pre}
 	var j []JournalEntry
-	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
+	plan := e.plan()
+	if err := ApplyInstancePlan(plan, e.sess.stores(e.store, &j)); err != nil {
 		t.Fatal(err)
 	}
 	// After the migration b's binding was changed by someone else.
 	gb, _ := e.store.LoadAgent(b.ID)
 	gb.SessionInstanceID = "si_111111111111111111111111"
 	_ = e.store.WithAgentLock(b.ID, func() error { return e.store.SaveAgent(gb) })
-	n, skipped, err := RollbackInstances(j, e.sess.stores(e.store, &[]JournalEntry{}))
+	n, skipped, err := RollbackInstancePlan(plan, j, e.sess.stores(e.store, &[]JournalEntry{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +345,7 @@ func TestRollbackRemovesOnlyWhatMigrationWrote(t *testing.T) {
 		t.Fatal("markers must be untouched")
 	}
 	// Rollback is repeatable.
-	if n2, _, err := RollbackInstances(j, e.sess.stores(e.store, &[]JournalEntry{})); err != nil || n2 != 0 {
+	if n2, _, err := RollbackInstancePlan(plan, j, e.sess.stores(e.store, &[]JournalEntry{})); err != nil || n2 != 0 {
 		t.Fatalf("second rollback: %d %v", n2, err)
 	}
 }
