@@ -62,9 +62,12 @@ plan.json is intact and is the plan named by the directory, and whose every
 journal entry is a write in that plan; otherwise nothing is rolled back. A
 value is removed only from the exact record it was written to and only while
 the record still holds it; anything changed since is left alone and listed.
-Newest run first (or --force-older). Re-running an interrupted rollback
-finishes it. These checks stop a mistaken or crafted directory; a process
-running as you that can write your backups directory is outside them.`,
+Newest run first, and a completed rollback is not repeated (either needs
+--force-older). Re-running an interrupted rollback finishes it. These checks
+stop a mistaken or crafted directory; a process running as you that can
+write your backups directory is outside them. On Windows the owner, mode and
+no-follow checks are not available; the location, name, plan and journal
+checks still apply.`,
 	Args: cobra.NoArgs,
 	RunE: runSessionInstances,
 }
@@ -74,7 +77,7 @@ func init() {
 	sessionInstancesCmd.Flags().StringVar(&instancesApplyPlan, "apply", "", "apply the plan with this hash (from a dry run)")
 	sessionInstancesCmd.Flags().StringVar(&instancesRollback, "rollback", "", "undo the apply recorded in this backup directory")
 	sessionInstancesCmd.Flags().BoolVar(&instancesJSON, "json", false, "print the plan as JSON")
-	sessionInstancesCmd.Flags().BoolVar(&instancesForceOlder, "force-older", false, "allow --rollback of a run that is not the newest")
+	sessionInstancesCmd.Flags().BoolVar(&instancesForceOlder, "force-older", false, "allow --rollback of a run that is not the newest or was already rolled back")
 	sessionInstancesCmd.Flags().StringSliceVar(&instancesConfirm, "confirm", nil, "owner-confirmed candidate agent ids (no marker) to bind; part of the plan hash")
 }
 
@@ -304,6 +307,12 @@ func runInstancesRollback(out io.Writer, dir string) error {
 	run, err := loadTrustedInstanceRun(dir)
 	if err != nil {
 		return fmt.Errorf("refusing --rollback: %w", err)
+	}
+	// A completed rollback is not repeated: a later run may since have
+	// written identical (deterministic) values that this run's undo would
+	// remove. An interrupted rollback wrote no marker, so it can be re-run.
+	if _, err := os.Lstat(filepath.Join(run.Dir, "rolled-back")); err == nil && !instancesForceOlder {
+		return fmt.Errorf("%s was already rolled back; a later run may have written the same values (pass --force-older to undo again)", run.Dir)
 	}
 	if newer, err := newerApplies(run.Dir); err != nil {
 		return err

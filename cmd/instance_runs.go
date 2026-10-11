@@ -84,16 +84,18 @@ func instanceRunHash(name string) (string, bool) {
 	return parts[1], true
 }
 
-// parseInstanceJournal parses newline-delimited entries. Only a torn final
-// line (a crash mid-append; that write never happened, because the journal
-// precedes it) is dropped; a malformed line followed by more content means
-// the journal was altered, and is refused.
+// parseInstanceJournal parses newline-delimited entries. Apply writes each
+// entry and its newline in one write, so only a final line WITHOUT a
+// trailing newline can be torn by a crash mid-append (that write never
+// happened, because the journal precedes it); it is dropped. Any other
+// malformed line means the journal was altered, and is refused.
 func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
 	lines := bytes.Split(data, []byte("\n"))
 	last := len(lines) - 1
 	for last >= 0 && len(bytes.TrimSpace(lines[last])) == 0 {
 		last--
 	}
+	tornTail := !bytes.HasSuffix(bytes.TrimRight(data, " \t\r"), []byte("\n"))
 	var entries []piagent.JournalEntry
 	for i := 0; i <= last; i++ {
 		line := bytes.TrimSpace(lines[i])
@@ -104,10 +106,10 @@ func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
 		dec := json.NewDecoder(bytes.NewReader(line))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&e); err != nil || dec.More() {
-			if i == last {
+			if i == last && tornTail {
 				break
 			}
-			return nil, fmt.Errorf("journal line %d is malformed and is not the last line", i+1)
+			return nil, fmt.Errorf("journal line %d is malformed (only an unterminated final line is a torn append)", i+1)
 		}
 		entries = append(entries, e)
 	}
@@ -122,6 +124,9 @@ func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
 // entry is a write in that plan. Anything else is refused before any
 // record is read or written.
 func loadTrustedInstanceRun(dir string) (*trustedInstanceRun, error) {
+	if config.GetSessionsPath() == "" {
+		return nil, errors.New("cannot determine the home directory, so the backups directory is unknown")
+	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err

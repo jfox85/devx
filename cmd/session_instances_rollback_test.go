@@ -164,6 +164,8 @@ func (f *instRollbackFixture) snapshot() string {
 func (f *instRollbackFixture) refused(dir, want string) {
 	f.t.Helper()
 	before := f.snapshot()
+	marker := filepath.Join(dir, "rolled-back")
+	markerBefore, _ := os.ReadFile(marker)
 	out, err := f.rollback(dir)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		f.t.Fatalf("rollback of %s must be refused with %q, got err=%v out=%s", dir, want, err, out)
@@ -171,7 +173,7 @@ func (f *instRollbackFixture) refused(dir, want string) {
 	if f.snapshot() != before {
 		f.t.Fatalf("refused rollback of %s changed records", dir)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "rolled-back")); err == nil {
+	if markerAfter, _ := os.ReadFile(marker); string(markerAfter) != string(markerBefore) {
 		f.t.Fatalf("refused rollback of %s wrote a rolled-back marker", dir)
 	}
 }
@@ -246,8 +248,14 @@ func TestInstanceRollbackRefusesForgedOrMisselectedDirectory(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(f.run, "plan.json"))
 	_ = os.WriteFile(filepath.Join(outside, "plan.json"), b, 0o600)
 	f.refused(outside, "not a run directory directly under")
-	// A path that only lexically leaves and re-enters is normalized.
-	f.refused(filepath.Join(filepath.Dir(f.run), "..", "backups", "..", filepath.Base(f.run), ".."), "not a ")
+	// Traversal out of backups into a sibling run-named dir is refused...
+	sibling := filepath.Join(f.cfg, filepath.Base(f.run))
+	_ = os.MkdirAll(sibling, 0o700)
+	for _, n := range []string{"plan.json", "journal.jsonl"} {
+		b, _ := os.ReadFile(filepath.Join(f.run, n))
+		_ = os.WriteFile(filepath.Join(sibling, n), b, 0o600)
+	}
+	f.refused(filepath.Dir(f.run)+"/../"+filepath.Base(f.run), "not a run directory directly under")
 	// Wrong kind of directory under backups (e.g. a marker run, or any name).
 	for _, name := range []string{"session-markers-20261001T000000Z-" + f.runPlan().Hash + "-x", "random", "session-instances-x", "session-instances-a-b-c-d"} {
 		f.refused(f.cloneRun(name), "not a session-instances-* run directory")
@@ -256,6 +264,18 @@ func TestInstanceRollbackRefusesForgedOrMisselectedDirectory(t *testing.T) {
 	f.refused(filepath.Dir(f.run), "not a run directory directly under")
 	f.refused(f.cfg, "not a run directory directly under")
 	f.assertApplied()
+	// ...while an unclean path that resolves to the genuine run is
+	// normalized and accepted.
+	_ = os.RemoveAll(sibling)
+	for _, e := range mustReadDir(t, filepath.Dir(f.run)) {
+		if filepath.Join(filepath.Dir(f.run), e) != f.run {
+			_ = os.RemoveAll(filepath.Join(filepath.Dir(f.run), e))
+		}
+	}
+	unclean := filepath.Dir(f.run) + "/../backups/./" + filepath.Base(f.run)
+	if out, err := f.rollback(unclean); err != nil || !strings.Contains(out, "Rolled back 4 change(s)") {
+		t.Fatalf("unclean genuine path: %v\n%s", err, out)
+	}
 }
 
 func TestInstanceRollbackRefusesUnsafeFiles(t *testing.T) {
@@ -419,14 +439,22 @@ func TestInstanceRollbackRefusesTamperedPlanOrJournal(t *testing.T) {
 		writeLines(t, filepath.Join(d, "journal.jsonl"), js...)
 		want := "does not match its plan"
 		if i == 5 {
-			want = "malformed and is not the last line"
+			want = "is malformed"
 		}
 		f.refused(d, want)
 	}
 	// A malformed line in the middle (content after it) is tampering.
 	d = f.cloneRun(runName(plan.Hash, "midtorn"))
 	writeLines(t, filepath.Join(d, "journal.jsonl"), lines[0], `{"kind":"sess`, lines[1])
-	f.refused(d, "malformed and is not the last line")
+	f.refused(d, "is malformed")
+	// A malformed final line that IS newline-terminated was written whole
+	// by someone, not torn by a crash: refused, not silently dropped.
+	d = f.cloneRun(runName(plan.Hash, "termtail"))
+	writeLines(t, filepath.Join(d, "journal.jsonl"), lines[0], `{"kind":"sess`)
+	f.refused(d, "is malformed")
+	d = f.cloneRun(runName(plan.Hash, "unknowntail"))
+	writeLines(t, filepath.Join(d, "journal.jsonl"), lines[0], strings.Replace(lines[1], `{"time"`, `{"extra":1,"time"`, 1))
+	f.refused(d, "is malformed")
 	f.assertApplied()
 }
 
@@ -459,15 +487,78 @@ func TestInstanceRollbackValidAndRetry(t *testing.T) {
 		t.Fatal("markers must be untouched")
 	}
 	f.assertVictimIntact()
-	// Retry is a no-op that reports why.
+	// A completed rollback is not repeated without --force-older...
+	f.refused(f.run, "already rolled back")
+	// ...and with it, the repeat is a no-op that reports why.
 	before := f.snapshot()
+	instancesForceOlder = true
 	out, err = f.rollback(f.run)
+	instancesForceOlder = false
 	if err != nil || !strings.Contains(out, "Rolled back 0 change(s)") || !strings.Contains(out, "already rolled back") {
-		t.Fatalf("retry: %v\n%s", err, out)
+		t.Fatalf("forced repeat: %v\n%s", err, out)
 	}
 	if f.snapshot() != before {
-		t.Fatal("retry changed records")
+		t.Fatal("repeat changed records")
 	}
+}
+
+// Security review r1: apply A, roll back A, apply B (same deterministic
+// ids), lose B's run dir; re-rolling A must not undo B's writes.
+func TestInstanceRollbackCompletedRunNotRepeatedOverLaterApply(t *testing.T) {
+	f := newInstRollbackFixture(t)
+	runA := f.run
+	if _, err := f.rollback(runA); err != nil {
+		t.Fatal(err)
+	}
+	runB := f.apply()
+	f.assertApplied()
+	if err := os.RemoveAll(runB); err != nil {
+		t.Fatal(err)
+	}
+	f.refused(runA, "already rolled back")
+	f.assertApplied()
+}
+
+// Two runs: an apply interrupted after its session write, then a re-apply
+// (a different plan, new run dir). Newest first; the older needs
+// --force-older and then removes only what is still its own.
+func TestInstanceRollbackTwoRuns(t *testing.T) {
+	f := newInstRollbackFixture(t)
+	runA := f.run
+	// Simulate A having bound only agent a: drop b's binding from A's
+	// effects by unbinding b and truncating A's journal to the first three
+	// (unterminated tail = torn append of b's entry).
+	j, _ := os.ReadFile(filepath.Join(runA, "journal.jsonl"))
+	lines := strings.Split(strings.TrimSpace(string(j)), "\n")
+	_ = os.WriteFile(filepath.Join(runA, "journal.jsonl"), []byte(strings.Join(lines[:3], "\n")+"\n"+lines[3][:10]), 0o600)
+	ab := f.agent(fxAgentB)
+	f.writeAgent(fxAgentB, "b", ab.CreatedAt, "", time.Time{})
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(filepath.Join(runA, "journal.jsonl"), old, old)
+	// Re-plan: only b's bind remains -> a different plan hash, run B.
+	runB := f.apply()
+	if filepath.Base(runB) == filepath.Base(runA) {
+		t.Fatal("re-apply must use a new run dir")
+	}
+	f.assertApplied()
+	f.refused(runA, "later migration run")
+	if out, err := f.rollback(runB); err != nil || !strings.Contains(out, "Rolled back 1 change(s)") {
+		t.Fatalf("rollback B: %v\n%s", err, out)
+	}
+	if f.agent(fxAgentB).SessionInstanceID != "" || f.agent(fxAgentA).SessionInstanceID == "" {
+		t.Fatal("B must undo only its own bind")
+	}
+	instancesForceOlder = true
+	out, err := f.rollback(runA)
+	instancesForceOlder = false
+	if err != nil || !strings.Contains(out, "Rolled back 3 change(s)") {
+		t.Fatalf("rollback A: %v\n%s", err, out)
+	}
+	s := f.sessions()
+	if s["a"].InstanceID != "" || s["b"].InstanceID != "" || f.agent(fxAgentA).SessionInstanceID != "" {
+		t.Fatal("A's writes must be undone")
+	}
+	f.assertVictimIntact()
 }
 
 func TestInstanceRollbackPartialJournalAndInterruptedApply(t *testing.T) {
@@ -475,8 +566,12 @@ func TestInstanceRollbackPartialJournalAndInterruptedApply(t *testing.T) {
 	journal, _ := os.ReadFile(filepath.Join(f.run, "journal.jsonl"))
 	lines := strings.Split(strings.TrimSpace(string(journal)), "\n")
 	// Crash mid-append of the last agent entry: its bind never happened
-	// (journal precedes the write), so emulate by unbinding b and tearing.
-	writeLines(t, filepath.Join(f.run, "journal.jsonl"), append(lines[:3], lines[3][:len(lines[3])/2])...)
+	// (journal precedes the write), so emulate by unbinding b and tearing
+	// (no trailing newline, as a real torn single write would leave).
+	torn := strings.Join(lines[:3], "\n") + "\n" + lines[3][:len(lines[3])/2]
+	if err := os.WriteFile(filepath.Join(f.run, "journal.jsonl"), []byte(torn), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	f.writeAgent(fxAgentB, "b", time.Date(2026, 10, 1, 12, 0, 1, 0, time.UTC), "", time.Time{})
 	out, err := f.rollback(f.run)
 	if err != nil || !strings.Contains(out, "Rolled back 3 change(s)") {
@@ -490,15 +585,28 @@ func TestInstanceRollbackPartialJournalAndInterruptedApply(t *testing.T) {
 
 func TestInstanceRollbackInterruptedSessionWrite(t *testing.T) {
 	// Session entries journaled but the sessions write never landed (crash
-	// between journal and replace): rollback skips them by value.
+	// between journal and replace), so no agent was bound either: restore
+	// the pre-apply records from the run's own backup, then roll back. Every
+	// entry is skipped by value; nothing is written.
 	f := newInstRollbackFixture(t)
-	if _, err := f.rollback(f.run); err != nil {
-		t.Fatal(err)
+	for _, p := range []struct{ src, dst string }{
+		{filepath.Join(f.run, "sessions.json"), filepath.Join(f.cfg, "sessions.json")},
+		{filepath.Join(f.run, "agents", fxAgentA, "agent.json"), f.agentPath(fxAgentA)},
+		{filepath.Join(f.run, "agents", fxAgentB, "agent.json"), f.agentPath(fxAgentB)},
+	} {
+		b, err := os.ReadFile(p.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(p.dst, b, 0o600)
 	}
-	_ = os.Remove(filepath.Join(f.run, "rolled-back"))
+	before := f.snapshot()
 	out, err := f.rollback(f.run)
-	if err != nil || !strings.Contains(out, "Rolled back 0 change(s)") || !strings.Contains(out, "write never happened") {
+	if err != nil || !strings.Contains(out, "Rolled back 0 change(s)") || !strings.Contains(out, "write never happened") || !strings.Contains(out, "bind never happened") {
 		t.Fatalf("journaled-but-unwritten must be skipped: %v\n%s", err, out)
+	}
+	if f.snapshot() != before {
+		t.Fatal("nothing may be written")
 	}
 }
 

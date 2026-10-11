@@ -699,10 +699,16 @@ func RollbackInstancePlan(p *InstancePlan, entries []JournalEntry, st InstanceSt
 				sessReverted++
 			}
 		}
+		if sessReverted == 0 {
+			return errNoSessionChange // nothing to undo: do not rewrite sessions.json
+		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errNoSessionChange) {
 		return reverted, skipped, err
 	}
 	return reverted + sessReverted, append(skipped, sessSkipped...), nil
 }
+
+// errNoSessionChange aborts a sessions mutation that would write nothing.
+var errNoSessionChange = errors.New("no session change")
