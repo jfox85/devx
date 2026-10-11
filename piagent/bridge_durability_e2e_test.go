@@ -91,7 +91,7 @@ func TestE2ERelaunchPublishesSpooledReceiptBeforeDispatch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, running+".receipt.json")); !os.IsNotExist(err) {
 		t.Fatalf("spool should be removed after recovery: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "pt_00000000000000ff.receipt.json.corrupt")); err != nil {
-		t.Fatalf("invalid spool should be kept aside: %v", err)
+	if m, _ := filepath.Glob(filepath.Join(dir, "pt_00000000000000ff.receipt.json.*.corrupt")); len(m) != 1 {
+		t.Fatalf("invalid spool should be kept aside once: %v", m)
 	}
 }
