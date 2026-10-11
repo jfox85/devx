@@ -61,19 +61,22 @@ func TestE2EOldBridgeIgnoresPreAcceptanceCancel(t *testing.T) {
 // nothing is recorded; the old bridge delivers normally and the human's
 // control is untouched. Waiting work stays cancellable.
 func TestE2ERunningCancelRefusedOnOldBridge(t *testing.T) {
-	f := newOldBridgeFixture(t, "DEVX_PI_TEST_DELIVERY_DELAY_MS=3000")
+	f := newOldBridgeFixture(t, "DEVX_PI_TEST_DELIVERY_DELAY_MS=8000")
 	r := f.start("warmup", "k1")
 	f.waitTask(r.TaskID, 45*time.Second, TaskCompleted)
 	f.online(r.AgentID)
 	task := f.send(r.AgentID, "gated prompt", "k2")
 	waiting := f.send(r.AgentID, "still queued", "k3")
 	before := f.waitTask(task, 15*time.Second, TaskRunning)
+	if before.Phase != PhaseDelivered {
+		t.Fatalf("precondition: task must be handed off but unaccepted: %+v", before)
+	}
 	if _, err := f.m.Takeover(r.AgentID, "test-human"); err != nil {
 		t.Fatal(err)
 	}
 	_, err := f.m.Cancel(task)
 	var be *BridgeUpgradeError
-	if !errors.As(err, &be) || be.Protocol != 0 {
+	if !errors.As(err, &be) || be.Kind != BridgeKindUpgrade || be.Protocol != 0 {
 		t.Fatalf("want bridge_upgrade_required for protocol 0, got %v", err)
 	}
 	if after, _, _ := f.m.TaskStatus(task); after.CancelRequested || after.Revision != before.Revision {
@@ -83,7 +86,7 @@ func TestE2ERunningCancelRefusedOnOldBridge(t *testing.T) {
 		t.Fatalf("waiting cancel on old bridge: %v", err)
 	}
 	// The old bridge fences the hand-off back under human control: no abort.
-	tv := f.waitTask(task, 15*time.Second, TaskWaiting, TaskCancelled, TaskCompleted)
+	tv := f.waitTask(task, 20*time.Second, TaskWaiting, TaskCancelled, TaskCompleted)
 	if tv.State != TaskWaiting || tv.WaitingReason != WaitHumanControl {
 		t.Fatalf("after takeover on old bridge: %+v", tv)
 	}

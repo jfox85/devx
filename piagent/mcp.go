@@ -244,8 +244,15 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 			if IsPermissionDenied(err) {
 				data = map[string]any{"error": "permission_denied", "message": msg}
 			} else if be := (*BridgeUpgradeError)(nil); errors.As(err, &be) {
-				data = map[string]any{"error": "bridge_upgrade_required", "message": msg, "task_id": be.TaskID, "agent_id": be.AgentID,
-					"bridge_protocol": be.Protocol, "required_protocol": BridgeProtocol, "recorded": false}
+				d := map[string]any{"error": be.Kind, "message": msg, "task_id": be.TaskID, "agent_id": be.AgentID,
+					"required_protocol": BridgeProtocol, "recorded": false}
+				if be.Protocol >= 0 {
+					d["bridge_protocol"] = be.Protocol
+				}
+				data = d
+			} else if errors.Is(err, ErrEditLimit) {
+				data = map[string]any{"error": "edit_limit_reached", "message": msg, "max_edits": MaxEditsPerTask,
+					"hint": "use pi_supersede_pending to replace the task"}
 			} else if ce := (*ConflictError)(nil); errors.As(err, &ce) {
 				data = map[string]any{"error": "conflict", "message": msg, "task_id": ce.TaskID, "expected_revision": ce.Expected,
 					"current_revision": ce.Current, "state": ce.State, "phase": ce.Phase}

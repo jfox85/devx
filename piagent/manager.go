@@ -670,16 +670,32 @@ func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
 // not support an operation; the agent must be relaunched by a human.
 var ErrBridgeUpgradeRequired = errors.New("bridge upgrade required")
 
+// Kinds of BridgeUpgradeError.
+const (
+	// BridgeKindUpgrade: the live bridge holding the task speaks an older
+	// protocol; only a human relaunch helps.
+	BridgeKindUpgrade = "bridge_upgrade_required"
+	// BridgeKindUnavailable: the bridge holding the task is not reporting
+	// (no/stale heartbeat, a different instance, fenced or stopped). It may
+	// be transient: retry, inspect the session, do not relaunch blindly.
+	BridgeKindUnavailable = "bridge_unavailable"
+)
+
 // BridgeUpgradeError explains why an operation was refused for the bridge
-// holding a task.
+// holding a task. Nothing is recorded when it is returned.
 type BridgeUpgradeError struct {
+	Kind     string // BridgeKindUpgrade or BridgeKindUnavailable
 	AgentID  string
 	TaskID   string
-	Protocol int // protocol the holding bridge reports (0 = unversioned/older)
+	Protocol int // protocol of the bridge holding the task; -1 if not known
 	Reason   string
 }
 
 func (e *BridgeUpgradeError) Error() string {
+	if e.Kind == BridgeKindUnavailable {
+		return fmt.Sprintf("cannot cancel running task %s: %s. Nothing was recorded. This may be transient: retry, "+
+			"or inspect agent %s (devx agent status); relaunching would mark the running task unknown", e.TaskID, e.Reason, e.AgentID)
+	}
 	return fmt.Sprintf("cannot cancel running task %s: %s. Nothing was recorded. Restarting the MCP server does not refresh a running Pi; "+
 		"a human must relaunch agent %s (devx agent relaunch) to load bridge protocol %d, or stop the turn from the Pi session",
 		e.TaskID, e.Reason, e.AgentID, BridgeProtocol)
@@ -694,18 +710,18 @@ func (m *Manager) requireBridgeProtocolLocked(a *Agent, t *Task) error {
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	fail := func(proto int, reason string) error {
-		return &BridgeUpgradeError{AgentID: a.ID, TaskID: t.ID, Protocol: proto, Reason: reason}
+	fail := func(kind string, proto int, reason string) error {
+		return &BridgeUpgradeError{Kind: kind, AgentID: a.ID, TaskID: t.ID, Protocol: proto, Reason: reason}
 	}
 	switch {
 	case b == nil:
-		return fail(0, "no bridge heartbeat is recorded for this agent")
+		return fail(BridgeKindUnavailable, -1, "no bridge heartbeat is recorded for this agent")
 	case b.Instance != t.BridgeInstance:
-		return fail(b.Protocol, "the Pi process that received this task is not the one currently reporting")
+		return fail(BridgeKindUnavailable, -1, "the Pi process that received this task is not the one currently reporting")
 	case time.Since(b.Heartbeat) >= BridgeStaleAfter || b.Mode == "fenced" || b.Mode == "stopped" || b.Nonce != a.LaunchNonce:
-		return fail(b.Protocol, "the bridge holding this task is not online")
+		return fail(BridgeKindUnavailable, b.Protocol, "the bridge holding this task is not online")
 	case b.Protocol < BridgeProtocol:
-		return fail(b.Protocol, fmt.Sprintf("the bridge holding this task speaks protocol %d (launched before this DevX build)", b.Protocol))
+		return fail(BridgeKindUpgrade, b.Protocol, fmt.Sprintf("the bridge holding this task speaks protocol %d (launched before this DevX build)", b.Protocol))
 	}
 	return nil
 }

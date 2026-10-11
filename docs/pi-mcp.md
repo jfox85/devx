@@ -138,7 +138,8 @@ Invariants:
 - **Edit marks are never evicted.** Every applied edit's key is kept for
   the task's whole life, in the same atomic write as the edit. A retry with
   any earlier key is recognised, even after a restart. A task allows at most
-  32 in-place edits. Beyond that `pi_update_pending` is refused, and keys are
+  32 in-place edits. Beyond that `pi_update_pending` is refused
+  (`error: "edit_limit_reached"`), and keys are
   never dropped to make room. Use `pi_supersede_pending` to keep changing it.
 - **Idempotent edits.** Edits require an `idempotency_key`.
   - A retry with the same key and request returns the original result
@@ -194,9 +195,14 @@ it; only a human `devx agent relaunch` does.
   `bridge_protocol` and `bridge_upgrade_needed`.
 - **Cancelling a running task needs the current protocol.** The task must
   be held by a live bridge that speaks the current protocol, whether or not
-  Pi has accepted it yet. Otherwise `pi_cancel` returns
-  `error: "bridge_upgrade_required"` with `recorded: false`, and nothing is
-  written.
+  Pi has accepted it yet. Otherwise `pi_cancel` returns `recorded: false`,
+  nothing is written, and the error says why:
+  - `bridge_upgrade_required`: the bridge holding the task is older. Only a
+    human relaunch helps.
+  - `bridge_unavailable`: there is no fresh heartbeat from the Pi process
+    holding the task (stale, fenced, stopped, or a different instance). This
+    may be transient, so retry or inspect. Relaunching would mark the
+    running task unknown.
   - An older bridge doesn't drop unaccepted injections, so it would start a
     "cancelled" prompt.
   - It also aborts whatever turn is running, possibly a human's.

@@ -253,7 +253,7 @@ func (t *Task) CancelOutcome(now time.Time) string {
 		return CancelWithheld
 	case t.Terminal():
 		return CancelFinishedFirst
-	case t.CancelProtocol < BridgeProtocol && t.AbortSentAt == nil:
+	case t.State == TaskRunning && t.CancelProtocol < BridgeProtocol && t.AbortSentAt == nil:
 		return CancelLegacyRequested
 	case t.AbortSentAt != nil && now.Sub(*t.AbortSentAt) > AbortConfirmAfter:
 		return CancelAbortUnconfirmed

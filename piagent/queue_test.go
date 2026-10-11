@@ -563,20 +563,20 @@ func TestRunningCancelRequiresCurrentBridgeProtocol(t *testing.T) {
 		name   string
 		setup  func(t *testing.T, m *Manager, agentID string)
 		accept bool
-		ok     bool
+		kind   string // "" = allowed
 	}{
-		{"old_bridge_unaccepted", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, 0) }, false, false},
-		{"old_bridge_accepted", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, 0) }, true, false},
-		{"no_bridge", func(t *testing.T, m *Manager, id string) {}, true, false},
+		{"old_bridge_unaccepted", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, 0) }, false, BridgeKindUpgrade},
+		{"old_bridge_accepted", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, 0) }, true, BridgeKindUpgrade},
+		{"no_bridge", func(t *testing.T, m *Manager, id string) {}, true, BridgeKindUnavailable},
 		{"stale_bridge", func(t *testing.T, m *Manager, id string) {
 			liveBridge(t, m, id, BridgeProtocol)
 			_ = writeJSONAtomic(m.Store.bridgePath(id), &Bridge{Instance: "inst", Nonce: "nonce-test", Heartbeat: time.Now().Add(-time.Minute), Protocol: BridgeProtocol})
-		}, true, false},
+		}, true, BridgeKindUnavailable},
 		{"other_instance", func(t *testing.T, m *Manager, id string) {
 			liveBridge(t, m, id, BridgeProtocol)
 			_ = writeJSONAtomic(m.Store.bridgePath(id), &Bridge{Instance: "other", Nonce: "nonce-test", Heartbeat: time.Now(), Protocol: BridgeProtocol})
-		}, true, false},
-		{"current_bridge", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, BridgeProtocol) }, true, true},
+		}, true, BridgeKindUnavailable},
+		{"current_bridge", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, BridgeProtocol) }, true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -592,15 +592,15 @@ func TestRunningCancelRequiresCurrentBridgeProtocol(t *testing.T) {
 			})
 			_, err := m.Cancel(tk.ID)
 			got, _ := m.Store.LoadTask(a.ID, tk.ID)
-			if c.ok {
+			if c.kind == "" {
 				if err != nil || !got.CancelRequested || got.CancelProtocol != BridgeProtocol {
 					t.Fatalf("supported: %v %+v", err, got)
 				}
 				return
 			}
 			var be *BridgeUpgradeError
-			if !errors.As(err, &be) || !errors.Is(err, ErrBridgeUpgradeRequired) {
-				t.Fatalf("want bridge_upgrade_required, got %v", err)
+			if !errors.As(err, &be) || !errors.Is(err, ErrBridgeUpgradeRequired) || be.Kind != c.kind {
+				t.Fatalf("want %s, got %v", c.kind, err)
 			}
 			if got.CancelRequested || got.Revision != before.Revision {
 				t.Fatalf("refused cancel was recorded: %+v", got)
@@ -617,6 +617,39 @@ func TestRunningCancelRequiresCurrentBridgeProtocol(t *testing.T) {
 	legacy := &Task{State: TaskRunning, CancelRequested: true}
 	if o := legacy.CancelOutcome(time.Now()); o != CancelLegacyRequested {
 		t.Fatalf("legacy outcome %s", o)
+	}
+	// A waiting task with a stale flag is not reported as legacy.
+	if o := (&Task{State: TaskWaiting, CancelRequested: true}).CancelOutcome(time.Now()); o == CancelLegacyRequested {
+		t.Fatalf("waiting task reported legacy")
+	}
+}
+
+// MCP error codes for the new refusals are machine-readable.
+func TestMCPErrorCodesForGateAndEditLimit(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	liveBridge(t, m, a.ID, 0)
+	tk := sendT(t, m, a.ID, "p", "k")
+	bridgeWrite(t, m, a.ID, tk.ID, func(x *Task) { claim(x); accept(x) })
+	s := &MCPServer{M: m, Name: "devx-pi", Version: "test"}
+	out := mcpRoundTrip(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pi_cancel","arguments":{"task_id":"`+tk.ID+`"}}}`)
+	sc := byID(out, 1)["result"].(map[string]any)["structuredContent"].(map[string]any)
+	if sc["error"] != BridgeKindUpgrade || sc["recorded"] != false || sc["bridge_protocol"] != float64(0) {
+		t.Fatalf("cancel on old bridge: %+v", sc)
+	}
+	w := sendT(t, m, a.ID, "w", "kw")
+	rev := w.Revision
+	for i := 0; i < MaxEditsPerTask; i++ {
+		r, err := m.UpdatePending(UpdatePendingRequest{AgentID: a.ID, TaskID: w.ID, Prompt: fmt.Sprintf("v%d", i), ExpectedRevision: rev, IdempotencyKey: fmt.Sprintf("e%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rev = r.Revision
+	}
+	out = mcpRoundTrip(t, s, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pi_update_pending","arguments":{"agent_id":"%s","task_id":"%s","prompt":"x","expected_revision":%d,"idempotency_key":"over"}}}`, a.ID, w.ID, rev))
+	sc = byID(out, 2)["result"].(map[string]any)["structuredContent"].(map[string]any)
+	if sc["error"] != "edit_limit_reached" || sc["max_edits"] != float64(MaxEditsPerTask) {
+		t.Fatalf("edit limit: %+v", sc)
 	}
 }
 
