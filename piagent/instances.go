@@ -659,8 +659,18 @@ func RollbackInstancePlan(p *InstancePlan, entries []JournalEntry, st InstanceSt
 				return err
 			}
 			reverted++
-			_, err = st.Agents.AppendEvent(a.ID, Event{Type: "session_instance_unbound", Source: "devx", Data: map[string]any{
-				"session": a.DevxSession, "plan_hash": p.Hash, "via": "devx session instances --rollback"}})
+			// Undo exactly what this run did. An event_log restore re-applied
+			// a binding the agent's own log already recorded; the run never
+			// created that history, so its undo must not erase it
+			// (session_instance_unbound would clear RecordedBinding and leave
+			// the agent unrestorable). It is noted with an event
+			// RecordedBinding ignores.
+			ev := "session_instance_unbound"
+			if it.Basis == BasisEventLog {
+				ev = "session_instance_restore_undone"
+			}
+			_, err = st.Agents.AppendEvent(a.ID, Event{Type: ev, Source: "devx", Data: map[string]any{
+				"session": a.DevxSession, "plan_hash": p.Hash, "basis": it.Basis, "via": "devx session instances --rollback"}})
 			return err
 		})
 		if errors.Is(err, ErrNotFound) {
