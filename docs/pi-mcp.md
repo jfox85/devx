@@ -155,17 +155,38 @@ Invariants:
 
 `pi_cancel` reports `cancel_outcome`:
 
-| outcome | when |
-|---|---|
-| `cancelled_before_delivery` | the task was still queued (allowed under human control too: queued work is not running work) |
-| `cancelled_before_acceptance` | the bridge had handed it to Pi but Pi had not accepted it; the bridge's input handler drops the injection, so Pi never runs it |
-| `abort_pending` | an accepted turn; the bridge has not acted yet |
-| `abort_sent` | the bridge recorded `abort_sent_at` under the lock, then called `ctx.abort()`, at most once per task |
-| `aborted` | Pi settled the turn as aborted |
-| `abort_unconfirmed` | the abort was sent, but Pi has not settled within 30 s. Nothing is escalated: no keystrokes, no kill, no replay. Inspect the session. |
-| `abort_withheld` | the bridge refused to abort, with `abort_withheld` set to `human_control`, `control_changed_since_request` or `pi_has_queued_messages` |
-| `finished_before_abort` | the turn ended on its own first |
-| `superseded` | replaced by `pi_supersede_pending` |
+The outcomes fall into three distinct levels. A higher level is never
+reported from evidence of a lower one.
+
+1. **Requested:** DevX recorded the cancel request (`abort_pending`).
+2. **Dispatched:** the bridge called `ctx.abort()` (`abort_sent`, then
+   `abort_unconfirmed` if Pi does not settle).
+3. **Settled:** Pi reported the turn finished (`aborted`,
+   `finished_before_abort`), or the process holding it is gone
+   (`outcome_unknown`).
+
+| outcome | level | when |
+|---|---|---|
+| `cancelled_before_delivery` | settled | the task was still queued (allowed under human control too: queued work is not running work) |
+| `cancelled_before_acceptance` | settled | the bridge had handed it to Pi but Pi had not accepted it; the bridge's input handler drops the injection, so Pi never runs it |
+| `abort_pending` | requested | an accepted turn; the bridge has not acted yet |
+| `abort_sent` | dispatched | the bridge recorded `abort_sent_at` under the lock, then called `ctx.abort()`, at most once per task. This proves the call was made, not that anything stopped. |
+| `abort_unconfirmed` | dispatched | the abort was sent, but Pi has not settled within 30 s. Nothing is escalated: no keystrokes, no kill, no replay. Inspect the session. |
+| `aborted` | settled | Pi's agent loop settled the turn as aborted |
+| `finished_before_abort` | settled | the turn ended on its own first |
+| `outcome_unknown` | unknown | the Pi process that held the turn went away (crash, exit, relaunch) before it settled |
+| `abort_withheld` | not dispatched | the bridge refused to abort, with `abort_withheld` set to `human_control`, `control_changed_since_request` or `pi_has_queued_messages` |
+| `superseded` | settled | replaced by `pi_supersede_pending` |
+
+**What "settled" does not prove.** `aborted`, a terminal task state and
+`agent_settled` all describe Pi's **agent loop** and nothing more. DevX does
+not track processes that tools or extensions spawn. Examples are a shell
+command, or a subagent such as a research helper that started its own
+children. Such a subprocess, or one of its descendants, may still be
+running after the turn settles. An abort signal sent to a tool is not proof
+that its process tree exited. DevX makes no claim about descendant processes.
+Verifying them, and stopping them if needed, is an operator action outside
+this interface.
 
 Cancelling an accepted running turn is denied while a human holds control.
 A task handed to Pi but not yet accepted can still be cancelled; that only

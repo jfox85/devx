@@ -201,6 +201,10 @@ func (t *Task) Phase() string {
 }
 
 // Cancel outcomes reported for a task whose cancellation was requested.
+// They distinguish requested (abort_pending), dispatched (abort_sent,
+// abort_unconfirmed) and settled outcomes. "Settled" describes Pi's agent
+// loop only: DevX does not track subprocesses spawned by tools or
+// extensions and makes no claim that their process trees exited.
 const (
 	CancelBeforeDelivery   = "cancelled_before_delivery"
 	CancelBeforeAcceptance = "cancelled_before_acceptance"
