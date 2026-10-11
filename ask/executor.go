@@ -13,26 +13,28 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/session"
-	"github.com/spf13/viper"
 )
 
+// PolicyLoader returns the owner's responder policy. The responder runs an
+// arbitrary local command, so the policy must come only from the owner's
+// DevX config file, never through viper: viper gives a project
+// .devx/config.yaml and DEVX_* environment variables precedence, which would
+// let a repository enable the responder, drop approval, or choose the
+// executable. cmd installs the owner-config loader at startup. Unset, or on
+// a load error, the responder is disabled (fail closed).
+var PolicyLoader func() (Policy, error)
+
+// EffectivePolicy is the owner's responder policy, or a disabled policy
+// carrying the load error when it cannot be read.
 func EffectivePolicy() Policy {
-	timeout, err := time.ParseDuration(viper.GetString("agent_responder.timeout"))
-	if err != nil || timeout <= 0 {
-		timeout = 5 * time.Minute
+	if PolicyLoader == nil {
+		return Policy{Mode: "none", LoadErr: errors.New("agent responder policy is not configured")}
 	}
-	mode := viper.GetString("agent_responder.mode")
-	if mode == "" {
-		mode = "approval"
+	p, err := PolicyLoader()
+	if err != nil {
+		return Policy{Mode: "none", LoadErr: err}
 	}
-	return Policy{
-		Enabled:  viper.GetBool("agent_responder.enabled"),
-		Mode:     mode,
-		Command:  viper.GetString("agent_responder.command"),
-		Args:     viper.GetStringSlice("agent_responder.args"),
-		Timeout:  timeout,
-		ReadOnly: viper.GetBool("agent_responder.read_only"),
-	}
+	return p
 }
 
 type ExecuteOptions struct {
@@ -51,6 +53,12 @@ func Execute(ctx context.Context, req *Request, target *session.Session, opts Ex
 	policy := opts.Policy
 	if policy.Command == "" {
 		policy = EffectivePolicy()
+	}
+	if policy.LoadErr != nil {
+		req.Status = StatusFailed
+		req.Error = "agent responder policy unusable: " + policy.LoadErr.Error()
+		_ = store.Save(req)
+		return req, errors.New(req.Error)
 	}
 	if !policy.Enabled {
 		req.Status = StatusFailed

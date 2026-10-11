@@ -55,6 +55,9 @@ type ApprovalStore struct {
 }
 
 type Policy struct {
+	// LoadErr is set when the owner policy could not be loaded; such a
+	// policy is disabled.
+	LoadErr  error
 	Enabled  bool
 	Mode     string
 	Command  string
