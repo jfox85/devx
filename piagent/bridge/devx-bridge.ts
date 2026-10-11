@@ -348,6 +348,11 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 		if (r.abort_on_request) {
 			extra.note = "aborted on request";
 		} else {
+			// Not an abort this instance dispatched (the task is still bound to
+			// r.instance, checked above). An abort_sent_at left by a save that
+			// landed but reported failure was never sent: withdraw it so the
+			// task is not reported as aborted on request (PR82).
+			if (t.abort_sent_at) delete t.abort_sent_at;
 			// Interrupted from the TUI: that is a human taking control. Only
 			// if control has not changed since the turn settled; a human may
 			// have released meanwhile and that must stand.
@@ -462,6 +467,10 @@ export default function devxBridge(pi: ExtensionAPI) {
 	let pendingConfirm: { id: string; prompt: string; at: number } | undefined;
 	let lastEnd: { text: string; stop?: string; error?: string } | undefined;
 	let abortSent = false; // this bridge called ctx.abort() for a DevX cancel of currentTask
+	// The task this bridge tried to mark abort_sent_at for. If the save landed
+	// but reported failure, the abort is owed: dispatch it (gates permitting)
+	// or truthfully withdraw the mark. Never leave "sent" without sending.
+	let abortAttempt: string | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ctxRef: any;
 	let requeueId: string | undefined;
@@ -688,6 +697,22 @@ export default function devxBridge(pi: ExtensionAPI) {
 		return editor;
 	};
 
+	// Events annotate durable state; they never gate acting on it. Caller
+	// holds the lock.
+	const annotate = (type: string, taskId: string | undefined, data?: Record<string, unknown>) => {
+		try {
+			appendEvent(type, taskId, data);
+		} catch {}
+	};
+
+	// Why an abort for task t must not be sent now ("" = may send).
+	const abortGate = (t: any, a: any, ctx: any): string => {
+		if (a.lease?.holder !== "managed") return "human_control";
+		if ((t.cancel_lease_generation ?? a.lease.generation) !== a.lease.generation) return "control_changed_since_request";
+		if (ctx.hasPendingMessages()) return "pi_has_queued_messages";
+		return "";
+	};
+
 	const tick = () => {
 		const ctx = ctxRef;
 		if (!ctx || mode === "stopped") return;
@@ -697,6 +722,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		let deliver: { id: string; prompt: string } | undefined;
 		let doAbort = false;
 		let failUnconfirmed = false;
+		let lockFailed = false;
 		try {
 			withLock(() => {
 				const a = readJSON(p.agent);
@@ -716,19 +742,27 @@ export default function devxBridge(pi: ExtensionAPI) {
 				const editor = heartbeat(ctx);
 				if (!announced) announceLocked(ctx, a);
 				if (requeueId) {
+					// This bridge fenced requeueId: Pi never received it. A
+					// confirmed_at here is ours from a save that landed but
+					// reported failure; it is not true, so it is withdrawn.
 					const t = readJSON(taskPath(requeueId));
-					if (t?.state === "running" && !t.confirmed_at && t.cancel_requested) {
+					const ours = t?.state === "running" && (!t.confirmed_at || t.bridge_instance === instance);
+					if (ours) {
+						delete t.confirmed_at;
+						delete t.accepted_as;
+					}
+					if (ours && t.cancel_requested) {
 						t.state = "cancelled";
 						t.finished_at = now();
 						t.note = "cancelled before Pi accepted it";
 						saveTask(t);
-						appendEvent("task_cancelled", requeueId, { delivered: true, accepted: false });
-					} else if (t?.state === "running" && !t.confirmed_at) {
+						annotate("task_cancelled", requeueId, { delivered: true, accepted: false });
+					} else if (ours) {
 						t.state = "waiting";
 						delete t.delivered_at;
 						delete t.bridge_instance;
 						saveTask(t);
-						appendEvent("delivery_fenced", requeueId, { reason: requeueReason });
+						annotate("delivery_fenced", requeueId, { reason: requeueReason });
 					}
 					requeueId = undefined;
 					requeueReason = "lock_unavailable";
@@ -752,20 +786,34 @@ export default function devxBridge(pi: ExtensionAPI) {
 					// running work. Never while Pi holds queued messages: in the
 					// TUI ctx.abort() moves them into the editor, mixing them with
 					// a human's draft. Every decision is recorded.
-					if (t?.state === "running" && t.cancel_requested && t.confirmed_at && !t.abort_sent_at && !t.abort_withheld && !abortSent && !pendingConfirm) {
-						let withheld = "";
-						if (a.lease?.holder !== "managed") withheld = "human_control";
-						else if ((t.cancel_lease_generation ?? a.lease.generation) !== a.lease.generation) withheld = "control_changed_since_request";
-						else if (ctx.hasPendingMessages()) withheld = "pi_has_queued_messages";
+					if (t?.state === "running" && t.abort_sent_at && !abortSent && abortAttempt === t.id && !pendingConfirm) {
+						// Owed: our abort_sent_at save landed but reported
+						// failure, so ctx.abort() was not called. The gates are
+						// re-checked now: control may have moved meanwhile.
+						const withheld = abortGate(t, a, ctx);
+						if (withheld || ctx.isIdle()) {
+							delete t.abort_sent_at;
+							if (withheld) t.abort_withheld = withheld;
+							saveTask(t);
+							abortAttempt = undefined;
+							if (withheld) annotate("abort_withheld", t.id, { reason: withheld, lease_generation: a.lease?.generation ?? 0, abort_not_dispatched: true });
+						} else {
+							doAbort = true;
+						}
+					} else if (t?.state === "running" && t.cancel_requested && t.confirmed_at && !t.abort_sent_at && !t.abort_withheld && !abortSent && !pendingConfirm) {
+						const withheld = abortGate(t, a, ctx);
 						if (withheld) {
 							t.abort_withheld = withheld;
 							saveTask(t);
-							appendEvent("abort_withheld", t.id, { reason: withheld, lease_generation: a.lease?.generation ?? 0 });
+							annotate("abort_withheld", t.id, { reason: withheld, lease_generation: a.lease?.generation ?? 0 });
 						} else if (!ctx.isIdle()) {
+							abortAttempt = t.id;
 							t.abort_sent_at = now();
 							saveTask(t);
-							appendEvent("abort_sent", t.id, { lease_generation: a.lease.generation });
+							// Durable from here: the abort is dispatched even if
+							// the annotation below cannot be written.
 							doAbort = true;
+							annotate("abort_sent", t.id, { lease_generation: a.lease.generation });
 						}
 					}
 					if (pendingConfirm && Date.now() - pendingConfirm.at > CONFIRM_TIMEOUT_MS + TEST_DELIVERY_DELAY_MS && t?.state === "running") {
@@ -801,13 +849,14 @@ export default function devxBridge(pi: ExtensionAPI) {
 				deliver = { id: next.id, prompt: next.prompt };
 			});
 		} catch {
-			return; // lock contention or a write failure; retry next tick
+			lockFailed = true; // lock contention or a write failure; retry next tick
 		}
 		if (failUnconfirmed) settle({ text: "", stop: "", fail_error: "Pi did not accept the prompt (delivery not confirmed)" });
 		if (doAbort) {
 			abortSent = true;
 			ctx.abort();
 		}
+		if (lockFailed) return;
 		if (deliver) {
 			// followUp avoids a throw if a human submit raced us; the input
 			// handler below is the final fence either way.
@@ -887,7 +936,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 					t.confirmed_at = now();
 					t.accepted_as = e.streamingBehavior ?? "turn";
 					saveTask(t);
-					appendEvent("task_started", id, { accepted_as: t.accepted_as });
+					// Durable from here: Pi gets the prompt even if the
+					// annotation cannot be written.
+					annotate("task_started", id, { accepted_as: t.accepted_as });
 				}
 			});
 			} catch {
@@ -966,6 +1017,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		// the lock and ctx.abort() called, so it alone is authoritative: no
 		// read of durable task state, which a later cancel could change.
 		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: aborted && abortSent });
+		abortAttempt = undefined;
 	});
 
 	pi.registerCommand("devx-takeover", {
