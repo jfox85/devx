@@ -99,6 +99,10 @@ type Config struct {
 	PassEnv []string
 	// AllowedProjects is the allowlist for start. Empty denies all starts.
 	AllowedProjects []string
+	// LaunchPolicyErr, when set, means the owner's launch policy could not
+	// be loaded. Start, launch and relaunch then fail closed with this error;
+	// read-only and control operations keep working.
+	LaunchPolicyErr error
 	// DevxExecutable lets the bridge raise DevX attention flags. Optional.
 	DevxExecutable string
 	// WindowName is the tmux window name for agents.
@@ -186,6 +190,9 @@ func (m *Manager) Start(req StartRequest) (*StartResult, error) {
 		return nil, err
 	}
 	if err := validatePrompt(req.Prompt); err != nil {
+		return nil, err
+	}
+	if err := m.launchPolicyUsable(); err != nil {
 		return nil, err
 	}
 	if !m.projectAllowed(req.Project) {
@@ -366,9 +373,22 @@ func (s *Store) RecordedBinding(agentID string) (string, time.Time, error) {
 	}
 }
 
+// launchPolicyUsable refuses when the owner's launch policy failed to load.
+// The message is generic (it reaches remote MCP clients); the load error
+// itself is reported locally by whoever built the Config.
+func (m *Manager) launchPolicyUsable() error {
+	if m.Config.LaunchPolicyErr != nil {
+		return denied("the pi_mcp launch policy in the owner DevX config is unreadable, untrusted or invalid; nothing was started")
+	}
+	return nil
+}
+
 // launch starts Pi in a dedicated window (or respawns the bound pane) with a
 // fresh launch nonce. Bridges started with an older nonce are fenced out.
 func (m *Manager) launch(agentID string, relaunch bool) error {
+	if err := m.launchPolicyUsable(); err != nil {
+		return err
+	}
 	agent, err := m.Store.LoadAgent(agentID)
 	if err != nil {
 		return err

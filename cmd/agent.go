@@ -14,7 +14,6 @@ import (
 	"github.com/jfox85/devx/session"
 	"github.com/jfox85/devx/version"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 // devx agent: the human-facing control surface for MCP-managed Pi agents.
@@ -346,14 +345,35 @@ func newAgentManager() (*piagent.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg := piagent.Config{
-		PiCommand:       viper.GetString("pi_mcp.pi_command"),
-		PiArgs:          viper.GetStringSlice("pi_mcp.pi_args"),
-		PassEnv:         viper.GetStringSlice("pi_mcp.pass_env"),
-		AllowedProjects: viper.GetStringSlice("pi_mcp.allowed_projects"),
-		DevxExecutable:  exe,
+	cfg := ownerLaunchConfig(artifactPolicyPath())
+	if cfg.LaunchPolicyErr != nil {
+		// stderr only: `devx mcp pi` stdout carries the protocol, and the
+		// detail (paths, YAML positions) is not sent to MCP clients.
+		_, _ = fmt.Fprintf(os.Stderr, "devx: pi_mcp launch policy unusable, starts and relaunches are refused: %v\n", cfg.LaunchPolicyErr)
 	}
+	cfg.DevxExecutable = exe
 	return piagent.NewManager(piagent.NewStore(piAgentStateDir()), piagent.Tmux{}, localOnlySessionCreator{}, cfg), nil
+}
+
+// ownerLaunchConfig loads the security-sensitive launch policy
+// (pi_mcp.allowed_projects, pi_command, pi_args, pass_env) directly from the
+// owner's DevX config file, never through viper: viper gives a project
+// .devx/config.yaml (and DEVX_* environment variables) precedence when devx
+// runs inside a project, which would let a repository widen the start
+// allowlist or choose the executable, arguments and environment of managed
+// agents. An unusable file fails closed: no allowed projects, and starts and
+// (re)launches are refused with the load error.
+func ownerLaunchConfig(path string) piagent.Config {
+	lp, err := artifactbridge.LoadLaunchPolicyFile(path)
+	if err != nil {
+		return piagent.Config{LaunchPolicyErr: err}
+	}
+	return piagent.Config{
+		PiCommand:       lp.PiCommand,
+		PiArgs:          lp.PiArgs,
+		PassEnv:         lp.PassEnv,
+		AllowedProjects: lp.AllowedProjects,
+	}
 }
 
 // localOnlySessionCreator creates managed-agent sessions in local-only
