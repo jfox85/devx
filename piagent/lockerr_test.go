@@ -130,32 +130,23 @@ func TestDeniedTrackerIgnoresOtherErrors(t *testing.T) {
 
 // The owned-lock release must not give up on a transient pid read failure
 // (on Windows a probing waiter can hold the pid file open): readFileRetry
-// retries until the file is readable; a missing file returns at once.
+// retries other errors until the deadline; a missing file returns at once.
 func TestReadFileRetryRecoversFromTransientFailure(t *testing.T) {
-	if _, err := readFileRetry(filepath.Join(t.TempDir(), "absent"), time.Second); !os.IsNotExist(err) {
-		t.Fatalf("absent: %v", err)
+	calls := 0
+	flaky := func(string) ([]byte, error) {
+		calls++
+		if calls < 3 {
+			return nil, errors.New("transient sharing violation")
+		}
+		return []byte("1"), nil
 	}
-	// A directory where the file should be makes ReadFile fail with a
-	// non-NotExist error, standing in for a transient sharing violation;
-	// it is then atomically replaced by the real file.
-	dir := t.TempDir()
-	p := filepath.Join(dir, "pid")
-	if err := os.Mkdir(p, 0o700); err != nil {
-		t.Fatal(err)
+	data, err := readFileRetry("pid", 2*time.Second, flaky)
+	if err != nil || string(data) != "1" || calls != 3 {
+		t.Fatalf("readFileRetry = %q, %v after %d calls; want success on the 3rd", data, err, calls)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "pid.new"), []byte("1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		time.Sleep(30 * time.Millisecond)
-		_ = os.Remove(p)
-		_ = os.Rename(filepath.Join(dir, "pid.new"), p)
-	}()
-	data, err := readFileRetry(p, 2*time.Second)
-	<-done
-	if err != nil || string(data) != "1" {
-		t.Fatalf("readFileRetry = %q, %v; want the file once it is readable", data, err)
+	calls = 0
+	missing := func(string) ([]byte, error) { calls++; return nil, os.ErrNotExist }
+	if _, err := readFileRetry("pid", 2*time.Second, missing); !os.IsNotExist(err) || calls != 1 {
+		t.Fatalf("missing file: %v after %d calls; want NotExist at once", err, calls)
 	}
 }

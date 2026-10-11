@@ -104,7 +104,7 @@ func releaseOwnedDirLock(path string) {
 	// a waiter has the file open to probe the lock. A failed read used to
 	// skip the pid removal, so the directory could not be removed and the
 	// lock leaked until the stale timeout (seen on windows-latest).
-	data, err := readFileRetry(pidPath, lockReleaseRetry)
+	data, err := readFileRetry(pidPath, lockReleaseRetry, os.ReadFile)
 	if err == nil {
 		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid != os.Getpid() {
 			return // a waiter reclaimed it: the lock is no longer ours to remove
@@ -120,10 +120,10 @@ func releaseOwnedDirLock(path string) {
 
 // readFileRetry reads path, retrying transient failures for up to d. A
 // missing file is returned at once.
-func readFileRetry(path string, d time.Duration) ([]byte, error) {
+func readFileRetry(path string, d time.Duration, read func(string) ([]byte, error)) ([]byte, error) {
 	deadline := time.Now().Add(d)
 	for {
-		data, err := os.ReadFile(path)
+		data, err := read(path)
 		if err == nil || os.IsNotExist(err) || time.Now().After(deadline) {
 			return data, err
 		}
