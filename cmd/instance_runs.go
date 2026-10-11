@@ -84,21 +84,25 @@ func instanceRunHash(name string) (string, bool) {
 	return parts[1], true
 }
 
-// parseInstanceJournal parses newline-delimited entries. Apply writes each
-// entry and its newline in one write, so only a final line WITHOUT a
-// trailing newline can be torn by a crash mid-append (that write never
-// happened, because the journal precedes it); it is dropped. Any other
-// malformed line means the journal was altered, and is refused.
+// parseInstanceJournal parses newline-delimited entries.
+//
+// Commit invariant: a journal step is committed only once its entry AND its
+// terminating newline are durable. Apply writes entry+"\n" in one write
+// followed by fsync, and performs the record write only after both
+// succeeded. So an unterminated final line, even one that is complete,
+// valid JSON, may be a torn append whose record write never happened (and
+// whose value a later run may have written); it is dropped without being
+// decoded. Every newline-terminated line must be a well-formed entry; a
+// malformed one means the journal was altered, and is refused.
 func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
-	lines := bytes.Split(data, []byte("\n"))
-	last := len(lines) - 1
-	for last >= 0 && len(bytes.TrimSpace(lines[last])) == 0 {
-		last--
+	if i := bytes.LastIndexByte(data, '\n'); i < 0 {
+		data = nil // no terminated line at all
+	} else {
+		data = data[:i+1] // drop the unterminated tail, valid or not
 	}
-	tornTail := !bytes.HasSuffix(bytes.TrimRight(data, " \t\r"), []byte("\n"))
 	var entries []piagent.JournalEntry
-	for i := 0; i <= last; i++ {
-		line := bytes.TrimSpace(lines[i])
+	for n, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -106,10 +110,7 @@ func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
 		dec := json.NewDecoder(bytes.NewReader(line))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&e); err != nil || dec.More() {
-			if i == last && tornTail {
-				break
-			}
-			return nil, fmt.Errorf("journal line %d is malformed (only an unterminated final line is a torn append)", i+1)
+			return nil, fmt.Errorf("journal line %d is malformed (only an unterminated final line is a torn append)", n+1)
 		}
 		entries = append(entries, e)
 	}

@@ -583,6 +583,77 @@ func TestInstanceRollbackPartialJournalAndInterruptedApply(t *testing.T) {
 	f.assertVictimIntact()
 }
 
+// PR86 r4243222242: a complete, valid JSON entry WITHOUT its trailing
+// newline is a torn append too (apply writes entry+"\n" in one write and
+// returns before the record write unless that write fully succeeded), so
+// its step never happened in this run and must not be undone: a later run
+// may have written the same deterministic value.
+func TestInstanceRollbackDropsCompleteButUnterminatedTail(t *testing.T) {
+	f := newInstRollbackFixture(t)
+	runA := f.run
+	journal := mustRead(t, filepath.Join(runA, "journal.jsonl"))
+	lines := strings.Split(strings.TrimSpace(string(journal)), "\n")
+	if !strings.Contains(lines[3], `"name":"`+fxAgentB+`"`) {
+		t.Fatalf("expected agent b last: %s", lines[3])
+	}
+	// Run A crashed with b's full entry persisted but not its newline: b
+	// was never bound by A.
+	if err := os.WriteFile(filepath.Join(runA, "journal.jsonl"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ab := f.agent(fxAgentB)
+	f.writeAgent(fxAgentB, "b", ab.CreatedAt, "", time.Time{})
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(filepath.Join(runA, "journal.jsonl"), old, old)
+	// Run B binds b (same deterministic value); its run dir is later lost.
+	runB := f.apply()
+	f.assertApplied()
+	bound := f.agent(fxAgentB)
+	if err := os.RemoveAll(runB); err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.rollback(runA)
+	if err != nil || !strings.Contains(out, "Rolled back 3 change(s)") {
+		t.Fatalf("rollback A: %v\n%s", err, out)
+	}
+	if got := f.agent(fxAgentB); got.SessionInstanceID != bound.SessionInstanceID || !got.SessionCreatedAt.Equal(bound.SessionCreatedAt) {
+		t.Fatalf("rollback of A removed run B's binding of %s (A's unterminated step never happened)", fxAgentB)
+	}
+	if f.agent(fxAgentA).SessionInstanceID != "" || f.sessions()["a"].InstanceID != "" {
+		t.Fatal("A's committed (newline-terminated) steps must still be undone")
+	}
+	f.assertVictimIntact()
+}
+
+// Journal tail classification: newline-terminated valid lines are steps;
+// any unterminated final line (valid or invalid JSON) is dropped; a
+// newline-terminated invalid line is refused.
+func TestParseInstanceJournalTails(t *testing.T) {
+	valid := `{"time":"2026-10-01T12:00:00Z","kind":"session","name":"a","instance_id":"si_aaaaaaaaaaaaaaaaaaaaaaaa"}`
+	valid2 := strings.Replace(valid, `"name":"a"`, `"name":"b"`, 1)
+	for _, c := range []struct {
+		name, data string
+		want       int
+		err        bool
+	}{
+		{"terminated valid", valid + "\n" + valid2 + "\n", 2, false},
+		{"terminated valid, trailing blank lines", valid + "\n" + valid2 + "\n\n \n", 2, false},
+		{"terminated valid, CRLF", valid + "\r\n" + valid2 + "\r\n", 2, false},
+		{"unterminated valid tail", valid + "\n" + valid2, 1, false},
+		{"unterminated valid tail with trailing spaces", valid + "\n" + valid2 + "  ", 1, false},
+		{"unterminated invalid tail", valid + "\n" + valid2[:20], 1, false},
+		{"single unterminated valid line", valid, 0, false},
+		{"empty", "", 0, false},
+		{"terminated invalid tail", valid + "\n" + valid2[:20] + "\n", 0, true},
+		{"invalid middle line", valid + "\n{\n" + valid2 + "\n", 0, true},
+	} {
+		got, err := parseInstanceJournal([]byte(c.data))
+		if (err != nil) != c.err || (!c.err && len(got) != c.want) {
+			t.Errorf("%s: got %d entries, err=%v; want %d, err=%v", c.name, len(got), err, c.want, c.err)
+		}
+	}
+}
+
 func TestInstanceRollbackInterruptedSessionWrite(t *testing.T) {
 	// Session entries journaled but the sessions write never landed (crash
 	// between journal and replace), so no agent was bound either: restore
