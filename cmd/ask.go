@@ -152,7 +152,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	policy := ask.EffectivePolicy()
 	if policy.LoadErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "devx: agent responder disabled, owner config unusable: %v\n", policy.LoadErr)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "devx: agent responder disabled, owner config unusable: %v\n", policy.LoadErr)
 	}
 	if policy.Enabled && policy.Mode == "approval" {
 		allowed, err := askStore.IsAllowed(fromName, targetName, fromPath, target.Path)
