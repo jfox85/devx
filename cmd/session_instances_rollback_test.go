@@ -646,6 +646,8 @@ func TestParseInstanceJournalTails(t *testing.T) {
 		{"empty", "", 0, false},
 		{"terminated invalid tail", valid + "\n" + valid2[:20] + "\n", 0, true},
 		{"invalid middle line", valid + "\n{\n" + valid2 + "\n", 0, true},
+		{"terminated line with trailing garbage", valid + "}\n", 0, true},
+		{"terminated line with two values", valid + valid2 + "\n", 0, true},
 	} {
 		got, err := parseInstanceJournal([]byte(c.data))
 		if (err != nil) != c.err || (!c.err && len(got) != c.want) {

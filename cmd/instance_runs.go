@@ -86,14 +86,16 @@ func instanceRunHash(name string) (string, bool) {
 
 // parseInstanceJournal parses newline-delimited entries.
 //
-// Commit invariant: a journal step is committed only once its entry AND its
-// terminating newline are durable. Apply writes entry+"\n" in one write
+// Commit invariant (necessary, not sufficient): a journal step can count as
+// committed only once its entry AND its terminating newline are durable. Apply writes entry+"\n" in one write
 // followed by fsync, and performs the record write only after both
 // succeeded. So an unterminated final line, even one that is complete,
 // valid JSON, may be a torn append whose record write never happened (and
 // whose value a later run may have written); it is dropped without being
 // decoded. Every newline-terminated line must be a well-formed entry; a
-// malformed one means the journal was altered, and is refused.
+// malformed one means the journal was altered, and is refused. A
+// terminated entry whose record write then failed is still undone only by
+// value, under the record's identity checks.
 func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
 	if i := bytes.LastIndexByte(data, '\n'); i < 0 {
 		data = nil // no terminated line at all
@@ -109,7 +111,7 @@ func parseInstanceJournal(data []byte) ([]piagent.JournalEntry, error) {
 		var e piagent.JournalEntry
 		dec := json.NewDecoder(bytes.NewReader(line))
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&e); err != nil || dec.More() {
+		if err := dec.Decode(&e); err != nil || dec.InputOffset() != int64(len(line)) {
 			return nil, fmt.Errorf("journal line %d is malformed (only an unterminated final line is a torn append)", n+1)
 		}
 		entries = append(entries, e)
