@@ -139,3 +139,22 @@ test("cancel of an unaccepted hand-off is still dropped while a human claim is u
 	assert.equal(rj(path.join(e.dir, "agent.json")).lease.holder, "human");
 	assert.equal(b.sent.length, 1);
 });
+
+test("an abort the bridge sent that lands mid-tool (no aborted message, se.aborted) is 'aborted on request'", async (t) => {
+	const e = env();
+	t.after(() => fs.rmSync(e.root, { recursive: true, force: true }));
+	const b = await start(e);
+	b.tick();
+	b.h.input({ text: "work", source: "extension" }, b.ctx);
+	b.ctx.idle = false;
+	patchTask(e.dir, e.id, (x) => ((x.cancel_requested = true), (x.cancel_lease_generation = 1)));
+	b.tick();
+	assert.equal(b.ctx.aborts, 1);
+	b.ctx.idle = true;
+	b.h.agent_end({ messages: [{ role: "assistant", stopReason: "toolUse", content: [] }] }, b.ctx);
+	b.h.agent_settled({ aborted: true }, b.ctx);
+	const task = rj(path.join(e.dir, "tasks", `${e.id}.json`));
+	assert.equal(task.state, "cancelled");
+	assert.equal(task.note, "aborted on request");
+	assert.ok(task.abort_sent_at);
+});
