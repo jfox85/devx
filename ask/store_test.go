@@ -58,6 +58,7 @@ func TestStoreCreateGetPending(t *testing.T) {
 func TestApproveAlwaysPersistsOnlyAfterSuccessfulExecution(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // os.UserHomeDir reads USERPROFILE on Windows
 	configDir := filepath.Join(tmp, ".config", "devx")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		t.Fatal(err)
@@ -88,6 +89,7 @@ func TestApproveAlwaysPersistsOnlyAfterSuccessfulExecution(t *testing.T) {
 func TestApproveExecutionSetupFailureLeavesRequestPending(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // os.UserHomeDir reads USERPROFILE on Windows
 	configDir := filepath.Join(tmp, ".config", "devx")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		t.Fatal(err)

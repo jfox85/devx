@@ -10,12 +10,11 @@ import (
 func TestUpdateCheckStatePersistence(t *testing.T) {
 	// Use a temporary directory for testing
 	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
 
 	// Create a mock config directory
 	_ = filepath.Join(tempDir, ".config", "devx")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
+	t.Setenv("HOME", tempDir)
+	t.Setenv("USERPROFILE", tempDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Change working directory to temp dir so FindProjectConfigDir doesn't find the real .devx
 	originalWd, _ := os.Getwd()
@@ -105,9 +104,8 @@ func TestLoadUpdateCheckStateNonExistent(t *testing.T) {
 	testConfigDir := filepath.Join(tempDir, "test-config-nonexistent")
 
 	// Override the GetConfigDir function for this test by using environment
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", testConfigDir)
-	defer os.Setenv("HOME", originalHome)
+	t.Setenv("HOME", testConfigDir)
+	t.Setenv("USERPROFILE", testConfigDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Change working directory to temp dir so FindProjectConfigDir doesn't find the real .devx
 	originalWd, _ := os.Getwd()
