@@ -250,26 +250,52 @@ function setLeaseLocked(holder: "human" | "managed", reason: string, by: string)
 	return true;
 }
 
-// A settled turn's outcome, frozen once and published idempotently.
+// A settled turn's outcome: a closed record, decided once at settle time from
+// bridge-owned state and published idempotently. Publication (possibly later,
+// possibly by another instance) reads durable task state only for identity
+// and terminality, never to decide the outcome.
 type Receipt = {
-	v: 1;
+	v: 2;
 	receipt_id: string;
 	task_id: string;
 	instance: string;
 	text: string;
 	stop: string;
 	error?: string;
-	// How the turn ended, decided at settle time from what this bridge saw
-	// then; publication (possibly later, possibly by another instance) never
-	// re-derives it from state that changed meanwhile.
-	aborted?: boolean;
-	abort_on_request?: boolean;
+	// The turn ended in an abort.
+	aborted: boolean;
+	// That abort was the one this bridge dispatched for a DevX cancel.
+	abort_on_request: boolean;
+	// Lease generation a human interrupt is judged against: read at settle,
+	// else the one this bridge saw when it delivered the task. null only if
+	// neither is known; then the lease is never moved.
+	lease_generation_basis: number | null;
 	// Set when the bridge itself fails the task (Pi never accepted the
 	// prompt): no result text, state failed with this error.
 	fail_error?: string;
-	lease_generation_at_settle?: number;
 	settled_at: string;
 };
+
+const RECEIPT_ID_RE = /^rc_[0-9a-f]{16}$/;
+const TASK_ID_RE = /^pt_[0-9a-f]{16}$/;
+
+// Full structural check of a spooled receipt; returns why it is invalid.
+function receiptProblem(r: any, file: string): string {
+	if (!r || typeof r !== "object" || Array.isArray(r)) return "not_an_object";
+	if (r.v !== 2) return "unsupported_version";
+	if (typeof r.receipt_id !== "string" || !RECEIPT_ID_RE.test(r.receipt_id)) return "bad_receipt_id";
+	if (typeof r.task_id !== "string" || !TASK_ID_RE.test(r.task_id) || file !== `${r.task_id}.receipt.json`) return "bad_task_id";
+	if (typeof r.instance !== "string" || r.instance === "") return "bad_instance";
+	if (typeof r.text !== "string") return "bad_text";
+	if (typeof r.stop !== "string") return "bad_stop";
+	if (r.error !== undefined && typeof r.error !== "string") return "bad_error";
+	if (typeof r.aborted !== "boolean" || typeof r.abort_on_request !== "boolean") return "bad_abort";
+	if (r.abort_on_request && !r.aborted) return "bad_abort";
+	if (!(r.lease_generation_basis === null || Number.isInteger(r.lease_generation_basis))) return "bad_generation";
+	if (r.fail_error !== undefined && typeof r.fail_error !== "string") return "bad_fail_error";
+	if (typeof r.settled_at !== "string") return "bad_settled_at";
+	return "";
+}
 
 const receiptPath = (taskId: string) => path.join(p.results, `${taskId}.receipt.json`);
 
@@ -279,7 +305,8 @@ const receiptPath = (taskId: string) => path.join(p.results, `${taskId}.receipt.
 // Never overwrites a task someone else already made terminal.
 function publishReceiptLocked(r: Receipt, attempts: number): "published" | "superseded" | "gone" {
 	const t = readJSONStrict(taskPath(r.task_id));
-	if (!t) return "gone"; // the task record was removed (agent records deleted)
+	if (t === undefined) return "gone"; // the task record was removed (agent records deleted)
+	if (!t || typeof t !== "object" || Array.isArray(t) || t.id !== r.task_id) throw new TypeError("task record is not a valid task");
 	const resultFile = path.join(p.results, `${r.task_id}.txt`);
 	if (t.terminal_receipt === r.receipt_id) {
 		// Task already published by an attempt whose outcome we did not see.
@@ -306,7 +333,7 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 		state = "failed";
 	} else if (r.aborted) {
 		state = "cancelled";
-		if (r.abort_on_request ?? !!t.cancel_requested) {
+		if (r.abort_on_request) {
 			extra.note = "aborted on request";
 		} else {
 			// Interrupted from the TUI: that is a human taking control. Only
@@ -315,10 +342,7 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 			extra.note = "interrupted by a human in Pi";
 			extra.human_intervened = true;
 			const a = readJSONStrict(p.agent);
-			// If the settle-time generation is unknown, the delivery-time one
-			// stands in: control unchanged since delivery is unchanged since
-			// settle. Never move the lease on no known generation at all.
-			const gen = typeof r.lease_generation_at_settle === "number" ? r.lease_generation_at_settle : t.lease_generation_at_delivery;
+			const gen = r.lease_generation_basis;
 			if (a && a.lease?.holder === "managed" && typeof gen === "number" && a.lease.generation === gen) {
 				setLeaseLocked("human", "human_interrupt", "pi-tui");
 			}
@@ -336,8 +360,16 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 	return "published";
 }
 
+// Caller holds the lock. Sets a spool aside (kept for inspection, never
+// deleted) and records why.
+function quarantineSpool(name: string, reason: string, receiptId?: string) {
+	const file = path.join(p.results, name);
+	fs.renameSync(file, `${file}.corrupt`);
+	appendEvent("receipt_unreadable", TASK_ID_RE.test(name.slice(0, 19)) ? name.slice(0, 19) : undefined, { file: `${name}.corrupt`, reason, ...(receiptId ? { receipt_id: receiptId } : {}) });
+}
+
 // Spooled receipts left by earlier bridge instances (Pi exited before their
-// outcome was published).
+// outcome was published). Invalid spools are quarantined.
 function foreignReceipts(instance: string): Receipt[] {
 	let names: string[];
 	try {
@@ -351,20 +383,18 @@ function foreignReceipts(instance: string): Receipt[] {
 		if (!/^pt_[0-9a-f]{16}\.receipt\.json$/.test(n)) continue;
 		const file = path.join(p.results, n);
 		let r: any;
+		let problem = "";
 		try {
 			r = readJSONStrict(file);
+			problem = receiptProblem(r, n);
 		} catch (e: any) {
 			if (!(e instanceof SyntaxError)) throw e; // I/O error: retry later
-			r = undefined;
+			problem = "unparseable";
 		}
-		if (r?.v === 1 && typeof r.receipt_id === "string" && typeof r.task_id === "string" && n === `${r.task_id}.receipt.json`) {
-			if (r.instance !== instance) out.push(r);
-			continue;
-		}
-		// Spools are written atomically, so this is not a torn write. Set it
-		// aside (kept for inspection) instead of blocking dispatch forever.
-		fs.renameSync(file, `${file}.corrupt`);
-		appendEvent("receipt_unreadable", n.slice(0, 19), { file: `${n}.corrupt` });
+		// Spools are written atomically, so an invalid one is not a torn
+		// write that might complete: set it aside instead of blocking.
+		if (problem) quarantineSpool(n, problem, typeof r?.receipt_id === "string" ? r.receipt_id : undefined);
+		else if (r.instance !== instance) out.push(r);
 	}
 	return out;
 }
@@ -396,7 +426,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 	let currentTask: string | undefined; // delivered to this Pi process
 	let pendingConfirm: { id: string; prompt: string; at: number } | undefined;
 	let lastEnd: { text: string; stop?: string; error?: string } | undefined;
-	let abortSent = false;
+	let abortSent = false; // this bridge called ctx.abort() for a DevX cancel of currentTask
+	let deliveredGeneration: number | null = null; // lease generation when currentTask was delivered
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ctxRef: any;
 	let requeueId: string | undefined;
@@ -415,6 +446,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 	// Receipts spooled by earlier bridge instances must be published before
 	// this instance dispatches anything.
 	let recovered = false;
+	let announced = false; // bridge_online recorded for this instance
 
 	const statusLine = () => {
 		if (!ctxRef?.hasUI) return;
@@ -449,9 +481,31 @@ export default function devxBridge(pi: ExtensionAPI) {
 
 	// Freeze the outcome of the current task and try to publish it now. The
 	// task stays current until publication succeeds.
-	const settle = (r: Omit<Receipt, "v" | "receipt_id" | "task_id" | "instance" | "settled_at">) => {
+	const settle = (r: { text: string; stop: string; error?: string; aborted?: boolean; abort_on_request?: boolean; fail_error?: string }) => {
 		if (!currentTask || receipt) return;
-		receipt = { v: 1, receipt_id: `rc_${randomBytes(8).toString("hex")}`, task_id: currentTask, instance, settled_at: now(), ...r };
+		// Generation basis for judging a human interrupt: now, else the one
+		// seen at delivery (control unchanged since delivery is unchanged
+		// since settle), else none (the lease is then never moved).
+		let basis: number | null = deliveredGeneration;
+		try {
+			const g = readJSONStrict(p.agent)?.lease?.generation;
+			if (Number.isInteger(g)) basis = g;
+		} catch {}
+		const out: Receipt = {
+			v: 2,
+			receipt_id: `rc_${randomBytes(8).toString("hex")}`,
+			task_id: currentTask,
+			instance,
+			text: r.text,
+			stop: r.stop,
+			aborted: !!r.aborted,
+			abort_on_request: !!r.aborted && !!r.abort_on_request,
+			lease_generation_basis: basis,
+			settled_at: now(),
+		};
+		if (r.error !== undefined) out.error = r.error;
+		if (r.fail_error !== undefined) out.fail_error = r.fail_error;
+		receipt = out;
 		receiptSpooled = false;
 		publishAttempts = 0;
 		publishNextAt = 0;
@@ -512,24 +566,18 @@ export default function devxBridge(pi: ExtensionAPI) {
 	let recoveryFailures = 0;
 	const recoverLocked = () => {
 		try {
+			// Every spool ends published, attached, quarantined, or retried.
+			// Only an I/O error (errno code) is retried: anything else is a
+			// property of that record and would fail forever, so the spool is
+			// set aside rather than blocking dispatch.
 			for (const r of foreignReceipts(instance)) {
-				let taskCorrupt = false;
 				try {
-					readJSONStrict(taskPath(r.task_id));
-				} catch (e) {
-					if (!(e instanceof SyntaxError)) throw e; // I/O: retry later
-					taskCorrupt = true;
-				}
-				if (taskCorrupt) {
-					// The task record it belongs to is corrupt: set the
-					// receipt aside (kept for inspection) rather than block
-					// dispatch forever. Any other failure is retried.
-					const file = receiptPath(r.task_id);
-					fs.renameSync(file, `${file}.corrupt`);
-					appendEvent("receipt_unreadable", r.task_id, { file: `${r.task_id}.receipt.json.corrupt`, reason: "task_record_unreadable", receipt_id: r.receipt_id });
+					publishReceiptLocked(r, 0);
+				} catch (e: any) {
+					if (typeof e?.code === "string") throw e;
+					quarantineSpool(`${r.task_id}.receipt.json`, e instanceof SyntaxError ? "task_record_unreadable" : `publish_error: ${String(e?.message ?? e).slice(0, 120)}`, r.receipt_id);
 					continue;
 				}
-				publishReceiptLocked(r, 0);
 				try {
 					fs.rmSync(receiptPath(r.task_id), { force: true });
 				} catch {}
@@ -543,6 +591,18 @@ export default function devxBridge(pi: ExtensionAPI) {
 		}
 		recovered = true;
 		recoveryFailures = 0;
+	};
+
+	const announceLocked = (ctx: any, a: any) => {
+		appendEvent("bridge_online", undefined, {
+			instance,
+			pane: PANE,
+			pi_session_id: ctx.sessionManager.getSessionId(),
+			expected_pi_session_id: a?.pi_session_id ?? "",
+			mode,
+			ui: ctx.mode ?? "",
+		});
+		announced = true;
 	};
 
 	const heartbeat = (ctx: any) => {
@@ -564,7 +624,6 @@ export default function devxBridge(pi: ExtensionAPI) {
 			mode,
 			...(receipt ? { result_pending: receipt.task_id, publish_attempts: publishAttempts, publish_error: publishError } : {}),
 			...(humanClaimPending ? { human_claim_pending: true } : {}),
-			...(recovered || mode !== "active" ? {} : { recovery_pending: true }),
 		});
 		return editor;
 	};
@@ -584,7 +643,14 @@ export default function devxBridge(pi: ExtensionAPI) {
 				if (!a) return;
 				// Fence: only the newest launch, in the bound pane, may act.
 				if (a.launch_nonce !== NONCE) mode = "fenced";
+				// No liveness before reconciliation: an active instance
+				// announces itself (the heartbeat) only after every spool an
+				// earlier instance left is resolved. Otherwise devx would see
+				// a live, different instance and mark the spooled task
+				// unknown before its real outcome is published.
+				if (mode === "active" && !recovered && a.binding?.pane_id === PANE) recoverLocked();
 				const editor = heartbeat(ctx);
+				if (!announced) announceLocked(ctx, a);
 				if (requeueId) {
 					const t = readJSON(taskPath(requeueId));
 					if (t?.state === "running" && !t.confirmed_at) {
@@ -605,7 +671,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 					humanClaimPending = undefined;
 					return; // decide dispatch next tick, from the saved lease
 				}
-				if (!recovered) recoverLocked();
+				if (!recovered) return; // defensive: recovery above must have run
 
 				if (currentTask) {
 					if (receipt) return; // settled; only publication remains
@@ -638,6 +704,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 				}
 				currentTask = next.id;
 				abortSent = false;
+				deliveredGeneration = typeof a.lease.generation === "number" ? a.lease.generation : null;
 				lastEnd = undefined;
 				pendingConfirm = { id: next.id, prompt: next.prompt, at: Date.now() };
 				deliver = { id: next.id, prompt: next.prompt };
@@ -667,21 +734,18 @@ export default function devxBridge(pi: ExtensionAPI) {
 				const a = readJSON(p.agent);
 				if (!a || a.launch_nonce !== NONCE) mode = "fenced";
 				// Publish outcomes an earlier instance settled but could not
-				// save, before devx sees this instance online.
+				// save before devx sees this instance online. If that fails,
+				// stay silent (no heartbeat, no bridge_online): the tick
+				// retries and announces the instance once recovery succeeds.
 				if (mode === "active") {
 					try {
 						recoverLocked();
-					} catch {}
+					} catch {
+						return;
+					}
 				}
 				heartbeat(ctx);
-				appendEvent("bridge_online", undefined, {
-					instance,
-					pane: PANE,
-					pi_session_id: ctx.sessionManager.getSessionId(),
-					expected_pi_session_id: a?.pi_session_id ?? "",
-					mode,
-					ui: ctx.mode ?? "",
-				});
+				announceLocked(ctx, a);
 			});
 		} catch {}
 		timer = setInterval(tick, TICK_MS);
@@ -793,21 +857,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (!currentTask || pendingConfirm || receipt) return;
 		const end = lastEnd ?? { text: "" };
 		const aborted = end.stop === "aborted";
-		// Freeze whether this abort was the one DevX asked for. A cancel
-		// recorded after the turn settled must not relabel a human interrupt.
-		// If the records cannot be read now, leave the snapshot unknown:
-		// publication then decides from durable task state, and never moves
-		// the lease on an unknown generation.
-		let abortOnRequest: boolean | undefined;
-		let generation: number | undefined;
-		try {
-			abortOnRequest = aborted && !!readJSONStrict(taskPath(currentTask))?.cancel_requested;
-		} catch {}
-		try {
-			const g = readJSONStrict(p.agent)?.lease?.generation;
-			if (typeof g === "number") generation = g;
-		} catch {}
-		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: abortOnRequest, lease_generation_at_settle: generation });
+		// The cause is decided now, from this bridge's own state: the abort
+		// was "on request" only if this bridge dispatched it for a DevX
+		// cancel. Never from durable task state, which a later cancel could
+		// change before publication.
+		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: aborted && abortSent });
 	});
 
 	pi.registerCommand("devx-takeover", {
