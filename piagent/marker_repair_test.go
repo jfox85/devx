@@ -617,3 +617,33 @@ func TestMarkerComparisonIncludesUnknownMembers(t *testing.T) {
 		t.Fatal("whitespace-only difference must compare equal")
 	}
 }
+
+// A genuine journal entry still matches the plan after the plan is written
+// to plan.json (MarshalIndent) and read back, including unknown marker
+// members; a changed instance id does not match.
+func TestJournalMatchesPlanAfterPlanFileRoundTrip(t *testing.T) {
+	e := newMarkerEnv(t)
+	a := e.lost("core")
+	m := e.backups[0].Sessions["core"].LocalOnly
+	m.Unknown = map[string]json.RawMessage{"future": json.RawMessage(`{"b":2,"a":"<x>"}`)}
+	e.confirm = []string{a.ID}
+	p := e.plan()
+	if err := ApplyMarkerPlan(p, e.stores()); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.MarshalIndent(p, "", "  ")
+	var back MarkerPlan
+	if err := json.Unmarshal(data, &back); err != nil || !back.VerifyHash() {
+		t.Fatalf("reloaded plan hash: %v", err)
+	}
+	jdata, _ := json.Marshal(e.journal[0])
+	var j MarkerJournalEntry
+	_ = json.Unmarshal(jdata, &j)
+	if !JournalMatchesPlan(j, &back) {
+		t.Fatal("genuine entry rejected after round trip")
+	}
+	j.SessionInstanceID = "si_ffffffffffffffffffffffff"
+	if JournalMatchesPlan(j, &back) {
+		t.Fatal("changed instance id accepted")
+	}
+}
