@@ -86,8 +86,9 @@ jobs:
         cache: true
     
     - name: Run tests
+      # Failures must fail the job. Tests for Unix-only features (tmux, Gatepost
+      # trust checks, Unix permission bits) skip themselves on Windows with an
+      # explicit reason; everything else must pass. -race works on
+      # windows-latest (the runner ships a cgo-capable toolchain).
       run: |
-        # Windows tests may have limited functionality
-        # as tmux is not available on Windows
         go test -v -race ./...
-      continue-on-error: true

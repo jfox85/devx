@@ -17,9 +17,8 @@ func TestProjectRegistry(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Override home directory for testing
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	t.Run("load_empty_registry", func(t *testing.T) {
 		registry, err := LoadProjectRegistry()
@@ -201,9 +200,8 @@ func TestProjectRegistrySaveLoad(t *testing.T) {
 	}
 
 	// Override home directory
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Create test registry
 	registry := &ProjectRegistry{
@@ -263,11 +261,10 @@ func TestProjectRegistrySaveLoad(t *testing.T) {
 
 func TestGetProjectRegistryPath(t *testing.T) {
 	// Save original HOME
-	oldHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", oldHome)
 
 	testHome := "/test/home"
-	os.Setenv("HOME", testHome)
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome) // os.UserHomeDir reads USERPROFILE on Windows
 
 	got := GetProjectRegistryPath()
 	want := filepath.Join(testHome, ".config", "devx", "projects.json")
@@ -470,9 +467,8 @@ func TestProjectRegistryNilHandling(t *testing.T) {
 	}
 
 	// Override HOME to use temp dir
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Create a project directory that exists
 	projectDir := filepath.Join(tmpDir, "project")
