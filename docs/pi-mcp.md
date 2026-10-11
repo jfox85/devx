@@ -176,7 +176,7 @@ reported from evidence of a lower one.
 | `cancelled_before_delivery` | settled | the task was still queued (allowed under human control too: queued work is not running work) |
 | `cancelled_before_acceptance` | settled | the bridge had handed it to Pi but Pi had not accepted it; the bridge's input handler drops the injection, so Pi never runs it |
 | `abort_pending` | requested | an accepted turn; the bridge has not acted yet |
-| `abort_sent` | dispatched | the bridge recorded `abort_sent_at` under the lock, then called `ctx.abort()`, at most once per task. This proves the call was made, not that anything stopped. |
+| `abort_sent` | dispatched | the bridge recorded `abort_sent_at` under the lock, then called `ctx.abort()`, at most once per task. This proves the call was made, not that anything stopped. See "Task record vs event log" below for the rare case where the call is delayed by a tick or withdrawn. |
 | `abort_unconfirmed` | dispatched | the abort was sent, but Pi has not settled within 30 s. Nothing is escalated: no keystrokes, no kill, no replay. Inspect the session. |
 | `aborted` | settled | Pi's agent loop settled the turn as aborted |
 | `finished_before_abort` | settled | the turn ended on its own first |
@@ -241,6 +241,29 @@ microseconds, still sees the abort land. The cancel was legitimately
 requested under DevX control, and the event log shows the order. The bridge
 doesn't call `ctx.abort()` under the lock, because Pi's settle handlers take
 the same lock.
+
+**Task record vs event log.** The task record is the authority; events
+annotate it.
+
+- **The bridge acts on saved decisions even without their event.** Once it
+  has saved `abort_sent_at` or `confirmed_at`, it calls `ctx.abort()` or
+  lets Pi run the prompt, even if the matching `abort_sent` or
+  `task_started` event cannot be appended. The log may then be missing that
+  one event; the task record is still correct.
+- **When the task save itself reports failure** (it may still have landed),
+  the bridge does not act in that step:
+  - **An unconfirmed acceptance** is not injected. A `confirmed_at` that
+    landed anyway is withdrawn, and the task goes back to waiting.
+  - **An unconfirmed `abort_sent_at`** is owed. On the next tick the bridge
+    re-checks the same gates (managed control at the request's generation,
+    no queued messages):
+    - If the gates still pass and the turn is still running, it calls
+      `ctx.abort()` once.
+    - Otherwise it withdraws `abort_sent_at`. If a gate failed, it records
+      `abort_withheld` with `abort_not_dispatched`.
+    - If the turn settles first, the mark is withdrawn too. An abort this
+      bridge never dispatched is never reported as sent, nor as
+      "aborted on request".
 
 ### Child results while a parent is busy
 
