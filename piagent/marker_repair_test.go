@@ -1,6 +1,7 @@
 package piagent
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -503,5 +504,100 @@ func TestMarkerLostAgainByOlderWriterReplansSameRepair(t *testing.T) {
 	e.sess.recs["core"].LocalOnly = nil // older-schema rewrite
 	if p2 := e.plan(); p2.Hash != p.Hash {
 		t.Fatal("same evidence must yield the same plan")
+	}
+}
+
+// Re-planning with the same confirmations after a partial apply counts the
+// already-restored agent as satisfied (not an unknown confirmation), so the
+// same command flow completes; the plan only restores what remains.
+func TestMarkerReplanAfterPartialApplyKeepsConfirmationsValid(t *testing.T) {
+	e := newMarkerEnv(t)
+	a := e.lost("core")
+	b := e.lost("side")
+	e.confirm = []string{a.ID, b.ID}
+	p := e.plan()
+	e.sess.failAt = 2
+	_ = ApplyMarkerPlan(p, e.stores())
+	e.sess.failAt = 0
+	p2 := e.plan()
+	if len(p2.UnknownConfirmations) != 0 || len(p2.OwnerConfirmed) != 2 {
+		t.Fatalf("confirmations after partial apply: unknown=%v confirmed=%v", p2.UnknownConfirmations, p2.OwnerConfirmed)
+	}
+	if p2.item(a.ID).Action != MarkerActionPresent || p2.item(b.ID).Action != MarkerActionRestore {
+		t.Fatalf("got %s / %s", p2.item(a.ID).Action, p2.item(b.ID).Action)
+	}
+	if err := ApplyMarkerPlan(p2, e.stores()); err != nil {
+		t.Fatal(err)
+	}
+	if e.sess.recs["side"].LocalOnly == nil {
+		t.Fatal("remaining marker not restored")
+	}
+}
+
+// A crash between the sessions write and the event append leaves no
+// restored event; the retry adds exactly one.
+func TestMarkerRetryAddsMissingRestoredEvent(t *testing.T) {
+	e := newMarkerEnv(t)
+	a := e.lost("core")
+	e.confirm = []string{a.ID}
+	p := e.plan()
+	// Simulate: marker written, event never appended.
+	m := *p.item(a.ID).Marker
+	e.sess.recs["core"].LocalOnly = &m
+	count := func() int {
+		evs, _, _ := e.store.ReadEvents(a.ID, 0, 100)
+		n := 0
+		for _, ev := range evs {
+			if ev.Type == "local_only_marker_restored" {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 2; i++ {
+		if err := ApplyMarkerPlan(p, e.stores()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count() != 1 {
+		t.Fatalf("want exactly one restored event, got %d", count())
+	}
+}
+
+// Rollback refuses a record whose path or instance id changed even though
+// created_at and marker match.
+func TestMarkerRollbackChecksPathAndInstance(t *testing.T) {
+	for name, mod := range map[string]func(s *session.Session){
+		"path":     func(s *session.Session) { s.Path = "/moved" },
+		"instance": func(s *session.Session) { s.InstanceID = "si_ffffffffffffffffffffffff" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newMarkerEnv(t)
+			a := e.lost("core")
+			e.sess.recs["core"].InstanceID = session.DeriveInstanceID("core", e.sess.recs["core"].Path, e.sess.recs["core"].CreatedAt)
+			e.confirm = []string{a.ID}
+			if err := ApplyMarkerPlan(e.plan(), e.stores()); err != nil {
+				t.Fatal(err)
+			}
+			mod(e.sess.recs["core"])
+			n, skipped, err := RollbackMarkers(e.journal, e.stores())
+			if err != nil || n != 0 || len(skipped) != 1 || e.sess.recs["core"].LocalOnly == nil {
+				t.Fatalf("n=%d skipped=%v err=%v", n, skipped, err)
+			}
+		})
+	}
+}
+
+// Markers that differ only in a member this build does not know are not
+// the same marker (apply refuses; rollback leaves it).
+func TestMarkerComparisonIncludesUnknownMembers(t *testing.T) {
+	a := &session.LocalOnlyMeta{Owner: "o", AgentID: "pa_1"}
+	b := &session.LocalOnlyMeta{Owner: "o", AgentID: "pa_1", Unknown: map[string]json.RawMessage{"x": json.RawMessage(`1`)}}
+	if sameMarker(a, b) {
+		t.Fatal("unknown member difference ignored")
+	}
+	c := &session.LocalOnlyMeta{Owner: "o", AgentID: "pa_1", Unknown: map[string]json.RawMessage{"x": json.RawMessage(` 1 `)}}
+	if !sameMarker(b, c) {
+		t.Fatal("whitespace-only difference must compare equal")
 	}
 }

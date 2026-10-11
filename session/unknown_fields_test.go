@@ -134,3 +134,36 @@ func TestUnknownFieldsNeverShadowKnownOrRetired(t *testing.T) {
 		t.Fatalf("cleared marker reappeared: %s", out)
 	}
 }
+
+// Unknown members inside the local-only marker itself survive this build's
+// writes, so a future marker field is not stripped one level down.
+func TestLocalOnlyMarkerKeepsNestedUnknownFields(t *testing.T) {
+	in := `{"name":"lo","local_only":{"owner":"devx-pi-mcp","agent_id":"pa_1","created_at":"2026-10-08T22:32:42Z","session_instance_id":"si_x","OWNER":"ignored-dup"},"target":{}}`
+	var s Session
+	if err := json.Unmarshal([]byte(in), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.LocalOnly == nil || string(s.LocalOnly.Unknown["session_instance_id"]) != `"si_x"` {
+		t.Fatalf("nested unknown not kept: %+v", s.LocalOnly)
+	}
+	if _, ok := s.LocalOnly.Unknown["OWNER"]; ok {
+		t.Fatal("a case-folded known key must not be kept as unknown")
+	}
+	out, _ := json.Marshal(s)
+	if !strings.Contains(string(out), `"session_instance_id":"si_x"`) {
+		t.Fatalf("nested unknown not written back: %s", out)
+	}
+}
+
+// Keys encoding/json folds onto a known field (Unicode simple folding) are
+// never kept as unknown, and retired fields match case-insensitively.
+func TestUnknownFieldMatchingFollowsEncodingJSON(t *testing.T) {
+	var s Session
+	// "ſ" (U+017F) folds to "s": encoding/json decodes this into ProjectAlias.
+	if err := json.Unmarshal([]byte(`{"name":"a","project_aliaſ":"p","Color":"red"}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.ProjectAlias != "p" || len(s.Unknown) != 0 {
+		t.Fatalf("got alias %q unknown %v", s.ProjectAlias, s.Unknown)
+	}
+}

@@ -206,6 +206,41 @@ func TestSessionMarkersRepairEndToEnd(t *testing.T) {
 	if out, _ := run(nil, "--backup", backup); !strings.Contains(out, "marker_present") || !strings.Contains(out, "Nothing to apply") {
 		t.Fatalf("after apply:\n%s", out)
 	}
+	// Re-running the same confirmed dry run after it was applied stays
+	// applicable (confirmation satisfied) and has nothing left to write.
+	out, err = run(nil, "--backup", backup, "--confirm", agentID)
+	if err != nil || strings.Contains(out, "NOT CANDIDATES") || !strings.Contains(out, "Nothing to apply") {
+		t.Fatalf("re-run after apply must be clean: %v\n%s", err, out)
+	}
+	if out, err := run(nil, "--backup", backup, "--confirm", agentID, "--apply", hashRe.FindStringSubmatch(out)[1]); err != nil || !strings.Contains(out, "Nothing to apply") {
+		t.Fatalf("re-apply must be a no-op: %v\n%s", err, out)
+	}
+
+	appliedHash := hash(sessPath)
+	// Rollback accepts only run directories it created, with a journal that
+	// belongs to that run's plan, and the newest run first.
+	if out, err := run(nil, "--rollback", bdir); err == nil || !strings.Contains(out, "not a marker repair run directory") {
+		t.Fatalf("foreign rollback dir must be refused: %v\n%s", err, out)
+	}
+	fake := filepath.Join(filepath.Dir(rb[1]), "session-markers-99990101T000000Z-x-newer")
+	_ = os.MkdirAll(fake, 0o700)
+	_ = os.WriteFile(filepath.Join(fake, "journal.jsonl"), []byte("{}\n"), 0o600)
+	future := time.Now().Add(time.Hour)
+	_ = os.Chtimes(filepath.Join(fake, "journal.jsonl"), future, future)
+	if out, err := run(nil, "--rollback", rb[1]); err == nil || !strings.Contains(out, "later marker repair run") {
+		t.Fatalf("older run rollback must be refused: %v\n%s", err, out)
+	}
+	_ = os.RemoveAll(fake)
+	jpath := filepath.Join(rb[1], "journal.jsonl")
+	goodJournal, _ := os.ReadFile(jpath)
+	_ = os.WriteFile(jpath, []byte(strings.Replace(string(goodJournal), planHash, "ffffffffffffffff", 1)), 0o600)
+	if out, err := run(nil, "--rollback", rb[1]); err == nil || !strings.Contains(out, "belongs to plan") {
+		t.Fatalf("journal from another plan must be refused: %v\n%s", err, out)
+	}
+	_ = os.WriteFile(jpath, goodJournal, 0o600)
+	if hash(sessPath) != appliedHash {
+		t.Fatal("refused rollbacks must not write")
+	}
 
 	// 5. Rollback restores exactly the original record.
 	if out, err := run([]string{"DEVX_PI_AGENT_ID=pa_000000000099"}, "--rollback", rb[1]); err == nil || !strings.Contains(out, "inside a managed agent") {

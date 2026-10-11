@@ -206,10 +206,16 @@ func PlanMarkerRepair(sessions map[string]*session.Session, agents []*Agent, opt
 		it := MarkerPlanItem{AgentID: a.ID, Session: a.DevxSession, AgentCreatedAt: a.CreatedAt, AgentBoundID: a.SessionInstanceID}
 		reason := markerEligibility(a, sessions[a.DevxSession], live, liveByPath, sessByPath, &it, backups, opts.Witnesses)
 		switch {
-		case reason == MarkerActionPresent:
+		case reason == MarkerActionPresent && !confirmed[a.ID]:
 			it.Action = MarkerActionPresent
-		case reason != "":
+		case reason != "" && reason != MarkerActionPresent:
 			it.Action, it.Reason, it.Marker = MarkerActionSkip, reason, nil
+		case reason == MarkerActionPresent && confirmed[a.ID]:
+			// Restored by an earlier (possibly interrupted) apply of the
+			// same confirmation set: the confirmation is satisfied, so
+			// re-running the same command plans only what remains.
+			used[a.ID] = true
+			it.Action = MarkerActionPresent
 		case confirmed[a.ID]:
 			used[a.ID] = true
 			it.Action = MarkerActionRestore
@@ -374,13 +380,15 @@ func (p *MarkerPlan) HasWork() bool {
 
 // MarkerJournalEntry is one applied marker write (newline-delimited JSON).
 type MarkerJournalEntry struct {
-	Time             time.Time             `json:"time"`
-	Kind             string                `json:"kind"` // "local_only_marker"
-	Session          string                `json:"session"`
-	SessionCreatedAt time.Time             `json:"session_created_at"`
-	AgentID          string                `json:"agent_id"`
-	Marker           session.LocalOnlyMeta `json:"marker"`
-	PlanHash         string                `json:"plan_hash"`
+	Time              time.Time             `json:"time"`
+	Kind              string                `json:"kind"` // "local_only_marker"
+	Session           string                `json:"session"`
+	SessionCreatedAt  time.Time             `json:"session_created_at"`
+	SessionPath       string                `json:"session_path"`
+	SessionInstanceID string                `json:"session_instance_id,omitempty"`
+	AgentID           string                `json:"agent_id"`
+	Marker            session.LocalOnlyMeta `json:"marker"`
+	PlanHash          string                `json:"plan_hash"`
 }
 
 // MarkerStores is the narrow persistence surface the repair needs.
@@ -476,7 +484,8 @@ func restoreMarkerChecked(planHash string, it MarkerPlanItem, st MarkerStores, n
 				}
 			}
 			if err := st.Journal(MarkerJournalEntry{Time: now(), Kind: "local_only_marker", Session: it.Session,
-				SessionCreatedAt: s.CreatedAt, AgentID: it.AgentID, Marker: *it.Marker, PlanHash: planHash}); err != nil {
+				SessionCreatedAt: s.CreatedAt, SessionPath: s.Path, SessionInstanceID: s.InstanceID,
+				AgentID: it.AgentID, Marker: *it.Marker, PlanHash: planHash}); err != nil {
 				return err
 			}
 			m := *it.Marker
@@ -485,9 +494,14 @@ func restoreMarkerChecked(planHash string, it MarkerPlanItem, st MarkerStores, n
 			return nil
 		})
 		if errors.Is(err, errAlreadyApplied) {
-			return nil
-		}
-		if err != nil {
+			// A crash between the sessions write and the event append
+			// leaves no event: add it now (still under the agent lock).
+			has, herr := st.Agents.hasMarkerRestoredEvent(a.ID, planHash)
+			if herr != nil || has {
+				return herr
+			}
+			wrote = true
+		} else if err != nil {
 			return err
 		}
 		if !wrote {
@@ -499,10 +513,58 @@ func restoreMarkerChecked(planHash string, it MarkerPlanItem, st MarkerStores, n
 	})
 }
 
+// hasMarkerRestoredEvent reports whether the agent's log records a
+// local_only_marker_restored event for planHash. Callers hold the agent lock.
+func (s *Store) hasMarkerRestoredEvent(agentID, planHash string) (bool, error) {
+	after := int64(0)
+	for {
+		evs, last, err := s.ReadEvents(agentID, after, MaxEventsPage)
+		if err != nil {
+			return false, err
+		}
+		for _, e := range evs {
+			if h, _ := e.Data["plan_hash"].(string); e.Type == "local_only_marker_restored" && h == planHash {
+				return true, nil
+			}
+		}
+		if len(evs) == 0 {
+			return false, nil
+		}
+		after = evs[len(evs)-1].Seq
+		if after >= last {
+			return false, nil
+		}
+	}
+}
+
 var errAlreadyApplied = errors.New("already applied")
 
+// sameMarker compares two markers exactly, including members this build
+// does not know (preserved in Unknown).
 func sameMarker(a, b *session.LocalOnlyMeta) bool {
-	return a != nil && b != nil && a.Owner == b.Owner && a.AgentID == b.AgentID && a.CreatedAt.Equal(b.CreatedAt)
+	if a == nil || b == nil || a.Owner != b.Owner || a.AgentID != b.AgentID || !a.CreatedAt.Equal(b.CreatedAt) {
+		return false
+	}
+	if len(a.Unknown) != len(b.Unknown) {
+		return false
+	}
+	for k, va := range a.Unknown {
+		vb, ok := b.Unknown[k]
+		if !ok || !jsonEqual(va, vb) {
+			return false
+		}
+	}
+	return true
+}
+
+func jsonEqual(a, b json.RawMessage) bool {
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	ja, _ := json.Marshal(x)
+	jb, _ := json.Marshal(y)
+	return string(ja) == string(jb)
 }
 
 // RollbackMarkers removes exactly the markers recorded in the journal, and
@@ -519,8 +581,9 @@ func RollbackMarkers(entries []MarkerJournalEntry, st MarkerStores) (reverted in
 			switch {
 			case s == nil:
 				skipped = append(skipped, "session "+e.Session+": removed since repair")
-			case !s.CreatedAt.Equal(e.SessionCreatedAt):
-				skipped = append(skipped, "session "+e.Session+": recreated since repair")
+			case !s.CreatedAt.Equal(e.SessionCreatedAt) || filepath.Clean(s.Path) != filepath.Clean(e.SessionPath) ||
+				(e.SessionInstanceID != "" && s.InstanceID != "" && s.InstanceID != e.SessionInstanceID):
+				skipped = append(skipped, "session "+e.Session+": not the repaired record (recreated or changed)")
 			case s.LocalOnly == nil:
 				skipped = append(skipped, "session "+e.Session+": no marker (repair write did not happen or was already undone)")
 			case !sameMarker(s.LocalOnly, &e.Marker):

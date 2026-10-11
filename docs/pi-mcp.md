@@ -306,9 +306,9 @@ the live tmux tag, ordering, path, project, claimants and the backups all
 agree, and only for agents the owner names with `--confirm`. It is applied
 against a hash, journaled and reversible. See
 [session-marker-repair.md](session-marker-repair.md). From this version on,
-DevX also preserves session fields it does not know, so this and later
-builds no longer strip fields written by newer ones (older binaries
-still do).
+DevX also preserves unknown fields of the store, each session record and
+the local-only marker, so this and later builds no longer strip those
+fields when newer builds add them (older binaries still do).
 
 **Old writers.** A `devx` binary from before this change can rewrite
 `sessions.json` and drop `instance_id`, or rewrite `agent.json` and drop

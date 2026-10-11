@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,9 @@ type LocalOnlyMeta struct {
 	Owner     string    `json:"owner"`
 	AgentID   string    `json:"agent_id"`
 	CreatedAt time.Time `json:"created_at"`
+	// Unknown holds marker members this build does not know (see
+	// unknown_fields.go); they are written back unchanged.
+	Unknown map[string]json.RawMessage `json:"-"`
 }
 
 // IsLocalOnly reports whether the session carries a local-only marker. Any

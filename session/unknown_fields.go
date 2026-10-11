@@ -15,9 +15,11 @@ import (
 // write: this is how builds without the local-only marker stripped
 // `local_only` (and `instance_id`) from records created by newer builds.
 //
-// From this version on, fields this build does not know are kept verbatim
-// and written back unchanged, both per session record and at the top level of
-// the store. This only protects records from writers that include this code:
+// From this version on, fields this build does not know are kept and written
+// back unchanged at three levels: the top level of the store, each session
+// record, and the local-only marker object (the ownership marker itself).
+// Other nested objects (target, target.gatepost, review) are not covered.
+// This only protects records from writers that include this code:
 // a binary built before it (for example any build of origin/main before this
 // change landed there) still drops unknown fields, and nothing a newer build
 // writes can prevent that. See docs/session-marker-repair.md.
@@ -32,13 +34,12 @@ var retiredSessionFields = map[string]bool{
 }
 
 // knownJSONFields returns the JSON keys encoding/json maps to struct fields
-// of t (top-level fields only; Session embeds no structs). Matching is
-// case-insensitive, as in encoding/json.
-func knownJSONFields(t reflect.Type) map[string]bool {
+// of t (top-level fields only; these structs embed none).
+func knownJSONFields(t reflect.Type) []string {
 	if v, ok := knownFieldsCache.Load(t); ok {
-		return v.(map[string]bool)
+		return v.([]string)
 	}
-	known := map[string]bool{}
+	var known []string
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if !f.IsExported() {
@@ -52,7 +53,7 @@ func knownJSONFields(t reflect.Type) map[string]bool {
 		if name == "" {
 			name = f.Name
 		}
-		known[strings.ToLower(name)] = true
+		known = append(known, name)
 	}
 	knownFieldsCache.Store(t, known)
 	return known
@@ -68,7 +69,7 @@ func splitUnknown(data []byte, t reflect.Type, retired map[string]bool) (map[str
 	known := knownJSONFields(t)
 	var extra map[string]json.RawMessage
 	for k, v := range all {
-		if known[strings.ToLower(k)] || retired[k] {
+		if matchesFold(known, k) || retired[strings.ToLower(k)] {
 			continue
 		}
 		if extra == nil {
@@ -77,6 +78,18 @@ func splitUnknown(data []byte, t reflect.Type, retired map[string]bool) (map[str
 		extra[k] = append(json.RawMessage(nil), v...)
 	}
 	return extra, nil
+}
+
+// matchesFold reports whether encoding/json would decode key k into one of
+// the known fields. encoding/json matches names case-insensitively with
+// Unicode simple folding, which strings.EqualFold implements.
+func matchesFold(known []string, k string) bool {
+	for _, n := range known {
+		if strings.EqualFold(n, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeUnknown adds the preserved unknown members to the encoded object
@@ -128,6 +141,34 @@ func (s Session) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return mergeUnknown(base, s.Unknown)
+}
+
+type localOnlyNoMethods LocalOnlyMeta
+
+// UnmarshalJSON decodes a local-only marker and keeps unknown members, so a
+// field a newer build adds to the marker survives this build's writes (and a
+// marker restored from a backup keeps it).
+func (m *LocalOnlyMeta) UnmarshalJSON(data []byte) error {
+	var plain localOnlyNoMethods
+	if err := json.Unmarshal(data, &plain); err != nil {
+		return err
+	}
+	extra, err := splitUnknown(data, reflect.TypeOf(plain), nil)
+	if err != nil {
+		return err
+	}
+	*m = LocalOnlyMeta(plain)
+	m.Unknown = extra
+	return nil
+}
+
+// MarshalJSON encodes the marker plus any preserved unknown members.
+func (m LocalOnlyMeta) MarshalJSON() ([]byte, error) {
+	base, err := json.Marshal(localOnlyNoMethods(m))
+	if err != nil {
+		return nil, err
+	}
+	return mergeUnknown(base, m.Unknown)
 }
 
 type storeNoMethods SessionStore

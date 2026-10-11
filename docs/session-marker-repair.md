@@ -23,10 +23,13 @@ writer; nothing here depends on identifying the exact one.
 
 ## Prevention (this change)
 
-`session.Session` and `session.SessionStore` now keep every JSON member this
-build does not know (`Unknown`, see `session/unknown_fields.go`) and write it
-back unchanged. Known fields always win, and fields DevX deliberately retired
-(currently only `color`) are still dropped.
+`session.SessionStore` (top level), `session.Session` (each record) and
+`session.LocalOnlyMeta` (the marker object itself) now keep JSON members this
+build does not know (`Unknown`, see `session/unknown_fields.go`) and write them
+back unchanged. Other nested objects (`target`, `target.gatepost`, `review`)
+are not covered yet. Known fields always win: keys are matched the way
+encoding/json matches them. Fields DevX deliberately retired (currently only
+`color`) are still dropped.
 
 Limits (do not overstate):
 
@@ -66,8 +69,17 @@ the agent is listed as `skip` with a reason:
 | backups | at least one reviewed backup holds a record with the same `created_at` and path carrying `local_only{owner: devx-pi-mcp, agent_id: <agent>, created_at: <record created_at>}`. No backup of that record carries a different marker, an adoption marker or a different instance id. Backups taken after the loss (no marker) are simply not witnesses |
 
 Backups must be regular files (no symlinks) owned by the current user, not
-group- or world-writable, and not the live `sessions.json`. Their paths and
-SHA-256 values are part of the plan hash.
+group- or world-writable, and not the live `sessions.json`. The checks run on
+the opened file, and its bytes are read from the same handle. Backup paths
+and SHA-256 values are part of the plan hash.
+
+How strong is the evidence? Every witness (agent records, event logs, tmux
+environment, backups) can be written by any process running as the same
+user, including a managed agent. The witnesses rule out accidental and
+ambiguous cases. **The owner's explicit `--confirm` after reading the dry run
+is the real authorization gate.** Likewise, the `DEVX_PI_AGENT_ID` refusal is
+a guardrail against an agent repairing its own ownership by accident, not a
+security boundary.
 
 `--apply`:
 
@@ -81,13 +93,26 @@ SHA-256 values are part of the plan hash.
    and the live tmux tag. Then, under the sessions lock, re-checks the exact
    record (created_at, path, instance id, project, no marker), checks that no
    other record already carries this agent's marker, journals (fsync), and sets
-   only `local_only`;
-6. appends a `local_only_marker_restored` event to the agent.
+   `local_only` (no other field of any record changes; the file itself is
+   re-serialised by the current schema like every DevX write, so retired
+   fields such as `color` are dropped);
+6. appends a `local_only_marker_restored` event to the agent. If a crash lost
+   the event, a retry adds it.
 
-A marker that is already present and identical counts as done, so re-running
-after an interruption, or a concurrent apply, completes without a second write.
-`--rollback` removes a marker only if the record is still the same instance
-and the marker is still exactly the one written.
+A marker that is already present and identical counts as done, so a concurrent
+apply, or re-running the same `ApplyMarkerPlan`, writes nothing twice. From the
+CLI after an interruption, re-run the same dry run with the same `--confirm`
+list: already-restored agents show `marker_present`, their confirmations still
+count, and the new plan hash covers only what remains. Apply that new hash.
+
+`--rollback <dir>`:
+- accepts only a `session-markers-*` run directory in the backups directory
+  next to `sessions.json`, whose `plan.json` and `journal.jsonl` are trusted
+  files and whose journal entries all belong to that plan;
+- refuses if a later run that was not rolled back exists (two runs can write
+  identical markers), unless `--force-older`;
+- removes a marker only if the record still has the journaled `created_at`,
+  path and instance id, and still holds exactly the marker written.
 
 The repair never changes agent records or bindings, instance ids, leases,
 queues, tmux sessions, panes or processes.

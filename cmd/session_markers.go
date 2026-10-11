@@ -26,6 +26,7 @@ var (
 	markersApply    string
 	markersRollback string
 	markersJSON     bool
+	markersForce    bool
 )
 
 var sessionMarkersCmd = &cobra.Command{
@@ -58,9 +59,17 @@ Backups must be regular files owned by you and not writable by others; their
 SHA-256 is part of the plan hash and re-checked at apply time. --apply copies
 sessions.json to a fresh backup directory first, re-validates every
 condition under the agent and sessions locks, journals before writing, and
-writes only session.local_only. It never touches agent bindings, instance
-ids, leases, queues, tmux sessions, panes or processes. --apply and
---rollback refuse to run inside a managed agent.`,
+changes only session.local_only. It never touches agent bindings, instance
+ids, leases, queues, tmux sessions, panes or processes. After an interrupted
+apply, re-run the same dry run (same --confirm list) and apply its new hash.
+
+--rollback accepts only a session-markers-* run directory created by
+--apply, newest run first (or --force-older), and removes a marker only where
+the record and marker are still exactly as written.
+
+Every witness can be written by processes running as you; the owner's
+--confirm after reviewing the dry run is the authorization. --apply and
+--rollback refuse to run inside a managed agent (a guardrail, not a boundary).`,
 	Args: cobra.NoArgs,
 	RunE: runSessionMarkers,
 }
@@ -72,6 +81,7 @@ func init() {
 	sessionMarkersCmd.Flags().StringVar(&markersApply, "apply", "", "apply the plan with this hash (from a dry run)")
 	sessionMarkersCmd.Flags().StringVar(&markersRollback, "rollback", "", "undo the marker repair recorded in this backup directory")
 	sessionMarkersCmd.Flags().BoolVar(&markersJSON, "json", false, "print the plan as JSON")
+	sessionMarkersCmd.Flags().BoolVar(&markersForce, "force-older", false, "allow --rollback of a run that is not the newest")
 }
 
 // errInsideAgent: ownership repairs are owner actions.
@@ -181,7 +191,9 @@ func currentMarkerPlan() (*piagent.MarkerPlan, error) {
 
 // readTrustedBackup reads a sessions.json backup the owner named. It must be
 // a regular file (not a symlink) owned by the current user and not writable
-// by group or others, and must not be the live sessions.json.
+// by group or others, and must not be the live sessions.json. The checks run
+// on the opened file and the bytes are read from that same handle, so the
+// file cannot be swapped between check and read.
 func readTrustedBackup(path string) (piagent.MarkerBackup, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -190,22 +202,9 @@ func readTrustedBackup(path string) (piagent.MarkerBackup, error) {
 	if live, err := filepath.Abs(config.GetSessionsPath()); err == nil && samePath(abs, live) {
 		return piagent.MarkerBackup{}, fmt.Errorf("backup %s is the live sessions.json", path)
 	}
-	fi, err := os.Lstat(abs)
+	data, err := readTrustedFile(abs)
 	if err != nil {
 		return piagent.MarkerBackup{}, fmt.Errorf("backup %s: %w", path, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return piagent.MarkerBackup{}, fmt.Errorf("backup %s is not a regular file", path)
-	}
-	if fi.Mode().Perm()&0o022 != 0 {
-		return piagent.MarkerBackup{}, fmt.Errorf("backup %s is writable by group or others", path)
-	}
-	if err := checkOwnedByMe(fi); err != nil {
-		return piagent.MarkerBackup{}, fmt.Errorf("backup %s: %w", path, err)
-	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		return piagent.MarkerBackup{}, err
 	}
 	var st session.SessionStore
 	if err := json.Unmarshal(data, &st); err != nil {
@@ -213,6 +212,36 @@ func readTrustedBackup(path string) (piagent.MarkerBackup, error) {
 	}
 	sum := sha256.Sum256(data)
 	return piagent.MarkerBackup{Path: abs, SHA256: hex.EncodeToString(sum[:]), Sessions: st.Sessions}, nil
+}
+
+// readTrustedFile opens path without following a final symlink, checks the
+// opened file is a regular file owned by the current user and not writable
+// by group or others, and returns its contents read from the same handle.
+func readTrustedFile(path string) ([]byte, error) {
+	if fi, err := os.Lstat(path); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	f, err := openNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("writable by group or others")
+	}
+	if err := checkOwnedByMe(fi); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(f)
 }
 
 func samePath(a, b string) bool {
@@ -267,7 +296,7 @@ func printMarkerPlan(out io.Writer, p *piagent.MarkerPlan) error {
 }
 
 func backupForMarkerRepair(p *piagent.MarkerPlan) (string, error) {
-	base := filepath.Join(filepath.Dir(config.GetSessionsPath()), "backups")
+	base := markerRunsBase()
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
@@ -289,14 +318,66 @@ func backupForMarkerRepair(p *piagent.MarkerPlan) (string, error) {
 	return dir, nil
 }
 
-func runMarkersRollback(out io.Writer, dir string) error {
-	f, err := os.Open(filepath.Join(dir, "journal.jsonl"))
+// markerRunsBase is where apply creates its per-run backup directories.
+func markerRunsBase() string {
+	return filepath.Join(filepath.Dir(config.GetSessionsPath()), "backups")
+}
+
+// newerMarkerRuns lists marker-repair runs that journaled after dir and were
+// not rolled back. Two runs can write identical markers, so undoing an older
+// run could remove a marker a newer run wrote.
+func newerMarkerRuns(dir string) ([]string, error) {
+	me, err := os.Stat(filepath.Join(dir, "journal.jsonl"))
 	if err != nil {
-		return fmt.Errorf("no journal in %s: %w", dir, err)
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(filepath.Clean(dir)), "session-markers-*", "journal.jsonl"))
+	var out []string
+	for _, m := range matches {
+		d := filepath.Dir(m)
+		if d == filepath.Clean(dir) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(d, "rolled-back")); err == nil {
+			continue
+		}
+		if st, err := os.Stat(m); err == nil && st.Size() > 0 && st.ModTime().After(me.ModTime()) {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+func runMarkersRollback(out io.Writer, dir string) error {
+	// Only a run directory this command created is accepted: it lives in
+	// the backups directory next to sessions.json, and its journal and plan
+	// are trusted files whose entries belong to that plan.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	if !samePath(filepath.Dir(abs), markerRunsBase()) || !strings.HasPrefix(filepath.Base(abs), "session-markers-") {
+		return fmt.Errorf("%s is not a marker repair run directory under %s", dir, markerRunsBase())
+	}
+	planData, err := readTrustedFile(filepath.Join(abs, "plan.json"))
+	if err != nil {
+		return fmt.Errorf("plan.json in %s: %w", dir, err)
+	}
+	var plan piagent.MarkerPlan
+	if err := json.Unmarshal(planData, &plan); err != nil || !plan.VerifyHash() {
+		return fmt.Errorf("plan.json in %s is not a valid marker plan", dir)
+	}
+	journalData, err := readTrustedFile(filepath.Join(abs, "journal.jsonl"))
+	if err != nil {
+		return fmt.Errorf("journal in %s: %w", dir, err)
+	}
+	if newer, err := newerMarkerRuns(abs); err != nil {
+		return err
+	} else if len(newer) > 0 && !markersForce {
+		return fmt.Errorf("a later marker repair run wrote after this one (%s); roll back the newest run first, or pass --force-older", strings.Join(newer, ", "))
+	}
 	var entries []piagent.MarkerJournalEntry
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(string(journalData)))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -305,6 +386,9 @@ func runMarkersRollback(out io.Writer, dir string) error {
 		var e piagent.MarkerJournalEntry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			break // torn last line: that write never happened (journal precedes it)
+		}
+		if e.PlanHash != plan.Hash {
+			return fmt.Errorf("journal entry for %s belongs to plan %s, not this run's plan %s", e.Session, e.PlanHash, plan.Hash)
 		}
 		entries = append(entries, e)
 	}
