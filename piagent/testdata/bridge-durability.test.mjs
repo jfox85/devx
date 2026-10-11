@@ -191,6 +191,8 @@ function withEnv(name, fn) {
 	});
 }
 
+// A structurally valid receipt spool as an earlier bridge instance writes it.
+const spool = (taskId, receiptId, over = {}) => ({ v: 2, receipt_id: receiptId, task_id: taskId, instance: "0123456789abcdef", text: "t", stop: "stop", aborted: false, abort_on_request: false, lease_generation_basis: 1, settled_at: "2026-10-11T00:00:00.000Z", ...over });
 const lockFault = (opts) => inject("mkdirSync", /agent\.lock$/, { code: "EACCES", ...opts });
 
 // ======================= A: human ownership =======================
@@ -570,7 +572,7 @@ withEnv("a spooled receipt whose task record is corrupt is set aside, not fatal"
 	addTask(env.dir, 1, "first");
 	const bad = "pt_0000000000000009";
 	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), "{corrupt");
-	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify({ v: 1, receipt_id: "rc_x", task_id: bad, instance: "old", text: "t", stop: "stop", settled_at: "" }));
+	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify(spool(bad, "rc_000000000000000a")));
 	const b = await startBridge(env);
 	b.tick();
 	assert.deepEqual(b.sent, ["first"]);
@@ -578,7 +580,28 @@ withEnv("a spooled receipt whose task record is corrupt is set aside, not fatal"
 	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && e.data.reason === "task_record_unreadable"));
 });
 
-withEnv("unreadable task at settle: a requested abort still publishes as 'aborted on request'", async (env) => {
+withEnv("attribution is frozen from bridge state: a cancel recorded before settle that the bridge never acted on is not 'on request'", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	// devx records a cancel, but Pi is idle so the bridge never aborts; then
+	// a human interrupt ends the turn. The cancel did not cause the abort.
+	const t = task(env.dir, id);
+	t.cancel_requested = true;
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${id}.json`), JSON.stringify(t));
+	b.tick();
+	assert.equal(b.ctx.aborted, 0);
+	inject("readFileSync", new RegExp(`tasks/${id}\\.json$`)); // settle-time reads fail too
+	inject("writeFileSync", /results\/pt_.*\.txt\..*\.tmp$/, { times: 1 }); // deferred publish
+	b.finishTurn("partial", "aborted");
+	clearFaults();
+	advance(60_000);
+	b.tick();
+	assert.equal(task(env.dir, id).state, "cancelled");
+	assert.equal(task(env.dir, id).note, "interrupted by a human in Pi");
+});
+
+withEnv("an abort the bridge dispatched for a cancel publishes as 'aborted on request' even if every read fails at settle", async (env) => {
 	const id = addTask(env.dir, 1, "first");
 	const b = await startBridge(env);
 	deliverAndAccept(b);
@@ -591,13 +614,11 @@ withEnv("unreadable task at settle: a requested abort still publishes as 'aborte
 	b.tick();
 	assert.equal(b.ctx.aborted, 1);
 	b.ctx.idle = true;
-	inject("readFileSync", new RegExp(`tasks/${id}\\.json$`), { times: 1 });
-	inject("writeFileSync", /results\/pt_.*\.txt\..*\.tmp$/, { times: 1 }); // force a deferred publish
+	inject("readFileSync", /(agent|tasks\/pt_.*)\.json$/);
 	b.finishTurn("partial", "aborted");
 	clearFaults();
 	advance(60_000);
 	b.tick();
-	assert.equal(task(env.dir, id).state, "cancelled");
 	assert.equal(task(env.dir, id).note, "aborted on request");
 	assert.equal(agent(env.dir).lease.holder, "managed");
 });
@@ -637,16 +658,132 @@ withEnv("unreadable agent at settle never moves the lease after a later release"
 withEnv("stuck recovery is surfaced after repeated failures and blocks dispatch", async (env) => {
 	addTask(env.dir, 1, "first");
 	const bad = "pt_0000000000000009";
-	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), JSON.stringify({ id: bad, order: 9, prompt: "x", state: "running", bridge_instance: "old" }));
-	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify({ v: 1, receipt_id: "rc_y", task_id: bad, instance: "old", text: "t", stop: "stop", settled_at: "" }));
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), JSON.stringify({ id: bad, order: 9, prompt: "x", state: "running", bridge_instance: "0123456789abcdef" }));
+	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify(spool(bad, "rc_000000000000000b")));
 	inject("writeFileSync", /results\/pt_0000000000000009\.txt\..*\.tmp$/);
 	const b = await startBridge(env);
 	for (let i = 0; i < 5; i++) b.tick();
 	assert.equal(b.sent.length, 0, "no dispatch while an earlier result is unpublished");
+	assert.ok(!fs.existsSync(path.join(env.dir, "bridge.json")), "no heartbeat (not online) before reconciliation");
+	assert.ok(!events(env.dir).some((e) => e.type === "bridge_online"));
 	assert.ok(b.ui.notes.some((n) => n.l === "warning" && /earlier Pi session/.test(n.m)));
 	clearFaults();
 	b.tick();
 	assert.equal(task(env.dir, bad).state, "completed");
+	assert.equal(events(env.dir).filter((e) => e.type === "bridge_online").length, 1, "announced once, after recovery");
 	b.tick();
 	assert.deepEqual(b.sent, ["first"]);
+});
+
+// ---- PR88 review round on 3a26a14 (r4243432186, r4243432191, r4243432196) ----
+
+// Go's AgentStatus orphan rule (manager.go): a running task whose
+// bridge_instance differs from a fresh, nonce-matching, non-fenced
+// heartbeat's instance is marked unknown.
+function goWouldOrphan(dir, id) {
+	let b;
+	try {
+		b = readJ(path.join(dir, "bridge.json"));
+	} catch {
+		return false; // no heartbeat: not online
+	}
+	const a = agent(dir);
+	const t = task(dir, id);
+	return t.state === "running" && b.nonce === a.launch_nonce && b.mode !== "fenced" && b.mode !== "stopped" && b.instance !== t.bridge_instance;
+}
+
+function relaunchNonce(dir, nonce) {
+	const ag = agent(dir);
+	ag.launch_nonce = nonce;
+	real.writeFileSync.call(fs, path.join(dir, "agent.json"), JSON.stringify(ag));
+}
+
+withEnv("r4243432186: a relaunch whose recovery fails is not online until the spooled outcome is published", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const a = await startBridge(env);
+	deliverAndAccept(a);
+	lockFault();
+	a.finishTurn("spooled answer"); // spooled; publish fails; crash (no shutdown)
+	clearFaults();
+	relaunchNonce(env.dir, "nonce-2");
+	fs.rmSync(path.join(env.dir, "bridge.json")); // the dead instance's heartbeat is long stale
+	inject("readFileSync", new RegExp(`tasks/${first}\\.json$`), { code: "EIO" }); // transient
+	const b = await startBridge(env, { nonce: "nonce-2" });
+	for (let i = 0; i < 3; i++) b.tick();
+	assert.equal(goWouldOrphan(env.dir, first), false, "devx must not see a live foreign instance");
+	assert.ok(!fs.existsSync(path.join(env.dir, "bridge.json")));
+	assert.equal(b.sent.length, 0);
+	clearFaults();
+	b.tick();
+	assert.equal(task(env.dir, first).state, "completed", "the real outcome, not unknown");
+	assert.equal(real.readFileSync.call(fs, path.join(env.dir, "results", `${first}.txt`), "utf8"), "spooled answer");
+	assert.equal(readJ(path.join(env.dir, "bridge.json")).mode, "active");
+	b.tick();
+	assert.deepEqual(b.sent, ["second"]);
+});
+
+withEnv("r4243432191: a cancel arriving after a human interrupt settled (all reads failing) never relabels it", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	inject("readFileSync", /(agent|tasks\/pt_.*)\.json$/, { times: 2 }); // settle-time reads fail
+	inject("writeFileSync", /results\/pt_.*\.txt\..*\.tmp$/); // publication delayed
+	b.finishTurn("partial", "aborted"); // human pressed Esc
+	const t = task(env.dir, id);
+	t.cancel_requested = true; // MCP cancel lands in the window
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${id}.json`), JSON.stringify(t));
+	clearFaults();
+	advance(60_000);
+	b.tick();
+	b.tick();
+	const done = task(env.dir, id);
+	assert.equal(done.note, "interrupted by a human in Pi");
+	assert.equal(done.human_intervened, true);
+	assert.equal(agent(env.dir).lease.holder, "human", "delivery-time generation stands in");
+	assert.equal(b.sent.length, 1, "nothing dispatched to the human who interrupted");
+});
+
+for (const [label, over] of [
+	["missing text", { text: undefined }],
+	["text not a string", { text: 5 }],
+	["missing stop", { stop: undefined }],
+	["missing instance", { instance: undefined }],
+	["missing settled_at", { settled_at: undefined }],
+	["missing abort fields", { aborted: undefined, abort_on_request: undefined }],
+	["on_request without abort", { abort_on_request: true }],
+	["bad generation", { lease_generation_basis: "1" }],
+	["bad receipt id", { receipt_id: "x" }],
+	["task id / file mismatch", { task_id: "pt_00000000000000ff" }],
+	["old version", { v: 1 }],
+	["array", null],
+]) {
+	withEnv(`r4243432196: structurally invalid spool is quarantined, not blocking: ${label}`, async (env) => {
+		addTask(env.dir, 1, "first");
+		const bad = "pt_0000000000000009";
+		real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), JSON.stringify({ id: bad, order: 9, prompt: "x", state: "running", bridge_instance: "0123456789abcdef" }));
+		const body = over === null ? [] : JSON.parse(JSON.stringify(spool(bad, "rc_000000000000000c", over)));
+		real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify(body));
+		const b = await startBridge(env);
+		b.tick();
+		assert.deepEqual(b.sent, ["first"]);
+		assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)), "kept for inspection");
+		assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && e.data.reason));
+		assert.equal(task(env.dir, bad).state, "running", "an invalid spool never decides the task");
+	});
+}
+
+withEnv("recovery quarantines a spool whose publication fails deterministically (non-I/O)", async (env) => {
+	addTask(env.dir, 1, "first");
+	const bad = "pt_0000000000000009";
+	// Task record parses but is not an object the publisher can use.
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), JSON.stringify({ id: "pt_00000000000000ee", state: "running" }));
+	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify(spool(bad, "rc_000000000000000d")));
+	const b = await startBridge(env);
+	b.tick();
+	assert.deepEqual(b.sent, ["first"]);
+	assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)));
+	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && /publish_error/.test(e.data.reason)));
+	assert.equal(task(env.dir, bad).state, "running", "never rewritten from a mismatched record");
 });
