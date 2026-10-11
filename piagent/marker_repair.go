@@ -72,6 +72,7 @@ const (
 	MarkerSkipPath             = "session path differs from the agent's worktree"
 	MarkerSkipProject          = "session project differs from the agent's"
 	MarkerSkipContainer        = "container session"
+	MarkerSkipExposed          = "session has ports or routes; a local-only session never does, so it may have been published (route cleanup skips marked sessions)"
 	MarkerSkipClaimants        = "another live agent claims the same session"
 	MarkerSkipSharedWorktree   = "another live agent or session uses the same worktree"
 	MarkerSkipNoTimes          = "session or agent has no creation time"
@@ -275,6 +276,8 @@ func markerEligibility(a *Agent, s *session.Session, live, liveByPath, sessByPat
 		return MarkerSkipProject
 	case s.IsContainerized():
 		return MarkerSkipContainer
+	case len(s.Ports) > 0 || len(s.Routes) > 0:
+		return MarkerSkipExposed
 	case live[a.DevxSession] != 1:
 		return MarkerSkipClaimants
 	case liveByPath[wt] != 1 || sessByPath[wt] != 1:
@@ -466,7 +469,8 @@ func restoreMarkerChecked(planHash string, it MarkerPlanItem, st MarkerStores, n
 		err = st.MutateSessions(func(sessions map[string]*session.Session) error {
 			s := sessions[it.Session]
 			if s == nil || !s.CreatedAt.Equal(it.SessionCreatedAt) || filepath.Clean(s.Path) != filepath.Clean(it.SessionPath) ||
-				s.InstanceID != it.SessionInstanceID || s.ProjectAlias != a.Project || s.IsContainerized() {
+				s.InstanceID != it.SessionInstanceID || s.ProjectAlias != a.Project || s.IsContainerized() ||
+				len(s.Ports) > 0 || len(s.Routes) > 0 {
 				return fmt.Errorf("session %q is not the reviewed record: %w", it.Session, ErrPlanStale)
 			}
 			if s.ManagedAgent != "" {

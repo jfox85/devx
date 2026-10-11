@@ -61,7 +61,7 @@ the agent is listed as `skip` with a reason:
 |---|---|
 | agent | `created_by=mcp`, not adopted, not retired |
 | claimants | the only live agent claiming the session, and the only live agent and session using the worktree |
-| record | exists, has **no** marker of any kind, same path as the agent's worktree, same project, not a container |
+| record | exists, has **no** marker of any kind, same path as the agent's worktree, same project, not a container, and no ports or routes (a local-only session never has them; a record with them may have been published, and `session rm` skips route cleanup for marked sessions) |
 | ordering | session `created_at` ≤ agent `created_at`, and the gap is ≤ 2 minutes (start writes the record, then the agent) |
 | instance | if the agent is bound, the record is that instance; if the record has an id, the agent recorded it, or it is the id the instances migration derives for this exact record |
 | creation event | the agent's own first `agent_created` event names this session (and its instance id, if one is recorded) |

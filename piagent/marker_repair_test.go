@@ -214,6 +214,10 @@ func TestMarkerPlanRefusesAmbiguousProvenance(t *testing.T) {
 		"path":            {func(e *markerEnv, a *Agent) { a.Worktree = "/elsewhere"; e.saveAgent(a) }, MarkerSkipPath},
 		"project":         {func(e *markerEnv, a *Agent) { e.sess.recs[a.DevxSession].ProjectAlias = "other" }, MarkerSkipProject},
 		"container":       {func(e *markerEnv, a *Agent) { e.sess.recs[a.DevxSession].Target.Type = "docker" }, MarkerSkipContainer},
+		"has ports":       {func(e *markerEnv, a *Agent) { e.sess.recs[a.DevxSession].Ports = map[string]int{"WEB": 3000} }, MarkerSkipExposed},
+		"has routes": {func(e *markerEnv, a *Agent) {
+			e.sess.recs[a.DevxSession].Routes = map[string]string{"web": "x.localhost"}
+		}, MarkerSkipExposed},
 		"recreated (newer)": {func(e *markerEnv, a *Agent) {
 			e.sess.recs[a.DevxSession].CreatedAt = a.CreatedAt.Add(time.Second)
 		}, MarkerSkipOrdering},
@@ -343,6 +347,7 @@ func TestMarkerApplyRefusesStaleState(t *testing.T) {
 			e.sess.recs["core"].LocalOnly = &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: "pa_999999999999"}
 		},
 		"adoption marker appeared": func(e *markerEnv, a *Agent) { e.sess.recs["core"].ManagedAgent = a.ID },
+		"ports added since":        func(e *markerEnv, a *Agent) { e.sess.recs["core"].Ports = map[string]int{"WEB": 1} },
 		"agent marker on another record": func(e *markerEnv, a *Agent) {
 			e.sess.recs["other"] = &session.Session{Name: "other", Path: "/o", LocalOnly: &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: a.ID}}
 		},
