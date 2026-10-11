@@ -21,7 +21,9 @@ import (
 // wait a long time behind 15 others (seen on windows-latest against a 10s
 // per-acquire limit). Waiting is therefore bounded per acquire generously,
 // while a leak is caught fast instead: a watchdog fails the test if the lock
-// directory stays in place with no holder for longer than leakAfter.
+// directory stays in place with no holder for longer than leakAfter. (A
+// release that takes longer than that, e.g. all three retry phases, also
+// counts: it would break the production 5s agent-lock timeout too.)
 func TestDirLockSurvivesHeavyChurn(t *testing.T) {
 	const timeout, stale, leakAfter = time.Minute, 5 * time.Minute, 3 * time.Second
 	for name, acquire := range map[string]func(string) (func(), error){
@@ -68,7 +70,12 @@ func TestDirLockSurvivesHeavyChurn(t *testing.T) {
 						release, err := acquire(path)
 						if err != nil {
 							failures.Add(1)
-							t.Errorf("acquire: %v", err)
+							age := "absent"
+							if fi, serr := os.Stat(path); serr == nil {
+								age = time.Since(fi.ModTime()).String()
+							}
+							pid, _ := os.ReadFile(filepath.Join(path, "pid"))
+							t.Errorf("acquire: %v (lock dir age %s, pid %q, holders %d)", err, age, pid, holders.Load())
 							return
 						}
 						if holders.Add(1) != 1 {
@@ -85,7 +92,12 @@ func TestDirLockSurvivesHeavyChurn(t *testing.T) {
 			select {
 			case <-done:
 			case <-leaked:
-				t.Fatalf("lock directory left in place with no holder for over %v (leaked release)", leakAfter)
+				// Fail without abandoning goroutines that are still waiting
+				// to acquire: clear the leaked lock so they finish, then wait.
+				t.Errorf("lock directory left in place with no holder for over %v (leaked release)", leakAfter)
+				_ = os.RemoveAll(path)
+				<-done
+				return
 			}
 			close(stop)
 			if failures.Load() != 0 {
