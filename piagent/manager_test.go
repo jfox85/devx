@@ -475,17 +475,18 @@ func TestMCPToolsAndPermissionDenial(t *testing.T) {
 	for _, tl := range tools {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"pi_list_sessions", "pi_start_task", "pi_send", "pi_status", "pi_result", "pi_events", "pi_cancel"} {
+	for _, want := range []string{"pi_list_sessions", "pi_start_task", "pi_send", "pi_status", "pi_result", "pi_events", "pi_cancel",
+		"pi_queue", "pi_update_pending", "pi_supersede_pending"} {
 		if !names[want] {
 			t.Errorf("missing tool %s", want)
 		}
 	}
-	for _, forbidden := range []string{"pi_takeover", "pi_release", "shell_exec", "exec"} {
+	for _, forbidden := range []string{"pi_takeover", "pi_release", "pi_steer", "pi_interrupt", "pi_send_keys", "shell_exec", "exec"} {
 		if names[forbidden] {
 			t.Errorf("tool %s must not be exposed", forbidden)
 		}
 	}
-	if len(names) != 7 {
+	if len(names) != 10 {
 		t.Errorf("unexpected tool count %d", len(names))
 	}
 	errKind := func(id float64) string {

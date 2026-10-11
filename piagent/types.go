@@ -145,11 +145,101 @@ type Task struct {
 	BridgeInstance  string     `json:"bridge_instance,omitempty"`
 	LeaseGeneration int64      `json:"lease_generation_at_delivery,omitempty"`
 	CancelRequested bool       `json:"cancel_requested,omitempty"`
-	HumanIntervened bool       `json:"human_intervened,omitempty"`
-	StopReason      string     `json:"stop_reason,omitempty"`
-	Error           string     `json:"error,omitempty"`
-	ResultBytes     int64      `json:"result_bytes,omitempty"`
-	Note            string     `json:"note,omitempty"`
+	// CancelRequestedAt and CancelLeaseGeneration record when, and under
+	// which lease generation, a running task's cancellation was requested.
+	// The bridge aborts only while the lease is still managed at that same
+	// generation; any control change in between withholds the abort.
+	CancelRequestedAt     *time.Time `json:"cancel_requested_at,omitempty"`
+	CancelLeaseGeneration int64      `json:"cancel_lease_generation,omitempty"`
+	// AbortSentAt is written by the bridge under the lock immediately
+	// before it calls ctx.abort() (at most once per task).
+	AbortSentAt *time.Time `json:"abort_sent_at,omitempty"`
+	// AbortWithheld explains why the bridge refused to abort a requested
+	// cancellation (human control, human input, Pi-queued messages).
+	AbortWithheld   string `json:"abort_withheld,omitempty"`
+	HumanIntervened bool   `json:"human_intervened,omitempty"`
+	// Revision increments on every write (Go and bridge). Edits of pending
+	// work are compare-and-swap on it.
+	Revision int64 `json:"revision,omitempty"`
+	// EditKeys holds the idempotency hashes of edits applied to this task
+	// (bounded), so a retried edit is recognised as already applied.
+	EditKeys []string `json:"edit_keys,omitempty"`
+	// Supersedes/SupersededBy link a pending task to its replacement.
+	Supersedes   string `json:"supersedes,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
+	StopReason   string `json:"stop_reason,omitempty"`
+	Error        string `json:"error,omitempty"`
+	ResultBytes  int64  `json:"result_bytes,omitempty"`
+	Note         string `json:"note,omitempty"`
+}
+
+// Delivery phases: where a task is in the hand-off to Pi. They separate
+// what DevX did (queued, handed to Pi) from what Pi did (accepted the
+// prompt into a turn) and from the outcome.
+const (
+	PhaseQueued    = "queued"    // in the DevX queue; Pi has not seen it
+	PhaseDelivered = "delivered" // handed to Pi; not yet accepted into a turn
+	PhaseAccepted  = "accepted"  // Pi accepted it; the turn is in progress
+	PhaseFinished  = "finished"  // terminal; see State
+)
+
+// Phase reports the task's delivery phase.
+func (t *Task) Phase() string {
+	switch {
+	case t.Terminal():
+		return PhaseFinished
+	case t.State == TaskWaiting:
+		return PhaseQueued
+	case t.ConfirmedAt != nil:
+		return PhaseAccepted
+	}
+	return PhaseDelivered
+}
+
+// Cancel outcomes reported for a task whose cancellation was requested.
+const (
+	CancelBeforeDelivery   = "cancelled_before_delivery"
+	CancelBeforeAcceptance = "cancelled_before_acceptance"
+	CancelAbortPending     = "abort_pending"     // requested; the bridge has not acted yet
+	CancelAbortSent        = "abort_sent"        // ctx.abort() was called; waiting for Pi to settle
+	CancelAbortUnconfirmed = "abort_unconfirmed" // abort sent, but Pi has not settled within AbortConfirmAfter
+	CancelAborted          = "aborted"           // Pi settled the turn as aborted
+	CancelWithheld         = "abort_withheld"    // the bridge refused: see abort_withheld reason
+	CancelFinishedFirst    = "finished_before_abort"
+	CancelSuperseded       = "superseded"
+)
+
+// AbortConfirmAfter bounds how long an abort may stay unsettled before it
+// is reported as unconfirmed. Nothing is escalated: no keystrokes, no kill.
+const AbortConfirmAfter = 30 * time.Second
+
+// CancelOutcome describes what became of a cancellation request, or "" if
+// none was made.
+func (t *Task) CancelOutcome(now time.Time) string {
+	if t.SupersededBy != "" {
+		return CancelSuperseded
+	}
+	if !t.CancelRequested {
+		return ""
+	}
+	switch {
+	case t.State == TaskCancelled && t.DeliveredAt == nil:
+		return CancelBeforeDelivery
+	case t.State == TaskCancelled && t.ConfirmedAt == nil:
+		return CancelBeforeAcceptance
+	case t.State == TaskCancelled && (t.AbortSentAt != nil || t.Note == "aborted on request"):
+		// The note is what bridges from before abort_sent_at write.
+		return CancelAborted
+	case t.AbortWithheld != "":
+		return CancelWithheld
+	case t.Terminal():
+		return CancelFinishedFirst
+	case t.AbortSentAt != nil && now.Sub(*t.AbortSentAt) > AbortConfirmAfter:
+		return CancelAbortUnconfirmed
+	case t.AbortSentAt != nil:
+		return CancelAbortSent
+	}
+	return CancelAbortPending
 }
 
 // Terminal reports whether the task will not change state again.

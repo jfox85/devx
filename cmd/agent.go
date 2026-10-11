@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jfox85/devx/artifactbridge"
@@ -81,10 +82,14 @@ var agentStatusCmd = &cobra.Command{
 			type taskRow struct {
 				ID, State, Note string
 				HumanIntervened bool
+				Phase           string `json:"phase"`
+				Revision        int64  `json:"revision"`
+				CancelOutcome   string `json:"cancel_outcome,omitempty"`
 			}
+			now := time.Now()
 			rows := make([]taskRow, 0, len(tasks))
 			for _, t := range tasks {
-				rows = append(rows, taskRow{t.ID, t.State, t.Note, t.HumanIntervened})
+				rows = append(rows, taskRow{t.ID, t.State, t.Note, t.HumanIntervened, t.Phase(), t.Revision, t.CancelOutcome(now)})
 			}
 			return writeJSONOut(cmd, map[string]any{"agent": v, "tasks": rows})
 		}
@@ -92,8 +97,13 @@ var agentStatusCmd = &cobra.Command{
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "Agent:       %s\nSession:     %s\nPi session:  %s\nState:       %s %s\nControl:     %s (generation %d, %s, since %s)\nPane:        %s (window %s)\nAttach:      %s\n",
 			a.ID, a.DevxSession, a.PiSessionID, v.State, v.Detail, a.Lease.Holder, a.Lease.Generation, a.Lease.Reason, a.Lease.Since.Local().Format(time.RFC3339), a.Binding.PaneID, a.Binding.WindowID, v.AttachHint)
+		now := time.Now()
 		for _, t := range tasks {
-			fmt.Fprintf(out, "  %s  %-9s %s\n", t.ID, t.State, t.Note)
+			extra := t.Note
+			if co := t.CancelOutcome(now); co != "" {
+				extra = strings.TrimSpace(co + "  " + extra)
+			}
+			fmt.Fprintf(out, "  %s  %-9s %-9s rev %-3d %s\n", t.ID, t.State, t.Phase(), t.Revision, extra)
 		}
 		return nil
 	},

@@ -96,14 +96,14 @@ func toolList() []tool {
 				"session_name":    strProp("Optional name for the new DevX session; must not already exist"),
 			}, "project", "prompt", "idempotency_key")},
 		{Name: "pi_send", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-			Description: "Queue a follow-up prompt for a managed agent. Prompts are delivered one at a time when Pi is idle and DevX holds control; while a human has control they wait (waiting_reason=human_control). Idempotent on idempotency_key.",
+			Description: "QUEUE a follow-up prompt for a managed agent. This never steers or interrupts a running turn: the prompt waits in the DevX queue and is delivered as a new turn, one at a time, only when Pi is idle, its editor is empty and DevX holds control (while a human has control it waits with waiting_reason=human_control). The response reports delivery=queued; follow phase queued -> delivered -> accepted -> finished with pi_status/pi_queue/pi_events. Until delivered it can be edited (pi_update_pending), replaced (pi_supersede_pending) or cancelled (pi_cancel). Idempotent on idempotency_key.",
 			InputSchema: obj(map[string]any{
 				"agent_id":        strProp("Managed agent id (pa_...)"),
 				"prompt":          strProp("Follow-up prompt (max 64 KiB)"),
 				"idempotency_key": strProp("Caller-chosen unique key for this send; reuse it on retry"),
 			}, "agent_id", "prompt", "idempotency_key")},
 		{Name: "pi_status", Annotations: ro,
-			Description: "Status of a task (waiting/running/completed/failed/cancelled/unknown) and its agent, with a bounded result excerpt. 'unknown' means the task was delivered but the Pi process that held it is gone; inspect the session before retrying.",
+			Description: "Status of a task and its agent, with a bounded result excerpt. state is waiting/running/completed/failed/cancelled/unknown; phase separates queued (DevX queue), delivered (handed to Pi, not yet accepted), accepted (Pi started the turn) and finished. revision is the compare-and-swap token for pending edits. cancel_outcome reports what a cancellation did. 'unknown' means the task was delivered but the Pi process that held it is gone; inspect the session before retrying.",
 			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)")}, "task_id")},
 		{Name: "pi_result", Annotations: ro,
 			Description: "Read a task's final assistant text in bounded chunks. Continue from next_offset until eof. Text is passed through credential redaction.",
@@ -112,8 +112,33 @@ func toolList() []tool {
 			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id"), "after_seq": intProp("Return events with seq greater than this"), "limit": intProp("Max events (<=200)"), "wait_seconds": intProp("Block up to N seconds for new events")}, "agent_id")},
 		{Name: "pi_cancel", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
-			Description: "Cancel a task. Waiting tasks are cancelled immediately; running tasks are aborted in Pi. Denied while a human has control (the human owns running work).",
-			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)")}, "task_id")},
+			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (control changed) / finished_before_abort / abort_unconfirmed (no settle within 30 s; nothing is escalated). Denied while a human has control of running work. Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op.",
+			InputSchema: obj(map[string]any{
+				"task_id":           strProp("Task id (pt_...)"),
+				"agent_id":          strProp("Optional agent id; when given the task must belong to it"),
+				"expected_revision": intProp("Optional revision from pi_status/pi_queue; the cancel fails with conflict if the task changed"),
+			}, "task_id")},
+		{Name: "pi_queue", Annotations: ro,
+			Description: "Inspect an agent's queue: in-flight work, pending prompts in delivery order (with revision, phase, waiting_reason, age and a redacted preview) and recent outcomes. Use the revision with pi_update_pending, pi_supersede_pending or pi_cancel.",
+			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id (pa_...)"), "recent": intProp("Recent finished tasks to include (max 10)")}, "agent_id")},
+		{Name: "pi_update_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+			Description: "Replace the prompt of a task that is still queued (not yet handed to Pi), keeping its task id and queue position. Compare-and-swap: expected_revision must match the current revision, otherwise the call fails with error=conflict and the current revision/state and nothing changes. Once delivered a prompt can no longer be edited. Idempotent on idempotency_key.",
+			InputSchema: obj(map[string]any{
+				"agent_id":          strProp("Managed agent id (pa_...)"),
+				"task_id":           strProp("Queued task id (pt_...)"),
+				"prompt":            strProp("New prompt (max 64 KiB)"),
+				"expected_revision": intProp("Revision you read from pi_queue/pi_status"),
+				"idempotency_key":   strProp("Caller-chosen unique key for this edit; reuse it on retry"),
+			}, "agent_id", "task_id", "prompt", "expected_revision", "idempotency_key")},
+		{Name: "pi_supersede_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+			Description: "Atomically cancel a still-queued task and queue a replacement in the same queue position (new task id; the old one records superseded_by). Same compare-and-swap and idempotency rules as pi_update_pending. Never affects work already handed to Pi.",
+			InputSchema: obj(map[string]any{
+				"agent_id":          strProp("Managed agent id (pa_...)"),
+				"task_id":           strProp("Queued task id (pt_...) to replace"),
+				"prompt":            strProp("Replacement prompt (max 64 KiB)"),
+				"expected_revision": intProp("Revision you read from pi_queue/pi_status"),
+				"idempotency_key":   strProp("Caller-chosen unique key for this edit; reuse it on retry"),
+			}, "agent_id", "task_id", "prompt", "expected_revision", "idempotency_key")},
 	}
 }
 
@@ -180,7 +205,7 @@ func (s *MCPServer) Serve(in io.Reader, out io.Writer) error {
 func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 	switch req.Method {
 	case "initialize":
-		instructions := "Manage Pi coding agents in DevX sessions. Every agent stays visible in DevX; a human can attach and take control at any time, which pauses delivery of your queued prompts until they release. Use idempotency keys and resume pi_events from your last seq."
+		instructions := "Manage Pi coding agents in DevX sessions. Every agent stays visible in DevX; a human can attach and take control at any time, which pauses delivery of your queued prompts until they release. pi_send only queues: it never steers a running turn, and queued is not delivered, accepted or completed — check phase/state before relying on a result. Use idempotency keys, compare-and-swap revisions for pending edits, and resume pi_events from your last seq."
 		if s.Extra != nil {
 			if extra := s.Extra.Instructions(); extra != "" {
 				instructions += " " + extra
@@ -218,6 +243,9 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 			msg := err.Error()
 			if IsPermissionDenied(err) {
 				data = map[string]any{"error": "permission_denied", "message": msg}
+			} else if ce := (*ConflictError)(nil); errors.As(err, &ce) {
+				data = map[string]any{"error": "conflict", "message": msg, "task_id": ce.TaskID, "expected_revision": ce.Expected,
+					"current_revision": ce.Current, "state": ce.State, "phase": ce.Phase}
 			} else if errors.Is(err, ErrNotFound) {
 				data = map[string]any{"error": "not_found", "message": msg}
 			} else {
@@ -286,7 +314,7 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"agent_id": r.AgentID, "task_id": r.TaskID, "session": r.Session, "pi_session_id": r.PiSessionID, "replayed": r.Replayed,
-			"attach": "devx session attach " + r.Session}, nil
+			"delivery": "queued", "attach": "devx session attach " + r.Session}, nil
 
 	case "pi_send":
 		var w struct {
@@ -305,7 +333,7 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"task_id": r.TaskID, "replayed": r.Replayed, "task": tv, "agent": agentSummary(av)}, nil
+		return map[string]any{"task_id": r.TaskID, "replayed": r.Replayed, "delivery": "queued", "task": tv, "agent": agentSummary(av)}, nil
 
 	case "pi_status":
 		var w struct {
@@ -362,19 +390,64 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 
 	case "pi_cancel":
 		var w struct {
-			TaskID string `json:"task_id"`
+			TaskID           string `json:"task_id"`
+			AgentID          string `json:"agent_id"`
+			ExpectedRevision *int64 `json:"expected_revision"`
 		}
 		if err := decodeArgs(raw, &w); err != nil {
 			return nil, err
 		}
-		if _, err := s.M.Cancel(w.TaskID); err != nil {
+		if _, err := s.M.CancelTask(CancelRequest{AgentID: w.AgentID, TaskID: w.TaskID, ExpectedRevision: w.ExpectedRevision}); err != nil {
 			return nil, err
 		}
 		tv, av, err := s.M.TaskStatus(w.TaskID)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"task": tv, "agent": agentSummary(av)}, nil
+		return map[string]any{"task": tv, "cancel_outcome": tv.CancelOutcome, "agent": agentSummary(av)}, nil
+
+	case "pi_queue":
+		var w struct {
+			AgentID string `json:"agent_id"`
+			Recent  int    `json:"recent"`
+		}
+		if err := decodeArgs(raw, &w); err != nil {
+			return nil, err
+		}
+		return s.M.Queue(w.AgentID, w.Recent)
+
+	case "pi_update_pending", "pi_supersede_pending":
+		var w struct {
+			AgentID          string `json:"agent_id"`
+			TaskID           string `json:"task_id"`
+			Prompt           string `json:"prompt"`
+			ExpectedRevision *int64 `json:"expected_revision"`
+			IdempotencyKey   string `json:"idempotency_key"`
+		}
+		if err := decodeArgs(raw, &w); err != nil {
+			return nil, err
+		}
+		if w.ExpectedRevision == nil {
+			return nil, fmt.Errorf("expected_revision is required (read it with pi_queue or pi_status)")
+		}
+		var r *EditResult
+		var err error
+		if name == "pi_update_pending" {
+			r, err = s.M.UpdatePending(UpdatePendingRequest{AgentID: w.AgentID, TaskID: w.TaskID, Prompt: w.Prompt, ExpectedRevision: *w.ExpectedRevision, IdempotencyKey: w.IdempotencyKey})
+		} else {
+			r, err = s.M.SupersedePending(SupersedePendingRequest{AgentID: w.AgentID, TaskID: w.TaskID, Prompt: w.Prompt, ExpectedRevision: *w.ExpectedRevision, IdempotencyKey: w.IdempotencyKey})
+		}
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]any{"task_id": r.TaskID, "revision": r.Revision, "replayed": r.Replayed, "delivery": "queued"}
+		if r.ReplacementTaskID != "" {
+			out["replacement_task_id"] = r.ReplacementTaskID
+			if tv, _, err := s.M.TaskStatus(r.ReplacementTaskID); err == nil {
+				out["replacement"] = tv
+			}
+		}
+		return out, nil
 	}
 	return nil, denied("unknown tool %q", name)
 }

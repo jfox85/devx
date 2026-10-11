@@ -72,6 +72,18 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   - `running`, `completed`, `failed` or `cancelled`
   - `unknown`: the task was delivered, but the Pi process that held it is
     gone. Its outcome can't be known, so it is never retried automatically.
+- **Delivery phase.** Every task also reports a `phase`. It separates what
+  DevX did from what Pi did:
+
+  | phase | meaning |
+  |---|---|
+  | `queued` | in the DevX queue; Pi has not seen it (`waiting`) |
+  | `delivered` | the bridge handed it to Pi; Pi has not accepted it yet |
+  | `accepted` | Pi's input pipeline accepted it and the turn started (`accepted_at`) |
+  | `finished` | terminal: see `state` |
+
+  `pi_start_task` and `pi_send` reply with `delivery: "queued"`. Queued is
+  never reported as delivered, accepted or completed.
 - **Agent states.** `idle`, `running`, `human_control`, `unknown` (stale
   heartbeat), `binding_stale` (the pane now belongs to another window),
   `pane_exited` or `not_launched`.
@@ -92,13 +104,103 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   Results, errors and event strings pass through credential redaction. This
   is defense in depth, not a guarantee.
 
+## Queue controls
+
+`pi_send` only **queues**. It never steers or interrupts a running turn. A
+queued prompt is delivered as its own new turn, one at a time, only when:
+
+- Pi is idle with no Pi-queued messages
+- the editor is empty
+- DevX holds the lease
+
+Until the bridge hands it to Pi, a queued prompt can be inspected, edited,
+replaced or cancelled:
+
+| Tool | What it does |
+|---|---|
+| `pi_queue` | Read-only. Shows in-flight work, pending prompts in delivery order, and recent outcomes. Pending prompts include `revision`, `phase`, `waiting_reason`, age and a redacted 512-byte preview. |
+| `pi_update_pending` | Replaces a queued prompt in place, keeping its task id and queue position. |
+| `pi_supersede_pending` | Cancels a queued prompt and queues a replacement in the same position. The replacement gets a new task id, and the old task records `superseded_by`. |
+| `pi_cancel` | Cancels a task. See below. |
+
+Invariants:
+
+- **Revisions.** Every task write, from Go or from the bridge, happens under
+  `agent.lock` and increments `revision`.
+- **Compare-and-swap edits.** Edits require `expected_revision` to match the
+  current revision. On a mismatch the call fails with `error: "conflict"`,
+  the current revision, state and phase, and nothing is overwritten.
+- **Delivered prompts are frozen.** The bridge's claim changes the state and
+  revision under the same lock, so an edit can never change a prompt Pi
+  already has.
+- **Idempotent edits.** Edits require an `idempotency_key`.
+  - A retry with the same key and request returns the original result
+    (`replayed: true`).
+  - Reusing a key for a different request is an error.
+  - Supersede fixes the replacement id first, then cancels the old task
+    before creating the new one. After a crash, at most one copy is ever
+    waiting, and a retry completes the same replacement.
+- **Identity.** Edits name both `agent_id` and `task_id`. A task that
+  belongs to another agent is `not_found`, and a retired agent accepts no
+  edits.
+- **Restarts.** Revisions and edit records are on disk, so a restarted MCP
+  server sees the same state.
+- **No editor or keystroke access.** Nothing reads or writes the Pi editor
+  except the existing "is the human typing" check, and nothing sends
+  keystrokes.
+
+### Cancellation outcomes
+
+`pi_cancel` reports `cancel_outcome`:
+
+| outcome | when |
+|---|---|
+| `cancelled_before_delivery` | the task was still queued (allowed under human control too: queued work is not running work) |
+| `cancelled_before_acceptance` | the bridge had handed it to Pi but Pi had not accepted it; the bridge's input handler drops the injection, so Pi never runs it |
+| `abort_pending` | an accepted turn; the bridge has not acted yet |
+| `abort_sent` | the bridge recorded `abort_sent_at` under the lock, then called `ctx.abort()`, at most once per task |
+| `aborted` | Pi settled the turn as aborted |
+| `abort_unconfirmed` | the abort was sent, but Pi has not settled within 30 s. Nothing is escalated: no keystrokes, no kill, no replay. Inspect the session. |
+| `abort_withheld` | the bridge refused to abort, with `abort_withheld` set to `human_control`, `control_changed_since_request` or `pi_has_queued_messages` |
+| `finished_before_abort` | the turn ended on its own first |
+| `superseded` | replaced by `pi_supersede_pending` |
+
+Cancelling running work is denied while a human holds control. The bridge
+also re-checks at the moment it would abort: control must still be managed
+at the lease generation the request was made under. Pi must also have no
+queued messages, because in the TUI `ctx.abort()` moves Pi-queued messages
+into the editor alongside a human's draft.
+
+If an abort was withheld and the human has since released control, calling
+`pi_cancel` again makes a new request. Repeating a cancel otherwise does
+nothing.
+
+### Steering and interrupts
+
+There is no steer tool, by design. Pi 1.1 gives extensions no way to look
+at or withdraw a message it has queued, and an abort moves such messages
+into the human's editor. So a steer can't be safely cancelled, and it could
+end up mixed with human input.
+
+The only bounded interrupt is cancelling a running task, under the rules
+above. A future steer would need all of these:
+
+- a managed lease and an empty editor
+- a running turn that is DevX's own and already accepted
+- at most one outstanding steer
+- a `steer_sent` phase that can't be revoked
+- a Pi API for removing queued messages
+
 ## Safety boundaries
 
 - **Transport:** stdio only, with no network listener.
 - **Tools:** a fixed allowlist of `pi_list_sessions`, `pi_start_task`,
-  `pi_send`, `pi_status`, `pi_result`, `pi_events` and `pi_cancel`.
-  Unknown tool names and unknown arguments are rejected. There is no
-  shell/exec tool and no takeover or release tool.
+  `pi_send`, `pi_status`, `pi_result`, `pi_events`, `pi_cancel`,
+  `pi_queue`, `pi_update_pending` and `pi_supersede_pending`. Unknown tool
+  names and unknown arguments are rejected. There is no shell/exec tool,
+  no steer or keystroke tool, and no takeover or release tool. A relay in
+  front of this server, such as Agent Shed, can expose fewer tools. Each
+  write tool is a separate grant.
 - **Starting agents:** `pi_start_task` only works for projects listed in
   `pi_mcp.allowed_projects`, and only creates a **new** session. If the
   session, its branch, its worktree path or a same-named tmux session
@@ -119,7 +221,8 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   no project cleanup command. A missing or foreign marker is a permission
   denial; nothing is adopted.
 - **Cancellation:** `pi_cancel` on running work is denied while a human holds
-  control.
+  control. The bridge withholds an abort if control changed after the request
+  (see [Cancellation outcomes](#cancellation-outcomes)).
 - **Prompt delivery:** prompts are never typed into tmux. The launch script
   holds the pane with `tail -f /dev/null` after Pi exits, so there is never a
   shell in that pane.

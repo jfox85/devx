@@ -155,8 +155,11 @@ function loadTasks(): any[] {
 	return out.sort((a, b) => a.order - b.order);
 }
 
+// Caller holds the lock. Every write bumps the revision (the Go side does
+// the same), so an edit of pending work can never overwrite a claim.
 function saveTask(t: any) {
 	t.updated_at = now();
+	t.revision = (typeof t.revision === "number" ? t.revision : 0) + 1;
 	writeJSON(taskPath(t.id), t);
 }
 
@@ -261,7 +264,13 @@ export default function devxBridge(pi: ExtensionAPI) {
 				const editor = heartbeat(ctx);
 				if (requeueId) {
 					const t = readJSON(taskPath(requeueId));
-					if (t?.state === "running" && !t.confirmed_at) {
+					if (t?.state === "running" && !t.confirmed_at && t.cancel_requested) {
+						t.state = "cancelled";
+						t.finished_at = now();
+						t.note = "cancelled before Pi accepted it";
+						saveTask(t);
+						appendEvent("task_cancelled", requeueId, { delivered: true, accepted: false });
+					} else if (t?.state === "running" && !t.confirmed_at) {
 						t.state = "waiting";
 						delete t.delivered_at;
 						delete t.bridge_instance;
@@ -274,7 +283,28 @@ export default function devxBridge(pi: ExtensionAPI) {
 
 				if (currentTask) {
 					const t = readJSON(taskPath(currentTask));
-					if (t?.cancel_requested && !abortSent && !ctx.isIdle()) doAbort = true;
+					// Abort only a turn Pi accepted, at most once, and only while
+					// DevX still holds control at the generation the cancel was
+					// requested under. Never under human control: the human owns
+					// running work. Never while Pi holds queued messages: in the
+					// TUI ctx.abort() moves them into the editor, mixing them with
+					// a human's draft. Every decision is recorded.
+					if (t?.state === "running" && t.cancel_requested && t.confirmed_at && !t.abort_sent_at && !t.abort_withheld && !abortSent && !pendingConfirm) {
+						let withheld = "";
+						if (a.lease?.holder !== "managed") withheld = "human_control";
+						else if ((t.cancel_lease_generation ?? a.lease.generation) !== a.lease.generation) withheld = "control_changed_since_request";
+						else if (ctx.hasPendingMessages()) withheld = "pi_has_queued_messages";
+						if (withheld) {
+							t.abort_withheld = withheld;
+							saveTask(t);
+							appendEvent("abort_withheld", t.id, { reason: withheld, lease_generation: a.lease?.generation ?? 0 });
+						} else if (!ctx.isIdle()) {
+							t.abort_sent_at = now();
+							saveTask(t);
+							appendEvent("abort_sent", t.id, { lease_generation: a.lease.generation });
+							doAbort = true;
+						}
+					}
 					if (pendingConfirm && Date.now() - pendingConfirm.at > CONFIRM_TIMEOUT_MS + TEST_DELIVERY_DELAY_MS && t?.state === "running") {
 						finishLocked(t, "failed", { error: "Pi did not accept the prompt (delivery not confirmed)" });
 						currentTask = undefined;
@@ -345,7 +375,16 @@ export default function devxBridge(pi: ExtensionAPI) {
 			withLock(() => {
 				const a = readJSON(p.agent);
 				const t = readJSON(taskPath(id));
-				if (a?.lease?.holder !== "managed" || t?.state !== "running") {
+				if (t?.state === "running" && t.cancel_requested) {
+					// Cancelled after the hand-off but before Pi accepted it:
+					// drop the injection; Pi never starts this turn.
+					fenced = true;
+					t.state = "cancelled";
+					t.finished_at = now();
+					t.note = "cancelled before Pi accepted it";
+					saveTask(t);
+					appendEvent("task_cancelled", id, { delivered: true, accepted: false });
+				} else if (a?.lease?.holder !== "managed" || t?.state !== "running") {
 					// A human took control between selection and delivery:
 					// put the task back instead of injecting it.
 					fenced = true;
@@ -399,7 +438,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (currentTask) lastEnd = lastAssistant(e.messages ?? []);
 	});
 
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (se: any) => {
 		if (!currentTask || pendingConfirm) return;
 		const id = currentTask;
 		const end = lastEnd ?? { text: "" };
@@ -409,8 +448,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 				if (!t || t.state !== "running") return;
 				fs.writeFileSync(path.join(p.results, `${id}.txt`), end.text, { mode: 0o600 });
 				const extra: Record<string, unknown> = { stop_reason: end.stop ?? "", result_bytes: Buffer.byteLength(end.text) };
-				if (end.stop === "aborted") {
-					if (t.cancel_requested) {
+				// An abort that lands between turns (e.g. during a tool call)
+				// may leave no aborted assistant message; the settle event
+				// still reports it.
+				if (end.stop === "aborted" || se?.aborted === true) {
+					if (t.abort_sent_at && abortSent) {
 						finishLocked(t, "cancelled", { ...extra, note: "aborted on request" });
 					} else {
 						// Interrupted from the TUI: that is a human taking control.
