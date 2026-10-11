@@ -584,7 +584,13 @@ withEnv("unreadable task at settle: a requested abort still publishes as 'aborte
 	deliverAndAccept(b);
 	const t = task(env.dir, id);
 	t.cancel_requested = true;
+	t.cancel_lease_generation = agent(env.dir).lease.generation;
 	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${id}.json`), JSON.stringify(t));
+	// PR82 protocol 2: "on request" needs an abort this bridge actually sent.
+	b.ctx.idle = false;
+	b.tick();
+	assert.equal(b.ctx.aborted, 1);
+	b.ctx.idle = true;
 	inject("readFileSync", new RegExp(`tasks/${id}\\.json$`), { times: 1 });
 	inject("writeFileSync", /results\/pt_.*\.txt\..*\.tmp$/, { times: 1 }); // force a deferred publish
 	b.finishTurn("partial", "aborted");
