@@ -51,18 +51,16 @@ func TestE2ERunningCancelOutcome(t *testing.T) {
 		return tv.Phase == PhaseAccepted
 	}, "accepted")
 	time.Sleep(300 * time.Millisecond)
-	if _, err := f.m.Cancel(r.TaskID); err != nil {
-		t.Fatal(err)
+	// Repeated cancels while the abort is pending/in flight: one abort.
+	for i := 0; i < 3; i++ {
+		if _, err := f.m.Cancel(r.TaskID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	tv := f.waitTask(r.TaskID, 30*time.Second, TaskCancelled, TaskCompleted, TaskFailed)
 	if tv.State != TaskCancelled || tv.CancelOutcome != CancelAborted || tv.AbortSentAt == nil {
 		t.Fatalf("running cancel: %+v\nevents=%s", tv, eventTypes(f.events(r.AgentID)))
 	}
-	// A second cancel after the abort is a no-op: still exactly one abort.
-	if _, err := f.m.Cancel(r.TaskID); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(500 * time.Millisecond)
 	types := eventTypes(f.events(r.AgentID))
 	ci, ai := strings.Index(types, "cancel_requested"), strings.Index(types, "abort_sent")
 	if ci < 0 || ai < 0 || ci > ai {
@@ -237,7 +235,7 @@ func TestE2EMultipleQueuedFollowUpsInOrder(t *testing.T) {
 	}
 	d1 := f.waitTask(t1, 90*time.Second, TaskCompleted, TaskFailed)
 	d3 := f.waitTask(t3, 60*time.Second, TaskCompleted, TaskFailed)
-	if d1.State != TaskCompleted || d3.State != TaskCompleted || !d1.FinishedAt.Before(*d3.DeliveredAt) {
+	if d1.State != TaskCompleted || d3.State != TaskCompleted || !d1.FinishedAt.Before(*d3.DeliveredAt) || d1.AcceptedAs != "turn" || d3.AcceptedAs != "turn" {
 		t.Fatalf("order: one=%+v three=%+v", d1, d3)
 	}
 	if !strings.Contains(d1.Excerpt, "ECHO: follow ONE") || strings.Contains(d1.Excerpt, "THREE") {

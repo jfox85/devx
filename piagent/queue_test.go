@@ -312,15 +312,19 @@ func TestSupersedeReplayOnRetiredAgentCreatesNothing(t *testing.T) {
 	m, _ := newTestManager(t)
 	a := seedAgent(t, m)
 	tk := sendT(t, m, a.ID, "p", "k")
-	keyHash := hashKey("supersede", a.ID, tk.ID, "s")
-	pre := &idemRecord{Kind: "supersede", KeyHash: keyHash, RequestHash: hashKey("p2", "1"), AgentID: a.ID, TaskID: newTaskID(), SourceTaskID: tk.ID, CreatedAt: time.Now()}
-	if err := m.Store.saveIdem(pre); err != nil {
-		t.Fatal(err)
-	}
+	req := SupersedePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: "p2", ExpectedRevision: tk.Revision, IdempotencyKey: "s"}
+	pre := supersedeRecord(t, m, req)
+	// Crash after step 1: old cancelled and linked, replacement missing.
+	// Retirement skips the (terminal) old task, so only the retired guard
+	// stops the retry from creating the replacement.
+	bridgeWrite(t, m, a.ID, tk.ID, func(x *Task) {
+		now := time.Now()
+		x.State, x.FinishedAt, x.SupersededBy = TaskCancelled, &now, pre.TaskID
+	})
 	if err := m.RetireForSession(a.ID, a.DevxSession); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.SupersedePending(SupersedePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: "p2", ExpectedRevision: tk.Revision, IdempotencyKey: "s"})
+	_, err := m.SupersedePending(req)
 	if !IsPermissionDenied(err) {
 		t.Fatalf("want denied, got %v", err)
 	}
@@ -338,6 +342,12 @@ func TestConcurrentQueueEditsOneWins(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	errs := make([]error, n)
+	wantText := func(i int) string {
+		if i%2 == 0 {
+			return "edit"
+		}
+		return "sup"
+	}
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -350,10 +360,11 @@ func TestConcurrentQueueEditsOneWins(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	ok := 0
-	for _, err := range errs {
+	ok, winner := 0, -1
+	for i, err := range errs {
 		if err == nil {
 			ok++
+			winner = i
 		} else if _, c := isConflict(err); !c {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -373,9 +384,34 @@ func TestConcurrentQueueEditsOneWins(t *testing.T) {
 	}
 	// The single waiting copy carries exactly the winner's text.
 	for _, x := range tasks {
-		if x.State == TaskWaiting && x.Prompt != "edit" && x.Prompt != "sup" {
-			t.Fatalf("waiting prompt %q", x.Prompt)
+		if x.State == TaskWaiting && x.Prompt != wantText(winner) {
+			t.Fatalf("waiting prompt %q, winner %d wrote %q", x.Prompt, winner, wantText(winner))
 		}
+	}
+}
+
+// waitingReasonFor: with an online, idle bridge and managed control, the
+// head of the queue is pending_delivery and later items are queued behind.
+func TestWaitingReasonForQueuePosition(t *testing.T) {
+	av := &AgentView{Agent: &Agent{Lease: Lease{Holder: LeaseManaged}}, State: AgentIdle, BridgeOnline: true, Bridge: &Bridge{Idle: true}}
+	head, later := &Task{ID: "pt_a"}, &Task{ID: "pt_b"}
+	if r := waitingReasonFor(av, head, head.ID); r != WaitDelivering {
+		t.Fatalf("head: %s", r)
+	}
+	if r := waitingReasonFor(av, later, head.ID); r != WaitQueued {
+		t.Fatalf("later: %s", r)
+	}
+	av.CurrentTask = "pt_x"
+	if r := waitingReasonFor(av, head, head.ID); r != WaitQueued {
+		t.Fatalf("behind running: %s", r)
+	}
+	av.CurrentTask, av.Bridge.HumanTyping = "", true
+	if r := waitingReasonFor(av, head, head.ID); r != WaitBusy {
+		t.Fatalf("draft: %s", r)
+	}
+	av.Agent.Lease.Holder = LeaseHuman
+	if r := waitingReasonFor(av, head, head.ID); r != WaitHumanControl {
+		t.Fatalf("human: %s", r)
 	}
 }
 
