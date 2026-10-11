@@ -314,7 +314,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 				}
 				if (a.lease?.holder !== "managed") return;
 				if (!ctx.isIdle() || ctx.hasPendingMessages() || editor.trim() !== "") return;
-				const next = loadTasks().find((t) => t.state === "waiting");
+				// Never pick a waiting task that carries a cancel request.
+				const next = loadTasks().find((t) => t.state === "waiting" && !t.cancel_requested);
 				if (!next) return;
 				next.state = "running";
 				next.delivered_at = now();

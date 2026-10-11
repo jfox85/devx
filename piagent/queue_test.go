@@ -434,6 +434,21 @@ func TestCancelUnacceptedAllowedUnderHumanControl(t *testing.T) {
 	}
 }
 
+// A waiting task carrying a stale cancel flag (an older bridge put a
+// cancelled hand-off back) is still cancelled, not treated as done.
+func TestWaitingTaskWithStaleCancelFlagIsCancelled(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	tk := sendT(t, m, a.ID, "p", "k")
+	bridgeWrite(t, m, a.ID, tk.ID, func(x *Task) { x.CancelRequested = true })
+	if _, err := m.Cancel(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := m.Store.LoadTask(a.ID, tk.ID); got.State != TaskCancelled || got.CancelOutcome(time.Now()) != CancelBeforeDelivery {
+		t.Fatalf("%+v", got)
+	}
+}
+
 // A cancelled turn whose Pi process went away reports outcome_unknown, not
 // finished_before_abort.
 func TestCancelThenPiGoneIsOutcomeUnknown(t *testing.T) {

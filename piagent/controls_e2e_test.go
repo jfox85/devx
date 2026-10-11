@@ -340,6 +340,36 @@ func TestE2ECancelBeforeAcceptanceDropsInjection(t *testing.T) {
 	}
 }
 
+// Same as above but a human took control in the delivery window first:
+// the cancel is still allowed (nothing was accepted) and wins over the
+// takeover fence, so the task is cancelled, never put back to waiting.
+func TestE2ECancelBeforeAcceptanceUnderHumanControl(t *testing.T) {
+	f := newPiFixture(t, "DEVX_PI_TEST_DELIVERY_DELAY_MS=3000")
+	r := f.start("warmup", "k1")
+	f.waitTask(r.TaskID, 45*time.Second, TaskCompleted)
+	task := f.send(r.AgentID, "human fenced and cancelled", "k2")
+	if tv := f.waitTask(task, 15*time.Second, TaskRunning); tv.Phase != PhaseDelivered {
+		t.Fatalf("phase=%s", tv.Phase)
+	}
+	if _, err := f.m.Takeover(r.AgentID, "test-human"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.Cancel(task); err != nil {
+		t.Fatalf("cancel of unaccepted work under human control: %v", err)
+	}
+	tv := f.waitTask(task, 15*time.Second, TaskCancelled, TaskWaiting, TaskCompleted)
+	if tv.State != TaskCancelled || tv.CancelOutcome != CancelBeforeAcceptance {
+		t.Fatalf("%+v events=%s", tv, eventTypes(f.events(r.AgentID)))
+	}
+	time.Sleep(time.Second)
+	if strings.Contains(f.pane(r.AgentID), "human fenced and cancelled") {
+		t.Fatalf("cancelled prompt reached Pi:\n%s", f.pane(r.AgentID))
+	}
+	if strings.Contains(eventTypes(f.events(r.AgentID)), "delivery_fenced") {
+		t.Fatalf("task was fenced back instead of cancelled: %s", eventTypes(f.events(r.AgentID)))
+	}
+}
+
 // Duplicate sends (retry after a dropped response) produce exactly one
 // turn in Pi.
 func TestE2EDuplicateSendRunsOnce(t *testing.T) {

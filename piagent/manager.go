@@ -585,9 +585,11 @@ func (m *Manager) Cancel(taskID string) (*Task, error) {
 }
 
 // CancelTask cancels a waiting task immediately, or asks the bridge to abort
-// a running one. While a human holds control, running work belongs to the
-// human and remote cancellation is denied; the bridge re-checks control at
-// the moment it would abort and withholds the abort if control changed.
+// a running one. While a human holds control, running (accepted) work
+// belongs to the human and remote cancellation is denied; a task handed to
+// Pi but not yet accepted can still be cancelled, which only drops the
+// injection. The bridge re-checks control at the moment it would abort and
+// withholds the abort if control changed.
 // Repeating a cancellation is a no-op that reports the current outcome.
 func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
 	agentID := req.AgentID
@@ -608,7 +610,9 @@ func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
 		// A withheld abort may be requested again once DevX holds control
 		// again (the human released): that is a new, deliberate request.
 		rearm := t.State == TaskRunning && t.CancelRequested && t.AbortWithheld != "" && t.AbortSentAt == nil && a.Lease.Holder == LeaseManaged
-		if t.Terminal() || (t.CancelRequested && !rearm) {
+		// A waiting task is always cancellable, even if it carries a stale
+		// cancel flag (e.g. an older bridge put a cancelled hand-off back).
+		if t.Terminal() || (t.State == TaskRunning && t.CancelRequested && !rearm) {
 			return nil // already cancelled, finished, or requested: idempotent
 		}
 		if req.ExpectedRevision != nil && *req.ExpectedRevision != t.Revision {

@@ -167,7 +167,10 @@ Invariants:
 | `finished_before_abort` | the turn ended on its own first |
 | `superseded` | replaced by `pi_supersede_pending` |
 
-Cancelling running work is denied while a human holds control. The bridge
+Cancelling an accepted running turn is denied while a human holds control.
+A task handed to Pi but not yet accepted can still be cancelled; that only
+drops the injection. The bridge never picks a waiting task that has a
+cancel request on it. The bridge
 also re-checks at the moment it would abort: control must still be managed
 at the lease generation the request was made under. Pi must also have no
 queued messages, because in the TUI `ctx.abort()` moves Pi-queued messages
@@ -230,8 +233,8 @@ above. A future steer would need all of these:
   record by hand. `devx session rm` on it does no shared route sync and runs
   no project cleanup command. A missing or foreign marker is a permission
   denial; nothing is adopted.
-- **Cancellation:** `pi_cancel` on running work is denied while a human holds
-  control. The bridge withholds an abort if control changed after the request
+- **Cancellation:** `pi_cancel` on an accepted running turn is denied while a
+  human holds control. The bridge withholds an abort if control changed after the request
   (see [Cancellation outcomes](#cancellation-outcomes)).
 - **Prompt delivery:** prompts are never typed into tmux. The launch script
   holds the pane with `tail -f /dev/null` after Pi exits, so there is never a

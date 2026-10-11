@@ -352,6 +352,7 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 	qv := &QueueView{AgentID: agentID, State: av.State, Control: av.Agent.Lease.Holder, LeaseGen: av.Agent.Lease.Generation,
 		InFlight: []QueueItem{}, Pending: []QueueItem{}, Recent: []QueueItem{}, LastSeq: av.LastSeq}
 	var done []QueueItem
+	var doneTasks []*Task
 	firstWaiting := ""
 	for _, t := range tasks {
 		if t.State == TaskWaiting {
@@ -364,9 +365,6 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 			CancelOutcome: t.CancelOutcome(now), AgeSeconds: int64(now.Sub(t.CreatedAt) / time.Second), CreatedAt: t.CreatedAt,
 			DeliveredAt: t.DeliveredAt, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, FinishedAt: t.FinishedAt, PromptBytes: len(t.Prompt),
 			Supersedes: t.Supersedes, SupersededBy: t.SupersededBy, Note: t.Note, Editable: t.State == TaskWaiting && av.Agent.RetiredAt == nil}
-		// Redact before cutting, so a credential straddling the cut is
-		// still recognised.
-		it.PromptPreview, it.PreviewTrunc = headExcerpt(Redact(t.Prompt), MaxPromptPreview)
 		switch {
 		case t.State == TaskWaiting:
 			qv.PendingTotal++
@@ -375,16 +373,27 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 				continue
 			}
 			it.WaitingReason = waitingReasonFor(av, t, firstWaiting)
-			qv.Pending = append(qv.Pending, it)
+			qv.Pending = append(qv.Pending, withPreview(it, t))
 		case t.State == TaskRunning:
-			qv.InFlight = append(qv.InFlight, it)
+			qv.InFlight = append(qv.InFlight, withPreview(it, t))
 		default:
 			done = append(done, it)
+			doneTasks = append(doneTasks, t)
 		}
 	}
 	if n := len(done); n > recent {
-		done = done[n-recent:]
+		done, doneTasks = done[n-recent:], doneTasks[n-recent:]
 	}
-	qv.Recent = append(qv.Recent, done...)
+	for i := range done {
+		qv.Recent = append(qv.Recent, withPreview(done[i], doneTasks[i]))
+	}
 	return qv, nil
+}
+
+// withPreview adds the bounded preview. It redacts before cutting, so a
+// credential straddling the cut is still recognised, and is only computed
+// for items actually returned.
+func withPreview(it QueueItem, t *Task) QueueItem {
+	it.PromptPreview, it.PreviewTrunc = headExcerpt(Redact(t.Prompt), MaxPromptPreview)
+	return it
 }
