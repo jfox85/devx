@@ -1,0 +1,32 @@
+# TEMPORARY validation for the draft PR; removed before ready-for-review.
+name: Windows piagent lock flake stress
+on:
+  pull_request:
+    branches: [ devx-artifacts-opus55-oct9 ]
+jobs:
+  stress:
+    name: lock ${{ matrix.label }} ${{ matrix.shard }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [before-fix, after-fix]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23', cache: false }
+      - name: stress
+        shell: bash
+        run: |
+          if [ "${{ matrix.label }}" = before-fix ]; then
+            # Same tests; only the pid read reverted to a single attempt.
+            perl -0pi -e 's/data, err := readFileRetry\(pidPath, lockReleaseRetry\)/data, err := os.ReadFile(pidPath)/' piagent/lock.go
+            grep -n 'data, err := ' piagent/lock.go | head -3
+          fi
+          go test -race -count=40 -v -run '^TestDirLockSurvivesHeavyChurn$' ./piagent > churn.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} churn runs=$(grep -cE -- '^--- (PASS|FAIL): TestDirLockSurvivesHeavyChurn ' churn.log) fails=$(grep -cE -- '^--- FAIL: TestDirLockSurvivesHeavyChurn ' churn.log) accessdenied=$(grep -c 'Access is denied' churn.log)"
+          go test -race -count=100 -v -run '^TestConcurrentSendsGetDistinctOrderedTasks$' ./piagent > sends.log 2>&1 || true
+          echo "STRESS ${{ matrix.label }} sends runs=$(grep -cE -- '--- (PASS|FAIL): TestConcurrentSendsGetDistinctOrderedTasks ' sends.log) fails=$(grep -cE -- '--- FAIL: TestConcurrentSendsGetDistinctOrderedTasks ' sends.log) accessdenied=$(grep -c 'Access is denied' sends.log)"
+          echo "--- churn failure detail"; grep -E 'lockerr_test.go:[0-9]+|panic:|test timed out' churn.log | sed -E 's/[A-Z]:\\[^ ]*//g' | cut -c1-220 | sort | uniq -c | sort -rn | head -8 || true
+          echo "--- sends failure detail"; grep -E 'manager_test.go:[0-9]+|panic:|test timed out' sends.log | sed -E 's/[A-Z]:\\[^ ]*//g' | cut -c1-220 | sort | uniq -c | sort -rn | head -8 || true
