@@ -43,8 +43,15 @@ func (e *ConflictError) Error() string {
 
 func (e *ConflictError) Unwrap() error { return ErrConflict }
 
-// maxEditKeys bounds the per-task record of applied edit keys.
-const maxEditKeys = 32
+// MaxEditsPerTask bounds in-place edits of one task. Every applied edit's
+// idempotency mark is kept for the task's whole life (never evicted), in
+// the same atomic write as the edit, so a retry with an old key is always
+// recognised. Instead of evicting marks, a further edit is refused:
+// supersede the task (a new task with its own record) to keep changing it.
+const MaxEditsPerTask = 32
+
+// ErrEditLimit reports that a task reached MaxEditsPerTask.
+var ErrEditLimit = errors.New("edit limit reached")
 
 // loadAgentTaskLocked loads a task and checks it belongs to agentID, so a
 // caller holding a stale or wrong agent id cannot touch another agent's
@@ -99,9 +106,6 @@ func findEditMark(t *Task, keyHash, reqHash string) (found, same bool) {
 
 func addEditMark(t *Task, keyHash, reqHash string) {
 	t.EditKeys = append(t.EditKeys, editMark(keyHash, reqHash))
-	if n := len(t.EditKeys); n > maxEditKeys {
-		t.EditKeys = t.EditKeys[n-maxEditKeys:]
-	}
 }
 
 // UpdatePendingRequest replaces the prompt of a task Pi has not received.
@@ -152,6 +156,9 @@ func (m *Manager) UpdatePending(req UpdatePendingRequest) (*EditResult, error) {
 		}
 		if err := checkPending(t, req.ExpectedRevision, "updating a prompt"); err != nil {
 			return err
+		}
+		if len(t.EditKeys) >= MaxEditsPerTask {
+			return fmt.Errorf("%w: task %s was already edited %d times; use pi_supersede_pending to replace it", ErrEditLimit, t.ID, MaxEditsPerTask)
 		}
 		prevBytes := len(t.Prompt)
 		t.Prompt = req.Prompt

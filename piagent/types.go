@@ -155,6 +155,10 @@ type Task struct {
 	// generation; any control change in between withholds the abort.
 	CancelRequestedAt     *time.Time `json:"cancel_requested_at,omitempty"`
 	CancelLeaseGeneration int64      `json:"cancel_lease_generation,omitempty"`
+	// CancelProtocol is the protocol of the bridge holding the task when a
+	// running cancellation was requested. 0 means the request predates
+	// protocol gating (made by an older DevX against an older bridge).
+	CancelProtocol int `json:"cancel_protocol,omitempty"`
 	// AbortSentAt is written by the bridge under the lock immediately
 	// before it calls ctx.abort() (at most once per task).
 	AbortSentAt *time.Time `json:"abort_sent_at,omitempty"`
@@ -215,7 +219,11 @@ const (
 	CancelWithheld         = "abort_withheld"    // the bridge refused: see abort_withheld reason
 	CancelFinishedFirst    = "finished_before_abort"
 	CancelOutcomeUnknown   = "outcome_unknown" // the Pi process holding the turn went away
-	CancelSuperseded       = "superseded"
+	// CancelLegacyRequested: a running cancel recorded before protocol
+	// gating, held by a bridge that does not report whether it dispatched an
+	// abort. Only the eventual settle is observable.
+	CancelLegacyRequested = "abort_requested_legacy_bridge"
+	CancelSuperseded      = "superseded"
 )
 
 // AbortConfirmAfter bounds how long an abort may stay unsettled before it
@@ -245,6 +253,8 @@ func (t *Task) CancelOutcome(now time.Time) string {
 		return CancelWithheld
 	case t.Terminal():
 		return CancelFinishedFirst
+	case t.CancelProtocol < BridgeProtocol && t.AbortSentAt == nil:
+		return CancelLegacyRequested
 	case t.AbortSentAt != nil && now.Sub(*t.AbortSentAt) > AbortConfirmAfter:
 		return CancelAbortUnconfirmed
 	case t.AbortSentAt != nil:
@@ -275,7 +285,19 @@ type Bridge struct {
 	CurrentTask   string    `json:"current_task,omitempty"`
 	Heartbeat     time.Time `json:"heartbeat"`
 	Mode          string    `json:"mode,omitempty"`
+	// Protocol is the bridge's control protocol version (see
+	// BridgeProtocol). Bridges from before versioning write none (0).
+	Protocol int `json:"protocol,omitempty"`
 }
+
+// BridgeProtocol is the control protocol of the bridge embedded in this
+// build. Version 2 adds: dropping a cancelled injection before acceptance,
+// skipping cancel-flagged waiting tasks, aborting only accepted turns once
+// under the same managed lease generation with no Pi-queued messages, and
+// recording abort_sent/abort_withheld. A running Pi keeps the bridge it was
+// launched with: restarting the MCP server does not refresh it; only a
+// relaunch of that agent (a human action) does.
+const BridgeProtocol = 2
 
 // Event is one entry in an agent's durable, cursor-addressable event log.
 type Event struct {

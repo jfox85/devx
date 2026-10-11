@@ -50,6 +50,26 @@ func claim(tk *Task) {
 	tk.State, tk.DeliveredAt, tk.BridgeInstance = TaskRunning, &now, "inst"
 }
 
+// liveBridge writes a fresh heartbeat for the bridge instance claim() uses,
+// speaking protocol proto, as a launched Pi would. The agent's launch nonce
+// is set to match.
+func liveBridge(t *testing.T, m *Manager, agentID string, proto int) {
+	t.Helper()
+	if err := m.Store.WithAgentLock(agentID, func() error {
+		a, err := m.Store.LoadAgent(agentID)
+		if err != nil {
+			return err
+		}
+		a.LaunchNonce = "nonce-test"
+		if err := m.Store.SaveAgent(a); err != nil {
+			return err
+		}
+		return writeJSONAtomic(m.Store.bridgePath(agentID), &Bridge{Instance: "inst", Nonce: "nonce-test", Heartbeat: time.Now(), Protocol: proto, Mode: "active"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func accept(tk *Task) {
 	now := time.Now()
 	tk.ConfirmedAt = &now
@@ -457,6 +477,7 @@ func TestStaleIdentityIsRejected(t *testing.T) {
 func TestCancelUnacceptedAllowedUnderHumanControl(t *testing.T) {
 	m, _ := newTestManager(t)
 	a := seedAgent(t, m)
+	liveBridge(t, m, a.ID, BridgeProtocol)
 	tk := sendT(t, m, a.ID, "p", "k")
 	bridgeWrite(t, m, a.ID, tk.ID, claim)
 	if _, err := m.Takeover(a.ID, "h"); err != nil {
@@ -485,11 +506,137 @@ func TestWaitingTaskWithStaleCancelFlagIsCancelled(t *testing.T) {
 	}
 }
 
+// Review P2: edit idempotency marks are never evicted. After many distinct
+// edits, a retry of the FIRST edit is still recognised as a replay, and the
+// first key reused for a different prompt is still rejected as key reuse
+// (never applied as a new edit). Past the per-task limit, edits are
+// refused rather than evicting marks. Holds across a manager restart.
+func TestEditKeysAreNeverEvicted(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	tk := sendT(t, m, a.ID, "p", "k")
+	firstReq := UpdatePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: "v0", ExpectedRevision: tk.Revision, IdempotencyKey: "key-0"}
+	first, err := m.UpdatePending(firstReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev := first.Revision
+	for i := 1; i < MaxEditsPerTask; i++ {
+		r, err := m.UpdatePending(UpdatePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: fmt.Sprintf("v%d", i), ExpectedRevision: rev, IdempotencyKey: fmt.Sprintf("key-%d", i)})
+		if err != nil {
+			t.Fatalf("edit %d: %v", i, err)
+		}
+		rev = r.Revision
+	}
+	// The limit is reached: a new key is refused, nothing is evicted.
+	if _, err := m.UpdatePending(UpdatePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: "one too many", ExpectedRevision: rev, IdempotencyKey: "key-over"}); !errors.Is(err, ErrEditLimit) {
+		t.Fatalf("over limit: %v", err)
+	}
+	m2 := NewManager(NewStore(m.Store.Root), m.Tmux, m.Creator, m.Config) // restart
+	for _, mm := range []*Manager{m, m2} {
+		// Exact retry of the first edit: a replay, not a conflict.
+		r, err := mm.UpdatePending(firstReq)
+		if err != nil || !r.Replayed {
+			t.Fatalf("retry of first edit: %+v %v", r, err)
+		}
+		// First key reused for a different prompt at the current revision:
+		// key reuse error, task unchanged.
+		if _, err := mm.UpdatePending(UpdatePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: "OVERWRITE", ExpectedRevision: rev, IdempotencyKey: "key-0"}); err == nil || errors.Is(err, ErrConflict) {
+			t.Fatalf("reuse of first key must be rejected as key reuse: %v", err)
+		}
+	}
+	got, _ := m.Store.LoadTask(a.ID, tk.ID)
+	if got.Prompt != fmt.Sprintf("v%d", MaxEditsPerTask-1) || len(got.EditKeys) != MaxEditsPerTask {
+		t.Fatalf("stored prompt %q, marks %d", got.Prompt, len(got.EditKeys))
+	}
+	// Supersede still works past the limit.
+	if _, err := m.SupersedePending(SupersedePendingRequest{AgentID: a.ID, TaskID: tk.ID, Prompt: "fresh", ExpectedRevision: got.Revision, IdempotencyKey: "sup"}); err != nil {
+		t.Fatalf("supersede after limit: %v", err)
+	}
+}
+
+// Review P1: a running cancel is refused (nothing recorded) unless the live
+// bridge holding the task speaks the current protocol. An older bridge would
+// start an unaccepted prompt and abort whatever turn runs, possibly a human's.
+func TestRunningCancelRequiresCurrentBridgeProtocol(t *testing.T) {
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T, m *Manager, agentID string)
+		accept bool
+		ok     bool
+	}{
+		{"old_bridge_unaccepted", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, 0) }, false, false},
+		{"old_bridge_accepted", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, 0) }, true, false},
+		{"no_bridge", func(t *testing.T, m *Manager, id string) {}, true, false},
+		{"stale_bridge", func(t *testing.T, m *Manager, id string) {
+			liveBridge(t, m, id, BridgeProtocol)
+			_ = writeJSONAtomic(m.Store.bridgePath(id), &Bridge{Instance: "inst", Nonce: "nonce-test", Heartbeat: time.Now().Add(-time.Minute), Protocol: BridgeProtocol})
+		}, true, false},
+		{"other_instance", func(t *testing.T, m *Manager, id string) {
+			liveBridge(t, m, id, BridgeProtocol)
+			_ = writeJSONAtomic(m.Store.bridgePath(id), &Bridge{Instance: "other", Nonce: "nonce-test", Heartbeat: time.Now(), Protocol: BridgeProtocol})
+		}, true, false},
+		{"current_bridge", func(t *testing.T, m *Manager, id string) { liveBridge(t, m, id, BridgeProtocol) }, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, _ := newTestManager(t)
+			a := seedAgent(t, m)
+			c.setup(t, m, a.ID)
+			tk := sendT(t, m, a.ID, "p", "k")
+			before := bridgeWrite(t, m, a.ID, tk.ID, func(x *Task) {
+				claim(x)
+				if c.accept {
+					accept(x)
+				}
+			})
+			_, err := m.Cancel(tk.ID)
+			got, _ := m.Store.LoadTask(a.ID, tk.ID)
+			if c.ok {
+				if err != nil || !got.CancelRequested || got.CancelProtocol != BridgeProtocol {
+					t.Fatalf("supported: %v %+v", err, got)
+				}
+				return
+			}
+			var be *BridgeUpgradeError
+			if !errors.As(err, &be) || !errors.Is(err, ErrBridgeUpgradeRequired) {
+				t.Fatalf("want bridge_upgrade_required, got %v", err)
+			}
+			if got.CancelRequested || got.Revision != before.Revision {
+				t.Fatalf("refused cancel was recorded: %+v", got)
+			}
+			// Waiting work is still cancellable whatever the bridge.
+			w := sendT(t, m, a.ID, "w", "kw")
+			if _, err := m.Cancel(w.ID); err != nil {
+				t.Fatalf("waiting cancel: %v", err)
+			}
+		})
+	}
+	// A pre-gating request (protocol 0, no abort_sent_at) is reported as
+	// legacy, never as abort_pending/abort_sent.
+	legacy := &Task{State: TaskRunning, CancelRequested: true}
+	if o := legacy.CancelOutcome(time.Now()); o != CancelLegacyRequested {
+		t.Fatalf("legacy outcome %s", o)
+	}
+}
+
+// The embedded bridge must advertise the protocol this build gates on.
+func TestEmbeddedBridgeProtocolMatches(t *testing.T) {
+	want := fmt.Sprintf("const PROTOCOL = %d;", BridgeProtocol)
+	if !strings.Contains(string(BridgeSource()), want) {
+		t.Fatalf("bridge/devx-bridge.ts must declare %q", want)
+	}
+	if !strings.Contains(string(BridgeSource()), "protocol: PROTOCOL") {
+		t.Fatal("bridge heartbeat must report protocol")
+	}
+}
+
 // A cancelled turn whose Pi process went away reports outcome_unknown, not
 // finished_before_abort.
 func TestCancelThenPiGoneIsOutcomeUnknown(t *testing.T) {
 	m, _ := newTestManager(t)
 	a := seedAgent(t, m)
+	liveBridge(t, m, a.ID, BridgeProtocol)
 	tk := sendT(t, m, a.ID, "p", "k")
 	bridgeWrite(t, m, a.ID, tk.ID, func(x *Task) { claim(x); accept(x) })
 	if _, err := m.Cancel(tk.ID); err != nil {
@@ -508,6 +655,7 @@ func TestCancelThenPiGoneIsOutcomeUnknown(t *testing.T) {
 func TestCancelOutcomesAndHumanOwnership(t *testing.T) {
 	m, _ := newTestManager(t)
 	a := seedAgent(t, m)
+	liveBridge(t, m, a.ID, BridgeProtocol)
 
 	// Waiting: cancelled before delivery, revision-checked.
 	w := sendT(t, m, a.ID, "w", "kw")

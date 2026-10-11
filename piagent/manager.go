@@ -111,6 +111,9 @@ type Manager struct {
 	Tmux    Tmux
 	Creator SessionCreator
 	Config  Config
+	// bridgeSrc overrides the embedded bridge (tests only: fixtures that
+	// run an older bridge to validate mixed-version behavior).
+	bridgeSrc []byte
 }
 
 func NewManager(store *Store, tmux Tmux, creator SessionCreator, cfg Config) *Manager {
@@ -401,7 +404,11 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		}
 	}
 	nonce := randomHex(12)
-	bridgePath, err := WriteBridge(m.Store.Root)
+	src := m.bridgeSrc
+	if src == nil {
+		src = bridgeSource
+	}
+	bridgePath, err := writeBridgeSource(m.Store.Root, src)
 	if err != nil {
 		return err
 	}
@@ -636,7 +643,17 @@ func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
 			if a.Lease.Holder == LeaseHuman && t.ConfirmedAt != nil {
 				return denied("a human has control of agent %s; running work can only be stopped from the Pi session", a.ID)
 			}
+			// The cancel is carried out by the bridge holding the task, and
+			// a running Pi keeps the bridge it was launched with. Only a
+			// bridge that speaks this protocol drops unaccepted injections
+			// and guards aborts; an older one would start the prompt and
+			// abort whatever turn is running, possibly a human's. Refuse
+			// rather than record a request it would misinterpret.
+			if err := m.requireBridgeProtocolLocked(a, t); err != nil {
+				return err
+			}
 			t.CancelRequested, t.CancelRequestedAt, t.CancelLeaseGeneration, t.AbortWithheld = true, &now, a.Lease.Generation, ""
+			t.CancelProtocol = BridgeProtocol
 			if err := m.Store.SaveTask(t); err != nil {
 				return err
 			}
@@ -647,6 +664,50 @@ func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
 		return nil
 	})
 	return out, err
+}
+
+// ErrBridgeUpgradeRequired reports that the Pi bridge holding a task does
+// not support an operation; the agent must be relaunched by a human.
+var ErrBridgeUpgradeRequired = errors.New("bridge upgrade required")
+
+// BridgeUpgradeError explains why an operation was refused for the bridge
+// holding a task.
+type BridgeUpgradeError struct {
+	AgentID  string
+	TaskID   string
+	Protocol int // protocol the holding bridge reports (0 = unversioned/older)
+	Reason   string
+}
+
+func (e *BridgeUpgradeError) Error() string {
+	return fmt.Sprintf("cannot cancel running task %s: %s. Nothing was recorded. Restarting the MCP server does not refresh a running Pi; "+
+		"a human must relaunch agent %s (devx agent relaunch) to load bridge protocol %d, or stop the turn from the Pi session",
+		e.TaskID, e.Reason, e.AgentID, BridgeProtocol)
+}
+
+func (e *BridgeUpgradeError) Unwrap() error { return ErrBridgeUpgradeRequired }
+
+// requireBridgeProtocolLocked checks that the live bridge holding running
+// task t supports this build's cancel protocol. Callers hold the agent lock.
+func (m *Manager) requireBridgeProtocolLocked(a *Agent, t *Task) error {
+	b, err := m.Store.LoadBridge(a.ID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	fail := func(proto int, reason string) error {
+		return &BridgeUpgradeError{AgentID: a.ID, TaskID: t.ID, Protocol: proto, Reason: reason}
+	}
+	switch {
+	case b == nil:
+		return fail(0, "no bridge heartbeat is recorded for this agent")
+	case b.Instance != t.BridgeInstance:
+		return fail(b.Protocol, "the Pi process that received this task is not the one currently reporting")
+	case time.Since(b.Heartbeat) >= BridgeStaleAfter || b.Mode == "fenced" || b.Mode == "stopped" || b.Nonce != a.LaunchNonce:
+		return fail(b.Protocol, "the bridge holding this task is not online")
+	case b.Protocol < BridgeProtocol:
+		return fail(b.Protocol, fmt.Sprintf("the bridge holding this task speaks protocol %d (launched before this DevX build)", b.Protocol))
+	}
+	return nil
 }
 
 // Takeover gives a human control. Queued remote work stops being delivered
@@ -861,6 +922,12 @@ type AgentView struct {
 	Waiting      int     `json:"waiting_tasks"`
 	LastSeq      int64   `json:"last_event_seq"`
 	AttachHint   string  `json:"attach_hint"`
+	// BridgeProtocol is what the agent's live bridge reports (0 = a bridge
+	// from before protocol versioning). BridgeUpgradeNeeded means the
+	// running Pi was launched with an older bridge than this build's: some
+	// controls (running cancel) are refused until a human relaunches it.
+	BridgeProtocol      int  `json:"bridge_protocol"`
+	BridgeUpgradeNeeded bool `json:"bridge_upgrade_needed,omitempty"`
 }
 
 // AgentStatus reconciles durable state with tmux and the bridge heartbeat.
@@ -889,6 +956,8 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 			// no shutdown hook ran). The pane may still exist because the
 			// launch script holds it open for inspection.
 			bridgeDead = b.Mode == "stopped" || (!fresh && !processAlive(b.PID))
+			v.BridgeProtocol = b.Protocol
+			v.BridgeUpgradeNeeded = v.BridgeOnline && b.Protocol < BridgeProtocol
 		}
 		tasks, err := m.Store.ListTasks(a.ID)
 		if err != nil {

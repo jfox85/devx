@@ -135,6 +135,11 @@ Invariants:
 - **Delivered prompts are frozen.** The bridge's claim changes the state and
   revision under the same lock, so an edit can never change a prompt Pi
   already has.
+- **Edit marks are never evicted.** Every applied edit's key is kept for
+  the task's whole life, in the same atomic write as the edit. A retry with
+  any earlier key is recognised, even after a restart. A task allows at most
+  32 in-place edits. Beyond that `pi_update_pending` is refused, and keys are
+  never dropped to make room. Use `pi_supersede_pending` to keep changing it.
 - **Idempotent edits.** Edits require an `idempotency_key`.
   - A retry with the same key and request returns the original result
     (`replayed: true`).
@@ -177,6 +182,28 @@ reported from evidence of a lower one.
 | `outcome_unknown` | unknown | the Pi process that held the turn went away (crash, exit, relaunch) before it settled |
 | `abort_withheld` | not dispatched | the bridge refused to abort, with `abort_withheld` set to `human_control`, `control_changed_since_request` or `pi_has_queued_messages` |
 | `superseded` | settled | replaced by `pi_supersede_pending` |
+
+**Bridge protocol (mixed versions).** A running Pi keeps the bridge it was
+launched with. Restarting or upgrading the MCP server does **not** refresh
+it; only a human `devx agent relaunch` does.
+
+- **What the bridge reports.** Each bridge reports `protocol` in its
+  heartbeat. This build's is 2. Bridges from before versioning report
+  nothing, which is read as 0.
+- **What the agent view shows.** `pi_list_sessions` and `pi_status` show
+  `bridge_protocol` and `bridge_upgrade_needed`.
+- **Cancelling a running task needs the current protocol.** The task must
+  be held by a live bridge that speaks the current protocol, whether or not
+  Pi has accepted it yet. Otherwise `pi_cancel` returns
+  `error: "bridge_upgrade_required"` with `recorded: false`, and nothing is
+  written.
+  - An older bridge doesn't drop unaccepted injections, so it would start a
+    "cancelled" prompt.
+  - It also aborts whatever turn is running, possibly a human's.
+- **Queued work is always cancellable.** The bridge never sees a cancel of
+  waiting work.
+- **Cancels recorded before this gate existed** are reported as
+  `abort_requested_legacy_bridge`. Only their eventual settle is observable.
 
 **What "settled" does not prove.** `aborted`, a terminal task state and
 `agent_settled` all describe Pi's **agent loop** and nothing more. DevX does

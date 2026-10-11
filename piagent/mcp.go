@@ -112,7 +112,7 @@ func toolList() []tool {
 			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id"), "after_seq": intProp("Return events with seq greater than this"), "limit": intProp("Max events (<=200)"), "wait_seconds": intProp("Block up to N seconds for new events")}, "agent_id")},
 		{Name: "pi_cancel", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
-			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control at the same lease generation and Pi has no internally queued messages; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (abort_withheld = human_control / control_changed_since_request / pi_has_queued_messages) / finished_before_abort / outcome_unknown (the Pi process went away) / abort_unconfirmed (no settle within 30 s; nothing is escalated). abort_sent means the abort was dispatched, not that anything stopped; aborted means Pi's agent loop settled the turn, NOT that every subprocess a tool or extension started has exited. Denied while a human has control of accepted running work (a task Pi has not accepted yet can still be dropped). Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op, except that a withheld abort can be requested again after a human released control.",
+			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control at the same lease generation and Pi has no internally queued messages; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (abort_withheld = human_control / control_changed_since_request / pi_has_queued_messages) / finished_before_abort / outcome_unknown (the Pi process went away) / abort_unconfirmed (no settle within 30 s; nothing is escalated). abort_sent means the abort was dispatched, not that anything stopped; aborted means Pi's agent loop settled the turn, NOT that every subprocess a tool or extension started has exited. Denied while a human has control of accepted running work (a task Pi has not accepted yet can still be dropped). Cancelling a running task requires the agent's live Pi bridge to speak the current protocol; otherwise error=bridge_upgrade_required and nothing is recorded (restarting this server does not refresh a running Pi; a human relaunch does). Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op, except that a withheld abort can be requested again after a human released control.",
 			InputSchema: obj(map[string]any{
 				"task_id":           strProp("Task id (pt_...)"),
 				"agent_id":          strProp("Optional agent id; when given the task must belong to it"),
@@ -122,7 +122,7 @@ func toolList() []tool {
 			Description: "Inspect an agent's queue: in-flight work, pending prompts in delivery order (with revision, phase, waiting_reason, age and a redacted preview) and recent outcomes. Use the revision with pi_update_pending, pi_supersede_pending or pi_cancel.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id (pa_...)"), "recent": intProp("Recent finished tasks to include (max 10)")}, "agent_id")},
 		{Name: "pi_update_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
-			Description: "Replace the prompt of a task that is still queued (not yet handed to Pi), keeping its task id and queue position. Compare-and-swap: expected_revision must match the current revision, otherwise the call fails with error=conflict and the current revision/state and nothing changes. Once delivered a prompt can no longer be edited. Idempotent on idempotency_key.",
+			Description: "Replace the prompt of a task that is still queued (not yet handed to Pi), keeping its task id and queue position. Compare-and-swap: expected_revision must match the current revision, otherwise the call fails with error=conflict and the current revision/state and nothing changes. Once delivered a prompt can no longer be edited. Idempotent on idempotency_key (keys are never forgotten); a task allows at most 32 in-place edits, after which use pi_supersede_pending.",
 			InputSchema: obj(map[string]any{
 				"agent_id":          strProp("Managed agent id (pa_...)"),
 				"task_id":           strProp("Queued task id (pt_...)"),
@@ -243,6 +243,9 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 			msg := err.Error()
 			if IsPermissionDenied(err) {
 				data = map[string]any{"error": "permission_denied", "message": msg}
+			} else if be := (*BridgeUpgradeError)(nil); errors.As(err, &be) {
+				data = map[string]any{"error": "bridge_upgrade_required", "message": msg, "task_id": be.TaskID, "agent_id": be.AgentID,
+					"bridge_protocol": be.Protocol, "required_protocol": BridgeProtocol, "recorded": false}
 			} else if ce := (*ConflictError)(nil); errors.As(err, &ce) {
 				data = map[string]any{"error": "conflict", "message": msg, "task_id": ce.TaskID, "expected_revision": ce.Expected,
 					"current_revision": ce.Current, "state": ce.State, "phase": ce.Phase}
@@ -474,5 +477,9 @@ func agentSummary(v *AgentView) map[string]any {
 		"last_event_seq": v.LastSeq,
 		"pane":           a.Binding.PaneID,
 		"attach":         v.AttachHint,
+		// A running Pi keeps the bridge it was launched with; restarting
+		// this server does not refresh it.
+		"bridge_protocol":       v.BridgeProtocol,
+		"bridge_upgrade_needed": v.BridgeUpgradeNeeded,
 	}
 }

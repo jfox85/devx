@@ -196,6 +196,7 @@ func (f *failingTmuxCreator) EnsureTmux(string, *Agent) error { return errors.Ne
 func TestCancelSemantics(t *testing.T) {
 	m, _ := newTestManager(t)
 	a := seedAgent(t, m)
+	liveBridge(t, m, a.ID, BridgeProtocol)
 	r, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k"})
 	if _, err := m.Cancel(r.TaskID); err != nil {
 		t.Fatal(err)
@@ -213,7 +214,7 @@ func TestCancelSemantics(t *testing.T) {
 	_ = m.Store.WithAgentLock(a.ID, func() error {
 		tk, _ := m.Store.LoadTask(a.ID, r2.TaskID)
 		now := time.Now()
-		tk.State, tk.ConfirmedAt = TaskRunning, &now
+		tk.State, tk.ConfirmedAt, tk.BridgeInstance = TaskRunning, &now, "inst"
 		return m.Store.SaveTask(tk)
 	})
 	if _, err := m.Takeover(a.ID, "h"); err != nil {

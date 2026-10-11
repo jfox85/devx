@@ -23,6 +23,8 @@ const DEVX_SESSION = process.env.DEVX_PI_DEVX_SESSION ?? "";
 const DEVX_EXE = process.env.DEVX_PI_DEVX_EXECUTABLE ?? "";
 const PANE = process.env.TMUX_PANE ?? "";
 const TICK_MS = 250;
+// Control protocol this bridge implements; must equal piagent.BridgeProtocol.
+const PROTOCOL = 2;
 const CONFIRM_TIMEOUT_MS = 15000;
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 10000;
@@ -238,6 +240,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 			human_typing: editor.trim() !== "",
 			heartbeat: now(),
 			mode,
+			protocol: PROTOCOL,
 		});
 		return editor;
 	};
