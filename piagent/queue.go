@@ -252,9 +252,8 @@ func (m *Manager) SupersedePending(req SupersedePendingRequest) (*EditResult, er
 				}
 			}
 			// Step 2: create the replacement in the same queue position.
-			nt, err := m.Store.LoadTask(a.ID, newID)
-			if errors.Is(err, ErrNotFound) {
-				nt = &Task{ID: newID, AgentID: a.ID, Order: old.Order, Prompt: req.Prompt, IdempotencyHash: keyHash,
+			if _, err := m.Store.LoadTask(a.ID, newID); errors.Is(err, ErrNotFound) {
+				nt := &Task{ID: newID, AgentID: a.ID, Order: old.Order, Prompt: req.Prompt, IdempotencyHash: keyHash,
 					State: TaskWaiting, CreatedAt: m.Store.now(), Supersedes: old.ID}
 				if err := m.Store.SaveTask(nt); err != nil {
 					return err
@@ -365,8 +364,8 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 			CancelOutcome: t.CancelOutcome(now), AgeSeconds: int64(now.Sub(t.CreatedAt) / time.Second), CreatedAt: t.CreatedAt,
 			DeliveredAt: t.DeliveredAt, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, FinishedAt: t.FinishedAt, PromptBytes: len(t.Prompt),
 			Supersedes: t.Supersedes, SupersededBy: t.SupersededBy, Note: t.Note, Editable: t.State == TaskWaiting && av.Agent.RetiredAt == nil}
-		switch {
-		case t.State == TaskWaiting:
+		switch t.State {
+		case TaskWaiting:
 			qv.PendingTotal++
 			if len(qv.Pending) >= MaxQueuePending {
 				qv.PendingTruncated = true
@@ -374,7 +373,7 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 			}
 			it.WaitingReason = waitingReasonFor(av, t, firstWaiting)
 			qv.Pending = append(qv.Pending, withPreview(it, t))
-		case t.State == TaskRunning:
+		case TaskRunning:
 			qv.InFlight = append(qv.InFlight, withPreview(it, t))
 		default:
 			done = append(done, it)

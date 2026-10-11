@@ -103,7 +103,7 @@ var agentStatusCmd = &cobra.Command{
 			if co := t.CancelOutcome(now); co != "" {
 				extra = strings.TrimSpace(co + "  " + extra)
 			}
-			fmt.Fprintf(out, "  %s  %-9s %-9s rev %-3d %s\n", t.ID, t.State, t.Phase(), t.Revision, extra)
+			_, _ = fmt.Fprintf(out, "  %s  %-9s %-9s rev %-3d %s\n", t.ID, t.State, t.Phase(), t.Revision, extra)
 		}
 		return nil
 	},
