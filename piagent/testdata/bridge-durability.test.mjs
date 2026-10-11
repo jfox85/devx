@@ -49,9 +49,13 @@ for (const k of Object.keys(real)) fs[k] = wrap(k);
 syncBuiltinESMExports();
 
 // ---- controllable clock (backoff) ----
+// Re-based per test (in withEnv) so offsets never leak between tests. It
+// still advances with real time: the bridge's lock deadline loop needs a
+// moving clock. Backoff windows are only asserted right after an attempt.
 const realNow = Date.now.bind(Date);
+let clockBase = 0;
 let clockOffset = 0;
-Date.now = () => realNow() + clockOffset;
+Date.now = () => realNow() + clockBase + clockOffset;
 const advance = (ms) => {
 	clockOffset += ms;
 };
@@ -94,13 +98,19 @@ async function startBridge(env, opts = {}) {
 	process.env.TMUX_PANE = PANE;
 	delete process.env.DEVX_PI_DEVX_EXECUTABLE;
 	delete process.env.DEVX_PI_DEVX_SESSION;
+	delete process.env.DEVX_PI_TEST_DELIVERY_DELAY_MS;
 	const intervals = [];
 	const origSetInterval = globalThis.setInterval;
 	globalThis.setInterval = (fn) => {
 		intervals.push(fn);
 		return { unref() {} };
 	};
-	const mod = await import(`${pathToFileURL(BRIDGE).href}?i=${++seq}`);
+	let mod;
+	try {
+		mod = await import(`${pathToFileURL(BRIDGE).href}?i=${++seq}`);
+	} finally {
+		globalThis.setInterval = origSetInterval;
+	}
 	const handlers = {};
 	const commands = {};
 	const sent = [];
@@ -127,9 +137,16 @@ async function startBridge(env, opts = {}) {
 		registerCommand: (n, c) => (commands[n] = c),
 		sendUserMessage: (text) => sent.push(text),
 	};
-	mod.default(pi);
-	handlers.session_start({}, ctx);
-	globalThis.setInterval = origSetInterval;
+	globalThis.setInterval = (fn) => {
+		intervals.push(fn);
+		return { unref() {} };
+	};
+	try {
+		mod.default(pi);
+		handlers.session_start({}, ctx);
+	} finally {
+		globalThis.setInterval = origSetInterval;
+	}
 	const b = {
 		ctx,
 		ui,
@@ -163,6 +180,8 @@ function deliverAndAccept(b) {
 function withEnv(name, fn) {
 	test(name, async (t) => {
 		clearFaults();
+		clockBase = 0;
+		clockOffset = 0;
 		const env = makeRoot();
 		t.after(() => {
 			clearFaults();
@@ -181,7 +200,6 @@ for (const [label, arm] of [
 	["agent.json write fails", () => inject("writeFileSync", /agent\.json\..*\.tmp$/)],
 	["agent.json rename fails", () => inject("renameSync", /agent\.json$/)],
 	["agent record unreadable", () => inject("readFileSync", /agent\.json$/, { code: "EIO" })],
-	["human_input event append fails", () => inject("appendFileSync", /events\.jsonl$/)],
 ]) {
 	withEnv(`human input fails closed when takeover is not durable: ${label}`, async (env) => {
 		const waiting = addTask(env.dir, 1, "remote work");
@@ -218,6 +236,46 @@ for (const [label, arm] of [
 		assert.deepEqual(b.human("human message"), { action: "continue" });
 	});
 }
+
+withEnv("once the lease is durably human, failing annotations do not lock the human out", async (env) => {
+	const id = addTask(env.dir, 1, "remote work");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	inject("appendFileSync", /events\.jsonl$/);
+	inject("writeFileSync", /tasks\/pt_.*\.json\..*\.tmp$/);
+	assert.deepEqual(b.human("hi"), { action: "continue" });
+	assert.deepEqual(b.human("again"), { action: "continue" }, "not locked out on later submits");
+	clearFaults();
+	assert.equal(agent(env.dir).lease.holder, "human");
+	assert.equal(task(env.dir, id).state, "running");
+});
+
+withEnv("human input during a running task marks it human_intervened", async (env) => {
+	const id = addTask(env.dir, 1, "remote work");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	assert.deepEqual(b.human("steer"), { action: "continue" });
+	assert.equal(task(env.dir, id).human_intervened, true);
+	assert.equal(agent(env.dir).lease.holder, "human");
+});
+
+withEnv("human submit while a receipt is pending is accepted and does not touch the settled task", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	inject("writeFileSync", /results\/pt_.*\.txt\..*\.tmp$/);
+	b.finishTurn("answer");
+	assert.deepEqual(b.human("new"), { action: "continue" });
+	clearFaults();
+	advance(60_000);
+	b.tick();
+	const t = task(env.dir, id);
+	assert.equal(t.state, "completed");
+	assert.ok(!t.human_intervened);
+	assert.equal(agent(env.dir).lease.holder, "human");
+	b.tick();
+	assert.equal(b.sent.length, 1, "human control: nothing dispatched");
+});
 
 withEnv("human input continues only after the lease is durably human", async (env) => {
 	const b = await startBridge(env);
@@ -382,7 +440,8 @@ withEnv("restart: spooled receipt from a crashed instance is published before di
 	b.tick();
 	assert.deepEqual(b.sent, ["second"]);
 	assert.equal(task(env.dir, second).state, "running");
-	// The old instance is fenced and must not re-publish or dispatch.
+	// The old instance is fenced: it may retry its own receipt (finding it
+	// already stamped and logged, so a no-op) but never dispatches.
 	a.tick();
 	assert.equal(a.sent.length, 1);
 	assert.equal(events(env.dir).filter((e) => e.type === "task_finished" && e.task_id === first).length, 1);
@@ -422,6 +481,8 @@ withEnv("shutdown with an unpublished receipt marks unknown honestly when it can
 	assert.ok(ev.data.receipt_id && ev.data.receipt_spooled === true);
 	await startBridge(env); // next instance attaches the preserved result
 	assert.equal(real.readFileSync.call(fs, path.join(env.dir, "results", `${first}.txt`), "utf8"), "answer");
+	assert.equal(events(env.dir).filter((e) => e.type === "task_result_recovered" && e.data.receipt_id === ev.data.receipt_id).length, 1, "recovery is announced even though task_unknown carries the receipt id");
+	assert.ok(!fs.existsSync(path.join(env.dir, "results", `${first}.receipt.json`)));
 });
 
 withEnv("corrupt spool is set aside, not fatal", async (env) => {
@@ -452,9 +513,12 @@ withEnv("unconfirmed delivery failure is published durably too", async (env) => 
 	const b = await startBridge(env);
 	b.tick(); // delivered, never accepted
 	advance(20_000);
-	lockFault();
+	inject("writeFileSync", /tasks\/pt_.*\.json\..*\.tmp$/); // tick lock works; publication fails
+	b.tick(); // detects the timeout, settles, publication fails
 	b.tick();
-	b.tick();
+	assert.equal(task(env.dir, id).state, "running", "not failed until published");
+	assert.equal(b.sent.length, 1, "nothing dispatched past the unsaved failure");
+	assert.equal(readJ(path.join(env.dir, "bridge.json")).result_pending, id);
 	clearFaults();
 	advance(60_000);
 	b.tick();
@@ -464,4 +528,52 @@ withEnv("unconfirmed delivery failure is published durably too", async (env) => 
 	assert.equal(events(env.dir).filter((e) => e.type === "task_finished" && e.task_id === id).length, 1);
 	b.tick();
 	assert.deepEqual(b.sent, ["first", "second"]);
+});
+
+withEnv("human interrupt receipt takes control when control has not changed", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	lockFault();
+	b.finishTurn("partial", "aborted");
+	clearFaults();
+	advance(60_000);
+	b.tick();
+	const t = task(env.dir, id);
+	assert.equal(t.state, "cancelled");
+	assert.equal(t.note, "interrupted by a human in Pi");
+	assert.equal(agent(env.dir).lease.holder, "human");
+	b.tick();
+	assert.equal(b.sent.length, 1);
+});
+
+withEnv("real lock timeout during publication keeps the result and blocks dispatch", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	const lock = path.join(env.dir, "agent.lock");
+	real.mkdirSync.call(fs, lock); // held, fresh by both clocks
+	b.finishTurn("answer");
+	assert.equal(task(env.dir, id).state, "running");
+	assert.ok(fs.existsSync(path.join(env.dir, "results", `${id}.receipt.json`)), "spooled outside the lock");
+	fs.rmdirSync(lock);
+	advance(60_000);
+	b.tick();
+	assert.equal(task(env.dir, id).state, "completed");
+	b.tick();
+	assert.deepEqual(b.sent, ["first", "second"]);
+});
+
+withEnv("a spooled receipt whose task record is corrupt is set aside, not fatal", async (env) => {
+	addTask(env.dir, 1, "first");
+	const bad = "pt_0000000000000009";
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), "{corrupt");
+	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify({ v: 1, receipt_id: "rc_x", task_id: bad, instance: "old", text: "t", stop: "stop", settled_at: "" }));
+	const b = await startBridge(env);
+	b.tick();
+	assert.deepEqual(b.sent, ["first"]);
+	assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)));
+	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && e.data.reason === "task_record_unreadable"));
 });
