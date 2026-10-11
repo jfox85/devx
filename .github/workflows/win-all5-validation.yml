@@ -1,0 +1,65 @@
+# VALIDATION ONLY (draft PR, closed unmerged): full Windows test suite for
+# the combined #73+#76+#71+#72+#77 tree, with a hard isolation guard.
+name: Windows combined validation
+on:
+  pull_request:
+    branches: [ main ]
+jobs:
+  win-all5:
+    name: Windows combined suite (isolated)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23', cache: true }
+      - name: Isolation guard setup (sentinel profile + canary real config)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Sentinel profile: the ONLY home any test process can see unless a
+          # test sets its own temp home. Packages with TestMain (cmd, session,
+          # web) replace it with the tmuxfixture fake HOME.
+          S="$RUNNER_TEMP/sentinel-home"
+          mkdir -p "$S/.config/devx" "$S/AppData/Roaming" "$S/AppData/Local"
+          printf '{"sessions":{"canary":{"name":"canary","local_only":{"owner":"devx-pi-mcp","agent_id":"pa_000000000000","created_at":"2026-01-01T00:00:00Z"},"managed_agent":"pa_000000000000"}}}\n' > "$S/.config/devx/sessions.json"
+          printf 'disable_caddy: true\nauto_check_updates: false\n' > "$S/.config/devx/config.yaml"
+          # Canary in the runner's real profile too (in case anything bypasses env).
+          R="$(cygpath -u "$USERPROFILE")"
+          mkdir -p "$R/.config/devx"
+          cp "$S/.config/devx/sessions.json" "$S/.config/devx/config.yaml" "$R/.config/devx/"
+          echo "SENTINEL=$S" >> "$GITHUB_ENV"
+          echo "REALPROFILE=$R" >> "$GITHUB_ENV"
+          (cd "$S/.config" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sentinel-before.txt"
+          (cd "$R/.config/devx" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/real-before.txt"
+          (cd "$S" && find . | sort) > "$RUNNER_TEMP/sentinel-tree-before.txt"
+          git log --oneline -1
+      - name: go test -race ./... (sentinel HOME/USERPROFILE/APPDATA/LOCALAPPDATA)
+        shell: bash
+        run: |
+          set -uo pipefail
+          W="$(cygpath -w "$SENTINEL")"
+          export HOME="$W" USERPROFILE="$W" APPDATA="$W\\AppData\\Roaming" LOCALAPPDATA="$W\\AppData\\Local"
+          export XDG_CONFIG_HOME="$W\\.config" GOFLAGS=-count=1
+          go test -v -race ./... 2>&1 | tee "$RUNNER_TEMP/test.log"
+          rc=${PIPESTATUS[0]}
+          echo "GO_TEST_EXIT=$rc"
+          echo "SUMMARY pass=$(grep -cE -- '--- PASS' "$RUNNER_TEMP/test.log") fail=$(grep -cE -- '--- FAIL' "$RUNNER_TEMP/test.log") skip=$(grep -cE -- '--- SKIP' "$RUNNER_TEMP/test.log") okpkgs=$(grep -cE '^ok ' "$RUNNER_TEMP/test.log") failpkgs=$(grep -cE '^FAIL\s' "$RUNNER_TEMP/test.log")"
+          grep -E '^FAIL\s|^--- FAIL' "$RUNNER_TEMP/test.log" || true
+          exit $rc
+      - name: Isolation guard verify (fails the job if anything touched them)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$REALPROFILE/.config/devx" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/real-after.txt"
+          (cd "$SENTINEL/.config" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sentinel-after.txt"
+          (cd "$SENTINEL" && find . | sort) > "$RUNNER_TEMP/sentinel-tree-after.txt"
+          ok=1
+          if diff "$RUNNER_TEMP/real-before.txt" "$RUNNER_TEMP/real-after.txt"; then echo "GUARD real-profile ~/.config/devx: UNCHANGED"; else echo "GUARD real-profile ~/.config/devx: CHANGED"; ok=0; fi
+          if diff "$RUNNER_TEMP/sentinel-before.txt" "$RUNNER_TEMP/sentinel-after.txt"; then echo "GUARD sentinel .config files: UNCHANGED"; else echo "GUARD sentinel .config files: CHANGED"; ok=0; fi
+          # Go's own build cache, module cache and telemetry legitimately live
+          # under the sentinel profile (AppData, go/); only .config is guarded.
+          echo "GUARD sentinel new entries outside Go caches (informational):"
+          comm -13 "$RUNNER_TEMP/sentinel-tree-before.txt" "$RUNNER_TEMP/sentinel-tree-after.txt" | grep -vE '^\./(AppData/Local/(go-build|Temp)|AppData/Roaming/go|go/|\.cache/)' | head -40 || true
+          if comm -13 "$RUNNER_TEMP/sentinel-tree-before.txt" "$RUNNER_TEMP/sentinel-tree-after.txt" | grep -qE '^\./\.config/devx/'; then echo "GUARD sentinel .config/devx: NEW FILES"; ok=0; else echo "GUARD sentinel .config/devx: no new files"; fi
+          [ $ok = 1 ] && echo "GUARD RESULT: PASS" || { echo "GUARD RESULT: FAIL"; exit 1; }
