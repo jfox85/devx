@@ -209,6 +209,27 @@ requested under DevX control, and the event log shows the order. The bridge
 doesn't call `ctx.abort()` under the lock, because Pi's settle handlers take
 the same lock.
 
+### Child results while a parent is busy
+
+DevX has no parent/child relationship between managed agents and never
+forwards results by itself. Each agent's result is durable on its own, and
+can be read with `pi_status`, `pi_result` and `pi_events` while any other
+agent is mid-turn. A client that forwards a child's result to a busy parent
+with `pi_send` gets a **queued** task. It waits behind the parent's running
+turn (`queued_behind_other_task`) and is delivered as its own turn after that
+turn settles. It is never steered into the running turn.
+
+Covered by `TestE2EChildResultWhileParentBusyIsQueuedNotSteered`.
+
+Out of scope and deferred:
+
+- automatic forwarding
+- dependencies between tasks, such as `depends_on`
+- linking or authorizing parent and child agents
+
+These need their own design: identity, authorization, and what happens when
+the child is cancelled or its outcome is unknown.
+
 ### Steering and interrupts
 
 There is no steer tool, by design. Pi 1.1 gives extensions no way to look

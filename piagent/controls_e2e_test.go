@@ -368,6 +368,57 @@ func TestE2ECancelBeforeAcceptanceUnderHumanControl(t *testing.T) {
 	}
 }
 
+// Child result while the parent is busy. Two real managed agents: the
+// parent runs a long turn while a child finishes. DevX has no parent/child
+// link and never forwards results itself, so this covers what DevX does
+// own:
+//  1. the child's result is durable and readable (status, result cursor,
+//     events) while the parent is still mid-turn, with no dependency on
+//     the parent;
+//  2. a client forwarding that result to the busy parent with pi_send gets
+//     a queued task. It is NOT steered into the parent's running turn: it
+//     waits (queued behind the running task) and is delivered after that
+//     turn settles, as its own turn.
+//
+// Automatic forwarding and task dependencies are out of scope and deferred.
+func TestE2EChildResultWhileParentBusyIsQueuedNotSteered(t *testing.T) {
+	f := newPiFixture(t)
+	parent := f.start("parent long SLOW", "kp")
+	f.waitTask(parent.TaskID, 30*time.Second, TaskRunning)
+	child := f.start("child quick CHILDMARK-42", "kc")
+	cv := f.waitTask(child.TaskID, 45*time.Second, TaskCompleted, TaskFailed)
+	if cv.State != TaskCompleted {
+		t.Fatalf("child: %+v", cv)
+	}
+	// 1. The parent is still busy, and the child's outcome is fully readable.
+	if pv, _, _ := f.m.TaskStatus(parent.TaskID); pv.State != TaskRunning {
+		t.Skipf("parent finished before the child (slow runner); state=%s", pv.State)
+	}
+	res, err := f.m.Result(child.TaskID, 0, MaxResultChunk)
+	if err != nil || !res.Available || !strings.Contains(res.Text, "CHILDMARK-42") {
+		t.Fatalf("child result while parent busy: %+v %v", res, err)
+	}
+	if !strings.Contains(eventTypes(f.events(child.AgentID)), "task_finished") {
+		t.Fatalf("child events: %s", eventTypes(f.events(child.AgentID)))
+	}
+	// 2. Forward it to the busy parent: queued behind the running turn.
+	fwd := f.send(parent.AgentID, "child reported: "+res.Text[:40], "fwd")
+	time.Sleep(800 * time.Millisecond) // many bridge ticks while busy
+	tv, _, _ := f.m.TaskStatus(fwd)
+	if tv.Phase != PhaseQueued || tv.WaitingReason != WaitQueued || tv.DeliveredAt != nil {
+		t.Fatalf("forwarded result while parent busy: %+v", tv)
+	}
+	pDone := f.waitTask(parent.TaskID, 60*time.Second, TaskCompleted, TaskFailed)
+	if pDone.State != TaskCompleted || strings.Contains(pDone.Excerpt, "child reported") {
+		t.Fatalf("parent turn was steered: %+v", pDone)
+	}
+	fDone := f.waitTask(fwd, 45*time.Second, TaskCompleted, TaskFailed)
+	if fDone.State != TaskCompleted || fDone.AcceptedAs != "turn" || !fDone.DeliveredAt.After(*pDone.FinishedAt) ||
+		!strings.Contains(fDone.Excerpt, "ECHO: child reported") {
+		t.Fatalf("forwarded result: %+v (parent finished %v)", fDone, pDone.FinishedAt)
+	}
+}
+
 // Duplicate sends (retry after a dropped response) produce exactly one
 // turn in Pi.
 func TestE2EDuplicateSendRunsOnce(t *testing.T) {
