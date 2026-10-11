@@ -179,9 +179,11 @@ function appendEvent(type: string, taskId: string | undefined, data?: Record<str
 	} catch {}
 }
 
-// Whether an event carrying this receipt id is in the tail of the event log.
-// Used to keep terminal events exactly-once across unknown-outcome retries.
-function logHasReceipt(receiptId: string): boolean {
+// Whether an event of this type carrying this receipt id is in the tail of
+// the event log. Keeps terminal events exactly-once across unknown-outcome
+// retries. Other events (e.g. task_unknown) may carry the same receipt id and
+// do not count.
+function logHasReceipt(receiptId: string, type: string): boolean {
 	let size: number;
 	try {
 		size = fs.statSync(p.events).size;
@@ -197,7 +199,8 @@ function logHasReceipt(receiptId: string): boolean {
 		for (const line of b.toString("utf8").split("\n")) {
 			if (!line.includes(receiptId)) continue;
 			try {
-				if (JSON.parse(line)?.data?.receipt_id === receiptId) return true;
+				const ev = JSON.parse(line);
+				if (ev?.type === type && ev?.data?.receipt_id === receiptId) return true;
 			} catch {}
 		}
 	} finally {
@@ -285,7 +288,7 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 	const resultFile = path.join(p.results, `${r.task_id}.txt`);
 	if (t.terminal_receipt === r.receipt_id) {
 		// Task already published by an attempt whose outcome we did not see.
-		if (!logHasReceipt(r.receipt_id)) {
+		if (!logHasReceipt(r.receipt_id, "task_finished")) {
 			appendEvent("task_finished", t.id, { state: t.state, stop_reason: t.stop_reason ?? "", result_bytes: t.result_bytes ?? 0, human_intervened: !!t.human_intervened, receipt_id: r.receipt_id, publish_attempts: attempts });
 		}
 		return "published";
@@ -295,7 +298,7 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 		// unknown after this Pi went quiet). Terminal states never change, so
 		// do not rewrite it; attach the preserved outcome instead.
 		if (!r.fail_error && !fs.existsSync(resultFile)) writeAtomic(resultFile, r.text);
-		if (!logHasReceipt(r.receipt_id)) {
+		if (!logHasReceipt(r.receipt_id, "task_result_recovered")) {
 			appendEvent("task_result_recovered", t.id, { receipt_id: r.receipt_id, task_state: t.state, stop_reason: r.fail_error ? "" : r.stop, result_bytes: Buffer.byteLength(r.text), ...(r.fail_error ? { error: r.fail_error } : {}) });
 		}
 		return "superseded";
@@ -317,7 +320,7 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 			extra.note = "interrupted by a human in Pi";
 			extra.human_intervened = true;
 			const a = readJSONStrict(p.agent);
-			if (a && a.lease?.holder === "managed" && (r.lease_generation_at_settle === undefined || a.lease.generation === r.lease_generation_at_settle)) {
+			if (a && a.lease?.holder === "managed" && typeof r.lease_generation_at_settle === "number" && a.lease.generation === r.lease_generation_at_settle) {
 				setLeaseLocked("human", "human_interrupt", "pi-tui");
 			}
 		}
@@ -476,7 +479,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 				try {
 					spoolReceipt();
 				} catch {}
-				return publishReceiptLocked(r, publishAttempts);
+				const res = publishReceiptLocked(r, publishAttempts);
+				try {
+					fs.rmSync(receiptPath(r.task_id), { force: true });
+				} catch {}
+				return res;
 			});
 		} catch (e: any) {
 			publishError = String(e?.message ?? e).slice(0, 200);
@@ -489,9 +496,6 @@ export default function devxBridge(pi: ExtensionAPI) {
 			statusLine();
 			return false;
 		}
-		try {
-			fs.rmSync(receiptPath(r.task_id), { force: true });
-		} catch {}
 		const warned = publishWarned;
 		receipt = undefined;
 		receiptSpooled = false;
@@ -506,14 +510,35 @@ export default function devxBridge(pi: ExtensionAPI) {
 
 	// Caller holds the lock. Publishes receipts left by earlier instances;
 	// throws if any could not be published so dispatch stays blocked.
+	let recoveryFailures = 0;
 	const recoverLocked = () => {
-		for (const r of foreignReceipts(instance)) {
-			publishReceiptLocked(r, 0);
-			try {
-				fs.rmSync(receiptPath(r.task_id), { force: true });
-			} catch {}
+		try {
+			for (const r of foreignReceipts(instance)) {
+				try {
+					publishReceiptLocked(r, 0);
+				} catch (e) {
+					if (!(e instanceof SyntaxError)) throw e; // I/O: retry later
+					// The task record it belongs to is corrupt: set the
+					// receipt aside (kept for inspection) rather than block
+					// dispatch forever.
+					const file = receiptPath(r.task_id);
+					fs.renameSync(file, `${file}.corrupt`);
+					appendEvent("receipt_unreadable", r.task_id, { file: `${r.task_id}.receipt.json.corrupt`, reason: "task_record_unreadable", receipt_id: r.receipt_id });
+					continue;
+				}
+				try {
+					fs.rmSync(receiptPath(r.task_id), { force: true });
+				} catch {}
+			}
+		} catch (e: any) {
+			if (++recoveryFailures === PUBLISH_WARN_AFTER) {
+				notify(`DevX could not publish a result saved by an earlier Pi session (${String(e?.message ?? e).slice(0, 120)}). Queued tasks wait until it is saved.`, "warning");
+				flagAttention("Pi agent result recovery pending");
+			}
+			throw e;
 		}
 		recovered = true;
+		recoveryFailures = 0;
 	};
 
 	const heartbeat = (ctx: any) => {
@@ -536,7 +561,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 			protocol: PROTOCOL,
 			...(receipt ? { result_pending: receipt.task_id, publish_attempts: publishAttempts, publish_error: publishError } : {}),
 			...(humanClaimPending ? { human_claim_pending: true } : {}),
-			...(recovered ? {} : { recovery_pending: true }),
+			...(recovered || mode !== "active" ? {} : { recovery_pending: true }),
 		});
 		return editor;
 	};
@@ -757,17 +782,21 @@ export default function devxBridge(pi: ExtensionAPI) {
 			const running = receipt ? undefined : currentTask;
 			try {
 				withLock(() => {
-					// Ownership first: the human lease is the fence. Its
-					// failure (and any failure after it) rejects the input.
+					// Ownership first: the durable human lease is the fence,
+					// and only its failure rejects the input. The annotations
+					// below are best effort: once the lease is saved, failing
+					// them must not lock the human out of their own Pi.
 					setLeaseLocked("human", "human_input", "pi-tui");
-					if (running) {
-						const t = readJSONStrict(taskPath(running));
-						if (t && !t.human_intervened) {
-							t.human_intervened = true;
-							saveTask(t);
+					try {
+						if (running) {
+							const t = readJSONStrict(taskPath(running));
+							if (t && !t.human_intervened) {
+								t.human_intervened = true;
+								saveTask(t);
+							}
 						}
-					}
-					appendEvent("human_input", running, { bytes: e.text.length, during_task: !!running });
+						appendEvent("human_input", running, { bytes: e.text.length, during_task: !!running });
+					} catch {}
 				});
 				humanClaimPending = undefined;
 			} catch (err: any) {
@@ -805,10 +834,20 @@ export default function devxBridge(pi: ExtensionAPI) {
 		// leave no aborted assistant message; the settle event still reports it.
 		const aborted = end.stop === "aborted" || se?.aborted === true;
 		// Protocol 2: an abort is "on request" only if this bridge dispatched
-		// it (abort_sent_at recorded and ctx.abort() called). Frozen now, so a
-		// later publication never relabels a human interrupt.
-		const abortOnRequest = aborted && abortSent && !!readJSON(taskPath(currentTask))?.abort_sent_at;
-		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: abortOnRequest, lease_generation_at_settle: readJSON(p.agent)?.lease?.generation });
+		// it (ctx.abort() called and abort_sent_at recorded). Frozen now, so a
+		// later publication never relabels a human interrupt. If the task
+		// cannot be read now, abortSent alone decides: it is set only after
+		// abort_sent_at was durably saved under the lock.
+		let abortOnRequest = aborted && abortSent;
+		try {
+			abortOnRequest = aborted && abortSent && !!readJSONStrict(taskPath(currentTask))?.abort_sent_at;
+		} catch {}
+		let generation: number | undefined;
+		try {
+			const g = readJSONStrict(p.agent)?.lease?.generation;
+			if (typeof g === "number") generation = g;
+		} catch {}
+		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: abortOnRequest, lease_generation_at_settle: generation });
 	});
 
 	pi.registerCommand("devx-takeover", {
