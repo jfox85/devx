@@ -261,6 +261,11 @@ type Receipt = {
 	text: string;
 	stop: string;
 	error?: string;
+	// How the turn ended, decided at settle time from what this bridge saw
+	// then; publication (possibly later, possibly by another instance) never
+	// re-derives it from state that changed meanwhile.
+	aborted?: boolean;
+	abort_on_request?: boolean;
 	// Set when the bridge itself fails the task (Pi never accepted the
 	// prompt): no result text, state failed with this error.
 	fail_error?: string;
@@ -301,9 +306,9 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 	let state = "completed";
 	if (r.fail_error) {
 		state = "failed";
-	} else if (r.stop === "aborted") {
+	} else if (r.aborted) {
 		state = "cancelled";
-		if (t.cancel_requested) {
+		if (r.abort_on_request) {
 			extra.note = "aborted on request";
 		} else {
 			// Interrupted from the TUI: that is a human taking control. Only
@@ -796,7 +801,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 	pi.on("agent_settled", () => {
 		if (!currentTask || pendingConfirm || receipt) return;
 		const end = lastEnd ?? { text: "" };
-		settle({ text: end.text, stop: end.stop ?? "", error: end.error, lease_generation_at_settle: readJSON(p.agent)?.lease?.generation });
+		const aborted = end.stop === "aborted";
+		// Freeze whether this abort was the one DevX asked for. A cancel
+		// recorded after the turn settled must not relabel a human interrupt.
+		const abortOnRequest = aborted && !!readJSON(taskPath(currentTask))?.cancel_requested;
+		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: abortOnRequest, lease_generation_at_settle: readJSON(p.agent)?.lease?.generation });
 	});
 
 	pi.registerCommand("devx-takeover", {
