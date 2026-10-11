@@ -577,3 +577,70 @@ withEnv("a spooled receipt whose task record is corrupt is set aside, not fatal"
 	assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)));
 	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && e.data.reason === "task_record_unreadable"));
 });
+
+withEnv("unreadable task at settle: a requested abort still publishes as 'aborted on request'", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	const t = task(env.dir, id);
+	t.cancel_requested = true;
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${id}.json`), JSON.stringify(t));
+	inject("readFileSync", new RegExp(`tasks/${id}\\.json$`), { times: 1 });
+	inject("writeFileSync", /results\/pt_.*\.txt\..*\.tmp$/, { times: 1 }); // force a deferred publish
+	b.finishTurn("partial", "aborted");
+	clearFaults();
+	advance(60_000);
+	b.tick();
+	assert.equal(task(env.dir, id).state, "cancelled");
+	assert.equal(task(env.dir, id).note, "aborted on request");
+	assert.equal(agent(env.dir).lease.holder, "managed");
+});
+
+withEnv("unreadable agent at settle: a human interrupt still takes control (delivery generation stands in)", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	inject("readFileSync", /agent\.json$/, { times: 1 });
+	b.finishTurn("partial", "aborted");
+	clearFaults();
+	advance(60_000);
+	b.tick();
+	b.tick();
+	assert.equal(task(env.dir, id).note, "interrupted by a human in Pi");
+	assert.equal(agent(env.dir).lease.holder, "human");
+	assert.equal(b.sent.length, 1);
+});
+
+withEnv("unreadable agent at settle never moves the lease after a later release", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	inject("readFileSync", /agent\.json$/, { times: 1 });
+	lockFault();
+	b.finishTurn("partial", "aborted");
+	clearFaults();
+	await b.commands["devx-takeover"].handler("", b.ctx);
+	await b.commands["devx-release"].handler("", b.ctx);
+	advance(60_000);
+	b.tick();
+	assert.equal(task(env.dir, id).state, "cancelled");
+	assert.equal(agent(env.dir).lease.holder, "managed");
+});
+
+withEnv("stuck recovery is surfaced after repeated failures and blocks dispatch", async (env) => {
+	addTask(env.dir, 1, "first");
+	const bad = "pt_0000000000000009";
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${bad}.json`), JSON.stringify({ id: bad, order: 9, prompt: "x", state: "running", bridge_instance: "old" }));
+	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify({ v: 1, receipt_id: "rc_y", task_id: bad, instance: "old", text: "t", stop: "stop", settled_at: "" }));
+	inject("writeFileSync", /results\/pt_0000000000000009\.txt\..*\.tmp$/);
+	const b = await startBridge(env);
+	for (let i = 0; i < 5; i++) b.tick();
+	assert.equal(b.sent.length, 0, "no dispatch while an earlier result is unpublished");
+	assert.ok(b.ui.notes.some((n) => n.l === "warning" && /earlier Pi session/.test(n.m)));
+	clearFaults();
+	b.tick();
+	assert.equal(task(env.dir, bad).state, "completed");
+	b.tick();
+	assert.deepEqual(b.sent, ["first"]);
+});

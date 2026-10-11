@@ -315,7 +315,11 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 			extra.note = "interrupted by a human in Pi";
 			extra.human_intervened = true;
 			const a = readJSONStrict(p.agent);
-			if (a && a.lease?.holder === "managed" && typeof r.lease_generation_at_settle === "number" && a.lease.generation === r.lease_generation_at_settle) {
+			// If the settle-time generation is unknown, the delivery-time one
+			// stands in: control unchanged since delivery is unchanged since
+			// settle. Never move the lease on no known generation at all.
+			const gen = typeof r.lease_generation_at_settle === "number" ? r.lease_generation_at_settle : t.lease_generation_at_delivery;
+			if (a && a.lease?.holder === "managed" && typeof gen === "number" && a.lease.generation === gen) {
 				setLeaseLocked("human", "human_interrupt", "pi-tui");
 			}
 		}
@@ -509,18 +513,23 @@ export default function devxBridge(pi: ExtensionAPI) {
 	const recoverLocked = () => {
 		try {
 			for (const r of foreignReceipts(instance)) {
+				let taskCorrupt = false;
 				try {
-					publishReceiptLocked(r, 0);
+					readJSONStrict(taskPath(r.task_id));
 				} catch (e) {
 					if (!(e instanceof SyntaxError)) throw e; // I/O: retry later
+					taskCorrupt = true;
+				}
+				if (taskCorrupt) {
 					// The task record it belongs to is corrupt: set the
 					// receipt aside (kept for inspection) rather than block
-					// dispatch forever.
+					// dispatch forever. Any other failure is retried.
 					const file = receiptPath(r.task_id);
 					fs.renameSync(file, `${file}.corrupt`);
 					appendEvent("receipt_unreadable", r.task_id, { file: `${r.task_id}.receipt.json.corrupt`, reason: "task_record_unreadable", receipt_id: r.receipt_id });
 					continue;
 				}
+				publishReceiptLocked(r, 0);
 				try {
 					fs.rmSync(receiptPath(r.task_id), { force: true });
 				} catch {}
