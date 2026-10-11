@@ -42,6 +42,12 @@ const PUBLISH_BACKOFF_MIN_MS = 250;
 const PUBLISH_BACKOFF_MAX_MS = 30000;
 const PUBLISH_WARN_AFTER = 4; // failed attempts before the human is warned
 const RECEIPT_LOG_SCAN_BYTES = 1 << 20;
+// A live Pi is never invisible to devx for longer than this: Go's relaunch
+// guard and status rely on the heartbeat.
+const SILENT_RECOVERY_MAX_MS = 3000;
+// errno codes that can clear on their own; any other per-spool failure is a
+// property of that record and quarantines it.
+const TRANSIENT_CODES = new Set(["EIO", "EAGAIN", "EBUSY", "EINTR", "EMFILE", "ENFILE", "ENOSPC", "ETIMEDOUT"]);
 // Test hook: delay between claiming a task and handing it to Pi, so tests can
 // land a takeover inside that window. Ignored unless set to a positive number.
 const TEST_DELIVERY_DELAY_MS = Math.min(10000, parseInt(process.env.DEVX_PI_TEST_DELIVERY_DELAY_MS ?? "0", 10) || 0);
@@ -266,9 +272,9 @@ type Receipt = {
 	aborted: boolean;
 	// That abort was the one this bridge dispatched for a DevX cancel.
 	abort_on_request: boolean;
-	// Lease generation a human interrupt is judged against: read at settle,
-	// else the one this bridge saw when it delivered the task. null only if
-	// neither is known; then the lease is never moved.
+	// Lease generation read at settle; null if that read failed. A human
+	// interrupt moves the lease only if control has not changed since the
+	// turn settled (same generation, or a lease older than settled_at).
 	lease_generation_basis: number | null;
 	// Set when the bridge itself fails the task (Pi never accepted the
 	// prompt): no result text, state failed with this error.
@@ -342,8 +348,7 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 			extra.note = "interrupted by a human in Pi";
 			extra.human_intervened = true;
 			const a = readJSONStrict(p.agent);
-			const gen = r.lease_generation_basis;
-			if (a && a.lease?.holder === "managed" && typeof gen === "number" && a.lease.generation === gen) {
+			if (a && a.lease?.holder === "managed" && controlUnchangedSince(a.lease, r)) {
 				setLeaseLocked("human", "human_interrupt", "pi-tui");
 			}
 		}
@@ -364,8 +369,24 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 // deleted) and records why.
 function quarantineSpool(name: string, reason: string, receiptId?: string) {
 	const file = path.join(p.results, name);
-	fs.renameSync(file, `${file}.corrupt`);
-	appendEvent("receipt_unreadable", TASK_ID_RE.test(name.slice(0, 19)) ? name.slice(0, 19) : undefined, { file: `${name}.corrupt`, reason, ...(receiptId ? { receipt_id: receiptId } : {}) });
+	// Unique, so an earlier quarantined copy is never overwritten. The event
+	// goes first: if the rename then fails, recovery retries and records it
+	// again rather than losing the record of why.
+	const aside = `${name}.${Date.now()}.${randomBytes(3).toString("hex")}.corrupt`;
+	appendEvent("receipt_unreadable", TASK_ID_RE.test(name.slice(0, 19)) ? name.slice(0, 19) : undefined, { file: aside, reason, ...(receiptId ? { receipt_id: receiptId } : {}) });
+	fs.renameSync(file, path.join(p.results, aside));
+}
+
+// Whether the managed lease has not changed since the receipt's turn
+// settled: the generation read at settle matches, or (if that read failed)
+// the lease was granted before the settle. Both times come from this host.
+function controlUnchangedSince(lease: any, r: Receipt): boolean {
+	if (r.lease_generation_basis !== null) return lease.generation === r.lease_generation_basis;
+	const since = Date.parse(lease.since ?? "");
+	const settled = Date.parse(r.settled_at);
+	// Strictly earlier: a change in the same millisecond is ambiguous, and
+	// ambiguity never moves the lease.
+	return Number.isFinite(since) && Number.isFinite(settled) && since < settled;
 }
 
 // Spooled receipts left by earlier bridge instances (Pi exited before their
@@ -427,7 +448,6 @@ export default function devxBridge(pi: ExtensionAPI) {
 	let pendingConfirm: { id: string; prompt: string; at: number } | undefined;
 	let lastEnd: { text: string; stop?: string; error?: string } | undefined;
 	let abortSent = false; // this bridge called ctx.abort() for a DevX cancel of currentTask
-	let deliveredGeneration: number | null = null; // lease generation when currentTask was delivered
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ctxRef: any;
 	let requeueId: string | undefined;
@@ -447,6 +467,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 	// this instance dispatches anything.
 	let recovered = false;
 	let announced = false; // bridge_online recorded for this instance
+	let startedAt = Date.now();
+	// A valid predecessor spool whose task is still running under another
+	// instance is pending: devx's orphan rule would turn it unknown if it saw
+	// this instance live. Only then, and only briefly, is liveness withheld.
+	let orphanablePending = false;
 
 	const statusLine = () => {
 		if (!ctxRef?.hasUI) return;
@@ -459,6 +484,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 					? `devx: could not save the result of ${receipt.task_id} (retrying; ${publishError})`
 					: humanClaimPending
 						? "devx: taking control… (could not save yet; retrying)"
+						: mode === "active" && !recovered
+							? "devx: recovering an earlier Pi session's result — queued tasks wait"
 						: holder === "human"
 							? "devx: HUMAN control — /devx-release to resume managed tasks"
 							: currentTask
@@ -483,10 +510,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 	// task stays current until publication succeeds.
 	const settle = (r: { text: string; stop: string; error?: string; aborted?: boolean; abort_on_request?: boolean; fail_error?: string }) => {
 		if (!currentTask || receipt) return;
-		// Generation basis for judging a human interrupt: now, else the one
-		// seen at delivery (control unchanged since delivery is unchanged
-		// since settle), else none (the lease is then never moved).
-		let basis: number | null = deliveredGeneration;
+		// Generation basis for judging a human interrupt (see
+		// controlUnchangedSince): read now; null if that fails.
+		let basis: number | null = null;
 		try {
 			const g = readJSONStrict(p.agent)?.lease?.generation;
 			if (Number.isInteger(g)) basis = g;
@@ -566,22 +592,39 @@ export default function devxBridge(pi: ExtensionAPI) {
 	let recoveryFailures = 0;
 	const recoverLocked = () => {
 		try {
+			// Agent-wide failures are retried and never charged to a spool.
+			if (!readJSONStrict(p.agent)) throw new Error("devx agent record missing");
 			// Every spool ends published, attached, quarantined, or retried.
-			// Only an I/O error (errno code) is retried: anything else is a
-			// property of that record and would fail forever, so the spool is
-			// set aside rather than blocking dispatch.
+			// Only errno codes that can clear are retried; any other failure
+			// is a property of that record and would recur forever, so the
+			// spool is set aside rather than blocking dispatch.
+			let pending = false;
+			let firstError: any;
 			for (const r of foreignReceipts(instance)) {
 				try {
 					publishReceiptLocked(r, 0);
 				} catch (e: any) {
-					if (typeof e?.code === "string") throw e;
-					quarantineSpool(`${r.task_id}.receipt.json`, e instanceof SyntaxError ? "task_record_unreadable" : `publish_error: ${String(e?.message ?? e).slice(0, 120)}`, r.receipt_id);
+					if (TRANSIENT_CODES.has(e?.code)) {
+						pending = true;
+						firstError ??= e;
+						try {
+							const t = readJSONStrict(taskPath(r.task_id));
+							if (t?.state === "running" && t.bridge_instance !== instance) orphanablePending = true;
+						} catch {
+							orphanablePending = true; // unknown: assume it could be
+						}
+						continue;
+					}
+					const reason = e instanceof SyntaxError ? "task_record_unreadable" : `publish_error${e?.code ? ` ${e.code}` : ""}: ${String(e?.message ?? e).slice(0, 120)}`;
+					quarantineSpool(`${r.task_id}.receipt.json`, reason, r.receipt_id);
 					continue;
 				}
 				try {
 					fs.rmSync(receiptPath(r.task_id), { force: true });
 				} catch {}
 			}
+			if (pending) throw firstError;
+			orphanablePending = false;
 		} catch (e: any) {
 			if (++recoveryFailures === PUBLISH_WARN_AFTER) {
 				notify(`DevX could not publish a result saved by an earlier Pi session (${String(e?.message ?? e).slice(0, 120)}). Queued tasks wait until it is saved.`, "warning");
@@ -592,6 +635,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 		recovered = true;
 		recoveryFailures = 0;
 	};
+
+	const liveAllowed = () => mode !== "active" || recovered || !orphanablePending || Date.now() - startedAt >= SILENT_RECOVERY_MAX_MS;
 
 	const announceLocked = (ctx: any, a: any) => {
 		appendEvent("bridge_online", undefined, {
@@ -643,12 +688,16 @@ export default function devxBridge(pi: ExtensionAPI) {
 				if (!a) return;
 				// Fence: only the newest launch, in the bound pane, may act.
 				if (a.launch_nonce !== NONCE) mode = "fenced";
-				// No liveness before reconciliation: an active instance
-				// announces itself (the heartbeat) only after every spool an
-				// earlier instance left is resolved. Otherwise devx would see
-				// a live, different instance and mark the spooled task
-				// unknown before its real outcome is published.
-				if (mode === "active" && !recovered && a.binding?.pane_id === PANE) recoverLocked();
+				// Reconcile predecessors' spools before any dispatch. Liveness is
+				// withheld only while that would let devx orphan a spooled
+				// running task, and never beyond SILENT_RECOVERY_MAX_MS: a
+				// live Pi must not look exited (devx would then relaunch it).
+				if (mode === "active" && !recovered) {
+					try {
+						recoverLocked();
+					} catch {}
+				}
+				if (!liveAllowed()) return;
 				const editor = heartbeat(ctx);
 				if (!announced) announceLocked(ctx, a);
 				if (requeueId) {
@@ -671,7 +720,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 					humanClaimPending = undefined;
 					return; // decide dispatch next tick, from the saved lease
 				}
-				if (!recovered) return; // defensive: recovery above must have run
+				if (!recovered) return; // dispatch stays fenced until reconciled
 
 				if (currentTask) {
 					if (receipt) return; // settled; only publication remains
@@ -704,7 +753,6 @@ export default function devxBridge(pi: ExtensionAPI) {
 				}
 				currentTask = next.id;
 				abortSent = false;
-				deliveredGeneration = typeof a.lease.generation === "number" ? a.lease.generation : null;
 				lastEnd = undefined;
 				pendingConfirm = { id: next.id, prompt: next.prompt, at: Date.now() };
 				deliver = { id: next.id, prompt: next.prompt };
@@ -734,16 +782,14 @@ export default function devxBridge(pi: ExtensionAPI) {
 				const a = readJSON(p.agent);
 				if (!a || a.launch_nonce !== NONCE) mode = "fenced";
 				// Publish outcomes an earlier instance settled but could not
-				// save before devx sees this instance online. If that fails,
-				// stay silent (no heartbeat, no bridge_online): the tick
-				// retries and announces the instance once recovery succeeds.
+				// save before devx sees this instance online (see liveAllowed).
+				startedAt = Date.now();
 				if (mode === "active") {
 					try {
 						recoverLocked();
-					} catch {
-						return;
-					}
+					} catch {}
 				}
+				if (!liveAllowed()) return;
 				heartbeat(ctx);
 				announceLocked(ctx, a);
 			});
@@ -891,7 +937,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 			const waiting = loadTasks().filter((t) => t.state === "waiting").length;
 			const pending = receipt ? ` · result not yet saved: ${receipt.task_id} (${publishAttempts} attempts${publishError ? `; ${publishError}` : ""})` : "";
 			const claim = humanClaimPending ? " · takeover not yet saved" : "";
-			ctx.ui.notify(`agent ${AGENT_ID} · control: ${a?.lease?.holder} (gen ${a?.lease?.generation}) · running: ${currentTask ?? "none"} · waiting: ${waiting} · mode: ${mode}${pending}${claim}`, "info");
+			const rec = mode === "active" && !recovered ? ` · recovering an earlier session's result (${recoveryFailures} failed attempts)` : "";
+			ctx.ui.notify(`agent ${AGENT_ID} · control: ${a?.lease?.holder} (gen ${a?.lease?.generation}) · running: ${currentTask ?? "none"} · waiting: ${waiting} · mode: ${mode}${pending}${claim}${rec}`, "info");
 		},
 	});
 
@@ -928,7 +975,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 					b.heartbeat = now();
 					writeJSON(p.bridge, b);
 				}
-				appendEvent("bridge_offline", undefined, { instance });
+				if (announced) appendEvent("bridge_offline", undefined, { instance });
 			});
 		} catch {}
 	});

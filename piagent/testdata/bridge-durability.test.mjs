@@ -24,7 +24,7 @@ for (const k of ["mkdirSync", "writeFileSync", "renameSync", "appendFileSync", "
 let faults = [];
 // fault: { op, match: RegExp, mode: "before" | "after", times, code }
 function inject(op, match, opts = {}) {
-	const f = { op, match, mode: opts.mode ?? "before", times: opts.times ?? Infinity, code: opts.code ?? "EIO", hits: 0 };
+	const f = { op, match, mode: opts.mode ?? "before", times: opts.times ?? Infinity, skip: opts.skip ?? 0, code: opts.code ?? "EIO", hits: 0 };
 	faults.push(f);
 	return f;
 }
@@ -36,6 +36,10 @@ function wrap(op) {
 		const target = String(op === "renameSync" ? args[1] : args[0]).replaceAll("\\", "/");
 		const f = faults.find((x) => x.op === op && x.times > 0 && x.match.test(target));
 		if (!f) return real[op].apply(fs, args);
+		if (f.skip > 0) {
+			f.skip--;
+			return real[op].apply(fs, args);
+		}
 		f.times--;
 		f.hits++;
 		const err = Object.assign(new Error(`injected ${f.code} on ${op} ${path.basename(target)}`), { code: f.code });
@@ -67,7 +71,7 @@ function makeRoot() {
 	const dir = path.join(root, "agents", AGENT);
 	fs.mkdirSync(path.join(dir, "tasks"), { recursive: true });
 	fs.mkdirSync(path.join(dir, "results"), { recursive: true });
-	const agent = { id: AGENT, launch_nonce: "nonce-1", binding: { pane_id: PANE }, lease: { holder: "managed", generation: 1 } };
+	const agent = { id: AGENT, launch_nonce: "nonce-1", binding: { pane_id: PANE }, lease: { holder: "managed", generation: 1, since: "2026-01-01T00:00:00.000Z" } };
 	real.writeFileSync.call(fs, path.join(dir, "agent.json"), JSON.stringify(agent));
 	return { root, dir };
 }
@@ -76,6 +80,8 @@ function addTask(dir, n, prompt) {
 	real.writeFileSync.call(fs, path.join(dir, "tasks", `${id}.json`), JSON.stringify({ id, agent_id: AGENT, order: n, prompt, state: "waiting" }));
 	return id;
 }
+// A quarantined copy of results/<name> (unique suffix, ends in .corrupt).
+const quarantined = (dir, name) => fs.readdirSync(path.join(dir, "results")).some((f) => f.startsWith(`${name}.`) && f.endsWith(".corrupt"));
 const readJ = (f) => JSON.parse(real.readFileSync.call(fs, f, "utf8"));
 const task = (dir, id) => readJ(path.join(dir, "tasks", `${id}.json`));
 const agent = (dir) => readJ(path.join(dir, "agent.json"));
@@ -113,6 +119,7 @@ async function startBridge(env, opts = {}) {
 	}
 	const handlers = {};
 	const commands = {};
+	let startLater = () => {};
 	const sent = [];
 	const ui = { editor: opts.editor ?? "", status: "", notes: [] };
 	const ctx = {
@@ -143,7 +150,19 @@ async function startBridge(env, opts = {}) {
 	};
 	try {
 		mod.default(pi);
-		handlers.session_start({}, ctx);
+		if (!opts.deferStart) handlers.session_start({}, ctx);
+		else {
+			// Caller runs start() later; capture the tick timer then.
+			startLater = () => {
+				const o = globalThis.setInterval;
+				globalThis.setInterval = (fn) => (intervals.push(fn), { unref() {} });
+				try {
+					handlers.session_start({}, ctx);
+				} finally {
+					globalThis.setInterval = o;
+				}
+			};
+		}
 	} finally {
 		globalThis.setInterval = origSetInterval;
 	}
@@ -154,6 +173,7 @@ async function startBridge(env, opts = {}) {
 		handlers,
 		commands,
 		tick: () => intervals[0](),
+		start: () => startLater(),
 		// Pi hands the delivered prompt back through the input pipeline.
 		accept: () => handlers.input({ text: sent[sent.length - 1], source: "extension" }, ctx),
 		human: (text) => {
@@ -493,7 +513,7 @@ withEnv("corrupt spool is set aside, not fatal", async (env) => {
 	const b = await startBridge(env);
 	b.tick();
 	assert.deepEqual(b.sent, ["first"]);
-	assert.ok(fs.existsSync(path.join(env.dir, "results", "pt_0000000000000009.receipt.json.corrupt")));
+	assert.ok(quarantined(env.dir, "pt_0000000000000009.receipt.json"));
 	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable"));
 });
 
@@ -576,7 +596,7 @@ withEnv("a spooled receipt whose task record is corrupt is set aside, not fatal"
 	const b = await startBridge(env);
 	b.tick();
 	assert.deepEqual(b.sent, ["first"]);
-	assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)));
+	assert.ok(quarantined(env.dir, `${bad}.receipt.json`));
 	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && e.data.reason === "task_record_unreadable"));
 });
 
@@ -621,7 +641,7 @@ withEnv("an abort the bridge dispatched for a cancel publishes as 'aborted on re
 	assert.equal(agent(env.dir).lease.holder, "managed");
 });
 
-withEnv("unreadable agent at settle: a human interrupt still takes control (delivery generation stands in)", async (env) => {
+withEnv("unreadable agent at settle: a human interrupt still takes control (lease unchanged since settle)", async (env) => {
 	const id = addTask(env.dir, 1, "first");
 	addTask(env.dir, 2, "second");
 	const b = await startBridge(env);
@@ -739,7 +759,7 @@ withEnv("r4243432191: a cancel arriving after a human interrupt settled (all rea
 	const done = task(env.dir, id);
 	assert.equal(done.note, "interrupted by a human in Pi");
 	assert.equal(done.human_intervened, true);
-	assert.equal(agent(env.dir).lease.holder, "human", "delivery-time generation stands in");
+	assert.equal(agent(env.dir).lease.holder, "human", "lease older than the settle: control unchanged");
 	assert.equal(b.sent.length, 1, "nothing dispatched to the human who interrupted");
 });
 
@@ -766,7 +786,7 @@ for (const [label, over] of [
 		const b = await startBridge(env);
 		b.tick();
 		assert.deepEqual(b.sent, ["first"]);
-		assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)), "kept for inspection");
+		assert.ok(quarantined(env.dir, `${bad}.receipt.json`), "kept for inspection");
 		assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && e.data.reason));
 		assert.equal(task(env.dir, bad).state, "running", "an invalid spool never decides the task");
 	});
@@ -781,7 +801,134 @@ withEnv("recovery quarantines a spool whose publication fails deterministically 
 	const b = await startBridge(env);
 	b.tick();
 	assert.deepEqual(b.sent, ["first"]);
-	assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json.corrupt`)));
+	assert.ok(quarantined(env.dir, `${bad}.receipt.json`));
 	assert.ok(events(env.dir).some((e) => e.type === "receipt_unreadable" && /publish_error/.test(e.data.reason)));
 	assert.equal(task(env.dir, bad).state, "running", "never rewritten from a mismatched record");
+});
+
+// ---- Revision 3: liveness is never withheld from a live Pi for long ----
+
+function crashWithSpool(env, a, first) {
+	deliverAndAccept(a);
+	lockFault();
+	a.finishTurn("spooled answer");
+	clearFaults();
+}
+
+withEnv("L0: a transient recovery fault on an orphanable spool withholds liveness only briefly", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const a = await startBridge(env);
+	crashWithSpool(env, a, first);
+	relaunchNonce(env.dir, "nonce-2");
+	fs.rmSync(path.join(env.dir, "bridge.json"));
+	inject("readFileSync", new RegExp(`tasks/${first}\\.json$`), { code: "EIO" }); // persists
+	const b = await startBridge(env, { nonce: "nonce-2" });
+	b.tick();
+	assert.ok(!fs.existsSync(path.join(env.dir, "bridge.json")), "silent at first");
+	assert.match(b.ui.status, /recovering an earlier/);
+	advance(3_500);
+	b.tick();
+	const hb = readJ(path.join(env.dir, "bridge.json"));
+	assert.equal(hb.instance !== undefined && hb.mode, "active", "a live Pi must become visible to devx");
+	assert.equal(events(env.dir).filter((e) => e.type === "bridge_online" && e.data.instance === hb.instance).length, 1);
+	b.tick();
+	assert.equal(b.sent.length, 0, "dispatch stays fenced until reconciled");
+	clearFaults();
+	b.tick();
+	b.tick();
+	assert.deepEqual(b.sent, ["second"]);
+});
+
+withEnv("L0: a spool whose task is already terminal never withholds liveness, even if recovery keeps failing", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const a = await startBridge(env);
+	crashWithSpool(env, a, first);
+	// devx relaunch already marked it unknown (launch() runs markOrphanedLocked).
+	const t = task(env.dir, first);
+	t.state = "unknown";
+	real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${first}.json`), JSON.stringify(t));
+	relaunchNonce(env.dir, "nonce-2");
+	fs.rmSync(path.join(env.dir, "bridge.json"));
+	inject("writeFileSync", /results\/pt_0000000000000001\.txt\..*\.tmp$/, { code: "ENOSPC" }); // attach keeps failing
+	const b = await startBridge(env, { nonce: "nonce-2" });
+	assert.equal(readJ(path.join(env.dir, "bridge.json")).mode, "active", "visible immediately: nothing devx could orphan");
+	b.tick();
+	assert.equal(b.sent.length, 0, "dispatch fenced while recovery is pending");
+	clearFaults();
+	b.tick();
+	b.tick();
+	assert.equal(events(env.dir).filter((e) => e.type === "task_result_recovered").length, 1);
+	assert.deepEqual(b.sent, ["second"]);
+});
+
+for (const code of ["EACCES", "EISDIR", "ENOTDIR", "EROFS", "ELOOP"]) {
+	withEnv(`R3: a permanent errno (${code}) on one spool quarantines it instead of blocking forever`, async (env) => {
+		const first = addTask(env.dir, 1, "first");
+		addTask(env.dir, 2, "second");
+		const a = await startBridge(env);
+		crashWithSpool(env, a, first);
+		relaunchNonce(env.dir, "nonce-2");
+		inject("writeFileSync", /results\/pt_0000000000000001\.txt\..*\.tmp$/, { code });
+		const b = await startBridge(env, { nonce: "nonce-2" });
+		b.tick();
+		b.tick();
+		clearFaults();
+		assert.ok(quarantined(env.dir, `${first}.receipt.json`));
+		const ev = events(env.dir).find((e) => e.type === "receipt_unreadable");
+		assert.match(ev.data.reason, new RegExp(code));
+		assert.deepEqual(b.sent, ["second"]);
+	});
+}
+
+withEnv("R3: an agent-wide failure is retried, never charged to a spool", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const a = await startBridge(env);
+	crashWithSpool(env, a, first);
+	relaunchNonce(env.dir, "nonce-2");
+	const b = await startBridge(env, { nonce: "nonce-2", deferStart: true });
+	// session_start's own (lenient) read succeeds; recovery's strict read of
+	// the agent record fails.
+	inject("readFileSync", /agent\.json$/, { code: "EACCES", skip: 1, times: 1 });
+	b.start();
+	clearFaults();
+	b.tick();
+	b.tick();
+	assert.ok(!quarantined(env.dir, `${first}.receipt.json`), "not quarantined for an agent-level fault");
+	assert.equal(task(env.dir, first).state, "completed");
+	assert.deepEqual(b.sent, ["second"]);
+});
+
+withEnv("bridge_offline is recorded only for an instance that announced itself", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	const a = await startBridge(env);
+	crashWithSpool(env, a, first);
+	relaunchNonce(env.dir, "nonce-2");
+	fs.rmSync(path.join(env.dir, "bridge.json"));
+	inject("readFileSync", new RegExp(`tasks/${first}\\.json$`), { code: "EIO" });
+	const b = await startBridge(env, { nonce: "nonce-2" });
+	b.shutdown();
+	clearFaults();
+	const types = events(env.dir).map((e) => e.type);
+	assert.equal(types.filter((t) => t === "bridge_online").length, 1, "only the first instance announced");
+	assert.equal(types.filter((t) => t === "bridge_offline").length, 0);
+});
+
+withEnv("R1': after a takeover and release during the turn, a later Esc with an unreadable agent record takes control (lease older than settle)", async (env) => {
+	const id = addTask(env.dir, 1, "first");
+	const b = await startBridge(env);
+	deliverAndAccept(b);
+	await b.commands["devx-takeover"].handler("", b.ctx);
+	advance(5);
+	await b.commands["devx-release"].handler("", b.ctx);
+	await new Promise((r) => setTimeout(r, 5)); // the Esc comes after the release (timestamps use the real clock)
+	inject("readFileSync", /agent\.json$/, { times: 1 });
+	b.finishTurn("partial", "aborted");
+	clearFaults();
+	assert.equal(task(env.dir, id).note, "interrupted by a human in Pi");
+	// The release happened before the settle and nothing changed since: the
+	// interrupt is the human taking control again.
+	assert.equal(agent(env.dir).lease.holder, "human");
 });
