@@ -225,6 +225,13 @@ func (m *Manager) SupersedePending(req SupersedePendingRequest) (*EditResult, er
 				}
 			}
 			newID := rec.TaskID
+			if a.RetiredAt != nil {
+				if _, err := m.Store.LoadTask(a.ID, newID); errors.Is(err, ErrNotFound) {
+					// Interrupted supersede on an agent retired since: never
+					// create new work on a retired agent.
+					return denied("agent %s is retired: its session %q was removed", a.ID, a.DevxSession)
+				}
+			}
 			// Step 1: cancel the old task (unless a previous attempt did).
 			if old.SupersededBy != newID {
 				if err := checkPending(old, req.ExpectedRevision, "superseding a prompt"); err != nil {
@@ -288,6 +295,7 @@ type QueueItem struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
 	AcceptedAt    *time.Time `json:"accepted_at,omitempty"`
+	AcceptedAs    string     `json:"accepted_as,omitempty"`
 	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 	PromptBytes   int        `json:"prompt_bytes"`
 	PromptPreview string     `json:"prompt_preview"`
@@ -307,9 +315,16 @@ type QueueView struct {
 	LeaseGen int64       `json:"lease_generation"`
 	InFlight []QueueItem `json:"in_flight"`
 	Pending  []QueueItem `json:"pending"`
-	Recent   []QueueItem `json:"recent"`
-	LastSeq  int64       `json:"last_event_seq"`
+	// PendingTotal counts all queued tasks; Pending holds at most
+	// MaxQueuePending of them, in delivery order.
+	PendingTotal     int         `json:"pending_total"`
+	PendingTruncated bool        `json:"pending_truncated,omitempty"`
+	Recent           []QueueItem `json:"recent"`
+	LastSeq          int64       `json:"last_event_seq"`
 }
+
+// MaxQueuePending bounds pending items returned by one queue view.
+const MaxQueuePending = 50
 
 // MaxPromptPreview bounds prompt previews in the queue view.
 const MaxPromptPreview = 512
@@ -337,16 +352,29 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 	qv := &QueueView{AgentID: agentID, State: av.State, Control: av.Agent.Lease.Holder, LeaseGen: av.Agent.Lease.Generation,
 		InFlight: []QueueItem{}, Pending: []QueueItem{}, Recent: []QueueItem{}, LastSeq: av.LastSeq}
 	var done []QueueItem
+	firstWaiting := ""
+	for _, t := range tasks {
+		if t.State == TaskWaiting {
+			firstWaiting = t.ID
+			break
+		}
+	}
 	for _, t := range tasks {
 		it := QueueItem{TaskID: t.ID, Order: t.Order, State: t.State, Phase: t.Phase(), Revision: t.Revision,
 			CancelOutcome: t.CancelOutcome(now), AgeSeconds: int64(now.Sub(t.CreatedAt) / time.Second), CreatedAt: t.CreatedAt,
-			DeliveredAt: t.DeliveredAt, AcceptedAt: t.ConfirmedAt, FinishedAt: t.FinishedAt, PromptBytes: len(t.Prompt),
+			DeliveredAt: t.DeliveredAt, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, FinishedAt: t.FinishedAt, PromptBytes: len(t.Prompt),
 			Supersedes: t.Supersedes, SupersededBy: t.SupersededBy, Note: t.Note, Editable: t.State == TaskWaiting && av.Agent.RetiredAt == nil}
-		it.PromptPreview, it.PreviewTrunc = headExcerpt(t.Prompt, MaxPromptPreview)
-		it.PromptPreview = Redact(it.PromptPreview)
+		// Redact before cutting, so a credential straddling the cut is
+		// still recognised.
+		it.PromptPreview, it.PreviewTrunc = headExcerpt(Redact(t.Prompt), MaxPromptPreview)
 		switch {
 		case t.State == TaskWaiting:
-			it.WaitingReason = m.waitingReason(av, t)
+			qv.PendingTotal++
+			if len(qv.Pending) >= MaxQueuePending {
+				qv.PendingTruncated = true
+				continue
+			}
+			it.WaitingReason = waitingReasonFor(av, t, firstWaiting)
 			qv.Pending = append(qv.Pending, it)
 		case t.State == TaskRunning:
 			qv.InFlight = append(qv.InFlight, it)

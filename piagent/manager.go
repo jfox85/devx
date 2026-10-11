@@ -626,7 +626,10 @@ func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
 			_, err = m.Store.AppendEvent(t.AgentID, Event{Type: "task_cancelled", TaskID: t.ID, Source: "devx", Data: map[string]any{"delivered": false}})
 			return err
 		case TaskRunning:
-			if a.Lease.Holder == LeaseHuman {
+			// Handed to Pi but not accepted: cancelling only drops the
+			// injection (the bridge's input handler), it cannot interrupt
+			// anything, so it is allowed under human control too.
+			if a.Lease.Holder == LeaseHuman && t.ConfirmedAt != nil {
 				return denied("a human has control of agent %s; running work can only be stopped from the Pi session", a.ID)
 			}
 			t.CancelRequested, t.CancelRequestedAt, t.CancelLeaseGeneration, t.AbortWithheld = true, &now, a.Lease.Generation, ""
@@ -959,6 +962,7 @@ type TaskView struct {
 	AbortSentAt     *time.Time `json:"abort_sent_at,omitempty"`
 	AbortWithheld   string     `json:"abort_withheld,omitempty"`
 	AcceptedAt      *time.Time `json:"accepted_at,omitempty"`
+	AcceptedAs      string     `json:"accepted_as,omitempty"`
 	Supersedes      string     `json:"supersedes,omitempty"`
 	SupersededBy    string     `json:"superseded_by,omitempty"`
 	HumanIntervened bool       `json:"human_intervened,omitempty"`
@@ -988,7 +992,7 @@ func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
 	}
 	tv := &TaskView{TaskID: t.ID, AgentID: t.AgentID, State: t.State, Phase: t.Phase(), Revision: t.Revision,
 		CancelRequested: t.CancelRequested, CancelOutcome: t.CancelOutcome(m.Store.now()), AbortSentAt: t.AbortSentAt, AbortWithheld: t.AbortWithheld,
-		HumanIntervened: t.HumanIntervened, AcceptedAt: t.ConfirmedAt, Supersedes: t.Supersedes, SupersededBy: t.SupersededBy,
+		HumanIntervened: t.HumanIntervened, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, Supersedes: t.Supersedes, SupersededBy: t.SupersededBy,
 		StopReason: t.StopReason, Error: Redact(t.Error), Note: t.Note, CreatedAt: t.CreatedAt, DeliveredAt: t.DeliveredAt, FinishedAt: t.FinishedAt}
 	if t.State == TaskWaiting {
 		tv.WaitingReason = m.waitingReason(av, t)
@@ -1003,6 +1007,20 @@ func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
 }
 
 func (m *Manager) waitingReason(av *AgentView, t *Task) string {
+	tasks, _ := m.Store.ListTasks(t.AgentID)
+	first := ""
+	for _, o := range tasks {
+		if o.State == TaskWaiting {
+			first = o.ID
+			break
+		}
+	}
+	return waitingReasonFor(av, t, first)
+}
+
+// waitingReasonFor explains why waiting task t has not been delivered;
+// firstWaiting is the id of the oldest waiting task (delivered next).
+func waitingReasonFor(av *AgentView, t *Task, firstWaiting string) string {
 	switch {
 	case av.Agent.Lease.Holder == LeaseHuman:
 		return WaitHumanControl
@@ -1017,11 +1035,8 @@ func (m *Manager) waitingReason(av *AgentView, t *Task) string {
 	case av.Bridge != nil && !av.Bridge.Idle:
 		return WaitBusy
 	}
-	tasks, _ := m.Store.ListTasks(t.AgentID)
-	for _, o := range tasks {
-		if o.State == TaskWaiting && o.Order < t.Order {
-			return WaitQueued
-		}
+	if firstWaiting != "" && firstWaiting != t.ID {
+		return WaitQueued
 	}
 	if av.Bridge != nil && av.Bridge.HumanTyping {
 		return WaitBusy

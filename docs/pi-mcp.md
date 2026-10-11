@@ -79,7 +79,7 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   |---|---|
   | `queued` | in the DevX queue; Pi has not seen it (`waiting`) |
   | `delivered` | the bridge handed it to Pi; Pi has not accepted it yet |
-  | `accepted` | Pi's input pipeline accepted it and the turn started (`accepted_at`) |
+  | `accepted` | Pi's input pipeline accepted it (`accepted_at`). `accepted_as: "turn"` means Pi was idle, so the prompt started its own turn; Pi reports the delivery mode only while streaming. Any other value means Pi was already busy and queued the prompt internally as a follow-up. The bridge only delivers to an idle Pi, so that would be an anomaly, and it is recorded rather than hidden. |
   | `finished` | terminal: see `state` |
 
   `pi_start_task` and `pi_send` reply with `delivery: "queued"`. Queued is
@@ -118,7 +118,7 @@ replaced or cancelled:
 
 | Tool | What it does |
 |---|---|
-| `pi_queue` | Read-only. Shows in-flight work, pending prompts in delivery order, and recent outcomes. Pending prompts include `revision`, `phase`, `waiting_reason`, age and a redacted 512-byte preview. |
+| `pi_queue` | Read-only. Shows in-flight work, pending prompts in delivery order (at most 50, with `pending_total`), and recent outcomes. Pending prompts include `revision`, `phase`, `waiting_reason`, age and a 512-byte preview, redacted before truncation. |
 | `pi_update_pending` | Replaces a queued prompt in place, keeping its task id and queue position. |
 | `pi_supersede_pending` | Cancels a queued prompt and queues a replacement in the same position. The replacement gets a new task id, and the old task records `superseded_by`. |
 | `pi_cancel` | Cancels a task. See below. |
@@ -126,7 +126,9 @@ replaced or cancelled:
 Invariants:
 
 - **Revisions.** Every task write, from Go or from the bridge, happens under
-  `agent.lock` and increments `revision`.
+  `agent.lock` and increments `revision`. A bridge from before this change
+  doesn't bump revisions. Edits still check `state: waiting` first, so a
+  claimed prompt is never edited.
 - **Compare-and-swap edits.** Edits require `expected_revision` to match the
   current revision. On a mismatch the call fails with `error: "conflict"`,
   the current revision, state and phase, and nothing is overwritten.
@@ -174,6 +176,14 @@ into the editor alongside a human's draft.
 If an abort was withheld and the human has since released control, calling
 `pi_cancel` again makes a new request. Repeating a cancel otherwise does
 nothing.
+
+One remaining window: the bridge checks control, records `abort_sent_at` and
+releases the lock, then calls `ctx.abort()` in the same synchronous step.
+A takeover that commits inside those few statements, which take
+microseconds, still sees the abort land. The cancel was legitimately
+requested under DevX control, and the event log shows the order. The bridge
+doesn't call `ctx.abort()` under the lock, because Pi's settle handlers take
+the same lock.
 
 ### Steering and interrupts
 

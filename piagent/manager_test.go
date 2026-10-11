@@ -208,11 +208,12 @@ func TestCancelSemantics(t *testing.T) {
 	if _, err := m.Cancel(r.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	// Running task under human control: denied.
+	// Running (accepted) task under human control: denied.
 	r2, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p2", IdempotencyKey: "k2"})
 	_ = m.Store.WithAgentLock(a.ID, func() error {
 		tk, _ := m.Store.LoadTask(a.ID, r2.TaskID)
-		tk.State = TaskRunning
+		now := time.Now()
+		tk.State, tk.ConfirmedAt = TaskRunning, &now
 		return m.Store.SaveTask(tk)
 	})
 	if _, err := m.Takeover(a.ID, "h"); err != nil {

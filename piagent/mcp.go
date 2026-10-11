@@ -112,7 +112,7 @@ func toolList() []tool {
 			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id"), "after_seq": intProp("Return events with seq greater than this"), "limit": intProp("Max events (<=200)"), "wait_seconds": intProp("Block up to N seconds for new events")}, "agent_id")},
 		{Name: "pi_cancel", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
-			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (control changed) / finished_before_abort / abort_unconfirmed (no settle within 30 s; nothing is escalated). Denied while a human has control of running work. Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op.",
+			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control at the same lease generation and Pi has no internally queued messages; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (abort_withheld = human_control / control_changed_since_request / pi_has_queued_messages) / finished_before_abort / abort_unconfirmed (no settle within 30 s; nothing is escalated). Denied while a human has control of running work. Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op, except that a withheld abort can be requested again after a human released control.",
 			InputSchema: obj(map[string]any{
 				"task_id":           strProp("Task id (pt_...)"),
 				"agent_id":          strProp("Optional agent id; when given the task must belong to it"),
@@ -121,7 +121,7 @@ func toolList() []tool {
 		{Name: "pi_queue", Annotations: ro,
 			Description: "Inspect an agent's queue: in-flight work, pending prompts in delivery order (with revision, phase, waiting_reason, age and a redacted preview) and recent outcomes. Use the revision with pi_update_pending, pi_supersede_pending or pi_cancel.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id (pa_...)"), "recent": intProp("Recent finished tasks to include (max 10)")}, "agent_id")},
-		{Name: "pi_update_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+		{Name: "pi_update_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 			Description: "Replace the prompt of a task that is still queued (not yet handed to Pi), keeping its task id and queue position. Compare-and-swap: expected_revision must match the current revision, otherwise the call fails with error=conflict and the current revision/state and nothing changes. Once delivered a prompt can no longer be edited. Idempotent on idempotency_key.",
 			InputSchema: obj(map[string]any{
 				"agent_id":          strProp("Managed agent id (pa_...)"),
@@ -130,7 +130,7 @@ func toolList() []tool {
 				"expected_revision": intProp("Revision you read from pi_queue/pi_status"),
 				"idempotency_key":   strProp("Caller-chosen unique key for this edit; reuse it on retry"),
 			}, "agent_id", "task_id", "prompt", "expected_revision", "idempotency_key")},
-		{Name: "pi_supersede_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+		{Name: "pi_supersede_pending", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 			Description: "Atomically cancel a still-queued task and queue a replacement in the same queue position (new task id; the old one records superseded_by). Same compare-and-swap and idempotency rules as pi_update_pending. Never affects work already handed to Pi.",
 			InputSchema: obj(map[string]any{
 				"agent_id":          strProp("Managed agent id (pa_...)"),
@@ -440,7 +440,12 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := map[string]any{"task_id": r.TaskID, "revision": r.Revision, "replayed": r.Replayed, "delivery": "queued"}
+		// Report the current state, not an assumed one: a replayed edit may
+		// find the task already delivered or finished.
+		out := map[string]any{"task_id": r.TaskID, "revision": r.Revision, "replayed": r.Replayed}
+		if tv, _, err := s.M.TaskStatus(r.TaskID); err == nil {
+			out["task"] = tv
+		}
 		if r.ReplacementTaskID != "" {
 			out["replacement_task_id"] = r.ReplacementTaskID
 			if tv, _, err := s.M.TaskStatus(r.ReplacementTaskID); err == nil {

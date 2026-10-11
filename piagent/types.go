@@ -141,6 +141,10 @@ type Task struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 	DeliveredAt     *time.Time `json:"delivered_at,omitempty"`
 	ConfirmedAt     *time.Time `json:"confirmed_at,omitempty"`
+	// AcceptedAs is how Pi took the prompt: "turn" (Pi was idle and started
+	// a turn for it) or "followUp" (Pi was already busy and queued it
+	// internally; the bridge never delivers as steer).
+	AcceptedAs      string     `json:"accepted_as,omitempty"`
 	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 	BridgeInstance  string     `json:"bridge_instance,omitempty"`
 	LeaseGeneration int64      `json:"lease_generation_at_delivery,omitempty"`
@@ -206,6 +210,7 @@ const (
 	CancelAborted          = "aborted"           // Pi settled the turn as aborted
 	CancelWithheld         = "abort_withheld"    // the bridge refused: see abort_withheld reason
 	CancelFinishedFirst    = "finished_before_abort"
+	CancelOutcomeUnknown   = "outcome_unknown" // the Pi process holding the turn went away
 	CancelSuperseded       = "superseded"
 )
 
@@ -230,6 +235,8 @@ func (t *Task) CancelOutcome(now time.Time) string {
 	case t.State == TaskCancelled && (t.AbortSentAt != nil || t.Note == "aborted on request"):
 		// The note is what bridges from before abort_sent_at write.
 		return CancelAborted
+	case t.State == TaskUnknown:
+		return CancelOutcomeUnknown
 	case t.AbortWithheld != "":
 		return CancelWithheld
 	case t.Terminal():

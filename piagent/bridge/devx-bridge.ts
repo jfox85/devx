@@ -396,9 +396,13 @@ export default function devxBridge(pi: ExtensionAPI) {
 					}
 					appendEvent("delivery_fenced", id, { reason: a?.lease?.holder === "human" ? "human_control" : `task_${t?.state}` });
 				} else {
+					// Pi's input pipeline accepted it. Pi reports a delivery
+					// mode only while streaming: "turn" means Pi was idle and
+					// this starts its own turn.
 					t.confirmed_at = now();
+					t.accepted_as = e.streamingBehavior ?? "turn";
 					saveTask(t);
-					appendEvent("task_started", id, {});
+					appendEvent("task_started", id, { accepted_as: t.accepted_as });
 				}
 			});
 			} catch {
