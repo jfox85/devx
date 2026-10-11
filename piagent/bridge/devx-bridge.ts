@@ -10,6 +10,18 @@
 //
 // All shared-state changes happen under <agent>/agent.lock (mkdir lock), the
 // same lock the devx Go process uses.
+//
+// Durability rules (both fail closed):
+//   - Human ownership: interactive input reaches Pi only after the human
+//     lease is durably written. If that fails, the input is rejected and put
+//     back in the editor, and an in-memory claim keeps managed dispatch
+//     fenced while the bridge retries the lease.
+//   - Terminal receipts: a settled turn's outcome is frozen once into a
+//     receipt, spooled to results/<id>.receipt.json, and published
+//     idempotently (result -> task -> event). The task stays "current", and
+//     nothing else is dispatched, until publication succeeds. Retries back
+//     off and are surfaced, never replay the prompt, and a later bridge
+//     instance recovers spooled receipts before its first dispatch.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -26,6 +38,10 @@ const TICK_MS = 250;
 const CONFIRM_TIMEOUT_MS = 15000;
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 10000;
+const PUBLISH_BACKOFF_MIN_MS = 250;
+const PUBLISH_BACKOFF_MAX_MS = 30000;
+const PUBLISH_WARN_AFTER = 4; // failed attempts before the human is warned
+const RECEIPT_LOG_SCAN_BYTES = 1 << 20;
 // Test hook: delay between claiming a task and handing it to Pi, so tests can
 // land a takeover inside that window. Ignored unless set to a positive number.
 const TEST_DELIVERY_DELAY_MS = Math.min(10000, parseInt(process.env.DEVX_PI_TEST_DELIVERY_DELAY_MS ?? "0", 10) || 0);
@@ -80,10 +96,31 @@ function readJSON(file: string): any {
 	}
 }
 
+// Like readJSON, but only a missing file reads as undefined. An unreadable or
+// corrupt record throws, so callers that must decide durably never mistake an
+// I/O error for "absent".
+function readJSONStrict(file: string): any {
+	let data: string;
+	try {
+		data = fs.readFileSync(file, "utf8");
+	} catch (e: any) {
+		if (e?.code === "ENOENT") return undefined;
+		throw e;
+	}
+	return JSON.parse(data);
+}
+
 function writeAtomic(file: string, data: string) {
 	const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-	fs.writeFileSync(tmp, data, { mode: 0o600 });
-	fs.renameSync(tmp, file);
+	try {
+		fs.writeFileSync(tmp, data, { mode: 0o600 });
+		fs.renameSync(tmp, file);
+	} catch (e) {
+		try {
+			fs.rmSync(tmp, { force: true });
+		} catch {}
+		throw e;
+	}
 }
 
 const writeJSON = (file: string, v: any) => writeAtomic(file, JSON.stringify(v, null, 2));
@@ -132,7 +169,39 @@ function appendEvent(type: string, taskId: string | undefined, data?: Record<str
 		}
 	} catch {}
 	fs.appendFileSync(p.events, prefix + JSON.stringify(ev) + "\n", { mode: 0o600 });
-	writeAtomic(p.seq, String(ev.seq));
+	// The log is the source of truth and the event is now in it. seq is only a
+	// cache (repaired from the log on the next append), so failing to update it
+	// must not make the caller think the event was not recorded.
+	try {
+		writeAtomic(p.seq, String(ev.seq));
+	} catch {}
+}
+
+// Whether an event carrying this receipt id is in the tail of the event log.
+// Used to keep terminal events exactly-once across unknown-outcome retries.
+function logHasReceipt(receiptId: string): boolean {
+	let size: number;
+	try {
+		size = fs.statSync(p.events).size;
+	} catch (e: any) {
+		if (e?.code === "ENOENT") return false;
+		throw e;
+	}
+	const start = Math.max(0, size - RECEIPT_LOG_SCAN_BYTES);
+	const fd = fs.openSync(p.events, "r");
+	try {
+		const b = Buffer.alloc(size - start);
+		fs.readSync(fd, b, 0, b.length, start);
+		for (const line of b.toString("utf8").split("\n")) {
+			if (!line.includes(receiptId)) continue;
+			try {
+				if (JSON.parse(line)?.data?.receipt_id === receiptId) return true;
+			} catch {}
+		}
+	} finally {
+		fs.closeSync(fd);
+	}
+	return false;
 }
 
 function taskPath(id: string) {
@@ -160,15 +229,132 @@ function saveTask(t: any) {
 	writeJSON(taskPath(t.id), t);
 }
 
+// Caller holds the lock. Returns false when the holder is already `holder`.
+// Throws unless the lease is durably `holder` afterwards: a missing or
+// unreadable agent record is a failure, not a no-op. The lease_changed event
+// is recorded best effort; agent.json is the authority.
 function setLeaseLocked(holder: "human" | "managed", reason: string, by: string): boolean {
-	const a = readJSON(p.agent);
-	if (!a || a.lease?.holder === holder) return false;
+	const a = readJSONStrict(p.agent);
+	if (!a) throw new Error("devx agent record missing");
+	if (a.lease?.holder === holder) return false;
 	const from = a.lease?.holder;
 	a.lease = { holder, generation: (a.lease?.generation ?? 0) + 1, since: now(), reason, by };
 	a.updated_at = now();
 	writeJSON(p.agent, a);
-	appendEvent("lease_changed", undefined, { from, to: holder, generation: a.lease.generation, reason });
+	try {
+		appendEvent("lease_changed", undefined, { from, to: holder, generation: a.lease.generation, reason });
+	} catch {}
 	return true;
+}
+
+// A settled turn's outcome, frozen once and published idempotently.
+type Receipt = {
+	v: 1;
+	receipt_id: string;
+	task_id: string;
+	instance: string;
+	text: string;
+	stop: string;
+	error?: string;
+	// Set when the bridge itself fails the task (Pi never accepted the
+	// prompt): no result text, state failed with this error.
+	fail_error?: string;
+	lease_generation_at_settle?: number;
+	settled_at: string;
+};
+
+const receiptPath = (taskId: string) => path.join(p.results, `${taskId}.receipt.json`);
+
+// Caller holds the lock. Publishes a receipt so that, whatever earlier
+// attempts managed before failing, the end state is: result file written,
+// task terminal and stamped with the receipt, exactly one terminal event.
+// Never overwrites a task someone else already made terminal.
+function publishReceiptLocked(r: Receipt, attempts: number): "published" | "superseded" | "gone" {
+	const t = readJSONStrict(taskPath(r.task_id));
+	if (!t) return "gone"; // the task record was removed (agent records deleted)
+	const resultFile = path.join(p.results, `${r.task_id}.txt`);
+	if (t.terminal_receipt === r.receipt_id) {
+		// Task already published by an attempt whose outcome we did not see.
+		if (!logHasReceipt(r.receipt_id)) {
+			appendEvent("task_finished", t.id, { state: t.state, stop_reason: t.stop_reason ?? "", result_bytes: t.result_bytes ?? 0, human_intervened: !!t.human_intervened, receipt_id: r.receipt_id, publish_attempts: attempts });
+		}
+		return "published";
+	}
+	if (t.state !== "running" || (t.bridge_instance && t.bridge_instance !== r.instance)) {
+		// Someone else already made this task terminal (e.g. devx marked it
+		// unknown after this Pi went quiet). Terminal states never change, so
+		// do not rewrite it; attach the preserved outcome instead.
+		if (!r.fail_error && !fs.existsSync(resultFile)) writeAtomic(resultFile, r.text);
+		if (!logHasReceipt(r.receipt_id)) {
+			appendEvent("task_result_recovered", t.id, { receipt_id: r.receipt_id, task_state: t.state, stop_reason: r.fail_error ? "" : r.stop, result_bytes: Buffer.byteLength(r.text), ...(r.fail_error ? { error: r.fail_error } : {}) });
+		}
+		return "superseded";
+	}
+	let extra: Record<string, unknown> = { stop_reason: r.stop, result_bytes: Buffer.byteLength(r.text) };
+	if (r.fail_error) extra = { error: r.fail_error };
+	else writeAtomic(resultFile, r.text);
+	let state = "completed";
+	if (r.fail_error) {
+		state = "failed";
+	} else if (r.stop === "aborted") {
+		state = "cancelled";
+		if (t.cancel_requested) {
+			extra.note = "aborted on request";
+		} else {
+			// Interrupted from the TUI: that is a human taking control. Only
+			// if control has not changed since the turn settled; a human may
+			// have released meanwhile and that must stand.
+			extra.note = "interrupted by a human in Pi";
+			extra.human_intervened = true;
+			const a = readJSONStrict(p.agent);
+			if (a && a.lease?.holder === "managed" && (r.lease_generation_at_settle === undefined || a.lease.generation === r.lease_generation_at_settle)) {
+				setLeaseLocked("human", "human_interrupt", "pi-tui");
+			}
+		}
+	} else if (r.stop === "error") {
+		state = "failed";
+		extra.error = r.error ?? "Pi reported an error";
+	}
+	t.state = state;
+	t.finished_at = now();
+	t.terminal_receipt = r.receipt_id;
+	Object.assign(t, extra);
+	saveTask(t);
+	appendEvent("task_finished", t.id, { state, stop_reason: t.stop_reason ?? "", result_bytes: t.result_bytes ?? 0, human_intervened: !!t.human_intervened, receipt_id: r.receipt_id, publish_attempts: attempts });
+	return "published";
+}
+
+// Spooled receipts left by earlier bridge instances (Pi exited before their
+// outcome was published).
+function foreignReceipts(instance: string): Receipt[] {
+	let names: string[];
+	try {
+		names = fs.readdirSync(p.results);
+	} catch (e: any) {
+		if (e?.code === "ENOENT") return [];
+		throw e;
+	}
+	const out: Receipt[] = [];
+	for (const n of names) {
+		if (!/^pt_[0-9a-f]{16}\.receipt\.json$/.test(n)) continue;
+		const file = path.join(p.results, n);
+		let r: any;
+		try {
+			r = readJSONStrict(file);
+		} catch (e: any) {
+			if (!(e instanceof SyntaxError)) throw e; // I/O error: retry later
+			r = undefined;
+		}
+		if (r?.v === 1 && typeof r.receipt_id === "string" && typeof r.task_id === "string" && n === `${r.task_id}.receipt.json`) {
+			if (r.instance !== instance) out.push(r);
+			continue;
+		}
+		// Spools are written atomically, so this is not a torn write. Set it
+		// aside (kept for inspection) instead of blocking dispatch forever.
+		fs.renameSync(file, `${file}.corrupt`);
+		appendEvent("receipt_unreadable", n.slice(0, 19), { file: `${n}.corrupt` });
+	}
+	return out;
 }
 
 function flagAttention(reason: string) {
@@ -202,6 +388,21 @@ export default function devxBridge(pi: ExtensionAPI) {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ctxRef: any;
 	let requeueId: string | undefined;
+	let requeueReason = "lock_unavailable";
+	// Human input arrived but the human lease could not be saved. Until it is,
+	// the tick retries it and never dispatches managed work.
+	let humanClaimPending: string | undefined;
+	// Settled turn whose outcome is not yet durably published. currentTask
+	// stays set (so nothing else is dispatched) until it is.
+	let receipt: Receipt | undefined;
+	let receiptSpooled = false;
+	let publishAttempts = 0;
+	let publishNextAt = 0;
+	let publishError = "";
+	let publishWarned = false;
+	// Receipts spooled by earlier bridge instances must be published before
+	// this instance dispatches anything.
+	let recovered = false;
 
 	const statusLine = () => {
 		if (!ctxRef?.hasUI) return;
@@ -210,12 +411,99 @@ export default function devxBridge(pi: ExtensionAPI) {
 		const text =
 			mode === "fenced"
 				? "devx: FENCED (superseded launch) — not accepting tasks"
-				: holder === "human"
-					? "devx: HUMAN control — /devx-release to resume managed tasks"
-					: currentTask
-						? `devx: managed · running ${currentTask}`
-						: "devx: managed · type to take control";
+				: receipt && publishWarned
+					? `devx: could not save the result of ${receipt.task_id} (retrying; ${publishError})`
+					: humanClaimPending
+						? "devx: taking control… (could not save yet; retrying)"
+						: holder === "human"
+							? "devx: HUMAN control — /devx-release to resume managed tasks"
+							: currentTask
+								? `devx: managed · running ${currentTask}`
+								: "devx: managed · type to take control";
 		ctxRef.ui.setStatus("devx", text);
+	};
+
+	const notify = (msg: string, level: "info" | "warning" | "error") => {
+		try {
+			if (ctxRef?.hasUI) ctxRef.ui.notify(msg, level);
+		} catch {}
+	};
+
+	const spoolReceipt = () => {
+		if (!receipt || receiptSpooled) return;
+		writeAtomic(receiptPath(receipt.task_id), JSON.stringify(receipt));
+		receiptSpooled = true;
+	};
+
+	// Freeze the outcome of the current task and try to publish it now. The
+	// task stays current until publication succeeds.
+	const settle = (r: Omit<Receipt, "v" | "receipt_id" | "task_id" | "instance" | "settled_at">) => {
+		if (!currentTask || receipt) return;
+		receipt = { v: 1, receipt_id: `rc_${randomBytes(8).toString("hex")}`, task_id: currentTask, instance, settled_at: now(), ...r };
+		receiptSpooled = false;
+		publishAttempts = 0;
+		publishNextAt = 0;
+		publishError = "";
+		publishWarned = false;
+		// Spool first, outside the agent lock: the result survives a Pi exit
+		// even while the lock is unavailable.
+		try {
+			spoolReceipt();
+		} catch {}
+		tryPublish();
+	};
+
+	// One bounded publication attempt (respecting backoff). Returns true when
+	// no receipt is pending afterwards.
+	const tryPublish = (force = false): boolean => {
+		if (!receipt) return true;
+		if (!force && Date.now() < publishNextAt) return false;
+		const r = receipt;
+		publishAttempts++;
+		let outcome: "published" | "superseded" | "gone";
+		try {
+			outcome = withLock(() => {
+				try {
+					spoolReceipt();
+				} catch {}
+				return publishReceiptLocked(r, publishAttempts);
+			});
+		} catch (e: any) {
+			publishError = String(e?.message ?? e).slice(0, 200);
+			publishNextAt = Date.now() + Math.min(PUBLISH_BACKOFF_MAX_MS, PUBLISH_BACKOFF_MIN_MS * 2 ** Math.min(publishAttempts - 1, 16));
+			if (publishAttempts >= PUBLISH_WARN_AFTER && !publishWarned) {
+				publishWarned = true;
+				notify(`DevX could not save the result of task ${r.task_id} (${publishError}). It is kept and retried; queued tasks wait until it is saved.`, "warning");
+				flagAttention(`Pi task ${r.task_id} result not saved yet`);
+			}
+			statusLine();
+			return false;
+		}
+		try {
+			fs.rmSync(receiptPath(r.task_id), { force: true });
+		} catch {}
+		const warned = publishWarned;
+		receipt = undefined;
+		receiptSpooled = false;
+		currentTask = undefined;
+		lastEnd = undefined;
+		publishWarned = false;
+		if (warned) notify(`DevX saved the result of task ${r.task_id} after ${publishAttempts} attempts.`, "info");
+		if (outcome !== "gone") flagAttention(`Pi task ${r.task_id} finished`);
+		statusLine();
+		return true;
+	};
+
+	// Caller holds the lock. Publishes receipts left by earlier instances;
+	// throws if any could not be published so dispatch stays blocked.
+	const recoverLocked = () => {
+		for (const r of foreignReceipts(instance)) {
+			publishReceiptLocked(r, 0);
+			try {
+				fs.rmSync(receiptPath(r.task_id), { force: true });
+			} catch {}
+		}
+		recovered = true;
 	};
 
 	const heartbeat = (ctx: any) => {
@@ -235,23 +523,22 @@ export default function devxBridge(pi: ExtensionAPI) {
 			human_typing: editor.trim() !== "",
 			heartbeat: now(),
 			mode,
+			...(receipt ? { result_pending: receipt.task_id, publish_attempts: publishAttempts, publish_error: publishError } : {}),
+			...(humanClaimPending ? { human_claim_pending: true } : {}),
+			...(recovered ? {} : { recovery_pending: true }),
 		});
 		return editor;
-	};
-
-	const finishLocked = (t: any, state: string, extra: Record<string, unknown>) => {
-		t.state = state;
-		t.finished_at = now();
-		Object.assign(t, extra);
-		saveTask(t);
-		appendEvent("task_finished", t.id, { state, stop_reason: t.stop_reason ?? "", result_bytes: t.result_bytes ?? 0, human_intervened: !!t.human_intervened });
 	};
 
 	const tick = () => {
 		const ctx = ctxRef;
 		if (!ctx || mode === "stopped") return;
+		// A pending terminal receipt is published first (with backoff); it
+		// keeps currentTask set, so nothing below can dispatch past it.
+		if (receipt) tryPublish();
 		let deliver: { id: string; prompt: string } | undefined;
 		let doAbort = false;
+		let failUnconfirmed = false;
 		try {
 			withLock(() => {
 				const a = readJSON(p.agent);
@@ -266,19 +553,29 @@ export default function devxBridge(pi: ExtensionAPI) {
 						delete t.delivered_at;
 						delete t.bridge_instance;
 						saveTask(t);
-						appendEvent("delivery_fenced", requeueId, { reason: "lock_unavailable" });
+						appendEvent("delivery_fenced", requeueId, { reason: requeueReason });
 					}
 					requeueId = undefined;
+					requeueReason = "lock_unavailable";
 				}
 				if (mode !== "active" || a.binding?.pane_id !== PANE) return;
+				if (humanClaimPending) {
+					// Unsaved human ownership: save it before anything else.
+					// If this throws, the tick dispatches nothing.
+					setLeaseLocked("human", humanClaimPending, "pi-tui");
+					humanClaimPending = undefined;
+					return; // decide dispatch next tick, from the saved lease
+				}
+				if (!recovered) recoverLocked();
 
 				if (currentTask) {
+					if (receipt) return; // settled; only publication remains
 					const t = readJSON(taskPath(currentTask));
 					if (t?.cancel_requested && !abortSent && !ctx.isIdle()) doAbort = true;
 					if (pendingConfirm && Date.now() - pendingConfirm.at > CONFIRM_TIMEOUT_MS + TEST_DELIVERY_DELAY_MS && t?.state === "running") {
-						finishLocked(t, "failed", { error: "Pi did not accept the prompt (delivery not confirmed)" });
-						currentTask = undefined;
 						pendingConfirm = undefined;
+						// Published after the lock is released (below).
+						failUnconfirmed = true;
 					}
 					return;
 				}
@@ -291,7 +588,15 @@ export default function devxBridge(pi: ExtensionAPI) {
 				next.bridge_instance = instance;
 				next.lease_generation_at_delivery = a.lease.generation;
 				saveTask(next);
-				appendEvent("task_delivered", next.id, { pane: PANE, lease_generation: a.lease.generation });
+				try {
+					appendEvent("task_delivered", next.id, { pane: PANE, lease_generation: a.lease.generation });
+				} catch {
+					// The task is claimed but the claim is not fully recorded.
+					// Do not hand it to Pi; put it back on a later tick.
+					requeueId = next.id;
+					requeueReason = "delivery_not_recorded";
+					return;
+				}
 				currentTask = next.id;
 				abortSent = false;
 				lastEnd = undefined;
@@ -299,8 +604,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 				deliver = { id: next.id, prompt: next.prompt };
 			});
 		} catch {
-			return; // lock contention; retry next tick
+			return; // lock contention or a write failure; retry next tick
 		}
+		if (failUnconfirmed) settle({ text: "", stop: "", fail_error: "Pi did not accept the prompt (delivery not confirmed)" });
 		if (doAbort) {
 			abortSent = true;
 			ctx.abort();
@@ -321,6 +627,13 @@ export default function devxBridge(pi: ExtensionAPI) {
 			withLock(() => {
 				const a = readJSON(p.agent);
 				if (!a || a.launch_nonce !== NONCE) mode = "fenced";
+				// Publish outcomes an earlier instance settled but could not
+				// save, before devx sees this instance online.
+				if (mode === "active") {
+					try {
+						recoverLocked();
+					} catch {}
+				}
 				heartbeat(ctx);
 				appendEvent("bridge_online", undefined, {
 					instance,
@@ -336,8 +649,18 @@ export default function devxBridge(pi: ExtensionAPI) {
 		statusLine();
 	});
 
-	pi.on("input", (e) => {
+	pi.on("input", (e, ctx) => {
 		if (mode !== "active") return { action: "continue" };
+		if (e.source === "extension" && pendingConfirm && e.text === pendingConfirm.prompt && humanClaimPending) {
+			// A human submitted after this task was picked and that takeover
+			// is not saved yet: the human owns Pi. Do not inject.
+			requeueId = pendingConfirm.id;
+			requeueReason = "human_control";
+			pendingConfirm = undefined;
+			currentTask = undefined;
+			statusLine();
+			return { action: "handled" };
+		}
 		if (e.source === "extension" && pendingConfirm && e.text === pendingConfirm.prompt) {
 			const id = pendingConfirm.id;
 			let fenced = false;
@@ -377,63 +700,63 @@ export default function devxBridge(pi: ExtensionAPI) {
 			return { action: "continue" };
 		}
 		if (e.source === "interactive") {
+			// A turn whose outcome is already frozen is not the human's to
+			// mark; only a task still running in Pi is.
+			const running = receipt ? undefined : currentTask;
 			try {
 				withLock(() => {
-					appendEvent("human_input", currentTask, { bytes: e.text.length, during_task: !!currentTask });
-					if (currentTask) {
-						const t = readJSON(taskPath(currentTask));
-						if (t) {
+					// Ownership first: the human lease is the fence. Its
+					// failure (and any failure after it) rejects the input.
+					setLeaseLocked("human", "human_input", "pi-tui");
+					if (running) {
+						const t = readJSONStrict(taskPath(running));
+						if (t && !t.human_intervened) {
 							t.human_intervened = true;
 							saveTask(t);
 						}
 					}
-					setLeaseLocked("human", "human_input", "pi-tui");
+					appendEvent("human_input", running, { bytes: e.text.length, during_task: !!running });
 				});
-			} catch {}
+				humanClaimPending = undefined;
+			} catch (err: any) {
+				// Fail closed. Pi cleared the editor on submit; put the text
+				// back (ahead of anything typed since) so nothing is lost, and
+				// keep managed dispatch fenced until the claim is saved.
+				humanClaimPending = "human_input";
+				let restored = false;
+				const uiCtx = ctx ?? ctxRef;
+				try {
+					if (uiCtx?.hasUI) {
+						const cur = uiCtx.ui.getEditorText() ?? "";
+						uiCtx.ui.setEditorText(cur ? `${e.text}\n${cur}` : e.text);
+						restored = true;
+					}
+				} catch {}
+				const imgs = e.images?.length ? " Attached images were not kept; re-attach them." : "";
+				notify(`DevX could not record that you took control (${String(err?.message ?? err).slice(0, 120)}). Your message was not sent${restored ? " and is back in the editor" : ""}; queued tasks stay paused. Press Enter to retry.${imgs}`, "warning");
+				statusLine();
+				return { action: "handled" };
+			}
 			statusLine();
 		}
 		return { action: "continue" };
 	});
 
 	pi.on("agent_end", (e: any) => {
-		if (currentTask) lastEnd = lastAssistant(e.messages ?? []);
+		if (currentTask && !receipt) lastEnd = lastAssistant(e.messages ?? []);
 	});
 
 	pi.on("agent_settled", () => {
-		if (!currentTask || pendingConfirm) return;
-		const id = currentTask;
+		if (!currentTask || pendingConfirm || receipt) return;
 		const end = lastEnd ?? { text: "" };
-		try {
-			withLock(() => {
-				const t = readJSON(taskPath(id));
-				if (!t || t.state !== "running") return;
-				fs.writeFileSync(path.join(p.results, `${id}.txt`), end.text, { mode: 0o600 });
-				const extra: Record<string, unknown> = { stop_reason: end.stop ?? "", result_bytes: Buffer.byteLength(end.text) };
-				if (end.stop === "aborted") {
-					if (t.cancel_requested) {
-						finishLocked(t, "cancelled", { ...extra, note: "aborted on request" });
-					} else {
-						// Interrupted from the TUI: that is a human taking control.
-						finishLocked(t, "cancelled", { ...extra, note: "interrupted by a human in Pi", human_intervened: true });
-						setLeaseLocked("human", "human_interrupt", "pi-tui");
-					}
-				} else if (end.stop === "error") {
-					finishLocked(t, "failed", { ...extra, error: end.error ?? "Pi reported an error" });
-				} else {
-					finishLocked(t, "completed", extra);
-				}
-			});
-		} catch {}
-		currentTask = undefined;
-		lastEnd = undefined;
-		flagAttention(`Pi task ${id} finished`);
-		statusLine();
+		settle({ text: end.text, stop: end.stop ?? "", error: end.error, lease_generation_at_settle: readJSON(p.agent)?.lease?.generation });
 	});
 
 	pi.registerCommand("devx-takeover", {
 		description: "Take control of this DevX-managed agent (pauses queued remote tasks)",
 		handler: async (_args, ctx) => {
 			withLock(() => setLeaseLocked("human", "explicit_takeover", "pi-tui"));
+			humanClaimPending = undefined;
 			ctx.ui.notify("You have control. Queued DevX tasks are paused until /devx-release.", "info");
 			statusLine();
 		},
@@ -443,6 +766,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		description: "Release control back to DevX managed dispatch",
 		handler: async (_args, ctx) => {
 			withLock(() => setLeaseLocked("managed", "explicit_release", "pi-tui"));
+			humanClaimPending = undefined;
 			ctx.ui.notify("Released. DevX will deliver queued tasks when Pi is idle.", "info");
 			statusLine();
 		},
@@ -453,7 +777,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const a = readJSON(p.agent);
 			const waiting = loadTasks().filter((t) => t.state === "waiting").length;
-			ctx.ui.notify(`agent ${AGENT_ID} · control: ${a?.lease?.holder} (gen ${a?.lease?.generation}) · running: ${currentTask ?? "none"} · waiting: ${waiting} · mode: ${mode}`, "info");
+			const pending = receipt ? ` · result not yet saved: ${receipt.task_id} (${publishAttempts} attempts${publishError ? `; ${publishError}` : ""})` : "";
+			const claim = humanClaimPending ? " · takeover not yet saved" : "";
+			ctx.ui.notify(`agent ${AGENT_ID} · control: ${a?.lease?.holder} (gen ${a?.lease?.generation}) · running: ${currentTask ?? "none"} · waiting: ${waiting} · mode: ${mode}${pending}${claim}`, "info");
 		},
 	});
 
@@ -463,16 +789,25 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (mode === "stopped") return;
 		const wasActive = mode === "active";
 		mode = "stopped";
+		// Last publication attempt. If it fails, the task is marked unknown as
+		// before (devx would do the same once this bridge is gone), and the
+		// spooled receipt lets the next instance attach the preserved result.
+		if (receipt) tryPublish(true);
 		try {
 			withLock(() => {
+				if (wasActive && humanClaimPending) {
+					try {
+						setLeaseLocked("human", humanClaimPending, "pi-tui");
+					} catch {}
+				}
 				if (wasActive && currentTask) {
 					const t = readJSON(taskPath(currentTask));
 					if (t?.state === "running") {
 						t.state = "unknown";
 						t.finished_at = now();
-						t.note = "Pi exited while this task was running";
+						t.note = receipt ? "Pi exited before this task's settled result could be saved" : "Pi exited while this task was running";
 						saveTask(t);
-						appendEvent("task_unknown", t.id, { reason: t.note });
+						appendEvent("task_unknown", t.id, { reason: t.note, ...(receipt ? { receipt_id: receipt.receipt_id, receipt_spooled: receiptSpooled } : {}) });
 					}
 				}
 				const b = readJSON(p.bridge);
