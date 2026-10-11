@@ -344,7 +344,7 @@ func markerEligibility(a *Agent, s *session.Session, live, liveByPath, sessByPat
 		if m.Owner != session.LocalOnlyOwnerPiMCP || m.AgentID != a.ID || !m.CreatedAt.Equal(bs.CreatedAt) {
 			return MarkerSkipBackupConflict
 		}
-		if marker != nil && (marker.Owner != m.Owner || marker.AgentID != m.AgentID || !marker.CreatedAt.Equal(m.CreatedAt)) {
+		if marker != nil && !sameMarker(marker, &m) {
 			return MarkerSkipBackupConflict
 		}
 		marker = &m
@@ -494,47 +494,35 @@ func restoreMarkerChecked(planHash string, it MarkerPlanItem, st MarkerStores, n
 			return nil
 		})
 		if errors.Is(err, errAlreadyApplied) {
-			// A crash between the sessions write and the event append
-			// leaves no event: add it now (still under the agent lock).
-			has, herr := st.Agents.hasMarkerRestoredEvent(a.ID, planHash)
-			if herr != nil || has {
-				return herr
-			}
-			wrote = true
-		} else if err != nil {
-			return err
-		}
-		if !wrote {
 			return nil
 		}
+		if err != nil || !wrote {
+			return err
+		}
+		// Best-effort notification. The authoritative record of the write
+		// is the journal entry, fsynced before the sessions write; a crash
+		// between the write and this append leaves the journal only.
 		_, err = st.Agents.AppendEvent(a.ID, Event{Type: "local_only_marker_restored", Source: "devx", Data: map[string]any{
 			"session": it.Session, "plan_hash": planHash, "witnesses": it.Witnesses, "via": "devx session markers"}})
 		return err
 	})
 }
 
-// hasMarkerRestoredEvent reports whether the agent's log records a
-// local_only_marker_restored event for planHash. Callers hold the agent lock.
-func (s *Store) hasMarkerRestoredEvent(agentID, planHash string) (bool, error) {
-	after := int64(0)
-	for {
-		evs, last, err := s.ReadEvents(agentID, after, MaxEventsPage)
-		if err != nil {
-			return false, err
-		}
-		for _, e := range evs {
-			if h, _ := e.Data["plan_hash"].(string); e.Type == "local_only_marker_restored" && h == planHash {
-				return true, nil
-			}
-		}
-		if len(evs) == 0 {
-			return false, nil
-		}
-		after = evs[len(evs)-1].Seq
-		if after >= last {
-			return false, nil
+// JournalMatchesPlan reports whether journal entry e records exactly one of
+// the plan's confirmed restorations (same agent, session record identity and
+// marker). Rollback acts only on such entries.
+func JournalMatchesPlan(e MarkerJournalEntry, p *MarkerPlan) bool {
+	if e.Kind != "local_only_marker" || e.PlanHash != p.Hash {
+		return false
+	}
+	for _, it := range p.Items {
+		if it.Action == MarkerActionRestore && it.AgentID == e.AgentID && it.Session == e.Session &&
+			it.SessionCreatedAt.Equal(e.SessionCreatedAt) && filepath.Clean(it.SessionPath) == filepath.Clean(e.SessionPath) &&
+			it.SessionInstanceID == e.SessionInstanceID && sameMarker(it.Marker, &e.Marker) {
+			return true
 		}
 	}
+	return false
 }
 
 var errAlreadyApplied = errors.New("already applied")

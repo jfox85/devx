@@ -234,7 +234,7 @@ func TestSessionMarkersRepairEndToEnd(t *testing.T) {
 	jpath := filepath.Join(rb[1], "journal.jsonl")
 	goodJournal, _ := os.ReadFile(jpath)
 	_ = os.WriteFile(jpath, []byte(strings.Replace(string(goodJournal), planHash, "ffffffffffffffff", 1)), 0o600)
-	if out, err := run(nil, "--rollback", rb[1]); err == nil || !strings.Contains(out, "belongs to plan") {
+	if out, err := run(nil, "--rollback", rb[1]); err == nil || !strings.Contains(out, "does not match a restoration") {
 		t.Fatalf("journal from another plan must be refused: %v\n%s", err, out)
 	}
 	_ = os.WriteFile(jpath, goodJournal, 0o600)

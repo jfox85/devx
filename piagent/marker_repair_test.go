@@ -534,33 +534,49 @@ func TestMarkerReplanAfterPartialApplyKeepsConfirmationsValid(t *testing.T) {
 	}
 }
 
-// A crash between the sessions write and the event append leaves no
-// restored event; the retry adds exactly one.
-func TestMarkerRetryAddsMissingRestoredEvent(t *testing.T) {
+// Backups that disagree only in a marker member this build does not know
+// are a conflict, not "first backup wins".
+func TestMarkerBackupsDifferingInUnknownMemberConflict(t *testing.T) {
+	e := newMarkerEnv(t)
+	a := e.lost("core")
+	e.addBackupRecord("b2", "core", func(s *session.Session) {
+		m := *e.backups[0].Sessions["core"].LocalOnly
+		m.Unknown = map[string]json.RawMessage{"session_instance_id": json.RawMessage(`"si_x"`)}
+		s.LocalOnly = &m
+	})
+	e.confirm = []string{a.ID}
+	if it := e.plan().item(a.ID); it.Action != MarkerActionSkip || it.Reason != MarkerSkipBackupConflict {
+		t.Fatalf("got %s %q", it.Action, it.Reason)
+	}
+}
+
+// Rollback acts only on journal entries that match a confirmed restoration
+// of the run's plan.
+func TestJournalMatchesPlan(t *testing.T) {
 	e := newMarkerEnv(t)
 	a := e.lost("core")
 	e.confirm = []string{a.ID}
 	p := e.plan()
-	// Simulate: marker written, event never appended.
-	m := *p.item(a.ID).Marker
-	e.sess.recs["core"].LocalOnly = &m
-	count := func() int {
-		evs, _, _ := e.store.ReadEvents(a.ID, 0, 100)
-		n := 0
-		for _, ev := range evs {
-			if ev.Type == "local_only_marker_restored" {
-				n++
-			}
-		}
-		return n
+	if err := ApplyMarkerPlan(p, e.stores()); err != nil {
+		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		if err := ApplyMarkerPlan(p, e.stores()); err != nil {
-			t.Fatal(err)
-		}
+	good := e.journal[0]
+	if !JournalMatchesPlan(good, p) {
+		t.Fatal("genuine entry rejected")
 	}
-	if count() != 1 {
-		t.Fatalf("want exactly one restored event, got %d", count())
+	for name, mod := range map[string]func(*MarkerJournalEntry){
+		"hash":    func(j *MarkerJournalEntry) { j.PlanHash = "x" },
+		"session": func(j *MarkerJournalEntry) { j.Session = "other" },
+		"agent":   func(j *MarkerJournalEntry) { j.AgentID = "pa_999999999999" },
+		"created": func(j *MarkerJournalEntry) { j.SessionCreatedAt = j.SessionCreatedAt.Add(1) },
+		"path":    func(j *MarkerJournalEntry) { j.SessionPath = "/x" },
+		"marker":  func(j *MarkerJournalEntry) { j.Marker.CreatedAt = j.Marker.CreatedAt.Add(1) },
+	} {
+		j := good
+		mod(&j)
+		if JournalMatchesPlan(j, p) {
+			t.Fatalf("%s: forged entry accepted", name)
+		}
 	}
 }
 

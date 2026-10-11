@@ -341,7 +341,9 @@ func newerMarkerRuns(dir string) ([]string, error) {
 		if _, err := os.Stat(filepath.Join(d, "rolled-back")); err == nil {
 			continue
 		}
-		if st, err := os.Stat(m); err == nil && st.Size() > 0 && st.ModTime().After(me.ModTime()) {
+		// Equal times count as newer: on coarse-timestamp filesystems two
+		// runs can share an mtime, and refusing is the safe side.
+		if st, err := os.Stat(m); err == nil && st.Size() > 0 && !st.ModTime().Before(me.ModTime()) {
 			out = append(out, d)
 		}
 	}
@@ -387,8 +389,8 @@ func runMarkersRollback(out io.Writer, dir string) error {
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			break // torn last line: that write never happened (journal precedes it)
 		}
-		if e.PlanHash != plan.Hash {
-			return fmt.Errorf("journal entry for %s belongs to plan %s, not this run's plan %s", e.Session, e.PlanHash, plan.Hash)
+		if !piagent.JournalMatchesPlan(e, &plan) {
+			return fmt.Errorf("journal entry for %s (plan %s) does not match a restoration in this run's plan %s; nothing rolled back", e.Session, e.PlanHash, plan.Hash)
 		}
 		entries = append(entries, e)
 	}

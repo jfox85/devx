@@ -96,8 +96,10 @@ security boundary.
    `local_only` (no other field of any record changes; the file itself is
    re-serialised by the current schema like every DevX write, so retired
    fields such as `color` are dropped);
-6. appends a `local_only_marker_restored` event to the agent. If a crash lost
-   the event, a retry adds it.
+6. appends a `local_only_marker_restored` event to the agent. This event is a
+   notification only: the authoritative record of each write is the journal
+   entry, fsynced before the write. A crash between the write and the event
+   leaves the marker restored and journaled, but with no event.
 
 A marker that is already present and identical counts as done, so a concurrent
 apply, or re-running the same `ApplyMarkerPlan`, writes nothing twice. From the
@@ -108,11 +110,14 @@ count, and the new plan hash covers only what remains. Apply that new hash.
 `--rollback <dir>`:
 - accepts only a `session-markers-*` run directory in the backups directory
   next to `sessions.json`, whose `plan.json` and `journal.jsonl` are trusted
-  files and whose journal entries all belong to that plan;
-- refuses if a later run that was not rolled back exists (two runs can write
-  identical markers), unless `--force-older`;
-- removes a marker only if the record still has the journaled `created_at`,
-  path and instance id, and still holds exactly the marker written.
+  files and whose journal entries each match a confirmed restoration in that
+  plan (agent, session record identity and exact marker);
+- refuses if a later (or same-timestamp) run that was not rolled back exists
+  (two runs can write identical markers), unless `--force-older`;
+- removes a marker only if the record still has the journaled `created_at`
+  and path, and still holds exactly the marker written. The instance id is
+  compared when both the journal and the record have one: the instances
+  migration may assign an id after the repair.
 
 The repair never changes agent records or bindings, instance ids, leases,
 queues, tmux sessions, panes or processes.
