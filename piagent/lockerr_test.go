@@ -12,24 +12,59 @@ import (
 )
 
 // Many goroutines hammering acquire/release on one mkdir lock must never see
-// a non-contention error. On Windows, mkdir on a just-removed (delete-pending)
-// lock directory reports ERROR_ACCESS_DENIED; that is contention and must be
-// retried, not returned (it failed TestConcurrentSendsGetDistinctOrderedTasks
-// intermittently on windows-latest).
+// a non-contention error, never overlap, and never leak the lock. On Windows,
+// mkdir on a just-removed (delete-pending) lock directory reports
+// ERROR_ACCESS_DENIED (contention, must be retried), and a release can fail
+// transiently while a waiter probes the lock (must be retried, not leaked).
+//
+// The lock is an unfair spin lock, so under full-suite load one goroutine can
+// wait a long time behind 15 others (seen on windows-latest against a 10s
+// per-acquire limit). Waiting is therefore bounded per acquire generously,
+// while a leak is caught fast instead: a watchdog fails the test if the lock
+// directory stays in place with no holder for longer than leakAfter.
 func TestDirLockSurvivesHeavyChurn(t *testing.T) {
+	const timeout, stale, leakAfter = time.Minute, 5 * time.Minute, 3 * time.Second
 	for name, acquire := range map[string]func(string) (func(), error){
-		"plain": func(p string) (func(), error) { return acquireDirLock(p, 10*time.Second, time.Minute) },
-		"owned": func(p string) (func(), error) { return acquireOwnedDirLock(p, 10*time.Second, time.Minute) },
+		"plain": func(p string) (func(), error) { return acquireDirLock(p, timeout, stale) },
+		"owned": func(p string) (func(), error) { return acquireOwnedDirLock(p, timeout, stale) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.lock")
 			var holders, failures atomic.Int32
 			var wg sync.WaitGroup
+			stop := make(chan struct{})
+			leaked := make(chan struct{})
+			go func() { // leak watchdog
+				var since time.Time
+				for {
+					select {
+					case <-stop:
+						return
+					case <-time.After(20 * time.Millisecond):
+					}
+					_, err := os.Stat(path)
+					if err == nil && holders.Load() == 0 {
+						if since.IsZero() {
+							since = time.Now()
+						} else if time.Since(since) > leakAfter {
+							close(leaked)
+							return
+						}
+					} else {
+						since = time.Time{}
+					}
+				}
+			}()
 			for g := 0; g < 16; g++ {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
 					for i := 0; i < 60; i++ {
+						select {
+						case <-leaked:
+							return
+						default:
+						}
 						release, err := acquire(path)
 						if err != nil {
 							failures.Add(1)
@@ -45,9 +80,19 @@ func TestDirLockSurvivesHeavyChurn(t *testing.T) {
 					}
 				}()
 			}
-			wg.Wait()
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-leaked:
+				t.Fatalf("lock directory left in place with no holder for over %v (leaked release)", leakAfter)
+			}
+			close(stop)
 			if failures.Load() != 0 {
 				t.Fatalf("%d acquisitions failed", failures.Load())
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("lock left behind after every holder released: %v", err)
 			}
 		})
 	}
