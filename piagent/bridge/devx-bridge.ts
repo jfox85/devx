@@ -47,7 +47,8 @@ const RECEIPT_LOG_SCAN_BYTES = 1 << 20;
 const SILENT_RECOVERY_MAX_MS = 3000;
 // errno codes that can clear on their own; any other per-spool failure is a
 // property of that record and quarantines it.
-const TRANSIENT_CODES = new Set(["EIO", "EAGAIN", "EBUSY", "EINTR", "EMFILE", "ENFILE", "ENOSPC", "ETIMEDOUT"]);
+const TRANSIENT_CODES = new Set(["EIO", "EAGAIN", "EBUSY", "EINTR", "EMFILE", "ENFILE", "ENOSPC", "EDQUOT", "ETIMEDOUT"]);
+const isTransient = (e: any) => TRANSIENT_CODES.has(e?.code);
 // Test hook: delay between claiming a task and handing it to Pi, so tests can
 // land a takeover inside that window. Ignored unless set to a positive number.
 const TEST_DELIVERY_DELAY_MS = Math.min(10000, parseInt(process.env.DEVX_PI_TEST_DELIVERY_DELAY_MS ?? "0", 10) || 0);
@@ -367,13 +368,19 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 
 // Caller holds the lock. Sets a spool aside (kept for inspection, never
 // deleted) and records why.
+const quarantineLogged = new Set<string>();
 function quarantineSpool(name: string, reason: string, receiptId?: string) {
 	const file = path.join(p.results, name);
 	// Unique, so an earlier quarantined copy is never overwritten. The event
 	// goes first: if the rename then fails, recovery retries and records it
 	// again rather than losing the record of why.
+	// The event is written once per spool file (a retried quarantine whose
+	// rename failed must not flood the log).
 	const aside = `${name}.${Date.now()}.${randomBytes(3).toString("hex")}.corrupt`;
-	appendEvent("receipt_unreadable", TASK_ID_RE.test(name.slice(0, 19)) ? name.slice(0, 19) : undefined, { file: aside, reason, ...(receiptId ? { receipt_id: receiptId } : {}) });
+	if (!quarantineLogged.has(name)) {
+		appendEvent("receipt_unreadable", TASK_ID_RE.test(name.slice(0, 19)) ? name.slice(0, 19) : undefined, { file: aside, reason, ...(receiptId ? { receipt_id: receiptId } : {}) });
+		quarantineLogged.add(name);
+	}
 	fs.renameSync(file, path.join(p.results, aside));
 }
 
@@ -409,8 +416,10 @@ function foreignReceipts(instance: string): Receipt[] {
 			r = readJSONStrict(file);
 			problem = receiptProblem(r, n);
 		} catch (e: any) {
-			if (!(e instanceof SyntaxError)) throw e; // I/O error: retry later
-			problem = "unparseable";
+			// Same rule as publication: only errors that can clear are
+			// retried; anything else is a property of this file.
+			if (isTransient(e)) throw e;
+			problem = e instanceof SyntaxError ? "unparseable" : `spool_unreadable${e?.code ? ` ${e.code}` : ""}`;
 		}
 		// Spools are written atomically, so an invalid one is not a torn
 		// write that might complete: set it aside instead of blocking.
@@ -604,7 +613,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 				try {
 					publishReceiptLocked(r, 0);
 				} catch (e: any) {
-					if (TRANSIENT_CODES.has(e?.code)) {
+					if (isTransient(e)) {
 						pending = true;
 						firstError ??= e;
 						try {

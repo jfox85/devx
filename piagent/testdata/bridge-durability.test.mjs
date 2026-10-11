@@ -932,3 +932,37 @@ withEnv("R1': after a takeover and release during the turn, a later Esc with an 
 	// interrupt is the human taking control again.
 	assert.equal(agent(env.dir).lease.holder, "human");
 });
+
+for (const code of ["EACCES", "EISDIR"]) {
+	withEnv(`R3: a spool that cannot be read (${code}) is quarantined, and other spools are still reconciled`, async (env) => {
+		addTask(env.dir, 1, "first");
+		const bad = "pt_0000000000000008";
+		const good = "pt_0000000000000009";
+		for (const id of [bad, good]) real.writeFileSync.call(fs, path.join(env.dir, "tasks", `${id}.json`), JSON.stringify({ id, order: 9, prompt: "x", state: "running", bridge_instance: "0123456789abcdef" }));
+		real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), JSON.stringify(spool(bad, "rc_00000000000000e8")));
+		real.writeFileSync.call(fs, path.join(env.dir, "results", `${good}.receipt.json`), JSON.stringify(spool(good, "rc_00000000000000e9")));
+		inject("readFileSync", new RegExp(`results/${bad}\\.receipt\\.json$`), { code });
+		const b = await startBridge(env);
+		b.tick();
+		clearFaults();
+		assert.ok(quarantined(env.dir, `${bad}.receipt.json`));
+		assert.match(events(env.dir).find((e) => e.type === "receipt_unreadable").data.reason, new RegExp(code));
+		assert.equal(task(env.dir, good).state, "completed", "the readable spool is still published");
+		assert.deepEqual(b.sent, ["first"]);
+	});
+}
+
+withEnv("R3: a quarantine whose rename keeps failing records one event, not one per tick", async (env) => {
+	addTask(env.dir, 1, "first");
+	const bad = "pt_0000000000000009";
+	real.writeFileSync.call(fs, path.join(env.dir, "results", `${bad}.receipt.json`), "{corrupt");
+	inject("renameSync", /\.corrupt$/, { code: "EACCES" });
+	const b = await startBridge(env);
+	for (let i = 0; i < 8; i++) b.tick();
+	assert.equal(events(env.dir).filter((e) => e.type === "receipt_unreadable").length, 1);
+	assert.equal(b.sent.length, 0, "dispatch stays fenced while the spool is still in place");
+	clearFaults();
+	b.tick();
+	b.tick();
+	assert.deepEqual(b.sent, ["first"]);
+});
