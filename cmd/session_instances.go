@@ -65,9 +65,9 @@ the record still holds it; anything changed since is left alone and listed.
 Newest run first, and a completed rollback is not repeated (either needs
 --force-older). Re-running an interrupted rollback finishes it. These checks
 stop a mistaken or crafted directory; a process running as you that can
-write your backups directory is outside them. On Windows the owner, mode and
-no-follow checks are not available; the location, name, plan and journal
-checks still apply.`,
+write your backups directory is outside them. On Windows the owner and mode
+checks and the no-follow open are not available; symlink refusal and the
+location, name, plan and journal checks still apply.`,
 	Args: cobra.NoArgs,
 	RunE: runSessionInstances,
 }
@@ -323,8 +323,10 @@ func runInstancesRollback(out io.Writer, dir string) error {
 	if err != nil {
 		return fmt.Errorf("rollback stopped (re-run --rollback %s to finish; values already removed are skipped): %w", run.Dir, err)
 	}
-	_ = os.WriteFile(filepath.Join(run.Dir, "rolled-back"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
 	_, _ = fmt.Fprintf(out, "Rolled back %d change(s) of plan %s from %s.\n", n, run.Plan.Hash, run.Dir)
+	if err := os.WriteFile(filepath.Join(run.Dir, "rolled-back"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		_, _ = fmt.Fprintf(out, "Warning: could not record the rollback in %s (%v): this run is not protected against being rolled back again; do not re-run it after a later apply.\n", run.Dir, err)
+	}
 	for _, s := range skipped {
 		_, _ = fmt.Fprintln(out, "  left unchanged: "+s)
 	}

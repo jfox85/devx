@@ -674,6 +674,56 @@ func TestInstanceRollbackConcurrent(t *testing.T) {
 	f.assertVictimIntact()
 }
 
+func TestInstanceRollbackRefusesUnknownHome(t *testing.T) {
+	f := newInstRollbackFixture(t)
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("home", "") // plan9
+	if _, err := f.rollback(f.run); err == nil || !strings.Contains(err.Error(), "cannot determine the home directory") {
+		t.Fatalf("unknown home must be refused, got %v", err)
+	}
+}
+
+// An interrupted rollback (failed after removing some values, so no
+// rolled-back marker) finishes when re-run.
+func TestInstanceRollbackInterruptedIsRetryable(t *testing.T) {
+	f := newInstRollbackFixture(t)
+	// Interrupt: remove agent a's binding exactly as rollback would, then
+	// stop (no marker, other values still present).
+	plan := f.runPlan()
+	entries, err := parseInstanceJournal(mustRead(t, filepath.Join(f.run, "journal.jsonl")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first []piagent.JournalEntry
+	for _, e := range entries {
+		if e.Kind == "agent" && e.Name == fxAgentA {
+			first = append(first, e)
+		}
+	}
+	if n, _, err := piagent.RollbackInstancePlan(plan, first, instanceStores(nil)); err != nil || n != 1 {
+		t.Fatalf("partial: %d %v", n, err)
+	}
+	out, err := f.rollback(f.run)
+	if err != nil || !strings.Contains(out, "Rolled back 3 change(s)") || !strings.Contains(out, "agent "+fxAgentA+": not bound") {
+		t.Fatalf("retry must finish: %v\n%s", err, out)
+	}
+	s := f.sessions()
+	if s["a"].InstanceID != "" || s["b"].InstanceID != "" || f.agent(fxAgentB).SessionInstanceID != "" {
+		t.Fatal("retry left values behind")
+	}
+	f.assertVictimIntact()
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestInstanceRollbackNewerRunEqualMtime(t *testing.T) {
 	f := newInstRollbackFixture(t)
 	newer := f.cloneRun("session-instances-20261001T000000Z-" + f.runPlan().Hash + "-twin")
