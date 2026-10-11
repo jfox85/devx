@@ -798,13 +798,16 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (currentTask && !receipt) lastEnd = lastAssistant(e.messages ?? []);
 	});
 
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (se: any) => {
 		if (!currentTask || pendingConfirm || receipt) return;
 		const end = lastEnd ?? { text: "" };
-		const aborted = end.stop === "aborted";
-		// Freeze whether this abort was the one DevX asked for. A cancel
-		// recorded after the turn settled must not relabel a human interrupt.
-		const abortOnRequest = aborted && !!readJSON(taskPath(currentTask))?.cancel_requested;
+		// An abort that lands between turns (e.g. during a tool call) may
+		// leave no aborted assistant message; the settle event still reports it.
+		const aborted = end.stop === "aborted" || se?.aborted === true;
+		// Protocol 2: an abort is "on request" only if this bridge dispatched
+		// it (abort_sent_at recorded and ctx.abort() called). Frozen now, so a
+		// later publication never relabels a human interrupt.
+		const abortOnRequest = aborted && abortSent && !!readJSON(taskPath(currentTask))?.abort_sent_at;
 		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: abortOnRequest, lease_generation_at_settle: readJSON(p.agent)?.lease?.generation });
 	});
 
