@@ -383,18 +383,27 @@ func TestE2ECancelBeforeAcceptanceUnderHumanControl(t *testing.T) {
 // Automatic forwarding and task dependencies are out of scope and deferred.
 func TestE2EChildResultWhileParentBusyIsQueuedNotSteered(t *testing.T) {
 	f := newPiFixture(t)
-	parent := f.start("parent long SLOW", "kp")
+	// The child's Pi is started and warmed up first, so its startup does
+	// not race the parent's turn.
+	child := f.start("child warmup", "kc0")
+	f.waitTask(child.TaskID, 45*time.Second, TaskCompleted)
+	f.online(child.AgentID)
+	parent := f.start("parent long VERYSLOW", "kp")
 	f.waitTask(parent.TaskID, 30*time.Second, TaskRunning)
-	child := f.start("child quick CHILDMARK-42", "kc")
-	cv := f.waitTask(child.TaskID, 45*time.Second, TaskCompleted, TaskFailed)
+	childTask := f.send(child.AgentID, "child quick CHILDMARK-42", "kc1")
+	cv := f.waitTask(childTask, 30*time.Second, TaskCompleted, TaskFailed)
 	if cv.State != TaskCompleted {
 		t.Fatalf("child: %+v", cv)
 	}
-	// 1. The parent is still busy, and the child's outcome is fully readable.
-	if pv, _, _ := f.m.TaskStatus(parent.TaskID); pv.State != TaskRunning {
-		t.Skipf("parent finished before the child (slow runner); state=%s", pv.State)
+	parentBusy := func(where string) {
+		t.Helper()
+		if pv, _, _ := f.m.TaskStatus(parent.TaskID); pv.State != TaskRunning {
+			t.Fatalf("precondition lost at %s: parent turn ended early (state=%s); VERYSLOW margin too small", where, pv.State)
+		}
 	}
-	res, err := f.m.Result(child.TaskID, 0, MaxResultChunk)
+	// 1. The parent is still busy, and the child's outcome is fully readable.
+	parentBusy("child finished")
+	res, err := f.m.Result(childTask, 0, MaxResultChunk)
 	if err != nil || !res.Available || !strings.Contains(res.Text, "CHILDMARK-42") {
 		t.Fatalf("child result while parent busy: %+v %v", res, err)
 	}
@@ -405,10 +414,11 @@ func TestE2EChildResultWhileParentBusyIsQueuedNotSteered(t *testing.T) {
 	fwd := f.send(parent.AgentID, "child reported: "+res.Text[:40], "fwd")
 	time.Sleep(800 * time.Millisecond) // many bridge ticks while busy
 	tv, _, _ := f.m.TaskStatus(fwd)
+	parentBusy("after forwarding")
 	if tv.Phase != PhaseQueued || tv.WaitingReason != WaitQueued || tv.DeliveredAt != nil {
 		t.Fatalf("forwarded result while parent busy: %+v", tv)
 	}
-	pDone := f.waitTask(parent.TaskID, 60*time.Second, TaskCompleted, TaskFailed)
+	pDone := f.waitTask(parent.TaskID, 90*time.Second, TaskCompleted, TaskFailed)
 	if pDone.State != TaskCompleted || strings.Contains(pDone.Excerpt, "child reported") {
 		t.Fatalf("parent turn was steered: %+v", pDone)
 	}
