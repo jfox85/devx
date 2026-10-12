@@ -273,6 +273,36 @@ export default function devxBridge(pi: ExtensionAPI) {
 		return "";
 	};
 
+	// Caller holds the lock. This bridge fenced requeueId: Pi never ran it, so
+	// it goes back to waiting (or is cancelled if a cancel arrived). A
+	// confirmed_at or human_intervened here is ours from a write that landed
+	// but reported failure, or from input before acceptance; neither is true
+	// of a turn that never ran, so both are withdrawn.
+	const requeueLocked = () => {
+		if (!requeueId) return;
+		const t = readJSON(taskPath(requeueId));
+		const ours = t?.state === "running" && (!t.confirmed_at || t.bridge_instance === instance);
+		if (ours) {
+			delete t.confirmed_at;
+			delete t.accepted_as;
+			delete t.human_intervened;
+		}
+		if (ours && t.cancel_requested) {
+			t.state = "cancelled";
+			t.finished_at = now();
+			t.note = "cancelled before Pi accepted it";
+			saveTask(t);
+			annotate("task_cancelled", requeueId, { delivered: true, accepted: false });
+		} else if (ours) {
+			t.state = "waiting";
+			delete t.delivered_at;
+			delete t.bridge_instance;
+			saveTask(t);
+			annotate("delivery_fenced", requeueId, { reason: "lock_unavailable" });
+		}
+		requeueId = undefined;
+	};
+
 	const tick = () => {
 		const ctx = ctxRef;
 		if (!ctx || mode === "stopped") return;
@@ -286,31 +316,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 				// Fence: only the newest launch, in the bound pane, may act.
 				if (a.launch_nonce !== NONCE) mode = "fenced";
 				const editor = heartbeat(ctx);
-				if (requeueId) {
-					// This bridge fenced requeueId: Pi never received it. A
-					// confirmed_at here is ours from a save that landed but
-					// reported failure; it is not true, so it is withdrawn.
-					const t = readJSON(taskPath(requeueId));
-					const ours = t?.state === "running" && (!t.confirmed_at || t.bridge_instance === instance);
-					if (ours) {
-						delete t.confirmed_at;
-						delete t.accepted_as;
-					}
-					if (ours && t.cancel_requested) {
-						t.state = "cancelled";
-						t.finished_at = now();
-						t.note = "cancelled before Pi accepted it";
-						saveTask(t);
-						annotate("task_cancelled", requeueId, { delivered: true, accepted: false });
-					} else if (ours) {
-						t.state = "waiting";
-						delete t.delivered_at;
-						delete t.bridge_instance;
-						saveTask(t);
-						annotate("delivery_fenced", requeueId, { reason: "lock_unavailable" });
-					}
-					requeueId = undefined;
-				}
+				requeueLocked();
 				if (mode !== "active" || a.binding?.pane_id !== PANE) return;
 
 				if (currentTask) {
@@ -440,6 +446,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 						t.state = "waiting";
 						delete t.delivered_at;
 						delete t.bridge_instance;
+						delete t.human_intervened; // it never ran
 						saveTask(t);
 					}
 					appendEvent("delivery_fenced", id, { reason: a?.lease?.holder === "human" ? "human_control" : `task_${t?.state}` });
@@ -473,9 +480,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 			try {
 				withLock(() => {
 					appendEvent("human_input", currentTask, { bytes: e.text.length, during_task: !!currentTask });
-					if (currentTask) {
+					// Only a turn Pi accepted can have been intervened in; a task
+					// handed off but not yet accepted is put back unrun.
+					if (currentTask && !pendingConfirm) {
 						const t = readJSON(taskPath(currentTask));
-						if (t) {
+						if (t?.confirmed_at) {
 							t.human_intervened = true;
 							saveTask(t);
 						}
@@ -502,6 +511,10 @@ export default function devxBridge(pi: ExtensionAPI) {
 				if (!t || t.state !== "running") return;
 				fs.writeFileSync(path.join(p.results, `${id}.txt`), end.text, { mode: 0o600 });
 				const extra: Record<string, unknown> = { stop_reason: end.stop ?? "", result_bytes: Buffer.byteLength(end.text) };
+				// An abort_sent_at this bridge never dispatched (owed when the
+				// turn ended, whatever the outcome) is withdrawn: the field
+				// means ctx.abort() was called.
+				if (t.abort_sent_at && !abortSent) delete t.abort_sent_at;
 				// An abort that lands between turns (e.g. during a tool call)
 				// may leave no aborted assistant message; the settle event
 				// still reports it.
@@ -509,9 +522,6 @@ export default function devxBridge(pi: ExtensionAPI) {
 					if (t.abort_sent_at && abortSent) {
 						finishLocked(t, "cancelled", { ...extra, note: "aborted on request" });
 					} else {
-						// Not our abort. An abort_sent_at this bridge never
-						// dispatched (owed when the turn ended) is withdrawn.
-						if (t.abort_sent_at) delete t.abort_sent_at;
 						// Interrupted from the TUI: that is a human taking control.
 						finishLocked(t, "cancelled", { ...extra, note: "interrupted by a human in Pi", human_intervened: true });
 						setLeaseLocked("human", "human_interrupt", "pi-tui");
@@ -565,6 +575,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 		mode = "stopped";
 		try {
 			withLock(() => {
+				// A fenced hand-off Pi never ran goes back to waiting, not
+				// to "unknown" when devx later sees this Pi gone.
+				requeueLocked();
 				if (wasActive && currentTask) {
 					const t = readJSON(taskPath(currentTask));
 					if (t?.state === "running") {

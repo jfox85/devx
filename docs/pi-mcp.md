@@ -261,9 +261,9 @@ annotate it.
       `ctx.abort()` once.
     - Otherwise it withdraws `abort_sent_at`. If a gate failed, it records
       `abort_withheld` with `abort_not_dispatched`.
-    - If the turn settles first, the mark is withdrawn too. An abort this
-      bridge never dispatched is never reported as sent, nor as
-      "aborted on request".
+    - If the turn settles first, however it ends (completed, failed or
+      interrupted), the mark is withdrawn too. An abort this bridge never
+      dispatched is never reported as sent, nor as "aborted on request".
 
 ### Child results while a parent is busy
 
