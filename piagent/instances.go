@@ -646,6 +646,21 @@ func RollbackInstancePlan(p *InstancePlan, entries []JournalEntry, st InstanceSt
 			switch {
 			case a.SessionInstanceID == "":
 				skipped = append(skipped, "agent "+e.Name+": not bound (already rolled back, or the bind never happened)")
+				// agent.json is already unbound (e.g. a later event_log
+				// restore of this binding was rolled back first), but the
+				// log may still record the binding this run created. Undo
+				// that too, or a later plan would restore it without the
+				// owner. Only this run's own bind (not a restore), and only
+				// while the log still names exactly this binding.
+				if it.Basis != BasisEventLog {
+					if rid, _, err := st.Agents.RecordedBinding(a.ID); err != nil {
+						return err
+					} else if rid != "" && rid == it.SessionInstanceID {
+						_, err = st.Agents.AppendEvent(a.ID, Event{Type: "session_instance_unbound", Source: "devx", Data: map[string]any{
+							"session": a.DevxSession, "plan_hash": p.Hash, "basis": it.Basis, "via": "devx session instances --rollback", "log_only": true}})
+						return err
+					}
+				}
 				return nil
 			case a.SessionInstanceID != it.SessionInstanceID:
 				skipped = append(skipped, "agent "+e.Name+": binding changed since migration")
