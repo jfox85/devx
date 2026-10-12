@@ -50,6 +50,10 @@ type Session struct {
 	// created (see NewInstanceID) and never changed afterwards; records from
 	// before it existed get one through `devx session instances`.
 	InstanceID string `json:"instance_id,omitempty"`
+	// Unknown holds members of the on-disk record this build does not know
+	// (written by a newer DevX). They are written back unchanged so this
+	// build never strips another build's fields; see unknown_fields.go.
+	Unknown map[string]json.RawMessage `json:"-"`
 }
 
 // TargetMeta describes the execution environment for a session.
@@ -125,6 +129,8 @@ var sessionsProcessLock sync.Mutex
 type SessionStore struct {
 	Sessions      map[string]*Session `json:"sessions"`
 	NumberedSlots map[int]string      `json:"numbered_slots,omitempty"`
+	// Unknown holds top-level members this build does not know.
+	Unknown map[string]json.RawMessage `json:"-"`
 }
 
 // LoadSessions loads the sessions from the metadata file
@@ -443,6 +449,7 @@ func (s *SessionStore) Mutate(fn func(*SessionStore) error) error {
 func (s *SessionStore) adoptFrom(other *SessionStore) {
 	s.Sessions = other.Sessions
 	s.NumberedSlots = other.NumberedSlots
+	s.Unknown = other.Unknown
 }
 
 // RecordAttach updates the LastAttached timestamp for a session

@@ -232,12 +232,12 @@ func checkDependenciesQuiet() {
 }
 
 // isReadOnlyInvocation reports whether args run a command that promises to
-// write nothing (the `devx session instances` dry run reviews records before
-// any write), so the background update check, which writes its state file,
-// is skipped.
+// write nothing (the `devx session instances` and `devx session markers` dry
+// runs review records before any write), so the background update check,
+// which writes its state file, is skipped.
 func isReadOnlyInvocation(args []string) bool {
 	pos := positionalArgs(args)
-	if len(pos) < 2 || pos[0] != "session" || pos[1] != "instances" {
+	if len(pos) < 2 || pos[0] != "session" || (pos[1] != "instances" && pos[1] != "markers") {
 		return false
 	}
 	for _, a := range args {
