@@ -63,7 +63,7 @@ func TestTildeExpansion(t *testing.T) {
 	}
 
 	// Check that tilde was expanded
-	expected := home + "/test/path.yaml"
+	expected := filepath.Join(home, "test", "path.yaml")
 	if cfg.TmuxpTemplate != expected {
 		t.Errorf("expected tilde expansion to %s, got %s", expected, cfg.TmuxpTemplate)
 	}
@@ -111,7 +111,9 @@ func TestLoadConfigExternalDomain(t *testing.T) {
 
 func TestUsageConfigRoundTripsThroughSaveConfig(t *testing.T) {
 	viper.Reset()
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 
 	saved := &Config{}
 	saved.Usage.Enabled = false
