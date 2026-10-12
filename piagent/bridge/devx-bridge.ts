@@ -279,9 +279,9 @@ type Receipt = {
 	// That abort was the one this bridge dispatched for a DevX cancel.
 	abort_on_request: boolean;
 	// This bridge called ctx.abort() for a DevX cancel of this turn, however
-	// the turn ended (#82). Absent in spools from before this field: read as
-	// abort_on_request. Publication withdraws an abort_sent_at it did not
-	// dispatch.
+	// the turn ended (#82). Publication withdraws an abort_sent_at it did not
+	// dispatch; a spool without this field withdraws only when that is
+	// provable (aborted and not on request).
 	abort_dispatched?: boolean;
 	// Lease generation read at settle; null if that read failed. A human
 	// interrupt moves the lease only if control has not changed since the
@@ -348,7 +348,10 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 	// that landed but reported failure, whose abort was never dispatched
 	// before the turn ended (however it ended), is withdrawn (#82). The task
 	// is still bound to r.instance (checked above).
-	if (t.abort_sent_at && !(r.abort_dispatched ?? r.abort_on_request)) delete t.abort_sent_at;
+	// Spools without abort_dispatched (written before it existed) prove
+	// "not dispatched" only for an abort that was not on request; otherwise
+	// unknowable, so the mark is kept.
+	if (t.abort_sent_at && !(r.abort_dispatched ?? (r.abort_on_request || !r.aborted))) delete t.abort_sent_at;
 	let extra: Record<string, unknown> = { stop_reason: r.stop, result_bytes: Buffer.byteLength(r.text) };
 	if (r.fail_error) extra = { error: r.fail_error };
 	else writeAtomic(resultFile, r.text);

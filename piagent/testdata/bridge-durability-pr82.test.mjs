@@ -202,3 +202,19 @@ test("an owed abort is withdrawn by a delayed publication when the turn complete
 	assert.ok(!task.abort_sent_at, "abort_sent_at means ctx.abort() was called; it was not");
 	assert.equal(b.ctx.aborts, 0);
 });
+
+// A spool from before abort_dispatched existed, for a dispatched abort that
+// lost the race to a natural finish: "not dispatched" is not provable, so
+// the true abort_sent_at is kept.
+test("an old spool without abort_dispatched keeps a dispatched abort's abort_sent_at", async (t) => {
+	const e = env();
+	t.after(() => fs.rmSync(e.root, { recursive: true, force: true }));
+	const sentAt = "2026-10-11T00:00:01.000Z";
+	patchTask(e.dir, e.id, (x) => Object.assign(x, { state: "running", delivered_at: sentAt, confirmed_at: sentAt, bridge_instance: "0123456789abcdef", cancel_requested: true, cancel_lease_generation: 1, abort_sent_at: sentAt }));
+	fs.writeFileSync(path.join(e.dir, "results", `${e.id}.receipt.json`), JSON.stringify({ v: 2, receipt_id: "rc_00000000000000a1", task_id: e.id, instance: "0123456789abcdef", text: "done", stop: "stop", aborted: false, abort_on_request: false, lease_generation_basis: 1, settled_at: sentAt }));
+	const b = await start(e);
+	b.tick();
+	const task = rj(path.join(e.dir, "tasks", `${e.id}.json`));
+	assert.equal(task.state, "completed");
+	assert.equal(task.abort_sent_at, sentAt, "kept: the old spool cannot prove the abort was not sent");
+});
