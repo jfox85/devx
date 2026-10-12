@@ -425,8 +425,10 @@ function foreignReceipts(instance: string, deferred?: Set<string>, onDefer?: (na
 			if (e?.code && deferred && onDefer) {
 				// An errno reading the file (e.g. a permission change) is
 				// not a property of the receipt: keep it for a later instance.
-				deferred.add(n);
+				// Deferred only once its event is written: if that throws,
+				// recovery stays blocked and retries (never a silent defer).
 				onDefer(n, `spool_unreadable ${e.code}`);
+				deferred.add(n);
 				continue;
 			}
 			problem = e instanceof SyntaxError ? "unparseable" : `spool_unreadable${e?.code ? ` ${e.code}` : ""}`;
@@ -647,8 +649,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 					if (e?.code) {
 						// An errno is a property of the environment, not of this
 						// receipt: keep the spool for a later instance.
-						deferredSpools.add(`${r.task_id}.receipt.json`);
+						// Deferred only once its event is written (see above).
 						appendEvent("receipt_deferred", r.task_id, { receipt_id: r.receipt_id, reason });
+						deferredSpools.add(`${r.task_id}.receipt.json`);
 						notify(`DevX could not publish a result saved by an earlier Pi session (${reason}). It is kept on disk and retried after the next relaunch.`, "warning");
 						flagAttention("Pi agent result kept, not yet published");
 						continue;

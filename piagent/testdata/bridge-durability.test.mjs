@@ -992,3 +992,23 @@ withEnv("R3: a deferred result is published by the next instance once the fault 
 	assert.equal(fin.length, 1, "published or attached exactly once");
 	assert.ok(!fs.existsSync(path.join(env.dir, "results", `${first}.receipt.json`)), "spool removed after publication");
 });
+
+withEnv("R3: a deferral whose event cannot be written is not silent: recovery stays blocked and retries", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const a = await startBridge(env);
+	crashWithSpool(env, a, first);
+	relaunchNonce(env.dir, "nonce-2");
+	inject("writeFileSync", /results\/pt_0000000000000001\.txt\..*\.tmp$/, { code: "EACCES" });
+	inject("appendFileSync", /events\.jsonl$/, { code: "EIO" });
+	const b = await startBridge(env, { nonce: "nonce-2" });
+	b.tick();
+	b.tick();
+	assert.deepEqual(b.sent, [], "no dispatch past an unrecorded deferral");
+	clearFaults();
+	inject("writeFileSync", /results\/pt_0000000000000001\.txt\..*\.tmp$/, { code: "EACCES" });
+	b.tick();
+	clearFaults();
+	assert.equal(events(env.dir).filter((e) => e.type === "receipt_deferred").length, 1, "deferred once the event is written");
+	assert.deepEqual(b.sent, ["second"]);
+});
