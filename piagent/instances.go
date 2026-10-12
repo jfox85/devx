@@ -437,7 +437,14 @@ type JournalEntry struct {
 	InstanceID string    `json:"instance_id"`
 	Restored   bool      `json:"restored_existing_id,omitempty"`
 	Basis      string    `json:"basis,omitempty"`
+	// PlanHash names the plan this step belongs to. Journals written
+	// before it existed omit it; membership is still checked exactly.
+	PlanHash string `json:"plan_hash,omitempty"`
 }
+
+// ErrJournalNotInPlan means a journal entry does not record a write the
+// run's plan contains; rollback refuses the whole run.
+var ErrJournalNotInPlan = errors.New("journal entry is not a write in this run's plan")
 
 // ErrPlanStale means the records changed since the plan was made.
 var ErrPlanStale = errors.New("records changed since the plan was made; re-run the dry run and review the new plan")
@@ -488,7 +495,7 @@ func ApplyInstancePlan(p *InstancePlan, st InstanceStores) error {
 				continue // already applied
 			case "":
 				s.InstanceID = it.InstanceID
-				journal = append(journal, JournalEntry{Time: now(), Kind: "session", Name: it.Session, InstanceID: it.InstanceID, Restored: it.Existing})
+				journal = append(journal, JournalEntry{Time: now(), Kind: "session", Name: it.Session, InstanceID: it.InstanceID, Restored: it.Existing, PlanHash: p.Hash})
 			default:
 				return fmt.Errorf("session %q already has a different instance id: %w", it.Session, ErrPlanStale)
 			}
@@ -510,14 +517,14 @@ func ApplyInstancePlan(p *InstancePlan, st InstanceStores) error {
 		if it.Action != ActionBindAgent && it.Action != ActionRestoreBinding {
 			continue
 		}
-		if err := bindAgentChecked(st, it, now); err != nil {
+		if err := bindAgentChecked(st, it, p.Hash, now); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time) error {
+func bindAgentChecked(st InstanceStores, it AgentPlanItem, planHash string, now func() time.Time) error {
 	return st.Agents.WithAgentLock(it.AgentID, func() error {
 		a, err := st.Agents.LoadAgent(it.AgentID)
 		if err != nil {
@@ -551,7 +558,7 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 		default:
 			return fmt.Errorf("agent %s: binding without an accepted basis: %w", it.AgentID, ErrPlanStale)
 		}
-		if err := st.Journal(JournalEntry{Time: now(), Kind: "agent", Name: it.AgentID, InstanceID: it.SessionInstanceID, Basis: it.Basis}); err != nil {
+		if err := st.Journal(JournalEntry{Time: now(), Kind: "agent", Name: it.AgentID, InstanceID: it.SessionInstanceID, Basis: it.Basis, PlanHash: planHash}); err != nil {
 			return err
 		}
 		a.SessionInstanceID, a.SessionCreatedAt = it.SessionInstanceID, it.SessionCreatedAt
@@ -565,22 +572,86 @@ func bindAgentChecked(st InstanceStores, it AgentPlanItem, now func() time.Time)
 	})
 }
 
-// RollbackInstances removes exactly the values recorded in the journal,
-// and only where the record still holds that same value (anything changed
-// since is left alone and reported). Agent bindings are removed first.
-func RollbackInstances(entries []JournalEntry, st InstanceStores) (reverted int, skipped []string, err error) {
+// sessionWrite returns the plan item whose apply journals e (kind session).
+func (p *InstancePlan) sessionWrite(e JournalEntry) (SessionPlanItem, bool) {
+	for _, it := range p.Sessions {
+		if it.Action == ActionAssignSessionID && it.Session == e.Name && it.InstanceID == e.InstanceID && it.Existing == e.Restored {
+			return it, true
+		}
+	}
+	return SessionPlanItem{}, false
+}
+
+// agentWrite returns the plan item whose apply journals e (kind agent).
+func (p *InstancePlan) agentWrite(e JournalEntry) (AgentPlanItem, bool) {
+	for _, it := range p.Agents {
+		if (it.Action == ActionBindAgent || it.Action == ActionRestoreBinding) && it.AgentID == e.Name &&
+			it.SessionInstanceID == e.InstanceID && it.Basis == e.Basis {
+			return it, true
+		}
+	}
+	return AgentPlanItem{}, false
+}
+
+// ValidateInstanceJournal checks that the plan is intact and that every
+// journal entry records exactly a write the plan contains (same kind,
+// record, id, restored flag, basis and, when present, plan hash).
+func ValidateInstanceJournal(p *InstancePlan, entries []JournalEntry) error {
+	if p == nil || !p.VerifyHash() {
+		return fmt.Errorf("plan content does not match its hash")
+	}
+	for _, e := range entries {
+		if e.PlanHash != "" && e.PlanHash != p.Hash {
+			return fmt.Errorf("%s %q belongs to plan %s, not %s: %w", e.Kind, e.Name, e.PlanHash, p.Hash, ErrJournalNotInPlan)
+		}
+		ok := false
+		switch e.Kind {
+		case "session":
+			_, ok = p.sessionWrite(e)
+		case "agent":
+			_, ok = p.agentWrite(e)
+		}
+		if !ok {
+			return fmt.Errorf("%s %q (id %s): %w", e.Kind, e.Name, e.InstanceID, ErrJournalNotInPlan)
+		}
+	}
+	return nil
+}
+
+// RollbackInstancePlan undoes the writes a run journaled. It refuses the
+// whole run (nothing written) unless every entry is a write in the run's
+// verified plan. Each value is removed only from the exact record the plan
+// wrote it to, and only while that record still holds it: a session must
+// keep the planned created_at and path, an agent the planned session,
+// instance id and session_created_at. Anything else (recreated, rebound,
+// already undone, never written because apply stopped first) is left alone
+// and reported, so rollback is idempotent and safe to retry or run
+// concurrently. Agent bindings are removed first, under each agent's lock;
+// session ids then in one locked sessions write.
+func RollbackInstancePlan(p *InstancePlan, entries []JournalEntry, st InstanceStores) (reverted int, skipped []string, err error) {
+	if err := ValidateInstanceJournal(p, entries); err != nil {
+		return 0, nil, err
+	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		if e.Kind != "agent" {
 			continue
 		}
+		it, _ := p.agentWrite(e)
 		err := st.Agents.WithAgentLock(e.Name, func() error {
 			a, err := st.Agents.LoadAgent(e.Name)
 			if err != nil {
 				return err
 			}
-			if a.SessionInstanceID != e.InstanceID {
+			switch {
+			case a.SessionInstanceID == "":
+				skipped = append(skipped, "agent "+e.Name+": not bound (already rolled back, or the bind never happened)")
+				return nil
+			case a.SessionInstanceID != it.SessionInstanceID:
 				skipped = append(skipped, "agent "+e.Name+": binding changed since migration")
+				return nil
+			case a.DevxSession != it.Session || !a.SessionCreatedAt.Equal(it.SessionCreatedAt):
+				skipped = append(skipped, "agent "+e.Name+": not the record this run bound (session or session_created_at changed)")
 				return nil
 			}
 			a.SessionInstanceID, a.SessionCreatedAt = "", time.Time{}
@@ -589,36 +660,55 @@ func RollbackInstances(entries []JournalEntry, st InstanceStores) (reverted int,
 			}
 			reverted++
 			_, err = st.Agents.AppendEvent(a.ID, Event{Type: "session_instance_unbound", Source: "devx", Data: map[string]any{
-				"session": a.DevxSession, "via": "devx session instances --rollback"}})
+				"session": a.DevxSession, "plan_hash": p.Hash, "via": "devx session instances --rollback"}})
 			return err
 		})
-		if err != nil && !errors.Is(err, ErrNotFound) {
+		if errors.Is(err, ErrNotFound) {
+			skipped = append(skipped, "agent "+e.Name+": record no longer exists")
+		} else if err != nil {
 			return reverted, skipped, err
 		}
 	}
+	var sessSkipped []string
+	sessReverted := 0
 	err = st.MutateSessions(func(sessions map[string]*session.Session) error {
+		sessSkipped, sessReverted = nil, 0 // Mutate may retry fn
 		for i := len(entries) - 1; i >= 0; i-- {
 			e := entries[i]
 			if e.Kind != "session" {
 				continue
 			}
+			it, _ := p.sessionWrite(e)
 			s := sessions[e.Name]
 			switch {
 			case s == nil:
-				skipped = append(skipped, "session "+e.Name+": removed since migration")
+				sessSkipped = append(sessSkipped, "session "+e.Name+": removed since migration")
 			case e.Restored:
 				// The id was the agent's existing binding, restored after an
 				// old writer dropped it: leave it (removing it would break
 				// that binding).
-				skipped = append(skipped, "session "+e.Name+": restored pre-existing id kept")
-			case s.InstanceID != e.InstanceID:
-				skipped = append(skipped, "session "+e.Name+": instance id changed since migration")
+				sessSkipped = append(sessSkipped, "session "+e.Name+": restored pre-existing id kept")
+			case !s.CreatedAt.Equal(it.CreatedAt) || filepath.Clean(s.Path) != filepath.Clean(it.Path):
+				sessSkipped = append(sessSkipped, "session "+e.Name+": not the record this run wrote (recreated or changed)")
+			case s.InstanceID == "":
+				sessSkipped = append(sessSkipped, "session "+e.Name+": no instance id (already rolled back, or the write never happened)")
+			case s.InstanceID != it.InstanceID:
+				sessSkipped = append(sessSkipped, "session "+e.Name+": instance id changed since migration")
 			default:
 				s.InstanceID = ""
-				reverted++
+				sessReverted++
 			}
+		}
+		if sessReverted == 0 {
+			return errNoSessionChange // nothing to undo: do not rewrite sessions.json
 		}
 		return nil
 	})
-	return reverted, skipped, err
+	if err != nil && !errors.Is(err, errNoSessionChange) {
+		return reverted, skipped, err
+	}
+	return reverted + sessReverted, append(skipped, sessSkipped...), nil
 }
+
+// errNoSessionChange aborts a sessions mutation that would write nothing.
+var errNoSessionChange = errors.New("no session change")
