@@ -864,7 +864,7 @@ withEnv("L0: a spool whose task is already terminal never withholds liveness, ev
 });
 
 for (const code of ["EACCES", "EISDIR", "ENOTDIR", "EROFS", "ELOOP"]) {
-	withEnv(`R3: a permanent errno (${code}) on one spool quarantines it instead of blocking forever`, async (env) => {
+	withEnv(`R3: a permanent errno (${code}) on one spool defers it (kept on disk) instead of blocking forever`, async (env) => {
 		const first = addTask(env.dir, 1, "first");
 		addTask(env.dir, 2, "second");
 		const a = await startBridge(env);
@@ -875,10 +875,14 @@ for (const code of ["EACCES", "EISDIR", "ENOTDIR", "EROFS", "ELOOP"]) {
 		b.tick();
 		b.tick();
 		clearFaults();
-		assert.ok(quarantined(env.dir, `${first}.receipt.json`));
-		const ev = events(env.dir).find((e) => e.type === "receipt_unreadable");
-		assert.match(ev.data.reason, new RegExp(code));
-		assert.deepEqual(b.sent, ["second"]);
+		assert.ok(!quarantined(env.dir, `${first}.receipt.json`), "a valid receipt is never set aside for an environment fault");
+		assert.ok(fs.existsSync(path.join(env.dir, "results", `${first}.receipt.json`)), "kept for a later instance");
+		const ev = events(env.dir).filter((e) => e.type === "receipt_deferred");
+		assert.equal(ev.length, 1, "logged once");
+		assert.match(ev[0].data.reason, new RegExp(code));
+		assert.deepEqual(b.sent, ["second"], "dispatch is not blocked");
+		b.tick();
+		assert.equal(events(env.dir).filter((e) => e.type === "receipt_deferred").length, 1, "not retried or re-logged by this instance");
 	});
 }
 
@@ -934,7 +938,7 @@ withEnv("R1': after a takeover and release during the turn, a later Esc with an 
 });
 
 for (const code of ["EACCES", "EISDIR"]) {
-	withEnv(`R3: a spool that cannot be read (${code}) is quarantined, and other spools are still reconciled`, async (env) => {
+	withEnv(`R3: a spool that cannot be read (${code}) is deferred (kept on disk), and other spools are still reconciled`, async (env) => {
 		addTask(env.dir, 1, "first");
 		const bad = "pt_0000000000000008";
 		const good = "pt_0000000000000009";
@@ -945,8 +949,9 @@ for (const code of ["EACCES", "EISDIR"]) {
 		const b = await startBridge(env);
 		b.tick();
 		clearFaults();
-		assert.ok(quarantined(env.dir, `${bad}.receipt.json`));
-		assert.match(events(env.dir).find((e) => e.type === "receipt_unreadable").data.reason, new RegExp(code));
+		assert.ok(!quarantined(env.dir, `${bad}.receipt.json`));
+		assert.ok(fs.existsSync(path.join(env.dir, "results", `${bad}.receipt.json`)), "kept for a later instance");
+		assert.match(events(env.dir).find((e) => e.type === "receipt_deferred").data.reason, new RegExp(code));
 		assert.equal(task(env.dir, good).state, "completed", "the readable spool is still published");
 		assert.deepEqual(b.sent, ["first"]);
 	});
@@ -965,4 +970,25 @@ withEnv("R3: a quarantine whose rename keeps failing records one event, not one 
 	b.tick();
 	b.tick();
 	assert.deepEqual(b.sent, ["first"]);
+});
+
+withEnv("R3: a deferred result is published by the next instance once the fault clears (never lost)", async (env) => {
+	const first = addTask(env.dir, 1, "first");
+	addTask(env.dir, 2, "second");
+	const a = await startBridge(env);
+	crashWithSpool(env, a, first);
+	relaunchNonce(env.dir, "nonce-2");
+	inject("writeFileSync", /results\/pt_0000000000000001\.txt\..*\.tmp$/, { code: "EACCES" });
+	const b = await startBridge(env, { nonce: "nonce-2" });
+	b.tick();
+	b.tick();
+	clearFaults(); // the owner fixes permissions
+	relaunchNonce(env.dir, "nonce-3");
+	const c = await startBridge(env, { nonce: "nonce-3" });
+	c.tick();
+	c.tick();
+	assert.equal(real.readFileSync.call(fs, path.join(env.dir, "results", `${first}.txt`), "utf8"), "spooled answer");
+	const fin = events(env.dir).filter((e) => (e.type === "task_finished" || e.type === "task_result_recovered") && e.task_id === first);
+	assert.equal(fin.length, 1, "published or attached exactly once");
+	assert.ok(!fs.existsSync(path.join(env.dir, "results", `${first}.receipt.json`)), "spool removed after publication");
 });
