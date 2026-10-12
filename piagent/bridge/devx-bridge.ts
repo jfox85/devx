@@ -418,7 +418,9 @@ function controlUnchangedSince(lease: any, r: Receipt): boolean {
 
 // Spooled receipts left by earlier bridge instances (Pi exited before their
 // outcome was published). Invalid spools are quarantined.
-function foreignReceipts(instance: string): Receipt[] {
+// deferred: spool file names this instance skips (permanent errno); left on
+// disk for a later instance.
+function foreignReceipts(instance: string, deferred?: Set<string>, onDefer?: (name: string, reason: string) => void): Receipt[] {
 	let names: string[];
 	try {
 		names = fs.readdirSync(p.results);
@@ -429,6 +431,7 @@ function foreignReceipts(instance: string): Receipt[] {
 	const out: Receipt[] = [];
 	for (const n of names) {
 		if (!/^pt_[0-9a-f]{16}\.receipt\.json$/.test(n)) continue;
+		if (deferred?.has(n)) continue;
 		const file = path.join(p.results, n);
 		let r: any;
 		let problem = "";
@@ -439,6 +442,13 @@ function foreignReceipts(instance: string): Receipt[] {
 			// Same rule as publication: only errors that can clear are
 			// retried; anything else is a property of this file.
 			if (isTransient(e)) throw e;
+			if (e?.code && deferred && onDefer) {
+				// An errno reading the file (e.g. a permission change) is
+				// not a property of the receipt: keep it for a later instance.
+				deferred.add(n);
+				onDefer(n, `spool_unreadable ${e.code}`);
+				continue;
+			}
 			problem = e instanceof SyntaxError ? "unparseable" : `spool_unreadable${e?.code ? ` ${e.code}` : ""}`;
 		}
 		// Spools are written atomically, so an invalid one is not a torn
@@ -624,17 +634,26 @@ export default function devxBridge(pi: ExtensionAPI) {
 	// Caller holds the lock. Publishes receipts left by earlier instances;
 	// throws if any could not be published so dispatch stays blocked.
 	let recoveryFailures = 0;
+	// Valid spools whose publication failed with a permanent errno in this
+	// instance: skipped here (so dispatch is not blocked forever) but left on
+	// disk, so a later instance retries once the fault (for example a
+	// permission change) is fixed. Only structurally invalid spools, which can
+	// never publish, are quarantined.
+	const deferredSpools = new Set<string>();
 	const recoverLocked = () => {
 		try {
 			// Agent-wide failures are retried and never charged to a spool.
 			if (!readJSONStrict(p.agent)) throw new Error("devx agent record missing");
-			// Every spool ends published, attached, quarantined, or retried.
-			// Only errno codes that can clear are retried; any other failure
-			// is a property of that record and would recur forever, so the
-			// spool is set aside rather than blocking dispatch.
+			// Every spool ends published, attached, quarantined (invalid),
+			// deferred to a later instance (permanent errno), or retried.
 			let pending = false;
 			let firstError: any;
-			for (const r of foreignReceipts(instance)) {
+			const onDefer = (name: string, reason: string) => {
+				appendEvent("receipt_deferred", TASK_ID_RE.test(name.slice(0, 19)) ? name.slice(0, 19) : undefined, { file: name, reason });
+				notify(`DevX could not read a result saved by an earlier Pi session (${reason}). It is kept on disk and retried after the next relaunch.`, "warning");
+				flagAttention("Pi agent result kept, not yet published");
+			};
+			for (const r of foreignReceipts(instance, deferredSpools, onDefer)) {
 				try {
 					publishReceiptLocked(r, 0);
 				} catch (e: any) {
@@ -650,6 +669,15 @@ export default function devxBridge(pi: ExtensionAPI) {
 						continue;
 					}
 					const reason = e instanceof SyntaxError ? "task_record_unreadable" : `publish_error${e?.code ? ` ${e.code}` : ""}: ${String(e?.message ?? e).slice(0, 120)}`;
+					if (e?.code) {
+						// An errno is a property of the environment, not of this
+						// receipt: keep the spool for a later instance.
+						deferredSpools.add(`${r.task_id}.receipt.json`);
+						appendEvent("receipt_deferred", r.task_id, { receipt_id: r.receipt_id, reason });
+						notify(`DevX could not publish a result saved by an earlier Pi session (${reason}). It is kept on disk and retried after the next relaunch.`, "warning");
+						flagAttention("Pi agent result kept, not yet published");
+						continue;
+					}
 					quarantineSpool(`${r.task_id}.receipt.json`, reason, r.receipt_id);
 					continue;
 				}
