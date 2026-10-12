@@ -1087,8 +1087,11 @@ export default function devxBridge(pi: ExtensionAPI) {
 					} catch {}
 				}
 				// A fenced hand-off Pi never ran goes back to waiting, not
-				// to "unknown" when devx later sees this Pi gone.
-				requeueLocked();
+				// to "unknown" when devx later sees this Pi gone. Best effort:
+				// it must not stop the rest of shutdown.
+				try {
+					requeueLocked();
+				} catch {}
 				if (wasActive && currentTask) {
 					const t = readJSON(taskPath(currentTask));
 					if (t?.state === "running") {
