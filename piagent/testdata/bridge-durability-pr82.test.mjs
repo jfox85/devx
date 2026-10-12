@@ -158,3 +158,47 @@ test("an abort the bridge sent that lands mid-tool (no aborted message, se.abort
 	assert.equal(task.note, "aborted on request");
 	assert.ok(task.abort_sent_at);
 });
+
+// Owed abort (abort_sent_at save landed, reported failure) and a turn that
+// then ends on its own: the frozen receipt says the abort was not
+// dispatched, so even a delayed publication withdraws abort_sent_at.
+test("an owed abort is withdrawn by a delayed publication when the turn completed on its own", async (t) => {
+	const e = env();
+	t.after(() => fs.rmSync(e.root, { recursive: true, force: true }));
+	const b = await start(e);
+	b.tick();
+	assert.deepEqual(b.h.input({ text: "work", source: "extension" }, b.ctx), { action: "continue" });
+	b.ctx.idle = false;
+	patchTask(e.dir, e.id, (x) => ((x.cancel_requested = true), (x.cancel_lease_generation = 1)));
+	// Simulate the landed-but-failed save: abort_sent_at is on disk, the abort was not dispatched.
+	const realRename = fs.renameSync;
+	let once = true;
+	fs.renameSync = function (a, c) {
+		const r = realRename.call(fs, a, c);
+		if (once && String(c).includes("tasks")) {
+			once = false;
+			throw Object.assign(new Error("injected"), { code: "EIO" });
+		}
+		return r;
+	};
+	syncBuiltinESMExports();
+	try {
+		b.tick();
+	} finally {
+		fs.renameSync = realRename;
+		syncBuiltinESMExports();
+	}
+	assert.equal(b.ctx.aborts, 0);
+	assert.ok(rj(path.join(e.dir, "tasks", `${e.id}.json`)).abort_sent_at, "precondition: owed mark on disk");
+	lockBroken = true; // defer publication
+	b.ctx.idle = true;
+	b.h.agent_end({ messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] }] }, b.ctx);
+	b.h.agent_settled({}, b.ctx);
+	lockBroken = false;
+	off += 60_000;
+	b.tick();
+	const task = rj(path.join(e.dir, "tasks", `${e.id}.json`));
+	assert.equal(task.state, "completed");
+	assert.ok(!task.abort_sent_at, "abort_sent_at means ctx.abort() was called; it was not");
+	assert.equal(b.ctx.aborts, 0);
+});

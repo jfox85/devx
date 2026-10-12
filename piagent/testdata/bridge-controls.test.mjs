@@ -196,6 +196,32 @@ for (const [label, mode] of [["fails", "before"], ["lands but reports failure", 
 	});
 }
 
+for (const [stop, state] of [["stop", "completed"], ["error", "failed"]]) {
+	test(`an owed abort for a turn that ended on its own (${stop}) is withdrawn`, async (t) => {
+		const { e, id, b } = await acceptedWithCancel(t);
+		inject("renameSync", /tasks\/pt_.*\.json$/, { mode: "after", times: 1 });
+		b.tick();
+		faults = [];
+		b.ctx.idle = true;
+		b.finish("done", stop);
+		const after = task(e.dir, id);
+		assert.equal(b.ctx.aborted, 0);
+		assert.equal(after.state, state);
+		assert.ok(!after.abort_sent_at, "abort_sent_at means ctx.abort() was called; it was not");
+	});
+}
+
+test("a dispatched abort that lost the race to a natural finish keeps abort_sent_at", async (t) => {
+	const { e, id, b } = await acceptedWithCancel(t);
+	b.tick();
+	assert.equal(b.ctx.aborted, 1);
+	b.ctx.idle = true;
+	b.finish("done", "stop");
+	const after = task(e.dir, id);
+	assert.equal(after.state, "completed");
+	assert.ok(after.abort_sent_at, "the call was made; the record says so");
+});
+
 test("acceptance save lands but reports failure: Pi does not get it and the record does not claim it was accepted", async (t) => {
 	const e = makeEnv(t);
 	const id = addTask(e.dir, 1, "first");
@@ -213,6 +239,43 @@ test("acceptance save lands but reports failure: Pi does not get it and the reco
 	b.finish("done");
 	assert.equal(task(e.dir, id).state, "completed");
 	assert.equal(b.sent.length, 2);
+});
+
+test("Pi exits before a fenced hand-off is put back: it goes back to waiting, not unknown", async (t) => {
+	const e = makeEnv(t);
+	const id = addTask(e.dir, 1, "first");
+	const b = await startBridge(e);
+	b.tick();
+	inject("renameSync", /tasks\/pt_.*\.json$/, { mode: "after", times: 1 });
+	assert.deepEqual(b.accept(), { action: "handled" });
+	faults = [];
+	b.h.session_shutdown({}, b.ctx);
+	const u = task(e.dir, id);
+	assert.equal(u.state, "waiting", JSON.stringify(u));
+	assert.ok(!u.confirmed_at && !u.bridge_instance);
+});
+
+test("human input before acceptance does not mark the never-run task human_intervened", async (t) => {
+	const e = makeEnv(t);
+	const id = addTask(e.dir, 1, "first");
+	const b = await startBridge(e);
+	b.tick(); // handed to Pi, not yet accepted
+	b.h.input({ text: "human", source: "interactive" }, b.ctx);
+	assert.equal(agent(e.dir).lease.holder, "human");
+	assert.deepEqual(b.accept(), { action: "handled" }, "fenced: a human holds control");
+	const u = task(e.dir, id);
+	assert.equal(u.state, "waiting");
+	assert.ok(!u.human_intervened, JSON.stringify(u));
+});
+
+test("human input during an accepted turn marks it human_intervened", async (t) => {
+	const e = makeEnv(t);
+	const id = addTask(e.dir, 1, "first");
+	const b = await startBridge(e);
+	b.tick();
+	b.accept();
+	b.h.input({ text: "human", source: "interactive" }, b.ctx);
+	assert.equal(task(e.dir, id).human_intervened, true);
 });
 
 test("annotation failures elsewhere never stop the bridge acting on durable state (abort_withheld)", async (t) => {

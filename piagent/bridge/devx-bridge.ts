@@ -278,6 +278,11 @@ type Receipt = {
 	aborted: boolean;
 	// That abort was the one this bridge dispatched for a DevX cancel.
 	abort_on_request: boolean;
+	// This bridge called ctx.abort() for a DevX cancel of this turn, however
+	// the turn ended (#82). Absent in spools from before this field: read as
+	// abort_on_request. Publication withdraws an abort_sent_at it did not
+	// dispatch.
+	abort_dispatched?: boolean;
 	// Lease generation read at settle; null if that read failed. A human
 	// interrupt moves the lease only if control has not changed since the
 	// turn settled (same generation, or a lease older than settled_at).
@@ -303,6 +308,8 @@ function receiptProblem(r: any, file: string): string {
 	if (r.error !== undefined && typeof r.error !== "string") return "bad_error";
 	if (typeof r.aborted !== "boolean" || typeof r.abort_on_request !== "boolean") return "bad_abort";
 	if (r.abort_on_request && !r.aborted) return "bad_abort";
+	if (r.abort_dispatched !== undefined && typeof r.abort_dispatched !== "boolean") return "bad_abort";
+	if (r.abort_on_request && r.abort_dispatched === false) return "bad_abort";
 	if (!(r.lease_generation_basis === null || Number.isInteger(r.lease_generation_basis))) return "bad_generation";
 	if (r.fail_error !== undefined && typeof r.fail_error !== "string") return "bad_fail_error";
 	if (typeof r.settled_at !== "string") return "bad_settled_at";
@@ -337,6 +344,11 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 		}
 		return "superseded";
 	}
+	// abort_sent_at means this bridge called ctx.abort(). One left by a save
+	// that landed but reported failure, whose abort was never dispatched
+	// before the turn ended (however it ended), is withdrawn (#82). The task
+	// is still bound to r.instance (checked above).
+	if (t.abort_sent_at && !(r.abort_dispatched ?? r.abort_on_request)) delete t.abort_sent_at;
 	let extra: Record<string, unknown> = { stop_reason: r.stop, result_bytes: Buffer.byteLength(r.text) };
 	if (r.fail_error) extra = { error: r.fail_error };
 	else writeAtomic(resultFile, r.text);
@@ -348,11 +360,6 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 		if (r.abort_on_request) {
 			extra.note = "aborted on request";
 		} else {
-			// Not an abort this instance dispatched (the task is still bound to
-			// r.instance, checked above). An abort_sent_at left by a save that
-			// landed but reported failure was never sent: withdraw it so the
-			// task is not reported as aborted on request (PR82).
-			if (t.abort_sent_at) delete t.abort_sent_at;
 			// Interrupted from the TUI: that is a human taking control. Only
 			// if control has not changed since the turn settled; a human may
 			// have released meanwhile and that must stand.
@@ -531,7 +538,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 
 	// Freeze the outcome of the current task and try to publish it now. The
 	// task stays current until publication succeeds.
-	const settle = (r: { text: string; stop: string; error?: string; aborted?: boolean; abort_on_request?: boolean; fail_error?: string }) => {
+	const settle = (r: { text: string; stop: string; error?: string; aborted?: boolean; abort_on_request?: boolean; abort_dispatched?: boolean; fail_error?: string }) => {
 		if (!currentTask || receipt) return;
 		// Generation basis for judging a human interrupt (see
 		// controlUnchangedSince): read now; null if that fails.
@@ -549,6 +556,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 			stop: r.stop,
 			aborted: !!r.aborted,
 			abort_on_request: !!r.aborted && !!r.abort_on_request,
+			abort_dispatched: !!r.abort_dispatched,
 			lease_generation_basis: basis,
 			settled_at: now(),
 		};
@@ -713,6 +721,37 @@ export default function devxBridge(pi: ExtensionAPI) {
 		return "";
 	};
 
+	// Caller holds the lock. This bridge fenced requeueId: Pi never ran it, so
+	// it goes back to waiting (or is cancelled if a cancel arrived). A
+	// confirmed_at or human_intervened here is ours from a write that landed
+	// but reported failure, or from input before acceptance; neither is true
+	// of a turn that never ran, so both are withdrawn.
+	const requeueLocked = () => {
+		if (!requeueId) return;
+		const t = readJSON(taskPath(requeueId));
+		const ours = t?.state === "running" && (!t.confirmed_at || t.bridge_instance === instance);
+		if (ours) {
+			delete t.confirmed_at;
+			delete t.accepted_as;
+			delete t.human_intervened;
+		}
+		if (ours && t.cancel_requested) {
+			t.state = "cancelled";
+			t.finished_at = now();
+			t.note = "cancelled before Pi accepted it";
+			saveTask(t);
+			annotate("task_cancelled", requeueId, { delivered: true, accepted: false });
+		} else if (ours) {
+			t.state = "waiting";
+			delete t.delivered_at;
+			delete t.bridge_instance;
+			saveTask(t);
+			annotate("delivery_fenced", requeueId, { reason: requeueReason });
+		}
+		requeueId = undefined;
+		requeueReason = "lock_unavailable";
+	};
+
 	const tick = () => {
 		const ctx = ctxRef;
 		if (!ctx || mode === "stopped") return;
@@ -741,32 +780,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 				if (!liveAllowed()) return;
 				const editor = heartbeat(ctx);
 				if (!announced) announceLocked(ctx, a);
-				if (requeueId) {
-					// This bridge fenced requeueId: Pi never received it. A
-					// confirmed_at here is ours from a save that landed but
-					// reported failure; it is not true, so it is withdrawn.
-					const t = readJSON(taskPath(requeueId));
-					const ours = t?.state === "running" && (!t.confirmed_at || t.bridge_instance === instance);
-					if (ours) {
-						delete t.confirmed_at;
-						delete t.accepted_as;
-					}
-					if (ours && t.cancel_requested) {
-						t.state = "cancelled";
-						t.finished_at = now();
-						t.note = "cancelled before Pi accepted it";
-						saveTask(t);
-						annotate("task_cancelled", requeueId, { delivered: true, accepted: false });
-					} else if (ours) {
-						t.state = "waiting";
-						delete t.delivered_at;
-						delete t.bridge_instance;
-						saveTask(t);
-						annotate("delivery_fenced", requeueId, { reason: requeueReason });
-					}
-					requeueId = undefined;
-					requeueReason = "lock_unavailable";
-				}
+				requeueLocked();
 				if (mode !== "active" || a.binding?.pane_id !== PANE) return;
 				if (humanClaimPending) {
 					// Unsaved human ownership: save it before anything else.
@@ -926,6 +940,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 						t.state = "waiting";
 						delete t.delivered_at;
 						delete t.bridge_instance;
+						delete t.human_intervened; // it never ran
 						saveTask(t);
 					}
 					appendEvent("delivery_fenced", id, { reason: a?.lease?.holder === "human" ? "human_control" : `task_${t?.state}` });
@@ -958,7 +973,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (e.source === "interactive") {
 			// A turn whose outcome is already frozen is not the human's to
 			// mark; only a task still running in Pi is.
-			const running = receipt ? undefined : currentTask;
+			// Only a turn Pi accepted can have been intervened in; a task handed
+			// off but not yet accepted is put back unrun (#82).
+			const running = receipt || pendingConfirm ? undefined : currentTask;
 			try {
 				withLock(() => {
 					// Ownership first: the durable human lease is the fence,
@@ -969,7 +986,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 					try {
 						if (running) {
 							const t = readJSONStrict(taskPath(running));
-							if (t && !t.human_intervened) {
+							if (t?.confirmed_at && !t.human_intervened) {
 								t.human_intervened = true;
 								saveTask(t);
 							}
@@ -1016,7 +1033,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		// abortSent is set only after abort_sent_at was durably saved under
 		// the lock and ctx.abort() called, so it alone is authoritative: no
 		// read of durable task state, which a later cancel could change.
-		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: aborted && abortSent });
+		settle({ text: end.text, stop: end.stop ?? "", error: end.error, aborted, abort_on_request: aborted && abortSent, abort_dispatched: abortSent });
 		abortAttempt = undefined;
 	});
 
@@ -1069,6 +1086,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 						setLeaseLocked("human", humanClaimPending, "pi-tui");
 					} catch {}
 				}
+				// A fenced hand-off Pi never ran goes back to waiting, not
+				// to "unknown" when devx later sees this Pi gone.
+				requeueLocked();
 				if (wasActive && currentTask) {
 					const t = readJSON(taskPath(currentTask));
 					if (t?.state === "running") {
