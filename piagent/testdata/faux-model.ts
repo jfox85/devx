@@ -1,6 +1,7 @@
 // Test-only Pi extension: a deterministic local model so takeover tests run
 // a real interactive Pi without credentials or network.
 //   "SLOW"            -> long streamed reply (lets tests act mid-turn)
+//   "VERYSLOW"        -> about 4x longer than SLOW (wide margin for multi-agent tests)
 //   "FAIL"            -> provider error
 //   "BIG:<n>"         -> reply of about n bytes
 //   "SECRET"          -> reply containing a fake credential (redaction test)
@@ -33,7 +34,7 @@ export default function (pi: ExtensionAPI) {
 			return fauxAssistantMessage(`ECHO: ${text}\n${body}END-OF-BIG`);
 		}
 		if (text.includes("SECRET")) return fauxAssistantMessage(`ECHO: ${text} OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789`);
-		const n = text.includes("SLOW") ? 400 : 3;
+		const n = text.includes("VERYSLOW") ? 1600 : text.includes("SLOW") ? 400 : 3;
 		return fauxAssistantMessage(`ECHO: ${text} ` + "word ".repeat(n).trim());
 	};
 	const refill = () => {

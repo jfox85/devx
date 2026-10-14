@@ -206,8 +206,11 @@ func (s *Store) LoadTask(agentID, taskID string) (*Task, error) {
 	return &t, nil
 }
 
+// SaveTask writes a task. Callers hold the agent lock. Every write bumps
+// the task's revision, which pending-work edits compare-and-swap on.
 func (s *Store) SaveTask(t *Task) error {
 	t.UpdatedAt = s.now()
+	t.Revision++
 	return writeJSONAtomic(s.taskPath(t.AgentID, t.ID), t)
 }
 
@@ -255,7 +258,12 @@ func (s *Store) ListTasks(agentID string) ([]*Task, error) {
 		}
 		out = append(out, t)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Order < out[j].Order })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Order != out[j].Order {
+			return out[i].Order < out[j].Order
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
 	return out, nil
 }
 
@@ -379,6 +387,7 @@ type idemRecord struct {
 	PiSessionID     string    `json:"pi_session_id,omitempty"`
 	SessionName     string    `json:"session_name,omitempty"`
 	CreatingSession bool      `json:"creating_session,omitempty"`
+	SourceTaskID    string    `json:"source_task_id,omitempty"` // supersede: the task being replaced
 	CreatedAt       time.Time `json:"created_at"`
 }
 

@@ -286,7 +286,10 @@ func checkTokenFile(path string) error {
 	if !mode.IsRegular() {
 		return fmt.Errorf("redline token file %s is not a regular file", path)
 	}
-	if mode.Perm()&0o077 != 0 {
+	// Not checked on Windows: FileMode there always reports 0666 and access is
+	// governed by ACLs, which Go cannot express. The token file relies on the
+	// per-user profile ACL (default path is under the user's home) instead.
+	if runtime.GOOS != "windows" && mode.Perm()&0o077 != 0 {
 		return fmt.Errorf("redline token file %s is readable by other users (mode %04o); chmod 600 it", path, mode.Perm())
 	}
 	return nil
