@@ -160,7 +160,8 @@ func TestArtifactBridgeBinaryEndToEnd(t *testing.T) {
 
 	// Default config: no artifact tools at all.
 	writeCfg(false, false)
-	if names := toolNames(); names["devx_artifact_list"] || names["devx_attachment_upload"] || len(names) != 7 {
+	// 10 core pi_* tools, no artifact tools.
+	if names := toolNames(); names["devx_artifact_list"] || names["devx_attachment_upload"] || len(names) != 10 {
 		t.Fatalf("capabilities off: %v", names)
 	}
 	if sc, _ := mcp("devx_artifact_list", map[string]any{"agent_id": agentA}); sc["error"] != "permission_denied" {

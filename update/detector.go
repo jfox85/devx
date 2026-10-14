@@ -65,6 +65,9 @@ func isHomebrewManaged(path string) bool {
 // so sibling packages like "devx-tools" don't collide with "devx" (a plain
 // substring match would accept /opt/homebrew/Cellar/devx-tools/...).
 func isDevxCellarPath(path string) bool {
+	// Normalize separators so a native Windows path (as returned by
+	// os.Readlink there) is matched too; a no-op on Unix.
+	path = filepath.ToSlash(path)
 	const marker = "/Cellar/"
 	idx := strings.Index(path, marker)
 	if idx < 0 {
