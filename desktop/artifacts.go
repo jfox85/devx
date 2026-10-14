@@ -47,6 +47,15 @@ func openCommand(goos, abs string) (*exec.Cmd, error) {
 			return exec.Command("xdg-open", abs), nil
 		}
 		return exec.Command("xdg-open", filepath.Dir(abs)), nil
+	case "windows":
+		// explorer.exe opens a file with its associated app, or with
+		// /select, reveals it. It takes the path as a single argument with no
+		// shell parsing (unlike `cmd /c start`), so a crafted file name cannot
+		// inject commands.
+		if safe {
+			return exec.Command("explorer.exe", abs), nil
+		}
+		return exec.Command("explorer.exe", "/select,"+abs), nil
 	default:
 		return nil, fmt.Errorf("opening artifacts is not supported on %s", goos)
 	}
