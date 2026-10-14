@@ -160,6 +160,39 @@ func TestServeNestedArtifactURL(t *testing.T) {
 	}
 }
 
+func TestServeArtifactDownloadDisposition(t *testing.T) {
+	sess := setupArtifactAPITest(t)
+	a, err := artifactpkg.Add(sess, artifactpkg.AddOptions{Source: "-", Reader: strings.NewReader("png"), Destination: "screenshots/login shot.png", Type: "screenshot", Title: "Login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := artifactpkg.WithComputedFields(sess.Name, []artifactpkg.Artifact{a})[0]
+
+	inline := httptest.NewRecorder()
+	artifactMux().ServeHTTP(inline, httptest.NewRequest("GET", item.URL, nil))
+	if got := inline.Header().Get("Content-Disposition"); got != "" {
+		t.Fatalf("inline view should not set Content-Disposition, got %q", got)
+	}
+
+	dl := httptest.NewRecorder()
+	artifactMux().ServeHTTP(dl, httptest.NewRequest("GET", item.URL+"?download=1", nil))
+	if dl.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", dl.Code, dl.Body.String())
+	}
+	if got := dl.Header().Get("Content-Disposition"); got != `attachment; filename="login shot.png"` {
+		t.Fatalf("Content-Disposition = %q", got)
+	}
+	if dl.Body.String() != "png" {
+		t.Fatalf("body = %q", dl.Body.String())
+	}
+
+	byID := httptest.NewRecorder()
+	artifactMux().ServeHTTP(byID, httptest.NewRequest("GET", "/api/artifacts/file?session="+url.QueryEscape(sess.Name)+"&id="+url.QueryEscape(a.ID)+"&download=1", nil))
+	if got := byID.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Fatalf("by-id Content-Disposition = %q", got)
+	}
+}
+
 func TestServeArtifactRequiresManifestEntry(t *testing.T) {
 	sess := setupArtifactAPITest(t)
 	if err := os.MkdirAll(artifactpkg.DirForSession(sess), 0o755); err != nil {

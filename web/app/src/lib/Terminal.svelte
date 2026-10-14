@@ -46,6 +46,10 @@
   // Artifact pane/reference state
   let artifactPaneOpen = false
   let artifactFullScreen = false
+  // Fullscreen artifact viewer (image/video/etc.) rendered by ArtifactPane. It
+  // is tracked here so it joins the modal history stack: Back closes it first.
+  let artifactViewerOpen = false
+  let artifactPaneComponent
   let paneViewerOpen = false
   let paneViewerURL = ''
   let actionsMenuOpen = false
@@ -142,6 +146,9 @@
     currentSession = session.name
     windows = []
     promoteInPool(session.name)
+    // Pop the viewer's history entry while the modal stack still records it;
+    // the keyed ArtifactPane is destroyed after this reset, too late to do so.
+    if (artifactViewerOpen) handleArtifactViewerClosed()
     artifactFullScreen = false
     paneViewerOpen = false
     paneViewerURL = ''
@@ -534,7 +541,7 @@
   }
 
   function handleKeyboardProxyKeydown(e) {
-    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen || artifactViewerOpen) return
     if (handleTerminalAppShortcut(e)) return
     if (e.metaKey) return
     const key = tmuxKeyForEvent(e)
@@ -551,7 +558,7 @@
     const text = keyboardProxyValue
     const sessionName = session.name
     keyboardProxyValue = ''
-    if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    if (!text || composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen || artifactViewerOpen) return
     bufferKeyboardProxyText(sessionName, text)
   }
 
@@ -565,7 +572,7 @@
   }
 
   function handleKeyboardProxyPaste(e) {
-    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen) return
+    if (composerOpen || artifactSearchOpen || paneViewerOpen || artifactFullScreen || artifactViewerOpen) return
     const items = e.clipboardData?.items || []
     for (const item of items) {
       if (item.kind === 'file' && item.type.startsWith('image/')) {
@@ -610,6 +617,17 @@
         suppressNextPopState = false
       }
     }
+  }
+
+  function handleArtifactViewerOpened() {
+    artifactViewerOpen = true
+    pushModalHistory('artifact-viewer')
+  }
+
+  function handleArtifactViewerClosed() {
+    if (!artifactViewerOpen) return
+    artifactViewerOpen = false
+    popModalHistory('artifact-viewer')
   }
 
   function closeArtifactFullScreen(goBack = true) {
@@ -698,6 +716,11 @@
     modalStack = modalStack.filter((_, i) => i !== modalStack.length - 1)
     if (type === 'pane-viewer') {
       closePaneViewer(false)
+      return
+    }
+    if (type === 'artifact-viewer') {
+      artifactViewerOpen = false
+      artifactPaneComponent?.closeViewer?.()
       return
     }
     if (type === 'artifact-fullscreen') {
@@ -1469,7 +1492,7 @@
     {#if artifactsIsVisible && !artifactFullScreen}
       <div class="min-h-0 min-w-0" style={artifactPaneCSS}>
         {#key session.name}
-          <ArtifactPane {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={false} onToggleFullScreen={openArtifactFullScreen} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} />
+          <ArtifactPane bind:this={artifactPaneComponent} {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={false} onToggleFullScreen={openArtifactFullScreen} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} onViewerOpened={handleArtifactViewerOpened} onViewerClosed={handleArtifactViewerClosed} />
         {/key}
       </div>
     {/if}
@@ -1478,7 +1501,7 @@
   {#if artifactsIsVisible && artifactFullScreen}
     <div class="fixed inset-0 z-[1000] bg-[#0b1020] border border-[#1e2d4a] shadow-2xl">
       {#key session.name}
-        <ArtifactPane {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={true} onToggleFullScreen={() => closeArtifactFullScreen()} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} />
+        <ArtifactPane bind:this={artifactPaneComponent} {session} selectedArtifactID={selectedArtifactID} {pasteArtifactNonce} fullScreen={true} onToggleFullScreen={() => closeArtifactFullScreen()} onInsert={insertArtifactPath} onClose={() => { closeArtifacts(); splitMode = 'vertical' }} onViewerOpened={handleArtifactViewerOpened} onViewerClosed={handleArtifactViewerClosed} />
       {/key}
     </div>
   {/if}

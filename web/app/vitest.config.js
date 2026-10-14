@@ -15,6 +15,7 @@ export default defineConfig({
       'src/lib/composer/composerStorage.test.js',
       'src/lib/composer/composerFormat.test.js',
       'src/lib/stores/sessionUiState.test.js',
+      'src/lib/artifacts/artifactKinds.test.js',
     ],
   },
 })

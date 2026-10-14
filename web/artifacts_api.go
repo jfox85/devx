@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -209,6 +211,11 @@ func serveManifestArtifactFile(w http.ResponseWriter, r *http.Request, sess *ses
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src 'self';")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("download") == "1" {
+		// Attachment disposition makes downloads work where <a download> is
+		// ignored (iOS Safari, installed PWAs) and never renders the file inline.
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(cleanRel)}))
+	}
 	http.ServeFile(w, r, abs)
 }
 
