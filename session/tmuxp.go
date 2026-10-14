@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/config"
+	"gopkg.in/yaml.v3"
 )
 
 const DefaultTmuxMouse = "off"
@@ -144,8 +145,8 @@ func loadTmuxpTemplate(projectPath string) (string, error) {
 
 // launchTmuxDetached is the shared core of EnsureTmuxSession and
 // LaunchTmuxSession. It checks for tmuxp, loads the .tmuxp.yaml in detached
-// mode, waits for panes to initialise, and kills the initial window that tmuxp
-// inserts before the template windows.
+// mode, waits for panes to initialise, and removes a stray index-0 window if
+// tmuxp left one behind in addition to the template windows.
 //
 // tmux -t targets use the "=name" exact-match prefix (tmux 2.6+) so that
 // session names containing "/" are not misinterpreted as pane separators.
@@ -170,11 +171,60 @@ func launchTmuxDetached(worktreePath, sessionName string) error {
 	// Give tmuxp time to finish initialising all panes.
 	time.Sleep(500 * time.Millisecond)
 
-	// Kill the initial window that tmuxp inserts before the template windows.
-	// "=name" forces exact session-name matching so "/" in names is literal.
-	_ = exec.Command("tmux", "kill-window", "-t", "="+sessionName+":0").Run()
+	removeStrayInitialWindow(sessionName, tmuxpConfigPath)
 
 	return nil
+}
+
+// removeStrayInitialWindow kills window 0 only when it is an extra window that
+// tmuxp created alongside the template windows. Recent tmuxp versions place the
+// template's first window at index 0 when base-index is unset, so killing
+// window 0 unconditionally would delete a real window — and the whole session
+// when the template declares a single window.
+func removeStrayInitialWindow(sessionName, tmuxpConfigPath string) {
+	templateWindows, err := countTemplateWindows(tmuxpConfigPath)
+	if err != nil {
+		return // Can't tell which window is stray; leave the session intact.
+	}
+	// "=name" forces exact session-name matching so "/" in names is literal.
+	out, err := exec.Command("tmux", "list-windows", "-t", "="+sessionName, "-F", "#{window_index}").Output()
+	if err != nil {
+		return
+	}
+	indexes := strings.Fields(string(out))
+	if shouldKillInitialWindow(indexes, templateWindows) {
+		_ = exec.Command("tmux", "kill-window", "-t", "="+sessionName+":0").Run()
+	}
+}
+
+// shouldKillInitialWindow reports whether window 0 is a stray extra window:
+// it must exist and the session must hold more windows than the template
+// declares.
+func shouldKillInitialWindow(windowIndexes []string, templateWindows int) bool {
+	if templateWindows <= 0 || len(windowIndexes) <= templateWindows {
+		return false
+	}
+	for _, idx := range windowIndexes {
+		if idx == "0" {
+			return true
+		}
+	}
+	return false
+}
+
+// countTemplateWindows returns the number of windows declared in a tmuxp config.
+func countTemplateWindows(tmuxpConfigPath string) (int, error) {
+	content, err := os.ReadFile(tmuxpConfigPath)
+	if err != nil {
+		return 0, err
+	}
+	var cfg struct {
+		Windows []yaml.Node `yaml:"windows"`
+	}
+	if err := yaml.Unmarshal(content, &cfg); err != nil {
+		return 0, fmt.Errorf("failed to parse tmuxp config: %w", err)
+	}
+	return len(cfg.Windows), nil
 }
 
 // EnsureTmuxSession checks whether the named tmux session is alive and, if
@@ -213,10 +263,6 @@ func LaunchTmuxSession(worktreePath, sessionName string) error {
 	if err := launchTmuxDetached(worktreePath, sessionName); err != nil {
 		return err
 	}
-
-	// Belt-and-suspenders: also remove any remaining index-0 window that may
-	// have survived if tmuxp added extra windows during startup.
-	_ = exec.Command("bash", "-c", fmt.Sprintf(`tmux list-windows -t %s -F "#{window_index}:#{window_name}" | grep "^0:" | cut -d: -f1 | xargs -I {} tmux kill-window -t %s:{} 2>/dev/null || true`, sessionName, sessionName)).Run()
 
 	// Attach to the session (switch-client when already inside tmux, attach otherwise)
 	cmd := attachOrSwitchCmd(sessionName)

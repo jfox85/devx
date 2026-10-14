@@ -196,6 +196,7 @@ func (f *failingTmuxCreator) EnsureTmux(string, *Agent) error { return errors.Ne
 func TestCancelSemantics(t *testing.T) {
 	m, _ := newTestManager(t)
 	a := seedAgent(t, m)
+	liveBridge(t, m, a.ID, BridgeProtocol)
 	r, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k"})
 	if _, err := m.Cancel(r.TaskID); err != nil {
 		t.Fatal(err)
@@ -208,11 +209,12 @@ func TestCancelSemantics(t *testing.T) {
 	if _, err := m.Cancel(r.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	// Running task under human control: denied.
+	// Running (accepted) task under human control: denied.
 	r2, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p2", IdempotencyKey: "k2"})
 	_ = m.Store.WithAgentLock(a.ID, func() error {
 		tk, _ := m.Store.LoadTask(a.ID, r2.TaskID)
-		tk.State = TaskRunning
+		now := time.Now()
+		tk.State, tk.ConfirmedAt, tk.BridgeInstance = TaskRunning, &now, "inst"
 		return m.Store.SaveTask(tk)
 	})
 	if _, err := m.Takeover(a.ID, "h"); err != nil {
@@ -475,17 +477,18 @@ func TestMCPToolsAndPermissionDenial(t *testing.T) {
 	for _, tl := range tools {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"pi_list_sessions", "pi_start_task", "pi_send", "pi_status", "pi_result", "pi_events", "pi_cancel"} {
+	for _, want := range []string{"pi_list_sessions", "pi_start_task", "pi_send", "pi_status", "pi_result", "pi_events", "pi_cancel",
+		"pi_queue", "pi_update_pending", "pi_supersede_pending"} {
 		if !names[want] {
 			t.Errorf("missing tool %s", want)
 		}
 	}
-	for _, forbidden := range []string{"pi_takeover", "pi_release", "shell_exec", "exec"} {
+	for _, forbidden := range []string{"pi_takeover", "pi_release", "pi_steer", "pi_interrupt", "pi_send_keys", "shell_exec", "exec"} {
 		if names[forbidden] {
 			t.Errorf("tool %s must not be exposed", forbidden)
 		}
 	}
-	if len(names) != 7 {
+	if len(names) != 10 {
 		t.Errorf("unexpected tool count %d", len(names))
 	}
 	errKind := func(id float64) string {
