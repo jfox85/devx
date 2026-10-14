@@ -356,6 +356,47 @@ pi_mcp:
 
 MCP client config: `{"mcpServers": {"devx-pi": {"command": "devx", "args": ["mcp", "pi"]}}}`
 
+**Only the owner's file sets the launch policy.** `allowed_projects`,
+`pi_command`, `pi_args` and `pass_env` are read directly from the owner's
+global DevX config (`~/.config/devx/config.yaml`, or the file given with
+`--config`) each time a `devx mcp pi` or `devx agent` command starts.
+A project's `.devx/config.yaml` and `DEVX_*` environment variables never
+affect them, even when DevX runs inside that project, so a repository
+cannot widen the start allowlist or choose the executable, arguments or
+environment of managed agents. Project configs still apply to every other
+setting.
+
+The file gets the same checks as the artifact bridge policy (below):
+- a regular file, at most 1 MiB;
+- owned by the current user, not writable by group or others;
+- strict types: lists of non-empty strings, and `pi_command` a non-empty
+  string;
+- no duplicate keys, YAML aliases or merge keys on these paths.
+
+This is stricter than earlier builds, which read these keys through the
+general config loader. These forms are now rejected as invalid:
+- unquoted numbers in lists (write `pi_args: [--n, "4"]`);
+- a space-separated string for a list;
+- a null value.
+
+These are now ignored, which leaves no allowed projects (every start is
+denied, but relaunch is not blocked and nothing is reported):
+- an upper-case `PI_MCP` key;
+- `config.yml` or `config.json` in place of `config.yaml`.
+
+If any check fails, DevX starts nothing: every `pi_start_task` and
+`devx agent relaunch` is refused, and `pi_list_sessions` reports no allowed
+projects. MCP clients get a generic denial. The detailed load error goes
+to the `devx` process's stderr. Listing, status, inspect, takeover,
+release and session removal keep working. A missing file means no allowed
+projects.
+
+These settings are read once when the process starts (see "Separate
+settings" below). After fixing the file, start a fresh `devx mcp pi`
+child; a running one keeps refusing. `devx config get pi_mcp.*` uses the
+general loader, so inside a project it can show a value that is not
+enforced.
+
 ## Artifact bridge
 
 Remote clients can exchange explicitly registered files with a managed

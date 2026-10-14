@@ -57,39 +57,52 @@ var errPolicy = errf(codeUnavailable, "artifact bridge configuration is unreadab
 // yields DefaultPolicy (which has no allowed projects, so nothing is
 // eligible). Any read, parse or validation problem is an error.
 func LoadPolicyFile(path string) (Policy, error) {
-	p := DefaultPolicy()
+	data, err := ReadOwnerConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return DefaultPolicy(), nil
+	}
+	if err != nil {
+		return DefaultPolicy(), err
+	}
+	return ParsePolicy(data)
+}
+
+// ReadOwnerConfig reads the owner's DevX config file for security-sensitive
+// policy (the artifact bridge policy and the managed-agent launch policy).
+// A missing file is reported as an error wrapping os.ErrNotExist so callers
+// can apply their defaults. The file must be a regular file of bounded size
+// and, where the bridge runs (darwin/linux), owned by the current user and
+// not writable by group or others.
+func ReadOwnerConfig(path string) ([]byte, error) {
 	if path == "" {
-		return p, fmt.Errorf("no policy file configured")
+		return nil, fmt.Errorf("no policy file configured")
 	}
 	// Open once and check the opened file (not the path), then read through a
 	// limit, so a file swapped or grown after the check cannot be read
 	// unbounded. O_NONBLOCK keeps a FIFO from blocking the open.
 	f, err := openPolicy(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return p, nil
-	}
 	if err != nil {
-		return p, err
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return p, err
+		return nil, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > maxPolicyFileBytes {
-		return p, fmt.Errorf("config is not a regular file of at most %d bytes", maxPolicyFileBytes)
+		return nil, fmt.Errorf("config is not a regular file of at most %d bytes", maxPolicyFileBytes)
 	}
 	if err := policyFileTrusted(info); err != nil {
-		return p, err
+		return nil, err
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxPolicyFileBytes+1))
 	if err != nil {
-		return p, err
+		return nil, err
 	}
 	if len(data) > maxPolicyFileBytes {
-		return p, fmt.Errorf("config is not a regular file of at most %d bytes", maxPolicyFileBytes)
+		return nil, fmt.Errorf("config is not a regular file of at most %d bytes", maxPolicyFileBytes)
 	}
-	return ParsePolicy(data)
+	return data, nil
 }
 
 // ParsePolicy extracts and strictly validates pi_mcp.allowed_projects and
