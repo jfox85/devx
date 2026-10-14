@@ -75,13 +75,7 @@ cd "$WORK/src"
 
 # Only release tags (v*) published on the remote name a version; local scratch
 # tags, even v-prefixed ones, must not leak into the version string.
-VERSION="$SHORT"
-remote_tags="$(git -C "$ROOT" ls-remote --tags --refs origin 'v[0-9]*' | sed 's|.*refs/tags/||')"
-if [[ -n "$remote_tags" ]]; then
-	match_args=()
-	while IFS= read -r t; do match_args+=(--match "$t"); done <<<"$remote_tags"
-	VERSION="$(git describe --tags --abbrev=7 "${match_args[@]}" "$COMMIT" 2>/dev/null || echo "$SHORT")"
-fi
+VERSION="$("$ROOT/scripts/version.sh" "$COMMIT")"
 BUILD_DATE="$(date -u '+%Y-%m-%d_%H:%M:%S')"
 LDFLAGS="-X github.com/jfox85/devx/version.Version=$VERSION -X github.com/jfox85/devx/version.GitCommit=$SHORT -X github.com/jfox85/devx/version.BuildDate=$BUILD_DATE"
 
