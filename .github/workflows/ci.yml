@@ -77,9 +77,13 @@ jobs:
       if: matrix.os == 'macos-latest'
       run: |
         brew install tmux
-        # Use pipx to install tmuxp in an isolated environment
-        brew install pipx
-        pipx install tmuxp
+        # Use pipx to install tmuxp in an isolated environment. Pin the
+        # interpreter: tmuxp's argparse help formatter crashes at startup
+        # under Python 3.15 (AttributeError: 'NoneType' object has no
+        # attribute 'reset'), which Homebrew's pipx picks up by default.
+        brew install pipx python@3.14
+        pipx install --python "$(brew --prefix python@3.14)/bin/python3.14" tmuxp
+        tmuxp --version
     
     # Node runs the Pi bridge's fault-injection suite (piagent); required so
     # a missing Node fails instead of silently skipping it.
