@@ -31,6 +31,11 @@ clean:
 install:
 	go install $(LDFLAGS) .
 
+# Reproducible install of origin/main from a clean worktree (see README)
+.PHONY: install-local
+install-local:
+	./scripts/install-local.sh
+
 # Development build (no version info)
 .PHONY: dev
 dev:
@@ -58,6 +63,7 @@ help:
 	@echo "  web-build  - Build the Svelte SPA only"
 	@echo "  web-dev    - Start the Svelte dev server"
 	@echo "  dev        - Quick development build (Go only)"
+	@echo "  install-local - Reproducible install of origin/main (scripts/install-local.sh)"
 	@echo "  install    - Install to GOPATH/bin"
 	@echo "  clean      - Remove build artifacts"
 	@echo "  test       - Run tests"

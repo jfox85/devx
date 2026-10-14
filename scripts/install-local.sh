@@ -51,10 +51,17 @@ if ! git branch -r --contains "$COMMIT" | grep -q .; then
 	echo "refusing to build $REF ($COMMIT): it is not on any remote branch" >&2
 	exit 1
 fi
-SHORT="$(git rev-parse --short "$COMMIT")"
+# version.Info.String prints the first 7 characters of GitCommit; use exactly
+# that so the post-build check matches regardless of core.abbrev.
+SHORT="${COMMIT:0:7}"
 
+# `go install` uses GOBIN, else the first GOPATH entry's bin.
 GOBIN_DIR="$(go env GOBIN)"
-[[ -n "$GOBIN_DIR" ]] || GOBIN_DIR="$(go env GOPATH)/bin"
+if [[ -z "$GOBIN_DIR" ]]; then
+	GOPATH_FIRST="$(go env GOPATH)"
+	GOPATH_FIRST="${GOPATH_FIRST%%:*}"
+	GOBIN_DIR="$GOPATH_FIRST/bin"
+fi
 DEST="$GOBIN_DIR/devx"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/devx-install.XXXXXX")"
@@ -66,9 +73,15 @@ trap cleanup EXIT
 git worktree add -q --detach "$WORK/src" "$COMMIT"
 cd "$WORK/src"
 
-# Only release tags (v*) name a version; local scratch tags must not leak into
-# the version string.
-VERSION="$(git describe --tags --match 'v[0-9]*' --always "$COMMIT" 2>/dev/null || echo "$SHORT")"
+# Only release tags (v*) published on the remote name a version; local scratch
+# tags, even v-prefixed ones, must not leak into the version string.
+VERSION="$SHORT"
+remote_tags="$(git -C "$ROOT" ls-remote --tags --refs origin 'v[0-9]*' | sed 's|.*refs/tags/||')"
+if [[ -n "$remote_tags" ]]; then
+	match_args=()
+	while IFS= read -r t; do match_args+=(--match "$t"); done <<<"$remote_tags"
+	VERSION="$(git describe --tags --abbrev=7 "${match_args[@]}" "$COMMIT" 2>/dev/null || echo "$SHORT")"
+fi
 BUILD_DATE="$(date -u '+%Y-%m-%d_%H:%M:%S')"
 LDFLAGS="-X github.com/jfox85/devx/version.Version=$VERSION -X github.com/jfox85/devx/version.GitCommit=$SHORT -X github.com/jfox85/devx/version.BuildDate=$BUILD_DATE"
 
