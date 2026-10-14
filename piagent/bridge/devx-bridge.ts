@@ -278,9 +278,10 @@ type Receipt = {
 	aborted: boolean;
 	// That abort was the one this bridge dispatched for a DevX cancel.
 	abort_on_request: boolean;
-	// Whether this bridge called ctx.abort() for the task at all. false
-	// withdraws an abort_sent_at the bridge saved but never dispatched; absent
-	// (older receipts) leaves the task record as it is.
+	// This bridge called ctx.abort() for a DevX cancel of this turn, however
+	// the turn ended. Publication withdraws an abort_sent_at it did not
+	// dispatch; a spool without this field (written before it existed)
+	// withdraws only when that is provable (aborted and not on request).
 	abort_dispatched?: boolean;
 	// Lease generation read at settle; null if that read failed. A human
 	// interrupt moves the lease only if control has not changed since the
@@ -308,6 +309,7 @@ function receiptProblem(r: any, file: string): string {
 	if (typeof r.aborted !== "boolean" || typeof r.abort_on_request !== "boolean") return "bad_abort";
 	if (r.abort_on_request && !r.aborted) return "bad_abort";
 	if (r.abort_dispatched !== undefined && typeof r.abort_dispatched !== "boolean") return "bad_abort";
+	if (r.abort_on_request && r.abort_dispatched === false) return "bad_abort";
 	if (!(r.lease_generation_basis === null || Number.isInteger(r.lease_generation_basis))) return "bad_generation";
 	if (r.fail_error !== undefined && typeof r.fail_error !== "string") return "bad_fail_error";
 	if (typeof r.settled_at !== "string") return "bad_settled_at";
@@ -342,9 +344,12 @@ function publishReceiptLocked(r: Receipt, attempts: number): "published" | "supe
 		}
 		return "superseded";
 	}
-	// abort_sent_at means ctx.abort() was called. One this bridge saved but
-	// never dispatched (owed when the turn ended) is withdrawn.
-	if (t.abort_sent_at && r.abort_dispatched === false) delete t.abort_sent_at;
+	// abort_sent_at means this bridge called ctx.abort(). One left by a save
+	// that landed but reported failure, whose abort was never dispatched
+	// before the turn ended (however it ended), is withdrawn. Spools without
+	// abort_dispatched prove "not dispatched" only for an abort that was not
+	// on request; otherwise it is unknowable, so the mark is kept.
+	if (t.abort_sent_at && !(r.abort_dispatched ?? (r.abort_on_request || !r.aborted))) delete t.abort_sent_at;
 	let extra: Record<string, unknown> = { stop_reason: r.stop, result_bytes: Buffer.byteLength(r.text) };
 	if (r.fail_error) extra = { error: r.fail_error };
 	else writeAtomic(resultFile, r.text);
@@ -569,7 +574,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		};
 		if (r.error !== undefined) out.error = r.error;
 		if (r.fail_error !== undefined) out.fail_error = r.fail_error;
-		if (r.abort_dispatched !== undefined) out.abort_dispatched = r.abort_dispatched;
+		out.abort_dispatched = !!r.abort_dispatched;
 		receipt = out;
 		receiptSpooled = false;
 		publishAttempts = 0;

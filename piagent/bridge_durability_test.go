@@ -42,18 +42,24 @@ func TestBridgeDurabilityFaultInjection(t *testing.T) {
 	if major < 22 || (major == 22 && minor < 6) {
 		skip("node " + string(out) + " cannot load TypeScript (need 22.6+)")
 	}
-	suite, err := filepath.Abs(filepath.Join("testdata", "bridge-durability.test.mjs"))
-	if err != nil {
-		t.Fatal(err)
+	// bridge-durability-cancel.test.mjs covers receipts together with the
+	// protocol-2 cancellation gates.
+	for _, name := range []string{"bridge-durability.test.mjs", "bridge-durability-cancel.test.mjs"} {
+		t.Run(name, func(t *testing.T) {
+			suite, err := filepath.Abs(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(node, "--experimental-strip-types", "--no-warnings", "--test", "--test-reporter=tap", suite)
+			cmd.Env = append(os.Environ(), "NODE_OPTIONS=")
+			res, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("bridge suite %s failed: %v\n%s", name, err, res)
+			}
+			if !regexp.MustCompile(`(?m)^# fail 0$`).Match(res) || !regexp.MustCompile(`(?m)^# pass [1-9]`).Match(res) {
+				t.Fatalf("bridge suite %s did not report a clean pass:\n%s", name, res)
+			}
+			t.Logf("%s", regexp.MustCompile(`(?m)^# (pass|fail) \d+$`).FindAll(res, -1))
+		})
 	}
-	cmd := exec.Command(node, "--experimental-strip-types", "--no-warnings", "--test", "--test-reporter=tap", suite)
-	cmd.Env = append(os.Environ(), "NODE_OPTIONS=")
-	res, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("bridge durability suite failed: %v\n%s", err, res)
-	}
-	if !regexp.MustCompile(`(?m)^# fail 0$`).Match(res) || !regexp.MustCompile(`(?m)^# pass [1-9]`).Match(res) {
-		t.Fatalf("bridge durability suite did not report a clean pass:\n%s", res)
-	}
-	t.Logf("%s", regexp.MustCompile(`(?m)^# (pass|fail) \d+$`).FindAll(res, -1))
 }
