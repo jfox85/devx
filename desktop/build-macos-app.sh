@@ -36,9 +36,9 @@ mkdir -p "$APP/Contents/MacOS" "$RES" "$ICONSET"
 # sibling over PATH, so the bundled app can never skew against its own schema.
 (
   cd "$ROOT/.."
-  # Only release tags (v*) name a version, so a local scratch tag can't leak
-  # into the bundled CLI's `devx version`.
-  VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)"
+  # Only release tags published on origin name a version, so a local scratch
+  # tag (even v-prefixed) can't leak into the bundled CLI's `devx version`.
+  VERSION="$(./scripts/version.sh --dirty 2>/dev/null || echo dev)"
   GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   BUILD_DATE="$(date -u '+%Y-%m-%d_%H:%M:%S')"
   go build -ldflags "\

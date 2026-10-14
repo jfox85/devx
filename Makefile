@@ -1,6 +1,7 @@
 # Variables
 BINARY_NAME=devx
-VERSION=$(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo "dev")
+# Release tags published on origin only; see scripts/version.sh. Evaluated once.
+VERSION:=$(shell ./scripts/version.sh --dirty 2>/dev/null || echo "dev")
 GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X github.com/jfox85/devx/version.Version=$(VERSION) -X github.com/jfox85/devx/version.GitCommit=$(GIT_COMMIT) -X github.com/jfox85/devx/version.BuildDate=$(BUILD_DATE)"
