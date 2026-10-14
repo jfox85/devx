@@ -81,3 +81,42 @@ func TestTmuxSessionLaunch(t *testing.T) {
 		t.Error("expected window 'editor' to exist")
 	}
 }
+
+// Regression: a single-window template without base-index puts its only window
+// at index 0. Restoring must not kill that window (which destroys the session).
+func TestEnsureTmuxSessionKeepsSingleWindowAtIndexZero(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	if _, err := exec.LookPath("tmuxp"); err != nil {
+		t.Skip("tmuxp not available")
+	}
+
+	tmpDir := t.TempDir()
+	sessionName := "devx-test-single-window-restore"
+	config := "session_name: " + sessionName + "\n" +
+		"start_directory: " + tmpDir + "\n" +
+		"windows:\n" +
+		"  - window_name: primary\n" +
+		"    panes:\n" +
+		"      - bash\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".tmuxp.yaml"), []byte(config), 0644); err != nil {
+		t.Fatalf("failed to write tmuxp config: %v", err)
+	}
+	_ = exec.Command("tmux", "kill-session", "-t", "="+sessionName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", "="+sessionName).Run()
+	})
+
+	if err := EnsureTmuxSession(sessionName, tmpDir); err != nil {
+		t.Fatalf("EnsureTmuxSession failed: %v", err)
+	}
+
+	output, err := exec.Command("tmux", "list-windows", "-t", "="+sessionName, "-F", "#{window_name}").Output()
+	if err != nil {
+		t.Fatalf("failed to list windows: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != "primary" {
+		t.Errorf("expected only window 'primary', got %q", got)
+	}
+}
