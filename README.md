@@ -103,6 +103,20 @@ make install
 go build -o devx main.go
 ```
 
+**Reproducible local install (recommended for day-to-day use):**
+```bash
+# Build origin/main in a clean throwaway worktree and install to GOPATH/bin
+make install-local
+# Also rebuild and install /Applications/DevX.app (quit the app first)
+scripts/install-local.sh --app
+# Build a specific pushed ref instead of origin/main
+scripts/install-local.sh --ref v1.2.3
+```
+`install-local` builds only commits that exist on the remote. Your
+uncommitted edits never reach the installed binary. It verifies that
+`devx version` reports the commit it built and keeps the previous binary
+as `devx.previous`. Restart any running `devx web` afterwards.
+
 ## Quick Start
 
 1. **Initialize configuration**:
