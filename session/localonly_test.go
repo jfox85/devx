@@ -200,3 +200,29 @@ func requireTmux(t *testing.T) {
 		t.Skipf("tmux not available on this platform (%v)", err)
 	}
 }
+
+// LocalOnlyTmuxTag reads (only) the creation tag of the exact-named session.
+func TestLocalOnlyTmuxTag(t *testing.T) {
+	w := tmuxfixture.ActiveWrapper()
+	if w == nil || os.Getenv("HOME") != w.Home {
+		t.Skip("owned tmux wrapper / fake HOME not active")
+	}
+	requireTmux(t)
+	if _, present, err := LocalOnlyTmuxTag("lo-tag-none"); present || err != nil {
+		t.Fatalf("missing session: present=%v err=%v", present, err)
+	}
+	tmuxOut(t, "new-session", "-d", "-s", "lo-tag-plain", "sleep", "600")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", "=lo-tag-plain").Run() })
+	if v, present, err := LocalOnlyTmuxTag("lo-tag-plain"); !present || v != "" || err != nil {
+		t.Fatalf("untagged: %q %v %v", v, present, err)
+	}
+	tmuxOut(t, "new-session", "-d", "-s", "lo-tag-x", "-e", localOnlyTmuxEnv+"=pa_00000000000a", "sleep", "600")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", "=lo-tag-x").Run() })
+	if v, present, err := LocalOnlyTmuxTag("lo-tag-x"); !present || v != "pa_00000000000a" || err != nil {
+		t.Fatalf("tagged: %q %v %v", v, present, err)
+	}
+	// Prefix names never match a different session.
+	if _, present, _ := LocalOnlyTmuxTag("lo-tag"); present {
+		t.Fatal("prefix matched another session")
+	}
+}

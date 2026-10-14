@@ -152,6 +152,9 @@ func TestReadOnlyInvocationSkipsUpdateCheck(t *testing.T) {
 		"session instances --apply abc":            false,
 		"session instances --apply=abc":            false,
 		"session instances --rollback /d":          false,
+		"session markers --backup /b":              true,
+		"session markers --apply abc":              false,
+		"session markers --rollback /d":            false,
 		"session list":                             false,
 		"agent list":                               false,
 	} {

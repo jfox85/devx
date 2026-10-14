@@ -512,6 +512,19 @@ to its session, but only when the evidence is unambiguous:
   leases and markers are never touched. Output contains names, ids,
   reasons and timing differences, never file contents or secrets.
 
+**Lost local-only markers: `devx session markers`.** The instances
+migration never restores markers. If an older-schema writer stripped the
+`local_only` marker of an MCP-created agent's session, relaunch is denied.
+`devx session markers --backup <file>` plans restoring the exact marker
+from reviewed backups. It only does so when the agent's creation event,
+the live tmux tag, ordering, path, project, claimants and the backups all
+agree, and only for agents the owner names with `--confirm`. It is applied
+against a hash, journaled and reversible. See
+[session-marker-repair.md](session-marker-repair.md). From this version on,
+DevX also preserves unknown fields of the store, each session record and
+the local-only marker, so this and later builds no longer strip those
+fields when newer builds add them (older binaries still do).
+
 **Old writers.** A `devx` binary from before this change can rewrite
 `sessions.json` and drop `instance_id`, or rewrite `agent.json` and drop
 `session_instance_id` / `session_created_at`. Examples are a

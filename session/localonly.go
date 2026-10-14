@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,9 @@ type LocalOnlyMeta struct {
 	Owner     string    `json:"owner"`
 	AgentID   string    `json:"agent_id"`
 	CreatedAt time.Time `json:"created_at"`
+	// Unknown holds marker members this build does not know (see
+	// unknown_fields.go); they are written back unchanged.
+	Unknown map[string]json.RawMessage `json:"-"`
 }
 
 // IsLocalOnly reports whether the session carries a local-only marker. Any
@@ -189,6 +193,25 @@ func EnsureLocalOnlyTmuxSession(name string, sess *Session) error {
 		return fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// LocalOnlyTmuxTag returns the DEVX_LOCAL_ONLY_AGENT value the local-only
+// creator set on the live tmux session with exactly this name (present=false
+// if there is no such session, value "" if it has no tag). Read-only.
+func LocalOnlyTmuxTag(name string) (value string, present bool, err error) {
+	if !tmuxHasSession(name) {
+		return "", false, nil
+	}
+	out, err := exec.Command("tmux", "show-environment", "-t", "="+name, localOnlyTmuxEnv).Output()
+	if err != nil {
+		// show-environment exits non-zero when the variable is unset.
+		return "", true, nil
+	}
+	line := strings.TrimSpace(string(out))
+	if v, ok := strings.CutPrefix(line, localOnlyTmuxEnv+"="); ok {
+		return v, true, nil
+	}
+	return "", true, nil
 }
 
 func tmuxHasSession(name string) bool {
