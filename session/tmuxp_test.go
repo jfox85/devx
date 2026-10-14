@@ -7,6 +7,44 @@ import (
 	"testing"
 )
 
+func TestShouldKillInitialWindow(t *testing.T) {
+	tests := []struct {
+		name            string
+		indexes         []string
+		templateWindows int
+		want            bool
+	}{
+		{"single template window at index 0", []string{"0"}, 1, false},
+		{"template windows start at 0", []string{"0", "1", "2"}, 3, false},
+		{"template windows start at 1", []string{"1", "2"}, 2, false},
+		{"stray window 0 before template windows", []string{"0", "1", "2"}, 2, true},
+		{"extra window but none at index 0", []string{"1", "2", "3"}, 2, false},
+		{"unknown template window count", []string{"0", "1"}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldKillInitialWindow(tt.indexes, tt.templateWindows); got != tt.want {
+				t.Errorf("shouldKillInitialWindow(%v, %d) = %v, want %v", tt.indexes, tt.templateWindows, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCountTemplateWindows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".tmuxp.yaml")
+	config := "session_name: s\nwindows:\n  - window_name: a\n    panes: [bash]\n  - window_name: b\n    panes: [bash]\n"
+	if err := os.WriteFile(path, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := countTemplateWindows(path)
+	if err != nil {
+		t.Fatalf("countTemplateWindows: %v", err)
+	}
+	if got != 2 {
+		t.Errorf("countTemplateWindows = %d, want 2", got)
+	}
+}
+
 func TestGenerateTmuxpConfig(t *testing.T) {
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "devx-tmuxp-test-*")
