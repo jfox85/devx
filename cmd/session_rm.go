@@ -68,7 +68,14 @@ func runSessionRm(cmd *cobra.Command, args []string) error {
 
 	// Remove Caddy routes
 	if len(sess.Routes) > 0 {
-		if err := caddy.DestroySessionRoutes(name, sess.Routes); err != nil {
+		// Convert RouteMetadata map to map[string]string for Caddy API
+		routeIDs := make(map[string]string)
+		for service, metadata := range sess.Routes {
+			if metadata != nil {
+				routeIDs[service] = metadata.RouteID
+			}
+		}
+		if err := caddy.DestroySessionRoutes(name, routeIDs); err != nil {
 			fmt.Printf("Warning: failed to remove Caddy routes: %v\n", err)
 		}
 	}

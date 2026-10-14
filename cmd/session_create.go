@@ -222,18 +222,28 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: %v\n", err)
 	}
 
-	// Convert routes to hostnames for environment variables
-	hostnames := make(map[string]string)
+	// Convert routes to RouteMetadata for environment variables
+	routeMetadata := make(map[string]*session.RouteMetadata)
 	if len(routes) > 0 {
-		for serviceName := range routes {
+		for serviceName, routeID := range routes {
 			// Use the DNS-normalized service name for the hostname
 			dnsServiceName := caddy.NormalizeDNSName(serviceName)
 			// Sanitize session name for hostname compatibility
 			sanitizedSessionName := caddy.SanitizeHostname(name)
+			hostname := ""
 			if projectAlias != "" {
-				hostnames[serviceName] = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
+				hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, sanitizedSessionName, dnsServiceName)
 			} else {
-				hostnames[serviceName] = fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
+				hostname = fmt.Sprintf("%s-%s.localhost", sanitizedSessionName, dnsServiceName)
+			}
+			port := 0
+			if portAllocation.Ports != nil {
+				port = portAllocation.Ports[serviceName]
+			}
+			routeMetadata[serviceName] = &session.RouteMetadata{
+				Hostname: hostname,
+				Port:     port,
+				RouteID:  routeID,
 			}
 		}
 	}
@@ -241,7 +251,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	// Generate .envrc file
 	envData := session.EnvrcData{
 		Ports:  portAllocation.Ports,
-		Routes: hostnames,
+		Routes: routeMetadata,
 		Name:   name,
 	}
 	if err := session.GenerateEnvrc(worktreePath, envData); err != nil {
@@ -253,7 +263,7 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 		Name:   name,
 		Path:   worktreePath,
 		Ports:  portAllocation.Ports,
-		Routes: hostnames,
+		Routes: routeMetadata,
 	}
 	if err := session.GenerateTmuxpConfig(worktreePath, tmuxpData); err != nil {
 		return fmt.Errorf("failed to generate tmuxp config: %w", err)
@@ -263,10 +273,23 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 	if len(routes) > 0 {
 		if err := store.UpdateSession(name, func(s *session.Session) {
 			if s.Routes == nil {
-				s.Routes = make(map[string]string)
+				s.Routes = make(map[string]*session.RouteMetadata)
 			}
 			for service, routeID := range routes {
-				s.Routes[service] = routeID
+				// Get the hostname and port for this route
+				hostname := fmt.Sprintf("%s-%s.localhost", name, service)
+				if projectAlias != "" {
+					hostname = fmt.Sprintf("%s-%s-%s.localhost", projectAlias, name, service)
+				}
+				port := 0
+				if s.Ports != nil {
+					port = s.Ports[service]
+				}
+				s.Routes[service] = &session.RouteMetadata{
+					Hostname: hostname,
+					Port:     port,
+					RouteID:  routeID,
+				}
 			}
 		}); err != nil {
 			fmt.Printf("Warning: failed to save route information: %v\n", err)

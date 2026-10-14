@@ -14,19 +14,20 @@ import (
 )
 
 type Session struct {
-	Name            string            `json:"name"`
-	ProjectAlias    string            `json:"project_alias,omitempty"` // Reference to project in registry
-	ProjectPath     string            `json:"project_path,omitempty"`  // Resolved project path
-	Branch          string            `json:"branch"`
-	Path            string            `json:"path"`
-	Ports           map[string]int    `json:"ports"`
-	Routes          map[string]string `json:"routes,omitempty"`     // service -> route ID mapping
-	EditorPID       int               `json:"editor_pid,omitempty"` // PID of the editor process
-	AttentionFlag   bool              `json:"attention_flag,omitempty"`
-	AttentionReason string            `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
-	AttentionTime   time.Time         `json:"attention_time,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	Name            string                    `json:"name"`
+	ProjectAlias    string                    `json:"project_alias,omitempty"` // Reference to project in registry
+	ProjectPath     string                    `json:"project_path,omitempty"`  // Resolved project path
+	Branch          string                    `json:"branch"`
+	Path            string                    `json:"path"`
+	Ports           map[string]int            `json:"ports"`
+	Routes          map[string]*RouteMetadata `json:"routes,omitempty"`     // service -> route metadata
+	Services        map[string]*ServiceState  `json:"services,omitempty"`   // service -> lifecycle state
+	EditorPID       int                       `json:"editor_pid,omitempty"` // PID of the editor process
+	AttentionFlag   bool                      `json:"attention_flag,omitempty"`
+	AttentionReason string                    `json:"attention_reason,omitempty"` // "claude_done", "claude_stuck", "manual", etc.
+	AttentionTime   time.Time                 `json:"attention_time,omitempty"`
+	CreatedAt       time.Time                 `json:"created_at"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
 }
 
 type SessionStore struct {
@@ -114,7 +115,8 @@ func (s *SessionStore) AddSessionWithProject(name, branch, path string, ports ma
 		Branch:       branch,
 		Path:         path,
 		Ports:        ports,
-		Routes:       make(map[string]string),
+		Routes:       make(map[string]*RouteMetadata),
+		Services:     make(map[string]*ServiceState),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -226,8 +228,15 @@ func removeGitWorktree(worktreePath string) error {
 	return nil
 }
 
-func removeCaddyRoutes(sessionName string, routes map[string]string) error {
-	return caddy.DestroySessionRoutes(sessionName, routes)
+func removeCaddyRoutes(sessionName string, routes map[string]*RouteMetadata) error {
+	// Convert RouteMetadata map to map[string]string for the Caddy API
+	routeIDs := make(map[string]string)
+	for service, metadata := range routes {
+		if metadata != nil {
+			routeIDs[service] = metadata.RouteID
+		}
+	}
+	return caddy.DestroySessionRoutes(sessionName, routeIDs)
 }
 
 func getSessionsPath() string {

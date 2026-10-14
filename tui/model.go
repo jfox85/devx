@@ -34,7 +34,7 @@ type sessionItem struct {
 	branch          string
 	path            string
 	ports           map[string]int
-	routes          map[string]string
+	routes          map[string]*session.RouteMetadata
 	attentionFlag   bool
 	attentionReason string
 	attentionTime   time.Time
@@ -1217,8 +1217,11 @@ func (m *model) getSessionDetails(sess sessionItem) string {
 		}
 		sort.Strings(routeServices)
 		for _, service := range routeServices {
-			url := fmt.Sprintf("http://%s.localhost", sess.routes[service])
-			details += fmt.Sprintf("      %s: %s\n", service, url)
+			routeInfo := sess.routes[service]
+			if routeInfo != nil {
+				url := fmt.Sprintf("http://%s", routeInfo.Hostname)
+				details += fmt.Sprintf("      %s: %s\n", service, url)
+			}
 		}
 	}
 
@@ -1304,8 +1307,11 @@ func (m *model) getSessionPreview(sess sessionItem, maxWidth int) string {
 			}
 			sort.Strings(routeServices)
 			for _, service := range routeServices {
-				url := fmt.Sprintf("http://%s.localhost", sess.routes[service])
-				preview.WriteString(fmt.Sprintf("  %s: %s\n", service, url))
+				routeInfo := sess.routes[service]
+				if routeInfo != nil {
+					url := fmt.Sprintf("http://%s", routeInfo.Hostname)
+					preview.WriteString(fmt.Sprintf("  %s: %s\n", service, url))
+				}
 			}
 		}
 	}
@@ -1914,10 +1920,12 @@ func (m *model) openRoutes(sessionName string) tea.Cmd {
 		}
 
 		// Open all routes in the default browser
-		for _, hostname := range sess.Routes {
-			url := fmt.Sprintf("http://%s.localhost", hostname)
-			if err := openURL(url); err != nil {
-				return errMsg{fmt.Errorf("failed to open %s: %w", url, err)}
+		for _, routeInfo := range sess.Routes {
+			if routeInfo != nil {
+				url := fmt.Sprintf("http://%s", routeInfo.Hostname)
+				if err := openURL(url); err != nil {
+					return errMsg{fmt.Errorf("failed to open %s: %w", url, err)}
+				}
 			}
 		}
 

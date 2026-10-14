@@ -10,8 +10,8 @@ import (
 )
 
 type EnvrcData struct {
-	Ports  map[string]int    // service name -> port number
-	Routes map[string]string // service name -> hostname
+	Ports  map[string]int            // service name -> port number
+	Routes map[string]*RouteMetadata // service name -> route metadata
 	Name   string
 }
 
@@ -47,11 +47,14 @@ func GenerateEnvrc(worktreePath string, data EnvrcData) error {
 		sort.Strings(routeNames)
 
 		for _, serviceName := range routeNames {
-			hostname := data.Routes[serviceName]
-			// Convert service name to HOST environment variable
-			// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
-			hostVar := strings.ToUpper(strings.ReplaceAll(serviceName, "-", "_")) + "_HOST"
-			lines = append(lines, fmt.Sprintf("export %s=http://%s", hostVar, hostname))
+			routeInfo := data.Routes[serviceName]
+			if routeInfo != nil {
+				hostname := routeInfo.Hostname
+				// Convert service name to HOST environment variable
+				// e.g., "ui" -> "UI_HOST", "auth-service" -> "AUTH_SERVICE_HOST"
+				hostVar := strings.ToUpper(strings.ReplaceAll(serviceName, "-", "_")) + "_HOST"
+				lines = append(lines, fmt.Sprintf("export %s=http://%s", hostVar, hostname))
+			}
 		}
 	}
 

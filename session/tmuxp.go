@@ -28,8 +28,8 @@ windows:
     layout: tiled
     shell_command_before:
       - cd {{.Path}}{{range $serviceName, $port := .Ports}}
-      - export {{toPortVar $serviceName}}={{$port}}{{end}}{{if .Routes}}{{range $serviceName, $hostname := .Routes}}
-      - export {{toHostVar $serviceName}}=https://{{$hostname}}{{end}}{{end}}
+      - export {{toPortVar $serviceName}}={{$port}}{{end}}{{if .Routes}}{{range $serviceName, $routeInfo := .Routes}}{{if $routeInfo}}
+      - export {{toHostVar $serviceName}}=https://{{$routeInfo.Hostname}}{{end}}{{end}}{{end}}
       - export SESSION_NAME={{.Name}}
     panes:
       - echo "Backend window - Session: {{.Name}}"
@@ -39,8 +39,8 @@ windows:
     layout: tiled
     shell_command_before:
       - cd {{.Path}}{{range $serviceName, $port := .Ports}}
-      - export {{toPortVar $serviceName}}={{$port}}{{end}}{{if .Routes}}{{range $serviceName, $hostname := .Routes}}
-      - export {{toHostVar $serviceName}}=https://{{$hostname}}{{end}}{{end}}
+      - export {{toPortVar $serviceName}}={{$port}}{{end}}{{if .Routes}}{{range $serviceName, $routeInfo := .Routes}}{{if $routeInfo}}
+      - export {{toHostVar $serviceName}}=https://{{$routeInfo.Hostname}}{{end}}{{end}}{{end}}
       - export SESSION_NAME={{.Name}}
     panes:
       - echo "Frontend window - Session: {{.Name}}"
@@ -50,8 +50,8 @@ windows:
 type TmuxpData struct {
 	Name   string
 	Path   string
-	Ports  map[string]int    // service name -> port number
-	Routes map[string]string // service name -> hostname
+	Ports  map[string]int            // service name -> port number
+	Routes map[string]*RouteMetadata // service name -> route metadata
 }
 
 // GenerateTmuxpConfig creates a .tmuxp.yaml file in the worktree directory

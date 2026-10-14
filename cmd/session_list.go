@@ -29,7 +29,7 @@ type SessionStatus struct {
 	Name         string
 	Branch       string
 	Ports        map[string]int
-	Routes       map[string]string
+	Routes       map[string]*session.RouteMetadata
 	TmuxStatus   string // "attached", "detached", "none"
 	EditorStatus string // "running", "stopped"
 	Path         string
