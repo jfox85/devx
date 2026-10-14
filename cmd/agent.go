@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jfox85/devx/artifactbridge"
 	"github.com/jfox85/devx/config"
 	"github.com/jfox85/devx/piagent"
 	"github.com/jfox85/devx/session"
@@ -211,6 +212,52 @@ var agentRelaunchCmd = &cobra.Command{
 	},
 }
 
+var (
+	agentAdoptPane      string
+	agentAdoptPiSession string
+)
+
+var agentAdoptCmd = &cobra.Command{
+	Use:   "adopt <session> --pane <%id> --pi-session <id>",
+	Short: "Register an existing session's running Pi as a managed agent (no restart)",
+	Long: `Register the Pi already running in one of your DevX sessions as an
+MCP-managed agent, without restarting it or creating anything.
+
+The agent starts under YOUR control, so nothing is delivered yet. Because the
+running Pi was started without the DevX bridge, it cannot receive tasks until
+it is relaunched once with the bridge, resuming the same conversation:
+
+  1. devx agent adopt <session> --pane %12 --pi-session <pi-session-id>
+  2. when that Pi is idle with nothing unsent:  devx agent relaunch <agent-id> --force
+  3. in Pi (or with devx agent release <agent-id>):  /devx-release
+
+Only host sessions can be adopted, and only the exact pane given is ever
+touched. Find the pane with: tmux list-panes -s -t <session>
+Find the Pi session id in Pi with /session.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		m, err := newAgentManager()
+		if err != nil {
+			return err
+		}
+		r, err := m.Adopt(piagent.AdoptRequest{Session: args[0], PaneID: agentAdoptPane, PiSessionID: agentAdoptPiSession, By: currentUserLabel()})
+		if err != nil {
+			return err
+		}
+		if agentJSONFlag {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(r)
+		}
+		verb := "Adopted"
+		if r.Replayed {
+			verb = "Already adopted"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s as %s (pane %s). You have control; nothing is delivered yet.\n"+
+			"Next: when that Pi is idle, run `devx agent relaunch %s --force` to load the DevX bridge (same conversation), then /devx-release.\n",
+			verb, r.Session, r.AgentID, r.Pane, r.AgentID)
+		return nil
+	},
+}
+
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Local MCP servers",
@@ -229,7 +276,7 @@ listed in pi_mcp.allowed_projects in the DevX config. Example MCP config:
 		if err != nil {
 			return err
 		}
-		s := &piagent.MCPServer{M: m, Name: "devx-pi", Version: version.Version, Client: "mcp"}
+		s := &piagent.MCPServer{M: m, Name: "devx-pi", Version: version.Version, Client: "mcp", Extra: newArtifactBridge(m)}
 		return s.Serve(cmd.InOrStdin(), cmd.OutOrStdout())
 	},
 }
@@ -240,7 +287,11 @@ func init() {
 	agentInspectCmd.Flags().IntVar(&agentInspectLines, "lines", 200, "Scrollback lines to include")
 	agentReleaseCmd.Flags().BoolVar(&agentReleaseDrop, "drop-queued", false, "Cancel prompts queued while you had control instead of delivering them")
 	agentRelaunchCmd.Flags().BoolVar(&agentRelaunchForce, "force", false, "Replace a Pi that still appears to be running")
-	agentCmd.AddCommand(agentListCmd, agentStatusCmd, agentAttachCmd, agentInspectCmd, agentTakeoverCmd, agentReleaseCmd, agentRelaunchCmd)
+	agentAdoptCmd.Flags().StringVar(&agentAdoptPane, "pane", "", "Exact tmux pane id (%N) where the session's Pi runs")
+	agentAdoptCmd.Flags().StringVar(&agentAdoptPiSession, "pi-session", "", "Pi session id of that conversation (shown by /session in Pi)")
+	_ = agentAdoptCmd.MarkFlagRequired("pane")
+	_ = agentAdoptCmd.MarkFlagRequired("pi-session")
+	agentCmd.AddCommand(agentListCmd, agentStatusCmd, agentAttachCmd, agentInspectCmd, agentTakeoverCmd, agentReleaseCmd, agentRelaunchCmd, agentAdoptCmd)
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.AddCommand(mcpPiCmd)
 }
@@ -262,6 +313,32 @@ func currentUserLabel() string {
 // any worktree.
 func piAgentStateDir() string {
 	return filepath.Join(filepath.Dir(config.GetSessionsPath()), "pi-agents")
+}
+
+// newArtifactBridge returns the artifact bridge tool provider. Its policy
+// (pi_mcp.allowed_projects and pi_mcp.artifacts) is re-read from the owner's
+// global DevX config on every tools/list and tool call, so edits apply
+// without restarting this process or the relay; an unreadable or invalid
+// config disables the bridge for that call. Project-level .devx configs and
+// DEVX_* environment variables never widen it: the bridge reads only the
+// owner's global file, or the file named by an explicit --config flag.
+func newArtifactBridge(m *piagent.Manager) piagent.ToolProvider {
+	path := artifactPolicyPath()
+	return artifactbridge.New(artifactbridge.Config{StateDir: filepath.Join(piAgentStateDir(), "artifact-bridge")}, m.Store,
+		func() (artifactbridge.Policy, error) { return artifactbridge.LoadPolicyFile(path) })
+}
+
+// artifactPolicyPath is the owner's global DevX config file, the same file
+// pi_mcp.allowed_projects is administered in.
+func artifactPolicyPath() string {
+	if cfgFile != "" {
+		return cfgFile
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "devx", "config.yaml")
 }
 
 func newAgentManager() (*piagent.Manager, error) {
@@ -316,10 +393,47 @@ func (localOnlySessionCreator) Create(name, project, agentID string) (piagent.Cr
 		}
 		return piagent.CreatedSession{}, err
 	}
-	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: project, TmuxName: name}, nil
+	return piagent.CreatedSession{Name: name, Path: sess.Path, Project: project, TmuxName: name,
+		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
 }
 
-func (localOnlySessionCreator) EnsureTmux(name, agentID string) error {
+// Adopt records agentID on an existing human-created host session (see
+// session.AdoptManagedAgent) and returns where it lives. Idempotent for the
+// same agent, so relaunch can use it to re-verify ownership.
+func (localOnlySessionCreator) Adopt(name, agentID string) (piagent.AdoptedSession, error) {
+	sess, err := session.AdoptManagedAgent(name, agentID)
+	if err != nil {
+		if errors.Is(err, session.ErrAdoptNotAllowed) {
+			return piagent.AdoptedSession{}, piagent.Denied("%v", err)
+		}
+		return piagent.AdoptedSession{}, err
+	}
+	if !session.TmuxHasSession(name) {
+		_ = session.ReleaseManagedAgent(name, agentID)
+		return piagent.AdoptedSession{}, fmt.Errorf("session %q has no running tmux session", name)
+	}
+	return piagent.AdoptedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name,
+		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
+}
+
+func (localOnlySessionCreator) VerifyAdopted(name string, a *piagent.Agent) (piagent.AdoptedSession, error) {
+	sess, err := session.VerifyManagedAgent(name, a.ID, a.SessionInstanceID, a.SessionCreatedAt)
+	if err != nil {
+		if errors.Is(err, session.ErrAdoptNotAllowed) {
+			return piagent.AdoptedSession{}, piagent.Denied("%v", err)
+		}
+		return piagent.AdoptedSession{}, err
+	}
+	return piagent.AdoptedSession{Name: name, Path: sess.Path, Project: sess.ProjectAlias, TmuxName: name,
+		InstanceID: sess.InstanceID, CreatedAt: sess.CreatedAt}, nil
+}
+
+func (localOnlySessionCreator) ReleaseAdoption(name, agentID string) error {
+	return session.ReleaseManagedAgent(name, agentID)
+}
+
+func (localOnlySessionCreator) EnsureTmux(name string, a *piagent.Agent) error {
+	agentID := a.ID
 	store, err := session.LoadSessions()
 	if err != nil {
 		return err
@@ -332,6 +446,11 @@ func (localOnlySessionCreator) EnsureTmux(name, agentID string) error {
 	// session. A missing or foreign marker is a permission denial.
 	if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != agentID || sess.LocalOnly.Owner != session.LocalOnlyOwnerPiMCP {
 		return piagent.Denied("session %q is not a local-only session owned by agent %s", name, agentID)
+	}
+	// A bound agent runs only in the exact instance it was bound to, even
+	// if a restored or hand-edited record carries a marker naming it.
+	if a.SessionInstanceID != "" && !session.MatchesBoundInstance(sess, a.SessionInstanceID, a.SessionCreatedAt) {
+		return piagent.Denied("session %q is not the session instance agent %s was bound to (it was recreated)", name, agentID)
 	}
 	if err := session.EnsureLocalOnlyTmuxSession(name, sess); err != nil {
 		if errors.Is(err, session.ErrLocalOnlyNotOwned) {

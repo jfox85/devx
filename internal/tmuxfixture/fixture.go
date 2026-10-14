@@ -74,6 +74,18 @@ type Fixture struct {
 	mu     sync.Mutex
 }
 
+// ShortTempBase returns the directory fixture and wrapper dirs are created
+// in: "/tmp" where it exists (short, because macOS limits socket paths to 104
+// bytes), otherwise the platform temp dir (e.g. on Windows, which has no
+// /tmp; there are no tmux sockets there, but packages still install the
+// guard in TestMain and must not fail before any test runs).
+func ShortTempBase() string {
+	if st, err := os.Stat("/tmp"); err == nil && st.IsDir() {
+		return "/tmp"
+	}
+	return os.TempDir()
+}
+
 // Options configures New.
 type Options struct {
 	// BaseDir is where the fixture directory is created. Default "/tmp"
@@ -90,7 +102,7 @@ const ownerFile = "owner.json"
 func New(opts Options) (*Fixture, error) {
 	base := opts.BaseDir
 	if base == "" {
-		base = "/tmp"
+		base = ShortTempBase()
 	}
 	dir, err := os.MkdirTemp(base, "dxtf-")
 	if err != nil {
@@ -121,6 +133,17 @@ func (f *Fixture) Dir() string { return f.dir }
 
 // Owner returns the current on-disk ownership record.
 func (f *Fixture) Owner() (*Owner, error) { return readOwner(f.dir) }
+
+// withNoConfig inserts "-f /dev/null" after the validated "-S <socket>" so
+// the fixture server never loads the developer's ~/.tmux.conf or
+// $XDG_CONFIG_HOME/tmux/tmux.conf (plugins, run-shell, session restore).
+// It is added only here, after validation: callers can never pass -f.
+// (Pinning HOME instead would change HOME for every pane the server runs.)
+func withNoConfig(argv []string) []string {
+	out := make([]string, 0, len(argv)+2)
+	out = append(out, argv[0], argv[1], "-f", os.DevNull)
+	return append(out, argv[2:]...)
+}
 
 // Env returns the scrubbed environment used for every tmux command.
 func Env() []string {
@@ -242,7 +265,7 @@ func (f *Fixture) run(args []string) (string, error) {
 		return "", err
 	}
 	f.audit(argv)
-	return f.exec(argv, Env())
+	return f.exec(withNoConfig(argv), Env())
 }
 
 // CommandLogPath is the durable audit log of every argv this fixture

@@ -44,6 +44,30 @@ type tool struct {
 	Annotations map[string]any `json:"annotations,omitempty"`
 }
 
+// Tool is an MCP tool definition contributed by a ToolProvider.
+type Tool = tool
+
+// ToolProvider contributes optional tools (for example the artifact bridge)
+// to the MCP server. Providers own their argument validation, authorization
+// and result shape; the server only routes calls to them.
+type ToolProvider interface {
+	// Tools returns the provider's currently enabled tools. Disabled
+	// capabilities must not be listed.
+	Tools() []Tool
+	// CallTool returns a complete MCP tool result, or handled=false when
+	// name is not one of the provider's enabled tools.
+	CallTool(name string, args json.RawMessage) (result map[string]any, handled bool)
+	// TaskArtifacts lists artifacts produced while a task ran, for
+	// inclusion in pi_status. It returns nil when not applicable or not
+	// authorized; it never fails the status call.
+	TaskArtifacts(agent *Agent, task *TaskView) []map[string]any
+	// Instructions is appended to the initialize instructions when non-empty.
+	Instructions() string
+}
+
+// Obj builds a closed JSON object schema (exported for tool providers).
+func Obj(props map[string]any, required ...string) map[string]any { return obj(props, required...) }
+
 func obj(props map[string]any, required ...string) map[string]any {
 	s := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
 	if len(required) > 0 {
@@ -99,6 +123,8 @@ type MCPServer struct {
 	Name    string
 	Version string
 	Client  string // identity recorded on agents created through this server
+	// Extra optionally contributes additional tools (nil = none).
+	Extra ToolProvider
 }
 
 // Serve reads requests until EOF. Responses are written as they complete;
@@ -154,16 +180,26 @@ func (s *MCPServer) Serve(in io.Reader, out io.Writer) error {
 func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 	switch req.Method {
 	case "initialize":
+		instructions := "Manage Pi coding agents in DevX sessions. Every agent stays visible in DevX; a human can attach and take control at any time, which pauses delivery of your queued prompts until they release. Use idempotency keys and resume pi_events from your last seq."
+		if s.Extra != nil {
+			if extra := s.Extra.Instructions(); extra != "" {
+				instructions += " " + extra
+			}
+		}
 		return map[string]any{
 			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": s.Name, "version": s.Version},
-			"instructions":    "Manage Pi coding agents in DevX sessions. Every agent stays visible in DevX; a human can attach and take control at any time, which pauses delivery of your queued prompts until they release. Use idempotency keys and resume pi_events from your last seq.",
+			"instructions":    instructions,
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": toolList()}, nil
+		tools := toolList()
+		if s.Extra != nil {
+			tools = append(tools, s.Extra.Tools()...)
+		}
+		return map[string]any{"tools": tools}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -171,6 +207,11 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return nil, &rpcError{Code: -32602, Message: "invalid params"}
+		}
+		if s.Extra != nil {
+			if result, handled := s.Extra.CallTool(p.Name, p.Arguments); handled {
+				return result, nil
+			}
 		}
 		data, err := s.call(p.Name, p.Arguments)
 		if err != nil {
@@ -277,7 +318,13 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"task": tv, "agent": agentSummary(av)}, nil
+		out := map[string]any{"task": tv, "agent": agentSummary(av)}
+		if s.Extra != nil {
+			if arts := s.Extra.TaskArtifacts(av.Agent, tv); arts != nil {
+				out["artifacts"] = arts
+			}
+		}
+		return out, nil
 
 	case "pi_result":
 		var w struct {

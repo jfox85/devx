@@ -113,3 +113,36 @@ func TestRealTmuxWithHostileDecoyEnvironment(t *testing.T) {
 		_ = os.WriteFile(log, append([]byte("# fixture socket: "+f.Socket()+"\n# decoy TMUX="+decoySock+" TMUX_TMPDIR="+decoyTmp+"\n"), data...), 0o600)
 	}
 }
+
+// CodeRabbit r4238379176 against a real tmux server: a planted user config
+// ($XDG_CONFIG_HOME/tmux/tmux.conf and ~/.tmux.conf) is never loaded.
+func TestRealTmuxIgnoresUserConfig(t *testing.T) {
+	if os.Getenv("DEVX_TMUX_FIXTURE_REAL") == "0" {
+		t.Skip("DEVX_TMUX_FIXTURE_REAL=0")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	home := t.TempDir()
+	xdg := filepath.Join(home, "xdg")
+	_ = os.MkdirAll(filepath.Join(xdg, "tmux"), 0o700)
+	_ = os.WriteFile(filepath.Join(xdg, "tmux", "tmux.conf"), []byte("set -g @devx_probe loaded-xdg\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(home, ".tmux.conf"), []byte("set -g @devx_probe loaded-home\n"), 0o600)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	f, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = f.Cleanup(); _ = os.RemoveAll(f.Dir()) })
+	if err := f.NewSession("cfgprobe", t.TempDir(), "sleep 30"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.Run("display-message", "-p", "-t", "=cfgprobe", "#{@devx_probe}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("fixture server loaded a user tmux config: @devx_probe=%q", out)
+	}
+}

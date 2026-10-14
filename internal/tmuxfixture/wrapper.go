@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -82,7 +83,7 @@ func runWrapper(args []string) int {
 	}
 	logf("%s", jsonArgv(argv))
 	env := scrubWrapperEnv(os.Environ())
-	if err := syscall.Exec(real, append([]string{"tmux"}, argv...), env); err != nil {
+	if err := syscall.Exec(real, append([]string{"tmux"}, withNoConfig(argv)...), env); err != nil {
 		fmt.Fprintf(os.Stderr, "devx test tmux wrapper: exec %s: %v\n", real, err)
 		return 1
 	}
@@ -138,7 +139,7 @@ func InstallWrapper() (*Wrapped, func(), error) {
 			real = abs
 		}
 	}
-	dir, err := os.MkdirTemp("/tmp", "dxtw-")
+	dir, err := os.MkdirTemp(ShortTempBase(), "dxtw-")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -162,9 +163,19 @@ func InstallWrapper() (*Wrapped, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	if err := os.Symlink(self, filepath.Join(w.BinDir, "tmux")); err != nil {
+	// On Windows there is no wrapper (it relies on a symlinked test binary
+	// and exec-in-place), so a tmux found on PATH (MSYS2/Cygwin) would be
+	// reached unpinned: refuse instead of failing open. With no tmux, any
+	// tmux exec simply fails. Profile isolation below still applies.
+	if runtime.GOOS == "windows" && real != "" {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("tmux found on PATH at %s: the owned-socket wrapper is not supported on Windows; remove tmux from PATH for tests", real)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(self, filepath.Join(w.BinDir, "tmux")); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
 	}
 	nonce := randomHex(16)
 	if err := writeOwner(dir, &Owner{Nonce: nonce, Socket: w.Socket, Dir: dir, PID: os.Getpid(), Sessions: []string{}}); err != nil {
@@ -175,8 +186,13 @@ func InstallWrapper() (*Wrapped, func(), error) {
 		_ = os.Unsetenv(k)
 	}
 	set := map[string]string{
-		"PATH":            w.BinDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"HOME":            w.Home,
+		"PATH": w.BinDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME": w.Home,
+		// Windows equivalents: os.UserHomeDir reads USERPROFILE, and
+		// os.UserConfigDir/UserCacheDir read APPDATA/LOCALAPPDATA.
+		"USERPROFILE":     w.Home,
+		"APPDATA":         filepath.Join(w.Home, "AppData", "Roaming"),
+		"LOCALAPPDATA":    filepath.Join(w.Home, "AppData", "Local"),
 		"XDG_CONFIG_HOME": filepath.Join(w.Home, ".config"),
 		"XDG_STATE_HOME":  filepath.Join(w.Home, ".local", "state"),
 		"XDG_CACHE_HOME":  filepath.Join(w.Home, ".cache"),

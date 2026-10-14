@@ -313,6 +313,11 @@ func RestoreFiles(opts Options) (*Result, error) {
 		if err != nil {
 			return err
 		}
+		// MkdirAll follows symlinks: reject any existing symlinked parent
+		// BEFORE it can create directories outside the fixture.
+		if err := ensureNoExistingSymlinkParents(opts.FixtureRoot, filepath.Dir(dest)); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return err
 		}

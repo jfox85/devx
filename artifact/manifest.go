@@ -89,6 +89,14 @@ func LoadManifest(sess *session.Session) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read artifact manifest: %w", err)
 	}
+	return ParseManifest(data, sess.Name)
+}
+
+// ParseManifest parses and validates manifest bytes for sessionName. Callers
+// that must not follow symlinks (e.g. the MCP artifact bridge) read the bytes
+// themselves and use this for the same validation as LoadManifest.
+func ParseManifest(data []byte, sessionName string) (*Manifest, error) {
+	sess := &session.Session{Name: sessionName}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("failed to parse artifact manifest: %w", err)
@@ -118,23 +126,14 @@ func SaveManifest(sess *session.Session, m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("manifest is nil")
 	}
-	m.Version = ManifestVersion
-	m.Session = sess.Name
-	if m.Artifacts == nil {
-		m.Artifacts = []Artifact{}
-	}
-	if err := ValidateManifest(m); err != nil {
+	data, err := EncodeManifest(m, sess.Name)
+	if err != nil {
 		return err
 	}
 	dir := DirForSession(sess)
 	if err := EnsureArtifactDir(dir); err != nil {
 		return fmt.Errorf("failed to create artifact directory: %w", err)
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal artifact manifest: %w", err)
-	}
-	data = append(data, '\n')
 	tmp, err := os.CreateTemp(dir, ".manifest-*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp manifest: %w", err)

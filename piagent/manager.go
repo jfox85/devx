@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -30,11 +31,16 @@ func IsPermissionDenied(err error) bool {
 }
 
 // CreatedSession is what a SessionCreator returns for a new DevX session.
+// InstanceID and CreatedAt identify the exact session record; the agent
+// records them as its binding (Agent.SessionInstanceID). Empty means the
+// creator cannot identify instances (test doubles, older builds).
 type CreatedSession struct {
-	Name     string
-	Path     string
-	Project  string
-	TmuxName string
+	Name       string
+	Path       string
+	Project    string
+	TmuxName   string
+	InstanceID string
+	CreatedAt  time.Time
 }
 
 // SessionCreator creates and prepares new DevX sessions. The production
@@ -47,10 +53,36 @@ type SessionCreator interface {
 	// to someone else: fail.
 	Create(name, project, agentID string) (CreatedSession, error)
 	// EnsureTmux makes sure the session's tmux session exists and belongs
-	// to agentID.
-	EnsureTmux(name, agentID string) error
+	// to agent a. For an agent bound to a session instance the session
+	// record must be that instance (session.MatchesBoundInstance); a
+	// recreated session is refused even if its marker names the agent.
+	EnsureTmux(name string, a *Agent) error
 	// Exists reports whether a DevX session with this name exists.
 	Exists(name string) (bool, error)
+}
+
+// SessionAdopter is implemented by SessionCreators that can register an
+// existing, human-created DevX session for an adopted agent. Adopt must
+// verify the session exists, is not local-only, and is not already managed,
+// then record agentID on it; ReleaseAdoption undoes that record (used when
+// adoption fails after the marker was written). VerifyAdopted checks,
+// without writing anything, that the session still carries agentID's
+// adoption marker and returns it (used to re-verify before relaunch, so a
+// recreated session is never re-adopted implicitly).
+type SessionAdopter interface {
+	Adopt(name, agentID string) (AdoptedSession, error)
+	ReleaseAdoption(name, agentID string) error
+	VerifyAdopted(name string, a *Agent) (AdoptedSession, error)
+}
+
+// AdoptedSession describes the existing session an agent was adopted into.
+type AdoptedSession struct {
+	Name       string
+	Path       string
+	Project    string
+	TmuxName   string
+	InstanceID string
+	CreatedAt  time.Time
 }
 
 // Config controls how agents are launched.
@@ -217,6 +249,7 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 		now := m.Store.now()
 		agent = &Agent{
 			ID: rec.AgentID, DevxSession: created.Name, Project: created.Project, Worktree: created.Path,
+			SessionInstanceID: created.InstanceID, SessionCreatedAt: created.CreatedAt,
 			PiSessionID: rec.PiSessionID, Binding: Binding{TmuxSession: created.TmuxName},
 			Lease:     Lease{Holder: LeaseManaged, Generation: 1, Since: now, Reason: "created"},
 			CreatedAt: now, CreatedBy: req.By, StartTaskID: rec.TaskID, StartIdemHash: rec.KeyHash,
@@ -228,7 +261,7 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 			if err := m.Store.SaveAgent(agent); err != nil {
 				return err
 			}
-			_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_created", Source: "devx", Data: map[string]any{"session": agent.DevxSession, "pi_session_id": agent.PiSessionID}})
+			_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_created", Source: "devx", Data: withInstance(map[string]any{"session": agent.DevxSession, "pi_session_id": agent.PiSessionID}, agent)})
 			return err
 		})
 		if err != nil {
@@ -244,7 +277,15 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 	} else if err != nil {
 		return err
 	}
-	if agent.Binding.PaneID == "" || !m.Tmux.Pane(agent.Binding.PaneID).Exists {
+	if agent.Binding.PaneID == "" {
+		return m.launch(agent.ID, false)
+	}
+	switch p := m.Tmux.Pane(agent.Binding.PaneID); {
+	case p.QueryFailed:
+		// The task is queued; launching now could start a second Pi next to
+		// a live one. A retry with the same key resumes from here.
+		return fmt.Errorf("%w: pane %s state unknown; retry with the same idempotency_key", ErrTmuxUnavailable, agent.Binding.PaneID)
+	case !p.Exists:
 		return m.launch(agent.ID, false)
 	}
 	return nil
@@ -268,6 +309,63 @@ func (m *Manager) enqueueLocked(agentID, taskID, prompt, idemHash string) error 
 	return err
 }
 
+// withInstance adds the agent's session-instance binding to an event. The
+// append-only event log is the durable record of the binding: an older DevX
+// binary that rewrites agent.json drops the new fields, but never rewrites
+// past events, so the migration can restore the exact binding from here.
+func withInstance(data map[string]any, a *Agent) map[string]any {
+	if a.SessionInstanceID != "" {
+		data["session_instance_id"] = a.SessionInstanceID
+		data["session_created_at"] = a.SessionCreatedAt.Format(time.RFC3339Nano)
+	}
+	return data
+}
+
+// RecordedBinding returns the most recent session-instance binding recorded
+// in the agent's event log (agent_created, agent_adopted or
+// session_instance_bound; cleared by session_instance_unbound), or "" if
+// none. A session_instance_bound event counts only if it records an accepted
+// basis (marker, owner_confirmed or event_log): pre-release migration builds
+// wrote basis-less events for bindings inferred from timestamps alone, and
+// those must never be restored as trusted bindings.
+func (s *Store) RecordedBinding(agentID string) (string, time.Time, error) {
+	var id string
+	var at time.Time
+	after := int64(0)
+	for {
+		evs, last, err := s.ReadEvents(agentID, after, MaxEventsPage)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		for _, e := range evs {
+			switch e.Type {
+			case "agent_created", "agent_adopted", "session_instance_bound":
+				if b, _ := e.Data["basis"].(string); e.Type == "session_instance_bound" && !acceptedBindingBasis(b) {
+					continue
+				}
+				if v, _ := e.Data["session_instance_id"].(string); v != "" {
+					id = v
+					at = time.Time{}
+					if ts, _ := e.Data["session_created_at"].(string); ts != "" {
+						at, _ = time.Parse(time.RFC3339Nano, ts)
+					}
+				}
+			case "session_instance_unbound":
+				id, at = "", time.Time{}
+			}
+		}
+		// ReadEvents returns the log's highest seq, not the last seq of this
+		// page: advance from the last event actually returned.
+		if len(evs) == 0 {
+			return id, at, nil
+		}
+		after = evs[len(evs)-1].Seq
+		if after >= last {
+			return id, at, nil
+		}
+	}
+}
+
 // launch starts Pi in a dedicated window (or respawns the bound pane) with a
 // fresh launch nonce. Bridges started with an older nonce are fenced out.
 func (m *Manager) launch(agentID string, relaunch bool) error {
@@ -275,8 +373,32 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 	if err != nil {
 		return err
 	}
-	if err := m.Creator.EnsureTmux(agent.DevxSession, agent.ID); err != nil {
+	if agent.Adopted {
+		// The owner's own session: never create or modify it. Only verify
+		// it is still the session this agent adopted.
+		adopter, ok := m.Creator.(SessionAdopter)
+		if !ok {
+			return fmt.Errorf("this DevX build cannot relaunch adopted agents")
+		}
+		// Read-only: never re-mark the session. A session whose marker is
+		// gone (recreated, or dropped by an older writer) needs a fresh,
+		// deliberate `devx agent adopt` or the reviewed migration.
+		// VerifyAdopted enforces the instance binding (including the
+		// created_at witness when an older writer dropped the id).
+		if _, err := adopter.VerifyAdopted(agent.DevxSession, agent); err != nil {
+			return fmt.Errorf("verify adopted session: %w", err)
+		}
+	} else if err := m.Creator.EnsureTmux(agent.DevxSession, agent); err != nil {
 		return fmt.Errorf("ensure tmux session: %w", err)
+	}
+	// Query the pane ONCE and use that answer for the whole launch. Fail
+	// closed before changing anything: with the pane's state unknown, a
+	// relaunch could orphan a live turn or open a second Pi window.
+	var pane PaneInfo
+	if agent.Binding.PaneID != "" {
+		if pane = m.Tmux.Pane(agent.Binding.PaneID); pane.QueryFailed {
+			return fmt.Errorf("%w: pane %s state unknown; nothing was changed, retry", ErrTmuxUnavailable, agent.Binding.PaneID)
+		}
 	}
 	nonce := randomHex(12)
 	bridgePath, err := WriteBridge(m.Store.Root)
@@ -307,17 +429,20 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 	if err != nil {
 		return err
 	}
-	pane := m.Tmux.Pane(agent.Binding.PaneID)
 	tmuxName := agent.Binding.TmuxSession
 	if tmuxName == "" {
 		tmuxName = agent.DevxSession
 	}
 	var windowID, paneID string
-	if relaunch && pane.Exists && pane.SessionName == tmuxName {
+	if relaunch && pane.Exists && pane.InSession(tmuxName) {
 		if err := m.Tmux.RespawnPane(agent.Binding.PaneID, agent.Worktree, scriptPath); err != nil {
 			return err
 		}
 		windowID, paneID = pane.WindowID, agent.Binding.PaneID
+	} else if agent.Adopted {
+		// Never add windows to the owner's own session: only the exact
+		// adopted pane may be (re)used.
+		return denied("adopted agent %s: pane %s is gone or no longer in session %q; adopt the session's Pi pane again", agent.ID, agent.Binding.PaneID, tmuxName)
 	} else {
 		windowID, paneID, err = m.Tmux.NewWindow(tmuxName, m.Config.WindowName, agent.Worktree, scriptPath)
 		if err != nil {
@@ -367,7 +492,12 @@ func (m *Manager) launchScript(a *Agent, nonce, bridgePath string) string {
 	}
 	fmt.Fprintf(&b, "cd %s || exit 1\n", shellQuote(a.Worktree))
 	args := append([]string{m.Config.PiCommand}, m.Config.PiCommandArgs...)
-	args = append(args, "--session-id", a.PiSessionID, "--name", "devx "+a.DevxSession, "-e", bridgePath)
+	args = append(args, "--session-id", a.PiSessionID)
+	if !a.Adopted {
+		// Adopted sessions keep the owner's own Pi session name.
+		args = append(args, "--name", "devx "+a.DevxSession)
+	}
+	args = append(args, "-e", bridgePath)
 	args = append(args, m.Config.PiArgs...)
 	quoted := make([]string, len(args))
 	for i, s := range args {
@@ -560,7 +690,115 @@ func (m *Manager) Relaunch(agentID string, force bool) error {
 	if view.BridgeOnline && !force {
 		return fmt.Errorf("agent %s is running in pane %s; refusing to relaunch a live Pi (use --force to replace it)", agentID, view.Agent.Binding.PaneID)
 	}
+	if view.State == AgentAdoptedPending && !force {
+		// The adopted Pi has no bridge, so DevX cannot tell whether it is
+		// busy or holds an unsent draft. Only the owner can decide.
+		return fmt.Errorf("agent %s was adopted from a running Pi in pane %s that DevX cannot see into; "+
+			"make sure that Pi is idle with nothing unsent in its editor, then rerun with --force. "+
+			"The pane's process is replaced by Pi resuming the same conversation (session %s) with the DevX bridge", agentID, view.Agent.Binding.PaneID, view.Agent.PiSessionID)
+	}
 	return m.launch(agentID, true)
+}
+
+// AdoptRequest registers an existing DevX session's running Pi as a managed
+// agent. It is a human (CLI) action and is never exposed over MCP.
+type AdoptRequest struct {
+	Session     string // DevX session name
+	PaneID      string // exact tmux pane (%id) running the session's Pi
+	PiSessionID string // Pi session ID of that conversation
+	By          string
+}
+
+// AdoptResult identifies the adopted agent.
+type AdoptResult struct {
+	AgentID  string `json:"agent_id"`
+	Session  string `json:"session"`
+	Pane     string `json:"pane"`
+	Replayed bool   `json:"replayed"`
+}
+
+var piSessionIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// Adopt registers an existing session's Pi without touching it: no tmux
+// command other than reading the pane, no relaunch, no prompt. The agent
+// starts under human control, so nothing is delivered until the owner
+// relaunches (to load the bridge) and releases. Adopting the same session,
+// pane and Pi session again returns the existing agent.
+func (m *Manager) Adopt(req AdoptRequest) (*AdoptResult, error) {
+	adopter, ok := m.Creator.(SessionAdopter)
+	if !ok {
+		return nil, fmt.Errorf("this DevX build cannot adopt sessions")
+	}
+	if !strings.HasPrefix(req.PaneID, "%") || len(req.PaneID) < 2 {
+		return nil, fmt.Errorf("pane must be an exact tmux pane id like %%12")
+	}
+	if !piSessionIDRe.MatchString(req.PiSessionID) {
+		return nil, fmt.Errorf("invalid Pi session id %q", req.PiSessionID)
+	}
+	agents, err := m.Store.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range agents {
+		if a.RetiredAt != nil || a.DevxSession != req.Session {
+			continue
+		}
+		if a.Adopted && a.Binding.PaneID == req.PaneID && a.PiSessionID == req.PiSessionID {
+			// Replay writes nothing, and never rebinds: the session must
+			// still be the instance this agent adopted.
+			if _, err := adopter.VerifyAdopted(req.Session, a); err != nil {
+				return nil, fmt.Errorf("adoption replay for agent %s: %w", a.ID, err)
+			}
+			return &AdoptResult{AgentID: a.ID, Session: a.DevxSession, Pane: a.Binding.PaneID, Replayed: true}, nil
+		}
+		return nil, denied("session %q is already managed by agent %s", req.Session, a.ID)
+	}
+	agentID := newAgentID()
+	sess, err := adopter.Adopt(req.Session, agentID)
+	if err != nil {
+		return nil, err
+	}
+	undo := func(cause error) error {
+		if rerr := adopter.ReleaseAdoption(req.Session, agentID); rerr != nil {
+			return fmt.Errorf("%w (and releasing the session marker failed: %v)", cause, rerr)
+		}
+		return cause
+	}
+	pane := m.Tmux.Pane(req.PaneID)
+	switch {
+	case pane.QueryFailed:
+		return nil, undo(fmt.Errorf("%w: cannot inspect pane %s; nothing was adopted, retry", ErrTmuxUnavailable, req.PaneID))
+	case !pane.Exists || pane.Dead:
+		return nil, undo(fmt.Errorf("pane %s does not exist or is dead", req.PaneID))
+	case !pane.InSession(sess.TmuxName):
+		return nil, undo(denied("pane %s is not in session %q", req.PaneID, sess.TmuxName))
+	case pane.Command != "pi" && pane.Command != "node":
+		return nil, undo(denied("pane %s is running %q, not Pi; adopt the pane where the session's Pi runs", req.PaneID, pane.Command))
+	}
+	now := m.Store.now()
+	agent := &Agent{
+		ID: agentID, DevxSession: sess.Name, Project: sess.Project, Worktree: sess.Path, PiSessionID: req.PiSessionID,
+		SessionInstanceID: sess.InstanceID, SessionCreatedAt: sess.CreatedAt,
+		Binding:   Binding{TmuxSession: sess.TmuxName, WindowID: pane.WindowID, PaneID: req.PaneID},
+		Lease:     Lease{Holder: LeaseHuman, Generation: 1, Since: now, Reason: "adopted", By: req.By},
+		CreatedAt: now, CreatedBy: req.By, Adopted: true,
+	}
+	if err := m.Store.ensureAgentDirs(agent.ID); err != nil {
+		return nil, undo(err)
+	}
+	err = m.Store.WithAgentLock(agent.ID, func() error {
+		if err := m.Store.SaveAgent(agent); err != nil {
+			return err
+		}
+		_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_adopted", Source: "human", Data: withInstance(map[string]any{
+			"session": agent.DevxSession, "pane": req.PaneID, "window": pane.WindowID, "pi_session_id": req.PiSessionID}, agent)})
+		return err
+	})
+	if err != nil {
+		_ = os.RemoveAll(m.Store.AgentDir(agent.ID))
+		return nil, undo(err)
+	}
+	return &AdoptResult{AgentID: agent.ID, Session: agent.DevxSession, Pane: req.PaneID}, nil
 }
 
 // markOrphanedLocked moves running tasks whose bridge instance is gone to
@@ -614,7 +852,10 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 		v := &AgentView{Agent: a, AttachHint: fmt.Sprintf("devx session attach %s  (window %q); take control with: devx agent takeover %s", a.DevxSession, m.Config.WindowName, a.ID)}
 		pane := m.Tmux.Pane(a.Binding.PaneID)
 		v.PaneAlive = pane.Exists && !pane.Dead
-		v.BindingOK = pane.Exists && pane.SessionName == a.Binding.TmuxSession && pane.WindowID == a.Binding.WindowID
+		// A grouped viewer session (e.g. "<session>-web") shares the bound
+		// window; tmux may name it instead of the bound session. That is the
+		// same pane in the same window, not a moved one.
+		v.BindingOK = pane.InSession(a.Binding.TmuxSession) && pane.WindowID == a.Binding.WindowID
 		b, berr := m.Store.LoadBridge(a.ID)
 		bridgeDead := false
 		if berr == nil {
@@ -640,7 +881,16 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 				// A different live bridge instance cannot be holding this
 				// turn, and a missing pane cannot finish it.
 				sameInstanceDead := bridgeDead && v.Bridge.Instance == t.BridgeInstance
-				if (v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || (!pane.Exists || pane.Dead) && a.Binding.PaneID != "" {
+				// Only a CONFIRMED absence or dead pane counts: a failed
+				// tmux query (busy/restarting server, timeout, tmux not on
+				// PATH) proves nothing and must not terminalize the task.
+				// A fresh heartbeat from the very Pi instance holding this
+				// turn proves it is alive, whatever tmux says (wrong socket,
+				// misclassified error): never orphan it. If the pane really
+				// died, the heartbeat goes stale and this re-evaluates.
+				sameInstanceLive := v.BridgeOnline && v.Bridge.Instance == t.BridgeInstance
+				paneGone := !sameInstanceLive && !pane.QueryFailed && (!pane.Exists || pane.Dead) && a.Binding.PaneID != ""
+				if (v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || paneGone {
 					if err := m.markOrphanedLocked(a, "the Pi process that received this task is gone; outcome unknown — inspect the session"); err != nil {
 						return err
 					}
@@ -654,10 +904,14 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 			v.State, v.Detail = AgentRetired, fmt.Sprintf("session %q was removed; records kept for inspection", a.DevxSession)
 		case a.Binding.PaneID == "":
 			v.State, v.Detail = AgentNotLaunched, "start did not finish launching Pi; retry the start with the same idempotency_key"
+		case pane.QueryFailed:
+			v.State, v.Detail = AgentUnknown, "tmux could not be queried (server busy, restarting or unavailable); pane state unknown, nothing was changed"
 		case !pane.Exists:
 			v.State, v.Detail = AgentPaneExited, "the bound tmux pane no longer exists"
 		case !v.BindingOK:
 			v.State, v.Detail = AgentStaleBind, fmt.Sprintf("pane %s now belongs to %s/%s, not the bound window", a.Binding.PaneID, pane.SessionName, pane.WindowID)
+		case a.Adopted && a.LaunchCount == 0:
+			v.State, v.Detail = AgentAdoptedPending, fmt.Sprintf("adopted; the session's Pi runs without the DevX bridge. When it is idle, run: devx agent relaunch %s --force (same conversation), then /devx-release", a.ID)
 		case !v.BridgeOnline && bridgeDead:
 			v.State, v.Detail = AgentPaneExited, "Pi exited; the pane is holding for inspection (devx agent relaunch resumes the same Pi session)"
 		case !v.BridgeOnline:
@@ -728,6 +982,8 @@ func (m *Manager) waitingReason(av *AgentView, t *Task) string {
 		return WaitHumanControl
 	case av.State == AgentStaleBind || av.State == AgentPaneExited:
 		return WaitBindingStale
+	case av.State == AgentAdoptedPending:
+		return WaitBridgeOnline
 	case !av.BridgeOnline:
 		return WaitBridgeOnline
 	case av.CurrentTask != "":
@@ -776,11 +1032,27 @@ func (m *Manager) Result(taskID string, offset, maxBytes int) (*ResultChunk, err
 	if offset < 0 || offset > len(text) {
 		return nil, fmt.Errorf("offset %d is outside the result (0..%d)", offset, len(text))
 	}
-	for offset > 0 && offset < len(text) && !utf8.RuneStart(text[offset]) {
+	// Back up to the start of the rune containing offset. If offset is not
+	// inside a valid rune (stray continuation bytes), keep the requested
+	// offset: backing up would return the client's cursor to an earlier
+	// position and loop it.
+	requested := offset
+	for back := 0; back < utf8.UTFMax-1 && offset > 0 && offset < len(text) && !utf8.RuneStart(text[offset]); back++ {
 		offset--
+	}
+	if offset != requested {
+		if _, size := utf8.DecodeRuneInString(text[offset:]); offset+size <= requested {
+			offset = requested
+		}
 	}
 	c.Offset = offset
 	chunk, _ := headExcerpt(text[offset:], maxBytes)
+	if chunk == "" && offset < len(text) {
+		// max_bytes is smaller than the rune at offset: return that one
+		// whole rune so the cursor always advances.
+		_, size := utf8.DecodeRuneInString(text[offset:])
+		chunk = text[offset : offset+size]
+	}
 	c.Text = chunk
 	c.NextOffset = offset + len(chunk)
 	c.EOF = c.NextOffset >= len(text)
@@ -891,4 +1163,10 @@ func (m *Manager) RetireForSession(agentID, session string) error {
 		_, err = m.Store.AppendEvent(agentID, Event{Type: "agent_retired", Source: "devx", Data: map[string]any{"session": session}})
 		return err
 	})
+}
+
+// acceptedBindingBasis reports whether a migration binding event records a
+// basis this build trusts.
+func acceptedBindingBasis(b string) bool {
+	return b == BasisMarker || b == BasisOwnerConfirmed || b == BasisEventLog
 }

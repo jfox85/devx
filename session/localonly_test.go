@@ -80,6 +80,8 @@ func TestLocalOnlyCreateHasNoPortsRoutesOrProjectSideEffects(t *testing.T) {
 		t.Fatal("marker not persisted")
 	}
 	// tmux: one inert window, no editor/services windows from the template.
+	// (tmux is Unix-only; the record/worktree assertions above run everywhere.)
+	requireTmux(t)
 	if err := EnsureLocalOnlyTmuxSession("lo-a", sess); err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +163,7 @@ func TestLocalOnlyTmuxRefusesForeignOrUnmarked(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A same-named tmux session that someone else made is never adopted.
+	requireTmux(t)
 	tmuxOut(t, "new-session", "-d", "-s", "lo-d", "sleep", "600")
 	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", "=lo-d").Run() })
 	if err := EnsureLocalOnlyTmuxSession("lo-d", sess); !errors.Is(err, ErrLocalOnlyNotOwned) {
@@ -186,5 +189,14 @@ func TestLocalOnlyRejectsUnsafeNames(t *testing.T) {
 		if _, err := CreateLocalOnlySession(LocalOnlyRequest{Name: n, ProjectPath: "/tmp", AgentID: "pa"}); err == nil {
 			t.Fatalf("name %q accepted", n)
 		}
+	}
+}
+
+// requireTmux skips the tmux part of a test where tmux cannot run (Windows,
+// or tmux not installed); session-record assertions before it still run.
+func requireTmux(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not available on this platform (%v)", err)
 	}
 }

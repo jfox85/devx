@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -190,7 +191,7 @@ func TestStartRetryAfterPartialFailureResumes(t *testing.T) {
 
 type failingTmuxCreator struct{ *dirCreator }
 
-func (f *failingTmuxCreator) EnsureTmux(string, string) error { return errors.New("tmux unavailable") }
+func (f *failingTmuxCreator) EnsureTmux(string, *Agent) error { return errors.New("tmux unavailable") }
 
 func TestCancelSemantics(t *testing.T) {
 	m, _ := newTestManager(t)
@@ -275,8 +276,12 @@ func TestRestartReconciliation(t *testing.T) {
 	})
 	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: 999999, Pane: "%999999", Heartbeat: time.Now().Add(-time.Minute)})
 
-	// "Restart": a brand-new manager over the same root.
-	m2 := NewManager(NewStore(m.Store.Root), m.Tmux, m.Creator, m.Config)
+	// "Restart": a brand-new manager over the same root. tmux confirms the
+	// pane is gone (a failed query would only make the state unknown).
+	gone := Tmux{Exec: func(args ...string) (string, error) {
+		return "", fmt.Errorf("tmux %s: exit status 1: can't find pane: %%999999", args[0])
+	}}
+	m2 := NewManager(NewStore(m.Store.Root), gone, m.Creator, m.Config)
 	tv, av, err := m2.TaskStatus(run.TaskID)
 	if err != nil {
 		t.Fatal(err)
@@ -641,5 +646,277 @@ func TestAppendEventRecoversSeqFromLog(t *testing.T) {
 	evs, last, _ := m.Store.ReadEvents(a.ID, 3, 10)
 	if len(evs) != 1 || evs[0].Type != "after-crash" || last != 4 {
 		t.Fatalf("events after 3: %+v last=%d", evs, last)
+	}
+}
+
+// CodeRabbit r4238379180: a transient tmux failure (server busy, timeout,
+// tmux missing from PATH) is not proof the pane is gone. A running task must
+// stay running; only a confirmed absence (or a dead bridge instance) may
+// orphan it.
+func TestTransientTmuxErrorDoesNotOrphanRunningTask(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%5"}
+		a.LaunchNonce = "n"
+		return m.Store.SaveAgent(a)
+	})
+	run, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k1"})
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		tk, _ := m.Store.LoadTask(a.ID, run.TaskID)
+		tk.State, tk.BridgeInstance = TaskRunning, "inst"
+		return m.Store.SaveTask(tk)
+	})
+	// Live bridge, same instance, fresh heartbeat.
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: os.Getpid(), Pane: "%5", Heartbeat: time.Now()})
+
+	mode := "error"
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		switch mode {
+		case "error":
+			return "", fmt.Errorf("tmux display-message: exit status 1: server exited unexpectedly")
+		case "absent":
+			return "", fmt.Errorf("tmux display-message: exit status 1: can't find pane: %%5")
+		}
+		return "%5\ts1\t@1\t0\t1\ts1\tpi", nil
+	}}
+	tv, av, err := m.TaskStatus(run.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tv.State != TaskRunning {
+		t.Fatalf("transient tmux error must not terminalize the task: %+v", tv)
+	}
+	if av.State == AgentPaneExited {
+		t.Fatalf("transient tmux error must not report the pane as gone: %+v", av)
+	}
+	mode = "ok"
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskRunning {
+		t.Fatalf("after recovery: %+v", tv)
+	}
+	// A confirmed absence still orphans it once the bridge is no longer
+	// heartbeating (a live same-instance heartbeat proves Pi is alive).
+	mode = "absent"
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskRunning {
+		t.Fatalf("live heartbeat must outweigh tmux: %+v", tv)
+	}
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: os.Getpid(), Pane: "%5", Heartbeat: time.Now().Add(-time.Hour)})
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskUnknown {
+		t.Fatalf("confirmed pane absence with a stale bridge must orphan: %+v", tv)
+	}
+}
+
+// CodeRabbit r4238379183: a chunk always advances the cursor, even when
+// max_bytes is smaller than the rune at offset.
+func TestResultChunkAlwaysAdvances(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	r, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k1"})
+	text := "é漢x"
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		tk, _ := m.Store.LoadTask(a.ID, r.TaskID)
+		tk.State = TaskCompleted
+		return m.Store.SaveTask(tk)
+	})
+	if err := os.WriteFile(m.Store.resultPath(a.ID, r.TaskID), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	off := 0
+	for i := 0; i < 10; i++ {
+		c, err := m.Result(r.TaskID, off, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.NextOffset <= off {
+			t.Fatalf("chunk at %d did not advance: %+v", off, c)
+		}
+		got += c.Text
+		off = c.NextOffset
+		if c.EOF {
+			break
+		}
+	}
+	if got != text {
+		t.Fatalf("reassembled %q want %q", got, text)
+	}
+}
+
+// A failed tmux query must make launch/relaunch fail closed: no second Pi
+// window, no respawn, no orphaning, no state change.
+func TestTmuxUnavailableFailsClosed(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%5"}
+		return m.Store.SaveAgent(a)
+	})
+	m.Creator = okTmuxCreator{m.Creator}
+	var calls []string
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		calls = append(calls, args[0])
+		return "", fmt.Errorf("tmux %s: exit status 1: server exited unexpectedly", args[0])
+	}}
+	if err := m.launch(a.ID, false); !errors.Is(err, ErrTmuxUnavailable) {
+		t.Fatalf("launch with tmux unreachable: want ErrTmuxUnavailable, got %v", err)
+	}
+	if err := m.launch(a.ID, true); !errors.Is(err, ErrTmuxUnavailable) {
+		t.Fatalf("relaunch with tmux unreachable: want ErrTmuxUnavailable, got %v", err)
+	}
+	for _, c := range calls {
+		if c != "display-message" {
+			t.Fatalf("only read-only tmux queries may run, got %q", c)
+		}
+	}
+	got, _ := m.Store.LoadAgent(a.ID)
+	if got.LaunchCount != 0 || got.LaunchNonce != "" {
+		t.Fatalf("nothing may change: %+v", got)
+	}
+}
+
+// okTmuxCreator reports the session's tmux as present without running tmux.
+type okTmuxCreator struct{ SessionCreator }
+
+func (okTmuxCreator) EnsureTmux(string, *Agent) error { return nil }
+
+// Review M2: a missing tmux server is a confirmed absence (panes cannot
+// outlive their server), not a query failure; otherwise Start's resume could
+// never relaunch.
+func TestNoTmuxServerIsAbsenceNotFailure(t *testing.T) {
+	for _, msg := range []string{
+		"tmux display-message: exit status 1: no server running on /tmp/tmux-501/default",
+		"tmux display-message: exit status 1: error connecting to /tmp/x/sock (No such file or directory)",
+		"tmux display-message: exit status 1: can't find pane: %5",
+	} {
+		p := Tmux{Exec: func(...string) (string, error) { return "", errors.New(msg) }}.Pane("%5")
+		if p.Exists || p.QueryFailed {
+			t.Errorf("%q: want confirmed absence, got %+v", msg, p)
+		}
+	}
+	for _, msg := range []string{
+		"signal: killed",
+		"tmux display-message: exit status 1: error connecting to /tmp/x/sock (Permission denied)",
+		"tmux display-message: exit status 1: error connecting to /tmp/x/sock (File name too long)",
+	} {
+		p := Tmux{Exec: func(...string) (string, error) { return "", errors.New(msg) }}.Pane("%5")
+		if !p.QueryFailed {
+			t.Errorf("%q says nothing about the pane: must be QueryFailed, got %+v", msg, p)
+		}
+	}
+}
+
+// Review M1: launch queries the pane once. A tmux failure on a later call
+// must not turn a relaunch into a second Pi window.
+func TestRelaunchUsesSinglePaneAnswer(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%5"}
+		return m.Store.SaveAgent(a)
+	})
+	m.Creator = okTmuxCreator{m.Creator}
+	n := 0
+	var cmds []string
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		cmds = append(cmds, args[0])
+		if args[0] == "display-message" {
+			n++
+			if n == 1 {
+				return "%5\ts1\t@1\t0\t1\ts1\tpi", nil
+			}
+			return "", errors.New("tmux display-message: exit status 1: server exited unexpectedly")
+		}
+		return "", nil
+	}}
+	_ = m.launch(a.ID, true)
+	for _, c := range cmds {
+		if c == "new-window" {
+			t.Fatalf("relaunch opened a second window after a transient failure: %v", cmds)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("pane queried %d times, want 1: %v", n, cmds)
+	}
+}
+
+// Review L1: invalid UTF-8 never moves the cursor backwards or stalls.
+func TestResultChunkAdvancesOnInvalidUTF8(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	r, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k1"})
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		tk, _ := m.Store.LoadTask(a.ID, r.TaskID)
+		tk.State = TaskCompleted
+		return m.Store.SaveTask(tk)
+	})
+	text := "a\x80\x80x"
+	_ = os.WriteFile(m.Store.resultPath(a.ID, r.TaskID), []byte(text), 0o600)
+	off := 1
+	for i := 0; i < 10; i++ {
+		c, err := m.Result(r.TaskID, off, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.NextOffset <= off {
+			t.Fatalf("chunk at %d did not advance: %+v", off, c)
+		}
+		off = c.NextOffset
+		if c.EOF {
+			return
+		}
+	}
+	t.Fatal("did not reach EOF")
+}
+
+// Review round 2: a confirmed-absent pane (e.g. a wrong socket in the MCP
+// process) must not orphan a task while the same Pi instance is heartbeating;
+// once the heartbeat is stale it may.
+func TestLiveSameInstanceBridgeIsNeverOrphaned(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%5"}
+		a.LaunchNonce = "n"
+		return m.Store.SaveAgent(a)
+	})
+	run, _ := m.Send(SendRequest{AgentID: a.ID, Prompt: "p", IdempotencyKey: "k1"})
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		tk, _ := m.Store.LoadTask(a.ID, run.TaskID)
+		tk.State, tk.BridgeInstance = TaskRunning, "inst"
+		return m.Store.SaveTask(tk)
+	})
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		return "", fmt.Errorf("tmux display-message: exit status 1: error connecting to /tmp/wrong/default (No such file or directory)")
+	}}
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: os.Getpid(), Pane: "%5", Heartbeat: time.Now()})
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskRunning {
+		t.Fatalf("live same-instance bridge must keep the task running: %+v", tv)
+	}
+	// Heartbeat stale and its process gone: now it is orphaned.
+	_ = writeJSONAtomic(m.Store.bridgePath(a.ID), Bridge{Instance: "inst", Nonce: "n", PID: 999999, Pane: "%5", Heartbeat: time.Now().Add(-time.Hour)})
+	if tv, _, _ := m.TaskStatus(run.TaskID); tv.State != TaskUnknown {
+		t.Fatalf("dead pane with stale bridge must orphan: %+v", tv)
+	}
+}
+
+// processAlive must tell a running process from an exited one on every
+// platform (Windows has no signal 0): stale-lock reclamation depends on it.
+func TestProcessAliveDistinguishesExitedProcess(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Fatal("this process must be alive")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if processAlive(cmd.Process.Pid) {
+		t.Fatalf("exited process %d reported alive", cmd.Process.Pid)
+	}
+	if processAlive(0) || processAlive(-1) {
+		t.Fatal("non-positive pids are never alive")
 	}
 }
