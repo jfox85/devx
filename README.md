@@ -329,7 +329,14 @@ devx ask approve req_abc123 --always  # remember this requester/target pair
 devx ask deny req_abc123
 ```
 
-Responder execution is opt-in via config:
+Responder execution is opt-in via the owner config `~/.config/devx/config.yaml`
+(or `--config`). The responder runs a local command, so its settings are read
+**only** from that file: a project `.devx/config.yaml` and `DEVX_*`
+environment variables cannot enable it, change its mode or choose its
+command. On macOS and Linux the file must also be owned by you and not
+group/world-writable; Windows has no such ownership check, so there the file's
+ACL is what protects it. An unreadable or invalid `agent_responder` section
+disables the responder.
 
 ```yaml
 agent_responder:

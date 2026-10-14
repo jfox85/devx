@@ -7,10 +7,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfox85/devx/artifactbridge"
 	"github.com/jfox85/devx/ask"
 	"github.com/jfox85/devx/session"
 	"github.com/spf13/cobra"
 )
+
+// ownerResponderPolicy loads the `devx ask` responder policy directly from
+// the owner's DevX config file (the same file and trust checks as the
+// managed-agent launch policy), never through viper. Every responder entry
+// point (CLI, TUI, web) resolves its policy through ask.EffectivePolicy.
+func ownerResponderPolicy() (ask.Policy, error) {
+	rp, err := artifactbridge.LoadResponderPolicyFile(artifactPolicyPath())
+	if err != nil {
+		return ask.Policy{}, err
+	}
+	return ask.Policy{Enabled: rp.Enabled, Mode: rp.Mode, Command: rp.Command, Args: rp.Args, Timeout: rp.Timeout, ReadOnly: rp.ReadOnly}, nil
+}
 
 var askJSON bool
 var askNoAgent bool
@@ -138,6 +151,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return printAsk(cmd, req)
 	}
 	policy := ask.EffectivePolicy()
+	if policy.LoadErr != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "devx: agent responder disabled, owner config unusable: %v\n", policy.LoadErr)
+	}
 	if policy.Enabled && policy.Mode == "approval" {
 		allowed, err := askStore.IsAllowed(fromName, targetName, fromPath, target.Path)
 		if err != nil {
@@ -194,6 +210,7 @@ func printAskList(cmd *cobra.Command, reqs []*ask.Request) error {
 }
 
 func init() {
+	ask.PolicyLoader = ownerResponderPolicy
 	rootCmd.AddCommand(askCmd)
 	askCmd.PersistentFlags().BoolVar(&askJSON, "json", false, "Output JSON")
 	askCmd.Flags().BoolVar(&askNoAgent, "no-agent", false, "Create the ask without running a responder")
