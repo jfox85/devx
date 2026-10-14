@@ -81,7 +81,15 @@ jobs:
         brew install pipx
         pipx install tmuxp
     
+    # Node runs the Pi bridge's fault-injection suite (piagent); required so
+    # a missing Node fails instead of silently skipping it.
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '22'
+    
     - name: Run tests with race detector
+      env:
+        DEVX_REQUIRE_BRIDGE_NODE_TESTS: '1'
       run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
     
     - name: Upload coverage
