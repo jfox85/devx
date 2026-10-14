@@ -320,14 +320,15 @@ func TestRollbackRemovesOnlyWhatMigrationWrote(t *testing.T) {
 	pre := session.NewInstanceID()
 	e.sess.recs["pre"] = &session.Session{Name: "pre", Path: wtPath("pre"), CreatedAt: e.t0, InstanceID: pre}
 	var j []JournalEntry
-	if err := ApplyInstancePlan(e.plan(), e.sess.stores(e.store, &j)); err != nil {
+	plan := e.plan()
+	if err := ApplyInstancePlan(plan, e.sess.stores(e.store, &j)); err != nil {
 		t.Fatal(err)
 	}
 	// After the migration b's binding was changed by someone else.
 	gb, _ := e.store.LoadAgent(b.ID)
 	gb.SessionInstanceID = "si_111111111111111111111111"
 	_ = e.store.WithAgentLock(b.ID, func() error { return e.store.SaveAgent(gb) })
-	n, skipped, err := RollbackInstances(j, e.sess.stores(e.store, &[]JournalEntry{}))
+	n, skipped, err := RollbackInstancePlan(plan, j, e.sess.stores(e.store, &[]JournalEntry{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +345,7 @@ func TestRollbackRemovesOnlyWhatMigrationWrote(t *testing.T) {
 		t.Fatal("markers must be untouched")
 	}
 	// Rollback is repeatable.
-	if n2, _, err := RollbackInstances(j, e.sess.stores(e.store, &[]JournalEntry{})); err != nil || n2 != 0 {
+	if n2, _, err := RollbackInstancePlan(plan, j, e.sess.stores(e.store, &[]JournalEntry{})); err != nil || n2 != 0 {
 		t.Fatalf("second rollback: %d %v", n2, err)
 	}
 }
@@ -518,6 +519,66 @@ func TestPlanRestoresBindingDroppedFromAgentRecord(t *testing.T) {
 		InstanceID: session.NewInstanceID(), LocalOnly: &session.LocalOnlyMeta{Owner: session.LocalOnlyOwnerPiMCP, AgentID: a.ID}}
 	if it := plan().agent(a.ID); it.Action != ActionSkip || it.Reason != SkipBoundElsewhere {
 		t.Fatalf("recreated: %+v", it)
+	}
+}
+
+// Journals of restore applies (event_log binding, restored session id) are
+// members of their plan and round-trip through RollbackInstancePlan; a
+// restored session id is kept. Entries from another plan are refused.
+func TestRollbackPlanRoundTripsRestores(t *testing.T) {
+	e := newInstEnv(t)
+	a := e.legacy("s", "local", -time.Second)
+	var j0 []JournalEntry
+	first := e.plan()
+	if err := ApplyInstancePlan(first, e.sess.stores(e.store, &j0)); err != nil {
+		t.Fatal(err)
+	}
+	bound, _ := e.store.LoadAgent(a.ID)
+	id := bound.SessionInstanceID
+	// Old writer drops both the agent binding and the session id.
+	bound.SessionInstanceID, bound.SessionCreatedAt = "", time.Time{}
+	_ = e.store.WithAgentLock(a.ID, func() error { return e.store.SaveAgent(bound) })
+	e.sess.recs["s"].InstanceID = ""
+	p := PlanInstancesWithHistory(e.sess.clone(), e.list(), func(string) string { return session.NewInstanceID() }, e.store.RecordedBinding)
+	if p.agent(a.ID).Action != ActionRestoreBinding || len(p.Sessions) != 1 || !p.Sessions[0].Existing {
+		t.Fatalf("restore plan: %+v %+v", p.agent(a.ID), p.Sessions)
+	}
+	var j []JournalEntry
+	if err := ApplyInstancePlan(p, e.sess.stores(e.store, &j)); err != nil {
+		t.Fatal(err)
+	}
+	if len(j) != 2 || !j[0].Restored || j[1].Basis != BasisEventLog || j[0].PlanHash != p.Hash || j[1].PlanHash != p.Hash {
+		t.Fatalf("journal: %+v", j)
+	}
+	if err := ValidateInstanceJournal(p, j); err != nil {
+		t.Fatal(err)
+	}
+	// The first run's entries are not members of this plan, and vice versa.
+	if err := ValidateInstanceJournal(p, j0); !errors.Is(err, ErrJournalNotInPlan) {
+		t.Fatalf("foreign entries: %v", err)
+	}
+	// Legacy entries without plan_hash still validate by exact membership.
+	legacy := append([]JournalEntry{}, j...)
+	for i := range legacy {
+		legacy[i].PlanHash = ""
+	}
+	if err := ValidateInstanceJournal(p, legacy); err != nil {
+		t.Fatal(err)
+	}
+	n, skipped, err := RollbackInstancePlan(p, j, e.sess.stores(e.store, &[]JournalEntry{}))
+	if err != nil || n != 1 || len(skipped) != 1 {
+		t.Fatalf("rollback: n=%d skipped=%v err=%v", n, skipped, err)
+	}
+	if got, _ := e.store.LoadAgent(a.ID); got.SessionInstanceID != "" {
+		t.Fatal("restored binding must be undone")
+	}
+	if e.sess.recs["s"].InstanceID != id {
+		t.Fatal("restored pre-existing session id must be kept")
+	}
+	// A tampered plan is refused before anything is touched.
+	p.Agents[0].AgentID = "pa_ffffffffffff"
+	if _, _, err := RollbackInstancePlan(p, j, e.sess.stores(e.store, &[]JournalEntry{})); err == nil {
+		t.Fatal("tampered plan must be refused")
 	}
 }
 
