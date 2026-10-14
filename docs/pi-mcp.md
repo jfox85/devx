@@ -502,7 +502,10 @@ to its session, but only when the evidence is unambiguous:
   plan.
 - **Rollback.** `--rollback <backup-dir>` removes exactly the values the
   journal records, and only where the record still holds them. Ids that
-  restored an agent's existing binding are kept. Roll back the newest
+  restored an agent's existing binding are kept. Undoing a restore taken
+  from the agent's event log removes the binding from `agent.json` but not
+  the logged history (event `session_instance_restore_undone`), so the
+  agent stays restorable by a later run, as before the apply. Roll back the newest
   run first: a later run may have written identical values, so rolling
   back an older run needs `--force-older` (runs already rolled back don't
   count). Every apply gets its own backup directory.
