@@ -3,7 +3,7 @@
   // just the artifact pane), works the same in the browser, the desktop app and
   // mobile, and lets the user step through viewable artifacts.
   import { onMount, tick } from 'svelte'
-  import { renderKind, isViewable, neighborIndex } from './artifactKinds.js'
+  import { renderKind, isViewable, neighborIndex, indexOfID } from './artifactKinds.js'
   import { openArtifactExternally, downloadArtifactFile } from './artifactActions.js'
 
   export let sessionName = ''
@@ -11,7 +11,18 @@
   export let startID = ''
   export let onClose = () => {}
 
-  let index = Math.max(0, items.findIndex(a => a.id === startID))
+  // Follow the artifact by ID, not position (see indexOfID): the pane reloads
+  // `items` while the viewer is open.
+  let currentID = startID
+  let index = 0
+  $: follow(items)
+
+  // Runs only when `items` changes. If the followed artifact was removed,
+  // adopt the one now shown so later reloads track what is on screen.
+  function follow(list) {
+    index = indexOfID(list, currentID, index)
+    if (list[index]) currentID = list[index].id
+  }
   let actualSize = false
   let text = ''
   let textFor = ''
@@ -43,6 +54,7 @@
     const next = neighborIndex(items, index, step)
     if (next === -1) return
     index = next
+    currentID = items[next].id
     actualSize = false
   }
 
@@ -82,7 +94,10 @@
     // If the starting artifact is not viewable, jump to the nearest one that is.
     if (current && !isViewable(current)) {
       const n = neighborIndex(items, index, 1)
-      if (n !== -1) index = n
+      if (n !== -1) {
+        index = n
+        currentID = items[n].id
+      }
     }
     tick().then(() => root?.focus())
     return () => clearTimeout(statusTimer)

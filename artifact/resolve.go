@@ -38,11 +38,16 @@ func ResolveFile(sess *session.Session, id string) (string, *Artifact, error) {
 // "open with default app" handler. Anything else (scripts, .command, .app,
 // archives, binaries) could execute code when opened, so callers should reveal
 // the file in the file manager instead.
+//
+// HTML and SVG are deliberately excluded. Artifact content is agent-written,
+// and the default app for these is a browser, which would run their scripts
+// as a local file:// page outside the sandboxed in-app preview (served with
+// CSP sandbox). They are viewed in-app and revealed in the file manager here.
 var safeOpenExts = map[string]bool{
-	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
 	".mp4": true, ".mov": true, ".webm": true,
-	".pdf": true, ".html": true, ".htm": true,
-	".md": true, ".txt": true, ".log": true, ".diff": true, ".patch": true,
+	".pdf": true,
+	".md":  true, ".txt": true, ".log": true, ".diff": true, ".patch": true,
 	".json": true, ".csv": true,
 }
 

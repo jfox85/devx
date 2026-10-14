@@ -47,6 +47,19 @@ export function downloadURL(a) {
   return url + (url.includes('?') ? '&' : '?') + 'download=1'
 }
 
+// indexOfID finds the artifact the viewer is following after its list
+// changes. The pane reloads the list (upload, create, rename, archive) while
+// the viewer is open; following by ID keeps the view — and Open/Download — on
+// the same file when a new artifact shifts positions. If the artifact is gone,
+// stay at the previous position, clamped to the new list.
+export function indexOfID(items, id, previousIndex = 0) {
+  const n = items?.length || 0
+  if (n === 0) return 0
+  const i = items.findIndex(a => a?.id === id)
+  if (i !== -1) return i
+  return Math.min(Math.max(0, previousIndex), n - 1)
+}
+
 // neighborIndex steps through viewable artifacts, wrapping at either end.
 // Returns -1 when no other viewable artifact exists.
 export function neighborIndex(items, index, step) {

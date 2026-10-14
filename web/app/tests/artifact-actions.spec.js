@@ -5,20 +5,22 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 
 const session = { name: 'alpha', display_name: 'Alpha', project_alias: 'alpha', branch: 'main', pinned: false, activity_at: '2026-09-04T12:00:00Z', last_opened_at: '2026-09-04T12:00:00Z', target_type: 'host', color: 'blue', status: { priority: 5, color: 'green', badges: [] }, stale: {}, ports: {}, routes: {}, artifact_count: 3 }
 
+const beta = { ...session, name: 'beta', display_name: 'Beta', project_alias: 'beta', artifact_count: 0 }
+
 const artifacts = [
   { id: 'shot-1', title: 'Login screen', type: 'screenshot', file: 'screenshots/login.png', url: '/sessions/alpha/artifacts/screenshots/login.png', path: '.artifacts/screenshots/login.png', created: '2026-09-04T12:03:00Z', agent: 'pi' },
   { id: 'zip-1', title: 'Bundle', type: 'other', file: 'bundle.zip', url: '/sessions/alpha/artifacts/bundle.zip', path: '.artifacts/bundle.zip', created: '2026-09-04T12:02:00Z', agent: 'pi' },
   { id: 'shot-2', title: 'Dashboard', type: 'screenshot', file: 'screenshots/dash.png', url: '/sessions/alpha/artifacts/screenshots/dash.png', path: '.artifacts/screenshots/dash.png', created: '2026-09-04T12:01:00Z', agent: 'pi' },
 ]
 
-async function mockAPI(page) {
+async function mockAPI(page, sessions = [session]) {
   await page.addInitScript(() => {
     localStorage.setItem('devx_authed', '1')
     window.__opened = []
     window.open = (url) => { window.__opened.push(url); return null }
   })
   await page.route('**/api/sessions', route => route.request().method() === 'GET'
-    ? route.fulfill({ json: { sessions: [session], stale_summary: { total: 1, clean: 0, needs_review: 0, broken: 0 } } })
+    ? route.fulfill({ json: { sessions, stale_summary: { total: sessions.length, clean: 0, needs_review: 0, broken: 0 } } })
     : route.continue())
   await page.route('**/api/asks/pending', route => route.fulfill({ json: { requests: [] } }))
   await page.route('**/api/settings', route => route.fulfill({ json: { artifact_trigger_key: 'Ctrl+Space', default_session_target: 'host', usage_enabled: false } }))
@@ -84,6 +86,30 @@ for (const [label, viewport] of [['desktop', { width: 1280, height: 800 }], ['mo
       await page.goBack()
       await expect(viewer).toBeHidden()
       await expect(pane).toBeVisible()
+    })
+
+    test('switching sessions with the viewer open leaves no stale history entry', async ({ page }) => {
+      await mockAPI(page, [session, beta])
+      await openArtifacts(page)
+      const pane = page.getByLabel('artifacts panel')
+      await pane.getByRole('button', { name: '[view]' }).click()
+      const viewer = page.getByRole('dialog', { name: 'artifact viewer' })
+      await expect(viewer).toBeVisible()
+      const depthWithViewer = await page.evaluate(() => history.length)
+
+      // The quick switcher (Cmd/Ctrl+P) works over the viewer.
+      await page.keyboard.press('Control+p')
+      await page.getByLabel('session switcher search').fill('beta')
+      await page.getByLabel('session switcher search').press('Enter')
+      await expect(page.getByLabel('session switcher search')).toHaveCount(0)
+      await expect(page.getByTitle('Terminal — beta')).toBeAttached()
+      await expect(viewer).toBeHidden()
+
+      // The viewer's entry was popped on the switch: the current history entry
+      // is no longer a devx modal, so the next Back is a real navigation and
+      // is not silently consumed.
+      await expect.poll(() => page.evaluate(() => history.state?.devxModal ?? null)).toBeNull()
+      expect(await page.evaluate(() => history.length)).toBeLessThanOrEqual(depthWithViewer + 1)
     })
 
     test('open uses a new tab and download requests an attachment', async ({ page }) => {

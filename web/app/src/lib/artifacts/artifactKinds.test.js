@@ -1,6 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderKind, isViewable, downloadName, downloadURL, neighborIndex, artifactExt } from './artifactKinds.js'
+import { renderKind, isViewable, downloadName, downloadURL, neighborIndex, artifactExt, indexOfID } from './artifactKinds.js'
+
+test('indexOfID follows the same artifact when the list reloads', () => {
+  const before = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+  assert.equal(indexOfID(before, 'b', 0), 1)
+  // A new artifact sorts first: the viewer stays on 'b', now at index 2.
+  const after = [{ id: 'new' }, ...before]
+  assert.equal(indexOfID(after, 'b', 1), 2)
+  // 'b' was removed: stay at the previous position, clamped to the list.
+  assert.equal(indexOfID([{ id: 'a' }, { id: 'c' }], 'b', 1), 1)
+  assert.equal(indexOfID([{ id: 'a' }], 'b', 5), 0)
+  assert.equal(indexOfID([], 'b', 3), 0)
+})
 
 test('renderKind classifies by type and extension', () => {
   assert.equal(renderKind({ type: 'screenshot', file: 'screenshots/a.png' }), 'image')

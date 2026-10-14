@@ -146,8 +146,10 @@
     currentSession = session.name
     windows = []
     promoteInPool(session.name)
+    // Pop the viewer's history entry while the modal stack still records it;
+    // the keyed ArtifactPane is destroyed after this reset, too late to do so.
+    if (artifactViewerOpen) handleArtifactViewerClosed()
     artifactFullScreen = false
-    artifactViewerOpen = false
     paneViewerOpen = false
     paneViewerURL = ''
     actionsMenuOpen = false

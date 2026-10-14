@@ -56,12 +56,14 @@ func TestResolveFileRejectsSymlink(t *testing.T) {
 }
 
 func TestSafeToOpenExternally(t *testing.T) {
-	for _, f := range []string{"a.png", "dir/B.MP4", "r.html", "x.pdf", "n.md"} {
+	for _, f := range []string{"a.png", "dir/B.MP4", "x.pdf", "n.md"} {
 		if !SafeToOpenExternally(f) {
 			t.Errorf("%s should be safe to open", f)
 		}
 	}
-	for _, f := range []string{"run.command", "x.sh", "App.app", "a.zip", "noext", "t.jsx"} {
+	// HTML/SVG open in a browser that would run agent-written scripts outside
+	// the sandboxed in-app preview.
+	for _, f := range []string{"run.command", "x.sh", "App.app", "a.zip", "noext", "t.jsx", "r.html", "r.HTM", "d.svg"} {
 		if SafeToOpenExternally(f) {
 			t.Errorf("%s should not be opened directly", f)
 		}

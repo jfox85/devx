@@ -15,7 +15,8 @@ func TestOpenCommandRevealsUnsafeFiles(t *testing.T) {
 	}{
 		{"darwin", "/a/shot.png", []string{"open", "--", "/a/shot.png"}},
 		{"darwin", "/a/run.command", []string{"open", "-R", "--", "/a/run.command"}},
-		{"linux", "/a/r.html", []string{"xdg-open", "/a/r.html"}},
+		{"linux", "/a/r.pdf", []string{"xdg-open", "/a/r.pdf"}},
+		{"darwin", "/a/report.html", []string{"open", "-R", "--", "/a/report.html"}},
 		{"linux", "/a/x.sh", []string{"xdg-open", "/a"}},
 		{"windows", `C:\a\shot.png`, []string{"explorer.exe", `C:\a\shot.png`}},
 		{"windows", `C:\a\run.bat`, []string{"explorer.exe", `/select,C:\a\run.bat`}},
