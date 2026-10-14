@@ -1,6 +1,9 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { listArtifacts, markArtifactsSeen, uploadArtifacts, createTextArtifact, renameArtifact, archiveArtifact, removeArtifact } from '../../api.js'
+  import ArtifactViewer from './ArtifactViewer.svelte'
+  import { renderKind as artifactRenderKind, isViewable } from './artifactKinds.js'
+  import { openArtifactExternally, downloadArtifactFile } from './artifactActions.js'
 
   export let session
   export let selectedArtifactID = null
@@ -9,6 +12,58 @@
   export let onToggleFullScreen = () => {}
   export let onInsert = () => {}
   export let onClose = () => {}
+  // The host (Terminal) owns browser history so mobile/browser Back closes the
+  // topmost layer. These notify it when the fullscreen viewer opens or is
+  // closed from inside the pane; it calls closeViewer() when Back is pressed.
+  export let onViewerOpened = () => {}
+  export let onViewerClosed = () => {}
+
+  let viewerOpen = false
+  let viewerStartID = ''
+  let notice = ''
+  let noticeTimer
+
+  function openViewer(a = selected) {
+    if (!a || !isViewable(a)) return
+    viewerStartID = a.id
+    if (!viewerOpen) {
+      viewerOpen = true
+      onViewerOpened()
+    }
+  }
+
+  // closeViewer is called by the host when history pops; it must not notify
+  // back, or the host would pop a second history entry.
+  export function closeViewer() {
+    viewerOpen = false
+  }
+
+  function closeViewerFromUI() {
+    if (!viewerOpen) return
+    viewerOpen = false
+    onViewerClosed()
+  }
+
+  async function runAction(action) {
+    if (!selected) return
+    try {
+      const message = await action(session.name, selected)
+      showNotice(message)
+    } catch (e) {
+      error = e?.message || String(e) || 'Action failed'
+    }
+  }
+
+  function showNotice(message) {
+    notice = message || ''
+    clearTimeout(noticeTimer)
+    if (notice) noticeTimer = setTimeout(() => { notice = '' }, 4000)
+  }
+
+  onDestroy(() => {
+    clearTimeout(noticeTimer)
+    if (viewerOpen) onViewerClosed()
+  })
 
   let artifacts = []
   let selected = null
@@ -150,15 +205,7 @@
   }
 
   function renderKind(a = selected) {
-    if (!a) return 'other'
-    const ext = a.file?.split('.').pop()?.toLowerCase() || ''
-    if (a.type === 'screenshot' || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return 'image'
-    if (a.type === 'recording' || ['webm', 'mp4', 'mov'].includes(ext)) return 'video'
-    if (['jsx', 'tsx'].includes(ext)) return 'jsx'
-    if (['log', 'diff'].includes(a.type) || ['md', 'txt', 'log', 'diff', 'patch', 'js', 'ts', 'css', 'json'].includes(ext)) return 'text'
-    if (['html', 'htm'].includes(ext) || ['plan', 'report'].includes(a.type)) return 'html'
-    if (['pdf'].includes(ext) || ['document'].includes(a.type)) return 'iframe'
-    return 'other'
+    return artifactRenderKind(a)
   }
 
   function previewKind(a = selected) {
@@ -481,17 +528,25 @@
       {#if previewKind(selected) === 'jsx'}
         <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="toggle JSX preview/code" on:click={() => jsxPreviewMode = jsxPreviewMode === 'preview' ? 'code' : 'preview'}>{jsxPreviewMode === 'preview' ? '[code]' : '[preview]'}</button>
       {/if}
+      {#if isViewable(selected)}
+        <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="view fullscreen in this window" on:click={() => openViewer()}>[view]</button>
+      {/if}
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="open in a new tab, or the default app in the desktop app" on:click={() => runAction(openArtifactExternally)}>[open]</button>
+      <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" title="download artifact file" on:click={() => runAction(downloadArtifactFile)}>[download]</button>
       <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" on:click={insertSelected}>[insert]</button>
       <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" on:click={openRenameModal}>[edit]</button>
       <button class="text-[11px] font-mono text-gray-500 hover:text-cyan-300" on:click={archiveSelected}>[archive]</button>
       <button class="text-[11px] font-mono text-red-700 hover:text-red-400" on:click={removeSelected}>[remove]</button>
     </div>
+    {#if notice}
+      <div class="shrink-0 text-xs font-mono text-cyan-200 bg-cyan-950/40 border-b border-cyan-900 px-3 py-1.5 flex items-center gap-2" role="status"><span class="flex-1 truncate">{notice}</span><button aria-label="dismiss" on:click={() => notice = ''}>×</button></div>
+    {/if}
     <div class="flex-1 min-h-0 overflow-auto bg-[#0f1117] border-t border-[#101827] relative">
       {#if previewLoading}<div class="absolute top-2 right-3 z-10 text-[11px] font-mono text-gray-500">loading preview…</div>{/if}
       {#if previewKind(selected) === 'image'}
-        <div class="h-full flex items-center justify-center p-4"><img src={selectedURL} alt={selected.title} class="max-w-full max-h-full object-contain" /></div>
+        <div class="h-full flex items-center justify-center p-4"><button class="max-w-full max-h-full cursor-zoom-in" title="view fullscreen" aria-label="view {selected.title} fullscreen" on:click={() => openViewer()}><img src={selectedURL} alt={selected.title} class="max-w-full max-h-full object-contain" /></button></div>
       {:else if previewKind(selected) === 'video'}
-        <div class="p-4"><video src={selectedURL} controls class="max-w-full rounded border border-[#1e2d4a]"></video></div>
+        <div class="p-4"><video src={selectedURL} controls playsinline class="max-w-full rounded border border-[#1e2d4a]"></video></div>
       {:else if previewKind(selected) === 'text'}
         <pre class="text-xs font-mono whitespace-pre-wrap p-4 text-gray-200">{textPreview}</pre>
       {:else if previewKind(selected) === 'jsx'}
@@ -512,9 +567,13 @@
       {:else if previewKind(selected) === 'iframe'}
         <iframe title={selected.title} src={selectedURL} sandbox="" class="w-full h-full border-0 bg-[#0f1117]"></iframe>
       {:else}
-        <div class="p-4 text-sm text-gray-400">No inline preview. <a class="text-cyan-300 underline" href={selectedURL} target="_blank" rel="noreferrer">Open artifact</a></div>
+        <div class="p-4 text-sm text-gray-400">No inline preview. <button class="text-cyan-300 underline" on:click={() => runAction(openArtifactExternally)}>Open</button> or <button class="text-cyan-300 underline" on:click={() => runAction(downloadArtifactFile)}>download</button> it.</div>
       {/if}
     </div>
+  {/if}
+
+  {#if viewerOpen}
+    <ArtifactViewer sessionName={session.name} items={sortedArtifacts.filter(isViewable)} startID={viewerStartID} onClose={closeViewerFromUI} />
   {/if}
 
   {#if textModalOpen || renameModalOpen}

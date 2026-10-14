@@ -63,6 +63,25 @@ export function openExternal(url, onError) {
   return true
 }
 
+// openArtifact opens an artifact file with the OS default app via the host.
+// Returns a promise in desktop, or null in a browser so the caller can fall
+// back to opening the artifact URL in a new tab.
+export function openArtifact(session, id) {
+  const binding = host()?.OpenArtifact
+  if (typeof binding !== 'function') return null
+  return binding(session, id)
+}
+
+// downloadArtifact shows a native Save dialog and copies the artifact there.
+// WKWebView does not handle downloads, so the desktop app needs this path.
+// Resolves to the saved path ('' if the user cancelled), or returns null in a
+// browser so the caller falls back to a normal link download.
+export function downloadArtifact(session, id) {
+  const binding = host()?.DownloadArtifact
+  if (typeof binding !== 'function') return null
+  return binding(session, id)
+}
+
 // notify shows a native OS notification via the host. Returns true if handled
 // (desktop), false in a browser so the caller can fall back to a Web/in-app
 // notification. onError runs if the native call rejects.
