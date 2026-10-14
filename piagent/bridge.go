@@ -16,12 +16,14 @@ func BridgeSource() []byte { return append([]byte(nil), bridgeSource...) }
 // WriteBridge installs the bridge extension under root (not in Pi's global
 // extension directory, so it never loads into unrelated Pi sessions) and
 // returns its path. It is rewritten only when the content changed.
-func WriteBridge(root string) (string, error) {
+func WriteBridge(root string) (string, error) { return writeBridgeSource(root, bridgeSource) }
+
+func writeBridgeSource(root string, src []byte) (string, error) {
 	path := filepath.Join(root, "bridge", "devx-bridge.ts")
-	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, bridgeSource) {
+	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, src) {
 		return path, nil
 	}
-	if err := writeFileAtomic(path, bridgeSource); err != nil {
+	if err := writeFileAtomic(path, src); err != nil {
 		return "", err
 	}
 	return path, nil

@@ -104,8 +104,14 @@ func LoadConfig() (*Config, error) {
 }
 
 func SaveConfig(cfg *Config) error {
-	// Ensure config directory exists
-	configPath := filepath.Join(os.Getenv("HOME"), ".config", "devx")
+	// Ensure config directory exists. Use os.UserHomeDir (USERPROFILE on
+	// Windows) to match the read side in discovery.go; $HOME is usually unset on
+	// Windows, which made this a relative ".config/devx" under the CWD.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to resolve home directory: %w", err)
+	}
+	configPath := filepath.Join(home, ".config", "devx")
 	if err := os.MkdirAll(configPath, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}

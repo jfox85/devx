@@ -66,9 +66,8 @@ func TestShouldNotifyUser(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Use temp directory to isolate tests
 			tempDir := t.TempDir()
-			originalHome := os.Getenv("HOME")
-			os.Setenv("HOME", tempDir)
-			defer os.Setenv("HOME", originalHome)
+			t.Setenv("HOME", tempDir)
+			t.Setenv("USERPROFILE", tempDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 			originalWd, _ := os.Getwd()
 			if err := os.Chdir(tempDir); err != nil {
