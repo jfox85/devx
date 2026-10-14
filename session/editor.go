@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 
 	"github.com/spf13/viper"
 )
@@ -106,21 +105,14 @@ func IsEditorAvailable() bool {
 	return err == nil
 }
 
-// IsProcessRunning checks if a process with the given PID is still running
+// IsProcessRunning checks if a process with the given PID is still running.
+// The liveness probe is platform-specific (see process_unix.go and
+// process_windows.go): Windows has no signal 0.
 func IsProcessRunning(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-
-	// Send signal 0 to check if process exists
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	// Signal 0 doesn't actually send a signal, just checks if process exists
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return processAlive(pid)
 }
 
 // TerminateEditor terminates the editor process for a session

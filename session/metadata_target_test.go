@@ -58,6 +58,7 @@ func TestSessionsMetadataFingerprint(t *testing.T) {
 	// with t.Parallel(), preventing a future parallel test from racing on the
 	// shared HOME while the sessions metadata path is redirected here.
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on Windows
 
 	// Before any sessions file exists, the fingerprint reports "missing".
 	if fp := SessionsMetadataFingerprint(); fp != "missing" {
