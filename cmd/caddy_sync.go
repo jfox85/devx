@@ -16,8 +16,9 @@ func buildSessionInfoMap(store *session.SessionStore, registry *config.ProjectRe
 	sessionInfos := make(map[string]*caddy.SessionInfo)
 	for name, sess := range store.Sessions {
 		info := &caddy.SessionInfo{
-			Name:  name,
-			Ports: sess.Ports,
+			Name:      name,
+			Ports:     sess.Ports,
+			LocalOnly: sess.IsLocalOnly(),
 		}
 
 		for alias, project := range registry.Projects {

@@ -14,6 +14,7 @@ import (
 // createTestSession creates a session for testing purposes
 func createTestSession(t *testing.T, sessionName string) {
 	t.Helper()
+	requireIsolatedTestEnv(t)
 
 	// Create a temporary git repository for testing
 	tempDir := t.TempDir()
@@ -168,6 +169,7 @@ func TestSessionRemove(t *testing.T) {
 }
 
 func TestSessionListEmpty(t *testing.T) {
+	requireIsolatedTestEnv(t)
 	// Clear all sessions first
 	store, err := session.LoadSessions()
 	if err != nil {

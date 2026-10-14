@@ -57,6 +57,9 @@ func CheckCaddyHealth(sessions map[string]*SessionInfo) (*HealthCheckResult, err
 
 	// Check each session's expected routes
 	for sessionName, sessionInfo := range sessions {
+		if sessionInfo.LocalOnly {
+			continue
+		}
 		for serviceName, port := range sessionInfo.Ports {
 			hostname := BuildHostname(sessionName, serviceName, sessionInfo.ProjectAlias)
 			if hostname == "" {
@@ -100,4 +103,7 @@ type SessionInfo struct {
 	Name         string
 	Ports        map[string]int
 	ProjectAlias string
+	// LocalOnly sessions are never routed (Caddy) or published (tunnel),
+	// whatever their Ports say.
+	LocalOnly bool
 }

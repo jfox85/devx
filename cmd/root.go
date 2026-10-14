@@ -154,8 +154,9 @@ func initConfig() {
 
 // checkForUpdatesBackground performs a background update check
 func checkForUpdatesBackground() {
-	// Skip if auto-update checking is disabled
-	if !viper.GetBool("auto_check_updates") {
+	// Skip if auto-update checking is disabled, or for stdio protocol
+	// servers whose stdout must carry only protocol messages.
+	if !viper.GetBool("auto_check_updates") || isStdioServerInvocation(os.Args[1:]) {
 		return
 	}
 
@@ -178,13 +179,13 @@ func checkForUpdatesBackground() {
 			shouldNotify, _ := update.ShouldNotifyUser(info)
 			if shouldNotify {
 				// Print notification message
-				fmt.Printf("\n💡 devx %s is available (currently %s). Run 'devx update' to upgrade.\n\n",
+				fmt.Fprintf(os.Stderr, "\n💡 devx %s is available (currently %s). Run 'devx update' to upgrade.\n\n",
 					info.LatestVersion, info.CurrentVersion)
 
 				// Mark as notified so we don't spam on every command
 				if err := update.MarkUpdateNotified(info.LatestVersion); err != nil {
 					// Log but don't fail - this is not critical
-					fmt.Printf("Warning: failed to save notification state: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Warning: failed to save notification state: %v\n", err)
 				}
 			}
 		}
@@ -228,4 +229,23 @@ func checkDependenciesQuiet() {
 		fmt.Printf("ℹ️  Note: Missing optional dependencies: %s\n", strings.Join(missingOptional, ", "))
 		fmt.Printf("   Run 'devx check' for more details.\n\n")
 	}
+}
+
+// isStdioServerInvocation reports whether args run a stdio protocol server
+// (`devx [global flags] mcp pi`), which must not print anything to stdout
+// outside the protocol stream.
+func isStdioServerInvocation(args []string) bool {
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--config" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		pos = append(pos, a)
+	}
+	return len(pos) >= 2 && pos[0] == "mcp" && pos[1] == "pi"
 }

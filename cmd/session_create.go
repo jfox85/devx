@@ -176,6 +176,13 @@ func runSessionCreate(cmd *cobra.Command, args []string) error {
 
 	// Check if session already exists in metadata
 	existingSession, sessionExists := store.GetSession(name)
+	if sessionExists && existingSession.IsLocalOnly() {
+		// A managed local-only session must never be converted into (or
+		// recreated as) a normal session with ports, routes and template
+		// windows. Manage it with `devx agent ...`; remove it with
+		// `devx session rm`.
+		return fmt.Errorf("session '%s' is a local-only managed agent session; --reuse/--detach are not supported for it", name)
+	}
 	if sessionExists && !detachFlag && !reuseFlag {
 		return fmt.Errorf("session '%s' already exists in metadata. Use --reuse to reuse it or --detach to recreate", name)
 	}

@@ -54,6 +54,9 @@ func buildCloudflaredConfig(sessions map[string]*caddy.SessionInfo, tunnelID, cr
 
 	for _, sessionName := range names {
 		info := sessions[sessionName]
+		if info.LocalOnly {
+			continue
+		}
 
 		// Sort service names for deterministic output
 		services := make([]string, 0, len(info.Ports))

@@ -2,6 +2,7 @@ package update
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -86,7 +87,7 @@ func CheckForUpdatesWithCache(interval time.Duration) (*UpdateInfo, bool, error)
 	state.LastCheck = time.Now()
 	if err := config.SaveUpdateCheckState(state); err != nil {
 		// Log but don't fail - this is not critical
-		fmt.Printf("Warning: failed to save update check state: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to save update check state: %v\n", err)
 	}
 
 	return info, true, nil

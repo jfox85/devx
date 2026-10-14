@@ -2326,8 +2326,9 @@ func (m *model) checkCaddyHealth() tea.Cmd {
 		sessionInfos := make(map[string]*caddy.SessionInfo)
 		for name, sess := range store.Sessions {
 			info := &caddy.SessionInfo{
-				Name:  name,
-				Ports: sess.Ports,
+				Name:      name,
+				Ports:     sess.Ports,
+				LocalOnly: sess.IsLocalOnly(),
 			}
 
 			// Find project alias if session is in a project

@@ -1,6 +1,8 @@
 package session
 
 import (
+	"github.com/jfox85/devx/internal/tmuxfixture"
+
 	"os"
 	"os/exec"
 	"testing"
@@ -103,6 +105,11 @@ func TestIsEditorAvailable(t *testing.T) {
 
 // TestCursorExec tests if the cursor command is available (as per requirements)
 func TestCursorExec(t *testing.T) {
+	// Under the tmux wrapper HOME is a fake test store; the Cursor CLI can
+	// block indefinitely initializing a new profile there.
+	if w := tmuxfixture.ActiveWrapper(); w != nil && os.Getenv("HOME") == w.Home {
+		t.Skip("cursor probe skipped under isolated fake HOME")
+	}
 	err := exec.Command("cursor", "--version").Run()
 	if err != nil {
 		t.Skipf("cursor command not available: %v", err)
