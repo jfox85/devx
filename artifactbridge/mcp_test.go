@@ -86,7 +86,8 @@ func TestMCPServerWithBridge(t *testing.T) {
 	for _, tl := range out[2]["result"].(map[string]any)["tools"].([]any) {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	if len(names) != 10 || !names[ToolList] || !names[ToolRead] || !names[ToolUpload] || !names["pi_send"] {
+	// 10 core pi_* tools + 3 artifact tools.
+	if len(names) != 13 || !names[ToolList] || !names[ToolRead] || !names[ToolUpload] || !names["pi_send"] || !names["pi_queue"] {
 		t.Fatalf("tools: %v", names)
 	}
 	list := structured(t, out[3])
@@ -129,10 +130,10 @@ func TestMCPServerWithBridge(t *testing.T) {
 		}
 	}
 
-	// Without the provider, the server is unchanged: 7 tools, artifact tools unknown.
+	// Without the provider, the server is unchanged: 10 core tools, artifact tools unknown.
 	plain := &piagent.MCPServer{M: m, Name: "devx-pi", Version: "test"}
 	o := rpc(t, plain, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, call(2, ToolList, map[string]any{"agent_id": a.ID}))
-	if n := len(o[1]["result"].(map[string]any)["tools"].([]any)); n != 7 {
+	if n := len(o[1]["result"].(map[string]any)["tools"].([]any)); n != 10 {
 		t.Fatalf("plain server tool count %d", n)
 	}
 	if structured(t, o[2])["error"] != "permission_denied" {

@@ -111,6 +111,9 @@ type Manager struct {
 	Tmux    Tmux
 	Creator SessionCreator
 	Config  Config
+	// bridgeSrc overrides the embedded bridge (tests only: fixtures that
+	// run an older bridge to validate mixed-version behavior).
+	bridgeSrc []byte
 }
 
 func NewManager(store *Store, tmux Tmux, creator SessionCreator, cfg Config) *Manager {
@@ -401,7 +404,11 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		}
 	}
 	nonce := randomHex(12)
-	bridgePath, err := WriteBridge(m.Store.Root)
+	src := m.bridgeSrc
+	if src == nil {
+		src = bridgeSource
+	}
+	bridgePath, err := writeBridgeSource(m.Store.Root, src)
 	if err != nil {
 		return err
 	}
@@ -579,28 +586,50 @@ func (m *Manager) Send(req SendRequest) (*SendResult, error) {
 	return out, err
 }
 
-// Cancel cancels a waiting task immediately, or asks the bridge to abort a
-// running one. While a human holds control, running work belongs to the
-// human and remote cancellation is denied.
+// Cancel cancels a task by id (see CancelTask).
 func (m *Manager) Cancel(taskID string) (*Task, error) {
-	t, err := m.Store.FindTask(taskID)
-	if err != nil {
-		return nil, err
+	return m.CancelTask(CancelRequest{TaskID: taskID})
+}
+
+// CancelTask cancels a waiting task immediately, or asks the bridge to abort
+// a running one. While a human holds control, running (accepted) work
+// belongs to the human and remote cancellation is denied; a task handed to
+// Pi but not yet accepted can still be cancelled, which only drops the
+// injection. The bridge re-checks control at the moment it would abort and
+// withholds the abort if control changed.
+// Repeating a cancellation is a no-op that reports the current outcome.
+func (m *Manager) CancelTask(req CancelRequest) (*Task, error) {
+	agentID := req.AgentID
+	if agentID == "" {
+		t, err := m.Store.FindTask(req.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		agentID = t.AgentID
 	}
 	var out *Task
-	err = m.Store.WithAgentLock(t.AgentID, func() error {
-		a, err := m.Store.LoadAgent(t.AgentID)
-		if err != nil {
-			return err
-		}
-		t, err = m.Store.LoadTask(t.AgentID, taskID)
+	err := m.Store.WithAgentLock(agentID, func() error {
+		a, t, err := m.loadAgentTaskLocked(agentID, req.TaskID)
 		if err != nil {
 			return err
 		}
 		out = t
+		// A withheld abort may be requested again once DevX holds control
+		// again (the human released): that is a new, deliberate request.
+		rearm := t.State == TaskRunning && t.CancelRequested && t.AbortWithheld != "" && t.AbortSentAt == nil && a.Lease.Holder == LeaseManaged
+		// A waiting task is always cancellable, even if it carries a stale
+		// cancel flag (e.g. an older bridge put a cancelled hand-off back).
+		if t.Terminal() || (t.State == TaskRunning && t.CancelRequested && !rearm) {
+			return nil // already cancelled, finished, or requested: idempotent
+		}
+		if req.ExpectedRevision != nil && *req.ExpectedRevision != t.Revision {
+			return &ConflictError{TaskID: t.ID, Expected: *req.ExpectedRevision, Current: t.Revision, State: t.State, Phase: t.Phase(),
+				Reason: "the task changed since you read it; re-read it and retry with the current revision"}
+		}
+		now := m.Store.now()
 		switch t.State {
 		case TaskWaiting:
-			now := m.Store.now()
+			t.CancelRequested, t.CancelRequestedAt = true, &now
 			t.State, t.FinishedAt, t.Note = TaskCancelled, &now, "cancelled before delivery"
 			if err := m.Store.SaveTask(t); err != nil {
 				return err
@@ -608,22 +637,93 @@ func (m *Manager) Cancel(taskID string) (*Task, error) {
 			_, err = m.Store.AppendEvent(t.AgentID, Event{Type: "task_cancelled", TaskID: t.ID, Source: "devx", Data: map[string]any{"delivered": false}})
 			return err
 		case TaskRunning:
-			if a.Lease.Holder == LeaseHuman {
+			// Handed to Pi but not accepted: cancelling only drops the
+			// injection (the bridge's input handler), it cannot interrupt
+			// anything, so it is allowed under human control too.
+			if a.Lease.Holder == LeaseHuman && t.ConfirmedAt != nil {
 				return denied("a human has control of agent %s; running work can only be stopped from the Pi session", a.ID)
 			}
-			if t.CancelRequested {
-				return nil
+			// The cancel is carried out by the bridge holding the task, and
+			// a running Pi keeps the bridge it was launched with. Only a
+			// bridge that speaks this protocol drops unaccepted injections
+			// and guards aborts; an older one would start the prompt and
+			// abort whatever turn is running, possibly a human's. Refuse
+			// rather than record a request it would misinterpret.
+			if err := m.requireBridgeProtocolLocked(a, t); err != nil {
+				return err
 			}
-			t.CancelRequested = true
+			t.CancelRequested, t.CancelRequestedAt, t.CancelLeaseGeneration, t.AbortWithheld = true, &now, a.Lease.Generation, ""
+			t.CancelProtocol = BridgeProtocol
 			if err := m.Store.SaveTask(t); err != nil {
 				return err
 			}
-			_, err = m.Store.AppendEvent(t.AgentID, Event{Type: "cancel_requested", TaskID: t.ID, Source: "devx"})
+			_, err = m.Store.AppendEvent(t.AgentID, Event{Type: "cancel_requested", TaskID: t.ID, Source: "devx",
+				Data: map[string]any{"phase": t.Phase(), "lease_generation": a.Lease.Generation, "rearmed": rearm}})
 			return err
 		}
-		return nil // already terminal
+		return nil
 	})
 	return out, err
+}
+
+// ErrBridgeUpgradeRequired reports that the Pi bridge holding a task does
+// not support an operation; the agent must be relaunched by a human.
+var ErrBridgeUpgradeRequired = errors.New("bridge upgrade required")
+
+// Kinds of BridgeUpgradeError.
+const (
+	// BridgeKindUpgrade: the live bridge holding the task speaks an older
+	// protocol; only a human relaunch helps.
+	BridgeKindUpgrade = "bridge_upgrade_required"
+	// BridgeKindUnavailable: the bridge holding the task is not reporting
+	// (no/stale heartbeat, a different instance, fenced or stopped). It may
+	// be transient: retry, inspect the session, do not relaunch blindly.
+	BridgeKindUnavailable = "bridge_unavailable"
+)
+
+// BridgeUpgradeError explains why an operation was refused for the bridge
+// holding a task. Nothing is recorded when it is returned.
+type BridgeUpgradeError struct {
+	Kind     string // BridgeKindUpgrade or BridgeKindUnavailable
+	AgentID  string
+	TaskID   string
+	Protocol int // protocol of the bridge holding the task; -1 if not known
+	Reason   string
+}
+
+func (e *BridgeUpgradeError) Error() string {
+	if e.Kind == BridgeKindUnavailable {
+		return fmt.Sprintf("cannot cancel running task %s: %s. Nothing was recorded. This may be transient: retry, "+
+			"or inspect agent %s (devx agent status); relaunching would mark the running task unknown", e.TaskID, e.Reason, e.AgentID)
+	}
+	return fmt.Sprintf("cannot cancel running task %s: %s. Nothing was recorded. Restarting the MCP server does not refresh a running Pi; "+
+		"a human must relaunch agent %s (devx agent relaunch) to load bridge protocol %d, or stop the turn from the Pi session",
+		e.TaskID, e.Reason, e.AgentID, BridgeProtocol)
+}
+
+func (e *BridgeUpgradeError) Unwrap() error { return ErrBridgeUpgradeRequired }
+
+// requireBridgeProtocolLocked checks that the live bridge holding running
+// task t supports this build's cancel protocol. Callers hold the agent lock.
+func (m *Manager) requireBridgeProtocolLocked(a *Agent, t *Task) error {
+	b, err := m.Store.LoadBridge(a.ID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	fail := func(kind string, proto int, reason string) error {
+		return &BridgeUpgradeError{Kind: kind, AgentID: a.ID, TaskID: t.ID, Protocol: proto, Reason: reason}
+	}
+	switch {
+	case b == nil:
+		return fail(BridgeKindUnavailable, -1, "no bridge heartbeat is recorded for this agent")
+	case b.Instance != t.BridgeInstance:
+		return fail(BridgeKindUnavailable, -1, "the Pi process that received this task is not the one currently reporting")
+	case time.Since(b.Heartbeat) >= BridgeStaleAfter || b.Mode == "fenced" || b.Mode == "stopped" || b.Nonce != a.LaunchNonce:
+		return fail(BridgeKindUnavailable, b.Protocol, "the bridge holding this task is not online")
+	case b.Protocol < BridgeProtocol:
+		return fail(BridgeKindUpgrade, b.Protocol, fmt.Sprintf("the bridge holding this task speaks protocol %d (launched before this DevX build)", b.Protocol))
+	}
+	return nil
 }
 
 // Takeover gives a human control. Queued remote work stops being delivered
@@ -838,6 +938,12 @@ type AgentView struct {
 	Waiting      int     `json:"waiting_tasks"`
 	LastSeq      int64   `json:"last_event_seq"`
 	AttachHint   string  `json:"attach_hint"`
+	// BridgeProtocol is what the agent's live bridge reports (0 = a bridge
+	// from before protocol versioning). BridgeUpgradeNeeded means the
+	// running Pi was launched with an older bridge than this build's: some
+	// controls (running cancel) are refused until a human relaunches it.
+	BridgeProtocol      int  `json:"bridge_protocol"`
+	BridgeUpgradeNeeded bool `json:"bridge_upgrade_needed,omitempty"`
 }
 
 // AgentStatus reconciles durable state with tmux and the bridge heartbeat.
@@ -866,6 +972,8 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 			// no shutdown hook ran). The pane may still exist because the
 			// launch script holds it open for inspection.
 			bridgeDead = b.Mode == "stopped" || (!fresh && !processAlive(b.PID))
+			v.BridgeProtocol = b.Protocol
+			v.BridgeUpgradeNeeded = v.BridgeOnline && b.Protocol < BridgeProtocol
 		}
 		tasks, err := m.Store.ListTasks(a.ID)
 		if err != nil {
@@ -935,8 +1043,17 @@ type TaskView struct {
 	TaskID          string     `json:"task_id"`
 	AgentID         string     `json:"agent_id"`
 	State           string     `json:"state"`
+	Phase           string     `json:"phase"`
+	Revision        int64      `json:"revision"`
 	WaitingReason   string     `json:"waiting_reason,omitempty"`
 	CancelRequested bool       `json:"cancel_requested,omitempty"`
+	CancelOutcome   string     `json:"cancel_outcome,omitempty"`
+	AbortSentAt     *time.Time `json:"abort_sent_at,omitempty"`
+	AbortWithheld   string     `json:"abort_withheld,omitempty"`
+	AcceptedAt      *time.Time `json:"accepted_at,omitempty"`
+	AcceptedAs      string     `json:"accepted_as,omitempty"`
+	Supersedes      string     `json:"supersedes,omitempty"`
+	SupersededBy    string     `json:"superseded_by,omitempty"`
 	HumanIntervened bool       `json:"human_intervened,omitempty"`
 	StopReason      string     `json:"stop_reason,omitempty"`
 	Error           string     `json:"error,omitempty"`
@@ -962,7 +1079,9 @@ func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	tv := &TaskView{TaskID: t.ID, AgentID: t.AgentID, State: t.State, CancelRequested: t.CancelRequested, HumanIntervened: t.HumanIntervened,
+	tv := &TaskView{TaskID: t.ID, AgentID: t.AgentID, State: t.State, Phase: t.Phase(), Revision: t.Revision,
+		CancelRequested: t.CancelRequested, CancelOutcome: t.CancelOutcome(m.Store.now()), AbortSentAt: t.AbortSentAt, AbortWithheld: t.AbortWithheld,
+		HumanIntervened: t.HumanIntervened, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, Supersedes: t.Supersedes, SupersededBy: t.SupersededBy,
 		StopReason: t.StopReason, Error: Redact(t.Error), Note: t.Note, CreatedAt: t.CreatedAt, DeliveredAt: t.DeliveredAt, FinishedAt: t.FinishedAt}
 	if t.State == TaskWaiting {
 		tv.WaitingReason = m.waitingReason(av, t)
@@ -977,6 +1096,20 @@ func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
 }
 
 func (m *Manager) waitingReason(av *AgentView, t *Task) string {
+	tasks, _ := m.Store.ListTasks(t.AgentID)
+	first := ""
+	for _, o := range tasks {
+		if o.State == TaskWaiting {
+			first = o.ID
+			break
+		}
+	}
+	return waitingReasonFor(av, t, first)
+}
+
+// waitingReasonFor explains why waiting task t has not been delivered;
+// firstWaiting is the id of the oldest waiting task (delivered next).
+func waitingReasonFor(av *AgentView, t *Task, firstWaiting string) string {
 	switch {
 	case av.Agent.Lease.Holder == LeaseHuman:
 		return WaitHumanControl
@@ -991,11 +1124,8 @@ func (m *Manager) waitingReason(av *AgentView, t *Task) string {
 	case av.Bridge != nil && !av.Bridge.Idle:
 		return WaitBusy
 	}
-	tasks, _ := m.Store.ListTasks(t.AgentID)
-	for _, o := range tasks {
-		if o.State == TaskWaiting && o.Order < t.Order {
-			return WaitQueued
-		}
+	if firstWaiting != "" && firstWaiting != t.ID {
+		return WaitQueued
 	}
 	if av.Bridge != nil && av.Bridge.HumanTyping {
 		return WaitBusy

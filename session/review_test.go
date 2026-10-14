@@ -47,7 +47,9 @@ func TestReviewSessionClassifiesCleanDirtyAndUniqueCommits(t *testing.T) {
 }
 
 func TestRefreshSessionReviewStaleDetectsStatusChange(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	repo := initReviewRepo(t)
 	store, err := LoadSessions()
 	if err != nil {
@@ -83,7 +85,9 @@ func TestRefreshSessionReviewStaleDetectsStatusChange(t *testing.T) {
 }
 
 func TestRemoveSessionReviewDetails(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
 	review := &SessionReview{Classification: ReviewClassificationDirtyOnly, Details: "secret-ish details"}
 	if err := SaveSessionReviewDetails("test", review); err != nil {
 		t.Fatal(err)
