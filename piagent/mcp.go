@@ -85,8 +85,11 @@ func toolList() []tool {
 	ro := map[string]any{"readOnlyHint": true, "openWorldHint": false}
 	return []tool{
 		{Name: "pi_list_sessions", Annotations: ro,
-			Description: "List DevX sessions running an MCP-managed Pi agent, with reconciled state (idle/running/human_control/unknown/binding_stale/pane_exited), who holds control, and how a human attaches. Also lists projects this server may start agents in.",
-			InputSchema: obj(map[string]any{})},
+			Description: "List a bounded page of all MCP-managed Pi agent records (including retired agents), with reconciled state, control and attach instructions, then allowed projects. Follow next_cursor until eof, even when agents is empty. Inventory membership changes invalidate cursors; restart without cursor. State is live per page, not a snapshot.",
+			InputSchema: obj(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Maximum combined agent and project entries (default 20, max 100); byte budget may shorten a page", "minimum": 1, "maximum": 100},
+				"cursor": map[string]any{"type": "string", "description": "Opaque next_cursor from the previous page; omit to start", "maxLength": 512},
+			})},
 		{Name: "pi_start_task", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 			Description: "Create a NEW local-only DevX session (git worktree + tmux; no service ports, routes or project services) in an allowlisted project, launch an interactive Pi there, and queue the first prompt. Idempotent on idempotency_key: retrying after a timeout or dropped response returns the same agent_id/task_id and never starts a second session. The human can attach and take control at any time.",
 			InputSchema: obj(map[string]any{
@@ -261,7 +264,13 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 			} else {
 				data = map[string]any{"error": "failed", "message": Redact(msg)}
 			}
+			if p.Name == "pi_list_sessions" {
+				return sessionListError(data), nil
+			}
 			return toolResult(data, true), nil
+		}
+		if p.Name == "pi_list_sessions" {
+			return sessionListResult(data), nil
 		}
 		return toolResult(data, false), nil
 	}
@@ -292,18 +301,7 @@ func decodeArgs(raw json.RawMessage, dst any) error {
 func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 	switch name {
 	case "pi_list_sessions":
-		if err := decodeArgs(raw, &struct{}{}); err != nil {
-			return nil, err
-		}
-		views, err := s.M.List()
-		if err != nil {
-			return nil, err
-		}
-		out := make([]map[string]any, 0, len(views))
-		for _, v := range views {
-			out = append(out, agentSummary(v))
-		}
-		return map[string]any{"agents": out, "allowed_projects": s.M.Config.AllowedProjects}, nil
+		return s.listSessions(raw)
 
 	case "pi_start_task":
 		var a struct {
