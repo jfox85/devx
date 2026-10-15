@@ -95,9 +95,52 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   exactly what a client missed. `wait_seconds` (30 s max) blocks on the local
   log; nothing ever polls a model. This replaces the memory-only SSE for this
   feature; the existing SSE is unchanged.
+- **Mid-task progress.** A task can run for hours, so the bridge (protocol
+  3+) also reports what the agent is doing while it runs. After each
+  completed assistant turn of an accepted DevX task it records the turn
+  number, the time, the head of that turn's text and the name of the last
+  tool the turn called. Each record is written to
+  `results/<task>.progress.json` and appended to the event log as a
+  `progress` event:
+
+  ```json
+  {"seq": 42, "type": "progress", "task_id": "pt_…", "source": "bridge",
+   "data": {"turn": 7, "at": "2026-10-15T12:00:00.000Z",
+            "excerpt": "Tests pass locally; now updating the docs.",
+            "last_tool": "edit"}}
+  ```
+
+  - **Rate limit.** At most one progress record per task every 30 s. Turns
+    in between are coalesced, and the newest turn is the one recorded when
+    the interval allows. The first turn is recorded immediately. A turn
+    still pending when the task settles is dropped, because the result
+    supersedes it. Progress is never written after `task_finished`.
+  - **Only the task's own turns.** Turns before Pi accepts the prompt, a
+    human's own runs and (for a follow-up) the rest of an earlier run are
+    not reported.
+  - **Status.** `pi_status` returns `task.latest_progress` =
+    `{at, turn, excerpt, excerpt_truncated?, last_tool?}`. `agent.latest_progress`
+    (also in `pi_list_sessions`) is the same for the agent's `current_task`.
+    The field is absent until a turn is recorded, and for a waiting task.
+    After the task finishes, `task.latest_progress` is the last progress
+    recorded before the result. Use `pi_result` for the result itself.
+  - **Bounds and redaction.** The bridge stores at most 1200 characters of
+    raw text. DevX applies the same credential redaction used for results
+    *before* cutting to 500 bytes on a UTF-8 boundary, on every read (status
+    and events). When the bridge had to cut the text, the trailing partial
+    word is dropped so a cut credential cannot slip past the patterns. Tool
+    names are bounded to 128 bytes. Progress events carry only these fields.
+  - **Best effort.** Progress annotates running work and never gates it. A
+    failed write is retried on a later tick and never affects the task or
+    its result.
+  - **Older bridges** (protocol < 3) report no progress: `latest_progress`
+    is absent and no `progress` events are written. Everything else works
+    as before, and `bridge_upgrade_needed` is true until a human relaunches
+    the agent.
 - **Bounded output.**
   - prompts: 64 KiB max
   - status excerpts: 4 KiB, taken from the end of the text
+  - progress excerpts: 500 bytes, taken from the start of the latest turn
   - `pi_result` chunks: 16 KiB, addressed by a UTF-8-safe byte cursor
   - event pages: 200 events max
 
@@ -189,13 +232,21 @@ launched with. Restarting or upgrading the MCP server does **not** refresh
 it; only a human `devx agent relaunch` does.
 
 - **What the bridge reports.** Each bridge reports `protocol` in its
-  heartbeat. This build's is 2. Bridges from before versioning report
+  heartbeat. This build's is 3. Bridges from before versioning report
   nothing, which is read as 0.
+
+  | protocol | adds |
+  |---|---|
+  | 2 | the running-cancel semantics below |
+  | 3 | mid-task progress (`progress` events, `latest_progress`); cancel unchanged from 2 |
 - **What the agent view shows.** `pi_list_sessions` and `pi_status` show
-  `bridge_protocol` and `bridge_upgrade_needed`.
-- **Cancelling a running task needs the current protocol.** The task must
-  be held by a live bridge that speaks the current protocol, whether or not
-  Pi has accepted it yet. Otherwise `pi_cancel` returns `recorded: false`,
+  `bridge_protocol` and `bridge_upgrade_needed`. `bridge_upgrade_needed` is
+  true for any live bridge older than this build's. A protocol-2 bridge
+  still supports running cancel. It just reports no progress.
+- **Cancelling a running task needs protocol 2 or later.** The task must
+  be held by a live bridge that speaks at least protocol 2, whether or not
+  Pi has accepted it yet. Otherwise `pi_cancel` returns `recorded: false`
+  (with `required_protocol: 2`),
   nothing is written, and the error says why:
   - `bridge_upgrade_required`: the bridge holding the task is older. Only a
     human relaunch helps.

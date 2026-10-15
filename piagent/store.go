@@ -23,6 +23,8 @@ import (
 //	<root>/agents/<agent-id>/agent.json        Agent record (lease, binding)
 //	<root>/agents/<agent-id>/tasks/<id>.json   Task records
 //	<root>/agents/<agent-id>/results/<id>.txt  Final assistant text per task
+//	<root>/agents/<agent-id>/results/<id>.progress.json
+//	                                           Latest mid-task progress (bridge-owned)
 //	<root>/agents/<agent-id>/events.jsonl      Durable event log (seq ordered)
 //	<root>/agents/<agent-id>/seq               Last event seq
 //	<root>/agents/<agent-id>/bridge.json       Bridge heartbeat (bridge-owned)
@@ -374,6 +376,25 @@ func (s *Store) ReadResult(agentID, taskID string) (string, bool, error) {
 		return "", false, err
 	}
 	return Redact(string(data)), true, nil
+}
+
+func (s *Store) progressPath(a, t string) string {
+	return filepath.Join(s.resultsDir(a), t+".progress.json")
+}
+
+// ReadProgress returns the latest progress the bridge recorded for a task,
+// redacted and bounded for clients, or nil if none (older bridges never
+// write it). An unreadable or mismatched record reads as none: progress is
+// advisory and never fails a status call.
+func (s *Store) ReadProgress(agentID, taskID string) *ProgressView {
+	if !ValidAgentID(agentID) || !ValidTaskID(taskID) {
+		return nil
+	}
+	var p Progress
+	if err := readJSON(s.progressPath(agentID, taskID), &p); err != nil || p.TaskID != taskID {
+		return nil
+	}
+	return progressView(p.Turn, p.At, p.Excerpt, p.ExcerptTruncated, p.LastTool)
 }
 
 // idempotency records

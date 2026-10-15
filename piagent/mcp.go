@@ -85,7 +85,7 @@ func toolList() []tool {
 	ro := map[string]any{"readOnlyHint": true, "openWorldHint": false}
 	return []tool{
 		{Name: "pi_list_sessions", Annotations: ro,
-			Description: "List a bounded page of all MCP-managed Pi agent records (including retired agents), with reconciled state, control and attach instructions, then allowed projects. Follow next_cursor until eof, even when agents is empty. Inventory membership changes invalidate cursors; restart without cursor. State is live per page, not a snapshot.",
+			Description: "List a bounded page of all MCP-managed Pi agent records (including retired agents), with reconciled state, control and attach instructions, then allowed projects. Follow next_cursor until eof, even when agents is empty. Inventory membership changes invalidate cursors; restart without cursor. State is live per page, not a snapshot. Each agent with a running task may include latest_progress (see pi_status).",
 			InputSchema: obj(map[string]any{
 				"limit":  map[string]any{"type": "integer", "description": "Maximum combined agent and project entries (default 20, max 100); byte budget may shorten a page", "minimum": 1, "maximum": 100},
 				"cursor": map[string]any{"type": "string", "description": "Opaque next_cursor from the previous page; omit to start", "maxLength": 512},
@@ -106,13 +106,13 @@ func toolList() []tool {
 				"idempotency_key": strProp("Caller-chosen unique key for this send; reuse it on retry"),
 			}, "agent_id", "prompt", "idempotency_key")},
 		{Name: "pi_status", Annotations: ro,
-			Description: "Status of a task and its agent, with a bounded result excerpt. state is waiting/running/completed/failed/cancelled/unknown; phase separates queued (DevX queue), delivered (handed to Pi, not yet accepted), accepted (Pi started the turn) and finished. revision is the compare-and-swap token for pending edits. cancel_outcome reports what a cancellation did. 'unknown' means the task was delivered but the Pi process that held it is gone; inspect the session before retrying.",
+			Description: "Status of a task and its agent, with a bounded result excerpt. state is waiting/running/completed/failed/cancelled/unknown; phase separates queued (DevX queue), delivered (handed to Pi, not yet accepted), accepted (Pi started the turn) and finished. revision is the compare-and-swap token for pending edits. cancel_outcome reports what a cancellation did. 'unknown' means the task was delivered but the Pi process that held it is gone; inspect the session before retrying. Mid-task visibility: task.latest_progress {at, turn, excerpt, excerpt_truncated, last_tool} is the newest recorded assistant turn of the task (redacted; excerpt <= 500 bytes; recorded at most every 30 s per task). It is absent until a turn is recorded and always absent when agent.bridge_protocol < 3 (an older Pi bridge; a human relaunch loads the new one). agent.latest_progress is the same for the agent's current_task.",
 			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)")}, "task_id")},
 		{Name: "pi_result", Annotations: ro,
 			Description: "Read a task's final assistant text in bounded chunks. Continue from next_offset until eof. Text is passed through credential redaction.",
 			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)"), "offset": intProp("Byte offset (default 0)"), "max_bytes": intProp("Chunk size, max 16384")}, "task_id")},
 		{Name: "pi_events", Annotations: ro,
-			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling.",
+			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling. Besides lifecycle events (task_delivered, task_started, task_finished, lease_changed, ...), Pi bridges with protocol >= 3 write type=progress events while a task runs: data {turn, at, excerpt (redacted, <= 500 bytes), excerpt_truncated?, last_tool?}, at most one per task every 30 s with the newest turn kept.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id"), "after_seq": intProp("Return events with seq greater than this"), "limit": intProp("Max events (<=200)"), "wait_seconds": intProp("Block up to N seconds for new events")}, "agent_id")},
 		{Name: "pi_cancel", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control at the same lease generation and Pi has no internally queued messages; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (abort_withheld = human_control / control_changed_since_request / pi_has_queued_messages) / finished_before_abort / outcome_unknown (the Pi process went away) / abort_unconfirmed (no settle within 30 s; nothing is escalated). abort_sent means the abort was dispatched, not that anything stopped; aborted means Pi's agent loop settled the turn, NOT that every subprocess a tool or extension started has exited. Denied while a human has control of accepted running work (a task Pi has not accepted yet can still be dropped). Cancelling a running task requires the agent's live Pi bridge to speak the current protocol; otherwise nothing is recorded and error=bridge_upgrade_required (older bridge; restarting this server does not refresh a running Pi, a human relaunch does) or error=bridge_unavailable (no live heartbeat from the Pi holding the task; may be transient: retry or inspect, do not relaunch blindly). Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op, except that a withheld abort can be requested again after a human released control.",
@@ -248,7 +248,7 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 				data = map[string]any{"error": "permission_denied", "message": msg}
 			} else if be := (*BridgeUpgradeError)(nil); errors.As(err, &be) {
 				d := map[string]any{"error": be.Kind, "message": msg, "task_id": be.TaskID, "agent_id": be.AgentID,
-					"required_protocol": BridgeProtocol, "recorded": false}
+					"required_protocol": BridgeCancelProtocol, "recorded": false}
 				if be.Protocol >= 0 {
 					d["bridge_protocol"] = be.Protocol
 				}
@@ -467,7 +467,7 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 
 func agentSummary(v *AgentView) map[string]any {
 	a := v.Agent
-	return map[string]any{
+	out := map[string]any{
 		"agent_id":       a.ID,
 		"session":        a.DevxSession,
 		"project":        a.Project,
@@ -487,4 +487,10 @@ func agentSummary(v *AgentView) map[string]any {
 		"bridge_protocol":       v.BridgeProtocol,
 		"bridge_upgrade_needed": v.BridgeUpgradeNeeded,
 	}
+	// Newest mid-task progress of current_task (redacted, at most
+	// MaxProgressExcerptBytes); absent when none was reported.
+	if v.LatestProgress != nil {
+		out["latest_progress"] = v.LatestProgress
+	}
+	return out
 }

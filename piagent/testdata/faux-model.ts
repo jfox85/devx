@@ -5,9 +5,23 @@
 //   "FAIL"            -> provider error
 //   "BIG:<n>"         -> reply of about n bytes
 //   "SECRET"          -> reply containing a fake credential (redaction test)
+//   "MULTITURN"       -> three turns: two "step <n>" turns that each call the
+//                        read tool (on a missing file), then a final reply;
+//                        step 1 carries a fake credential (progress tests)
 // Every reply starts with "ECHO: <prompt>".
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+
+// Tool results since the last user message: how many turns of this run
+// already called a tool.
+function toolTurnsSinceUser(context: any): number {
+	let n = 0;
+	for (const m of context.messages ?? []) {
+		if (m.role === "user") n = 0;
+		else if (m.role === "toolResult") n++;
+	}
+	return n;
+}
 
 function lastUserText(context: any): string {
 	let last = "";
@@ -26,6 +40,14 @@ export default function (pi: ExtensionAPI) {
 	const respond = (context: any) => {
 		const text = lastUserText(context);
 		if (text.includes("FAIL")) return fauxAssistantMessage("", { stopReason: "error", errorMessage: "synthetic provider failure" });
+		if (text.includes("MULTITURN")) {
+			const step = toolTurnsSinceUser(context) + 1;
+			if (step <= 2) {
+				const note = step === 1 ? " using GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789" : "";
+				return fauxAssistantMessage([fauxText(`step ${step}${note}`), fauxToolCall("read", { path: `/nonexistent/devx-faux-${step}.txt` })], { stopReason: "toolUse" });
+			}
+			return fauxAssistantMessage(`ECHO: ${text} done after ${step - 1} steps`);
+		}
 		const big = /BIG:(\d+)/.exec(text);
 		if (big) {
 			const n = parseInt(big[1], 10);

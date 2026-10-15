@@ -740,7 +740,7 @@ func (m *Manager) requireBridgeProtocolLocked(a *Agent, t *Task) error {
 		return fail(BridgeKindUnavailable, -1, "the Pi process that received this task is not the one currently reporting")
 	case time.Since(b.Heartbeat) >= BridgeStaleAfter || b.Mode == "fenced" || b.Mode == "stopped" || b.Nonce != a.LaunchNonce:
 		return fail(BridgeKindUnavailable, b.Protocol, "the bridge holding this task is not online")
-	case b.Protocol < BridgeProtocol:
+	case b.Protocol < BridgeCancelProtocol:
 		return fail(BridgeKindUpgrade, b.Protocol, fmt.Sprintf("the bridge holding this task speaks protocol %d (launched before this DevX build)", b.Protocol))
 	}
 	return nil
@@ -960,10 +960,15 @@ type AgentView struct {
 	AttachHint   string  `json:"attach_hint"`
 	// BridgeProtocol is what the agent's live bridge reports (0 = a bridge
 	// from before protocol versioning). BridgeUpgradeNeeded means the
-	// running Pi was launched with an older bridge than this build's: some
-	// controls (running cancel) are refused until a human relaunches it.
+	// running Pi was launched with an older bridge than this build's: it
+	// lacks some features until a human relaunches it (protocol < 2: running
+	// cancel is refused; protocol < 3: no mid-task progress is reported).
 	BridgeProtocol      int  `json:"bridge_protocol"`
 	BridgeUpgradeNeeded bool `json:"bridge_upgrade_needed,omitempty"`
+	// LatestProgress is the newest progress the bridge recorded for
+	// CurrentTask (redacted, bounded); nil when there is no running task or
+	// its bridge has not reported any (bridges before protocol 3 never do).
+	LatestProgress *ProgressView `json:"latest_progress,omitempty"`
 }
 
 // AgentStatus reconciles durable state with tmux and the bridge heartbeat.
@@ -1027,6 +1032,9 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 			}
 		}
 		v.CurrentTask = running
+		if running != "" {
+			v.LatestProgress = m.Store.ReadProgress(a.ID, running)
+		}
 		switch {
 		case a.RetiredAt != nil:
 			v.State, v.Detail = AgentRetired, fmt.Sprintf("session %q was removed; records kept for inspection", a.DevxSession)
@@ -1084,6 +1092,12 @@ type TaskView struct {
 	ResultBytes     int        `json:"result_bytes,omitempty"`
 	Excerpt         string     `json:"result_excerpt,omitempty"`
 	ExcerptTrunc    bool       `json:"result_excerpt_truncated,omitempty"`
+	// LatestProgress is the newest mid-task progress the bridge recorded
+	// for this task (redacted, bounded). Absent until the first completed
+	// assistant turn is recorded, and always absent with bridges older than
+	// protocol 3. After the task finishes it is the last progress recorded
+	// before the result; read the result itself with pi_result.
+	LatestProgress *ProgressView `json:"latest_progress,omitempty"`
 }
 
 func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
@@ -1105,6 +1119,8 @@ func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
 		StopReason: t.StopReason, Error: Redact(t.Error), Note: t.Note, CreatedAt: t.CreatedAt, DeliveredAt: t.DeliveredAt, FinishedAt: t.FinishedAt}
 	if t.State == TaskWaiting {
 		tv.WaitingReason = m.waitingReason(av, t)
+	} else {
+		tv.LatestProgress = m.Store.ReadProgress(t.AgentID, t.ID)
 	}
 	if text, ok, err := m.Store.ReadResult(t.AgentID, t.ID); err != nil {
 		return nil, nil, err
@@ -1224,6 +1240,10 @@ func (m *Manager) Events(agentID string, after int64, limit int, wait time.Durat
 		evs, last, err := m.Store.ReadEvents(agentID, after, limit)
 		if err != nil || len(evs) > 0 || time.Now().After(deadline) {
 			for i := range evs {
+				if evs[i].Type == EventProgress {
+					evs[i].Data = progressEventData(evs[i].Data)
+					continue
+				}
 				evs[i].Data = redactData(evs[i].Data)
 			}
 			return evs, last, err
