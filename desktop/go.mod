@@ -2,7 +2,7 @@ module github.com/jfox85/devx/desktop
 
 go 1.23.0
 
-toolchain go1.23.10
+toolchain go1.26.9
 
 require (
 	github.com/jfox85/devx v0.0.0
@@ -14,7 +14,7 @@ require (
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-resty/resty/v2 v2.16.5 // indirect
-	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
