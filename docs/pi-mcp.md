@@ -587,6 +587,29 @@ removed, moved, or is claimed by another agent, plus `allowed_projects` for
 information only. The bridge never widens to those records; only agents
 passing the predicate above and the owner policy are eligible.
 
+Inventory responses are paginated. `pi_list_sessions({})` returns at most
+20 combined agent/project entries; `limit` accepts 1–100. The complete
+encoded MCP tool result is also bounded to 60,000 bytes, so a page may
+contain fewer entries. Follow `next_cursor` until `eof: true`, including
+pages with an empty `agents` array: projects follow agents and are paginated
+too. Both arrays are always present. All existing agent-summary fields are
+preserved, and compact JSON text duplicates `structuredContent` for clients
+that only consume text.
+
+Agents sort by immutable agent ID; projects sort by alias. Cursors are opaque
+and tied to inventory membership and the configured project list. If either
+changes, the call fails with an instruction to restart without a cursor;
+records are never silently skipped. Status is reconciled live for each page,
+not frozen across pages. Retirement/state changes do not remove an agent or
+invalidate its cursor. A single entry that exceeds the encoded budget fails
+explicitly rather than returning an incomplete or silently truncated record.
+
+Upgrading from the argument-free schema requires refreshing/approving the
+`pi_list_sessions` tool definition at the gateway and refreshing the client's
+tool catalog. Existing `{}` calls remain valid but now return the first page.
+No additional tool or session access is introduced.
+
+
 **Reload, no restart (once running a build with reload).** The policy is
 re-read and validated on every `tools/list` and every tool call, and the
 agent and session records are re-read on every call. Once a `devx mcp pi`
