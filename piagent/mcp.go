@@ -112,7 +112,7 @@ func toolList() []tool {
 			Description: "Read a task's final assistant text in bounded chunks. Continue from next_offset until eof. Text is passed through credential redaction.",
 			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)"), "offset": intProp("Byte offset (default 0)"), "max_bytes": intProp("Chunk size, max 16384")}, "task_id")},
 		{Name: "pi_events", Annotations: ro,
-			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling. Besides lifecycle events (task_delivered, task_started, task_finished, lease_changed, ...), Pi bridges with protocol >= 3 write type=progress events while a task runs: data {turn, at, excerpt (redacted, <= 500 bytes), excerpt_truncated?, last_tool?}, at most one per task every 30 s with the newest turn kept.",
+			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling. Pages contain at most 200 events and 60,000 encoded MCP result bytes (including text and structuredContent); bytes may shorten a page. Continue from next_after_seq while more is true. An individually oversized event returns event_too_large with event_seq and an unchanged next_after_seq: inspect the local log; no events are skipped. Besides lifecycle events (task_delivered, task_started, task_finished, lease_changed, ...), Pi bridges with protocol >= 3 write type=progress events while a task runs: data {turn, at, excerpt (redacted, <= 500 bytes), excerpt_truncated?, last_tool?}, at most one per task every 30 s with the newest turn kept.",
 			InputSchema: obj(map[string]any{"agent_id": strProp("Managed agent id"), "after_seq": intProp("Return events with seq greater than this"), "limit": intProp("Max events (<=200)"), "wait_seconds": intProp("Block up to N seconds for new events")}, "agent_id")},
 		{Name: "pi_cancel", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 			Description: "Cancel a task. Queued tasks are cancelled immediately (cancel_outcome=cancelled_before_delivery). A task handed to Pi but not yet accepted is dropped before Pi starts it. For an accepted (running) turn this REQUESTS an abort: the bridge aborts it once, only if DevX still holds control at the same lease generation and Pi has no internally queued messages; outcome moves abort_pending -> abort_sent -> aborted, or abort_withheld (abort_withheld = human_control / control_changed_since_request / pi_has_queued_messages) / finished_before_abort / outcome_unknown (the Pi process went away) / abort_unconfirmed (no settle within 30 s; nothing is escalated). abort_sent means the abort was dispatched, not that anything stopped; aborted means Pi's agent loop settled the turn, NOT that every subprocess a tool or extension started has exited. Denied while a human has control of accepted running work (a task Pi has not accepted yet can still be dropped). Cancelling a running task requires the agent's live Pi bridge to speak the current protocol; otherwise nothing is recorded and error=bridge_upgrade_required (older bridge; restarting this server does not refresh a running Pi, a human relaunch does) or error=bridge_unavailable (no live heartbeat from the Pi holding the task; may be transient: retry or inspect, do not relaunch blindly). Optional expected_revision makes the cancel compare-and-swap. Repeating it is a no-op, except that a withheld abort can be requested again after a human released control.",
@@ -246,6 +246,9 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 			msg := err.Error()
 			if IsPermissionDenied(err) {
 				data = map[string]any{"error": "permission_denied", "message": msg}
+			} else if ee := (*eventPageSizeError)(nil); errors.As(err, &ee) {
+				data = map[string]any{"error": "event_too_large", "message": msg, "event_seq": ee.Seq,
+					"next_after_seq": ee.After, "last_seq": ee.Last, "more": true}
 			} else if be := (*BridgeUpgradeError)(nil); errors.As(err, &be) {
 				d := map[string]any{"error": be.Kind, "message": msg, "task_id": be.TaskID, "agent_id": be.AgentID,
 					"required_protocol": BridgeCancelProtocol, "recorded": false}
@@ -266,6 +269,9 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 			}
 			if p.Name == "pi_list_sessions" {
 				return sessionListError(data), nil
+			}
+			if p.Name == "pi_events" {
+				return eventPageError(data), nil
 			}
 			return toolResult(data, true), nil
 		}
@@ -387,14 +393,7 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		next := w.AfterSeq
-		if n := len(evs); n > 0 {
-			next = evs[n-1].Seq
-		}
-		if evs == nil {
-			evs = []Event{}
-		}
-		return map[string]any{"events": evs, "next_after_seq": next, "last_seq": last, "more": next < last}, nil
+		return eventPage(evs, w.AfterSeq, last)
 
 	case "pi_cancel":
 		var w struct {

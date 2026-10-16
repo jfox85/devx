@@ -142,7 +142,17 @@ DevX session "<name>"  tmux window "pi-agent"                      │
   - status excerpts: 4 KiB, taken from the end of the text
   - progress excerpts: 500 bytes, taken from the start of the latest turn
   - `pi_result` chunks: 16 KiB, addressed by a UTF-8-safe byte cursor
-  - event pages: 200 events max
+  - event pages: 200 events max and 60,000 encoded MCP result bytes, including
+    both compatibility text and `structuredContent` and their JSON escaping.
+    This caps the tool result itself, reserving 5,536 bytes for normal
+    JSON-RPC framing; arbitrarily long client request IDs are not included.
+    A page may stop before the requested count; continue from `next_after_seq`
+    while `more` is true. The cursor advances only past events returned.
+    If a single event cannot fit, `isError: true` / `error: event_too_large`
+    reports `event_seq`, `last_seq`, `more: true` and an unchanged
+    `next_after_seq`. Inspect the local agent `events.jsonl` to recover that
+    event; no payload is echoed, truncated or silently skipped. Errors also
+    obey the encoded-byte budget.
 
   Results, errors and event strings pass through credential redaction. This
   is defense in depth, not a guarantee.
