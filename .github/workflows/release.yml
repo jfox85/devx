@@ -33,15 +33,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      # GoReleaser's before hook runs `go test ./...`. The cmd and session
+      # tests use the tmuxfixture wrapper, which fails (rather than skips)
+      # when no real tmux is installed, and ubuntu-latest ships without tmux.
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          # Stay on v2: `brews` is deprecated and may be removed in a major.
+          version: "~> v2"
           distribution: goreleaser
           install-only: true
+
+      # Use the tag's CHANGELOG.md section as the GitHub release body; fall
+      # back to GoReleaser's git changelog when the tag has no section.
+      - name: Extract release notes
+        run: |
+          awk -v tag="## [${GITHUB_REF_NAME}]" '
+            index($0, tag) == 1 { f = 1; next }
+            f && /^## \[/ { exit }
+            f { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if grep -q '[^[:space:]]' "$RUNNER_TEMP/release-notes.md"; then
+            echo "RELEASE_NOTES=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No CHANGELOG.md section for ${GITHUB_REF_NAME}; using git changelog"
+          fi
 
       - name: Run GoReleaser
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: goreleaser release --clean
+        run: |
+          if [ -n "${RELEASE_NOTES:-}" ]; then
+            goreleaser release --clean --release-notes "$RELEASE_NOTES"
+          else
+            goreleaser release --clean
+          fi
