@@ -6,7 +6,12 @@
 //   - delivers queued DevX tasks with pi.sendUserMessage (never tmux keys),
 //   - fences delivery on the lease: human input or an explicit takeover stops
 //     further delivery until a human releases control,
-//   - records results and events in the DevX agent directory.
+//   - records results and events in the DevX agent directory,
+//   - reports mid-task progress: after each completed assistant turn of a
+//     DevX task, the latest message excerpt and tool name are recorded
+//     (results/<id>.progress.json plus a "progress" event), coalesced to at
+//     most one record per PROGRESS_MIN_INTERVAL_MS per task, newest kept.
+//     Text is stored raw like results; devx redacts and bounds it on read.
 //
 // All shared-state changes happen under <agent>/agent.lock (mkdir lock), the
 // same lock the devx Go process uses.
@@ -36,7 +41,16 @@ const DEVX_EXE = process.env.DEVX_PI_DEVX_EXECUTABLE ?? "";
 const PANE = process.env.TMUX_PANE ?? "";
 const TICK_MS = 250;
 // Control protocol this bridge implements; must equal piagent.BridgeProtocol.
-const PROTOCOL = 2;
+// 3 adds progress records; the control (cancel) semantics are those of 2.
+const PROTOCOL = 3;
+// Progress: at most one record per task per interval (newest turn wins), and
+// a bounded raw excerpt. devx redacts before cutting to its own smaller bound,
+// so the raw window is larger than what clients see.
+// Test hook: DEVX_PI_TEST_PROGRESS_INTERVAL_MS overrides the interval.
+const PROGRESS_INTERVAL_OVERRIDE = parseInt(process.env.DEVX_PI_TEST_PROGRESS_INTERVAL_MS ?? "", 10);
+const PROGRESS_MIN_INTERVAL_MS = Number.isFinite(PROGRESS_INTERVAL_OVERRIDE) && PROGRESS_INTERVAL_OVERRIDE >= 0 ? PROGRESS_INTERVAL_OVERRIDE : 30000;
+const PROGRESS_RAW_CHARS = 1200;
+const PROGRESS_TOOL_CHARS = 128;
 const CONFIRM_TIMEOUT_MS = 15000;
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 10000;
@@ -317,6 +331,25 @@ function receiptProblem(r: any, file: string): string {
 }
 
 const receiptPath = (taskId: string) => path.join(p.results, `${taskId}.receipt.json`);
+const progressPath = (taskId: string) => path.join(p.results, `${taskId}.progress.json`);
+
+type Progress = { turn: number; at: string; excerpt: string; excerpt_truncated: boolean; last_tool?: string };
+
+// Summary of one completed assistant turn: its text (head, bounded) and the
+// last tool it called.
+function turnProgress(message: any, turn: number): Progress {
+	const parts = Array.isArray(message?.content) ? message.content : [];
+	const text = parts
+		.filter((c: any) => c?.type === "text" && typeof c.text === "string")
+		.map((c: any) => c.text)
+		.join("")
+		.trim();
+	let tool: string | undefined;
+	for (const c of parts) if (c?.type === "toolCall" && typeof c.name === "string" && c.name) tool = c.name;
+	const out: Progress = { turn, at: now(), excerpt: text.slice(0, PROGRESS_RAW_CHARS), excerpt_truncated: text.length > PROGRESS_RAW_CHARS };
+	if (tool) out.last_tool = tool.slice(0, PROGRESS_TOOL_CHARS);
+	return out;
+}
 
 // Caller holds the lock. Publishes a receipt so that, whatever earlier
 // attempts managed before failing, the end state is: result file written,
@@ -515,6 +548,48 @@ export default function devxBridge(pi: ExtensionAPI) {
 	// instance is pending: devx's orphan rule would turn it unknown if it saw
 	// this instance live. Only then, and only briefly, is liveness withheld.
 	let orphanablePending = false;
+	// Mid-task progress for currentTask: turns completed, the newest turn not
+	// yet recorded, and when a record was last written (rate limit).
+	let progressTask: string | undefined;
+	// The task's own turns have started: immediately when Pi accepted the
+	// prompt as a new turn; for a followUp, once Pi starts that user message
+	// (earlier turns still belong to the run that was in progress).
+	let progressArmed = false;
+	let progressPrompt = "";
+	let progressTurns = 0;
+	let progressPending: Progress | undefined;
+	let progressLastAt = 0;
+
+	const resetProgress = (taskId: string | undefined) => {
+		progressTask = taskId;
+		progressArmed = false;
+		progressPrompt = "";
+		progressTurns = 0;
+		progressPending = undefined;
+		progressLastAt = 0;
+	};
+
+	// Caller holds the lock. Records the newest pending turn if the interval
+	// allows. Best effort: progress annotates a running task and never gates
+	// anything; a failed write keeps the turn pending for a later tick.
+	const flushProgressLocked = () => {
+		if (!progressPending || progressTask !== currentTask || !currentTask || receipt || pendingConfirm) return;
+		if (Date.now() - progressLastAt < PROGRESS_MIN_INTERVAL_MS) return;
+		const t = readJSON(taskPath(currentTask));
+		if (t?.state !== "running" || t.bridge_instance !== instance) {
+			progressPending = undefined;
+			return;
+		}
+		const pr = progressPending;
+		try {
+			writeAtomic(progressPath(currentTask), JSON.stringify({ task_id: currentTask, ...pr }));
+		} catch {
+			return;
+		}
+		progressPending = undefined;
+		progressLastAt = Date.now();
+		annotate("progress", currentTask, { ...pr });
+	};
 
 	const statusLine = () => {
 		if (!ctxRef?.hasUI) return;
@@ -577,6 +652,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 		out.abort_dispatched = !!r.abort_dispatched;
 		receipt = out;
 		receiptSpooled = false;
+		// The final result supersedes any progress not yet recorded.
+		progressPending = undefined;
 		publishAttempts = 0;
 		publishNextAt = 0;
 		publishError = "";
@@ -828,6 +905,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 
 				if (currentTask) {
 					if (receipt) return; // settled; only publication remains
+					flushProgressLocked();
 					const t = readJSON(taskPath(currentTask));
 					// Abort only a turn Pi accepted, at most once, and only while
 					// DevX still holds control at the generation the cancel was
@@ -892,6 +970,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 					return;
 				}
 				currentTask = next.id;
+				resetProgress(next.id);
 				abortSent = false;
 				lastEnd = undefined;
 				pendingConfirm = { id: next.id, prompt: next.prompt, at: Date.now() };
@@ -986,6 +1065,10 @@ export default function devxBridge(pi: ExtensionAPI) {
 					t.confirmed_at = now();
 					t.accepted_as = e.streamingBehavior ?? "turn";
 					saveTask(t);
+					if (progressTask === id) {
+						progressArmed = t.accepted_as === "turn";
+						progressPrompt = e.text;
+					}
 					// Durable from here: Pi gets the prompt even if the
 					// annotation cannot be written.
 					annotate("task_started", id, { accepted_as: t.accepted_as });
@@ -1052,6 +1135,22 @@ export default function devxBridge(pi: ExtensionAPI) {
 			statusLine();
 		}
 		return { action: "continue" };
+	});
+
+	// Each completed assistant turn of an accepted DevX task becomes the
+	// newest pending progress record; the tick writes it (rate limited).
+	pi.on("message_start", (e: any) => {
+		if (progressArmed || !progressPrompt || progressTask !== currentTask || e?.message?.role !== "user") return;
+		const c = e.message.content;
+		const text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((x: any) => x?.type === "text").map((x: any) => x.text).join("") : "";
+		if (text.trim() === progressPrompt.trim()) progressArmed = true;
+	});
+
+	pi.on("turn_end", (e: any) => {
+		if (!currentTask || pendingConfirm || receipt || progressTask !== currentTask || !progressArmed) return;
+		if (e?.message?.role !== "assistant") return;
+		progressTurns++;
+		progressPending = turnProgress(e.message, progressTurns);
 	});
 
 	pi.on("agent_end", (e: any) => {

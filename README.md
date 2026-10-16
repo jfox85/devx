@@ -456,6 +456,10 @@ bootstrap_files:
 sessions, queues follow-ups, and returns results. Every agent runs as a
 normal interactive Pi in the session's `pi-agent` window. You can watch it,
 attach, and take control. While you have control, remote prompts wait.
+While a task runs, the MCP client can follow it: `pi_events` carries
+rate-limited `progress` events, and `pi_status` carries `latest_progress`.
+Both show the latest assistant message (redacted, max 500 bytes) and the
+last tool called.
 
 ```bash
 devx agent list                 # managed agents and who has control

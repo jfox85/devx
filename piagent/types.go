@@ -67,6 +67,11 @@ const (
 	MaxPromptBytes = 64 << 10
 	// MaxExcerptBytes bounds result excerpts in status/send responses.
 	MaxExcerptBytes = 4 << 10
+	// MaxProgressExcerptBytes bounds the mid-task progress excerpt (latest
+	// assistant message) in status responses and progress events.
+	MaxProgressExcerptBytes = 500
+	// MaxProgressToolBytes bounds the reported last tool name.
+	MaxProgressToolBytes = 128
 	// MaxResultChunk bounds one cursor read of a full result.
 	MaxResultChunk = 16 << 10
 	// MaxEventsPage bounds one page of events.
@@ -253,7 +258,7 @@ func (t *Task) CancelOutcome(now time.Time) string {
 		return CancelWithheld
 	case t.Terminal():
 		return CancelFinishedFirst
-	case t.State == TaskRunning && t.CancelProtocol < BridgeProtocol && t.AbortSentAt == nil:
+	case t.State == TaskRunning && t.CancelProtocol < BridgeCancelProtocol && t.AbortSentAt == nil:
 		return CancelLegacyRequested
 	case t.AbortSentAt != nil && now.Sub(*t.AbortSentAt) > AbortConfirmAfter:
 		return CancelAbortUnconfirmed
@@ -294,10 +299,42 @@ type Bridge struct {
 // build. Version 2 adds: dropping a cancelled injection before acceptance,
 // skipping cancel-flagged waiting tasks, aborting only accepted turns once
 // under the same managed lease generation with no Pi-queued messages, and
-// recording abort_sent/abort_withheld. A running Pi keeps the bridge it was
+// recording abort_sent/abort_withheld. Version 3 adds mid-task progress
+// records (results/<task>.progress.json and "progress" events) and leaves
+// the cancel semantics of 2 unchanged. A running Pi keeps the bridge it was
 // launched with: restarting the MCP server does not refresh it; only a
 // relaunch of that agent (a human action) does.
-const BridgeProtocol = 2
+const BridgeProtocol = 3
+
+// BridgeCancelProtocol is the oldest bridge protocol whose running-cancel
+// handling this build relies on. Bridges at or above it may be asked to
+// abort a running turn.
+const BridgeCancelProtocol = 2
+
+// BridgeProgressProtocol is the oldest bridge protocol that reports mid-task
+// progress. Older bridges work as before and simply report none.
+const BridgeProgressProtocol = 3
+
+// Progress is the bridge's record of the newest completed assistant turn of
+// a running task (results/<task>.progress.json). Excerpt is raw (bounded by
+// the bridge); it is redacted and cut on read.
+type Progress struct {
+	TaskID           string    `json:"task_id"`
+	Turn             int       `json:"turn"`
+	At               time.Time `json:"at"`
+	Excerpt          string    `json:"excerpt"`
+	ExcerptTruncated bool      `json:"excerpt_truncated,omitempty"`
+	LastTool         string    `json:"last_tool,omitempty"`
+}
+
+// ProgressView is the client-facing latest_progress: redacted and bounded.
+type ProgressView struct {
+	At               time.Time `json:"at"`
+	Turn             int       `json:"turn"`
+	Excerpt          string    `json:"excerpt"`
+	ExcerptTruncated bool      `json:"excerpt_truncated,omitempty"`
+	LastTool         string    `json:"last_tool,omitempty"`
+}
 
 // Event is one entry in an agent's durable, cursor-addressable event log.
 type Event struct {

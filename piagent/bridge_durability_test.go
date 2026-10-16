@@ -43,8 +43,9 @@ func TestBridgeDurabilityFaultInjection(t *testing.T) {
 		skip("node " + string(out) + " cannot load TypeScript (need 22.6+)")
 	}
 	// bridge-durability-cancel.test.mjs covers receipts together with the
-	// protocol-2 cancellation gates.
-	for _, name := range []string{"bridge-durability.test.mjs", "bridge-durability-cancel.test.mjs"} {
+	// protocol-2 cancellation gates; bridge-progress.test.mjs covers the
+	// protocol-3 mid-task progress records (emission, rate limit, faults).
+	for _, name := range []string{"bridge-durability.test.mjs", "bridge-durability-cancel.test.mjs", "bridge-progress.test.mjs"} {
 		t.Run(name, func(t *testing.T) {
 			suite, err := filepath.Abs(filepath.Join("testdata", name))
 			if err != nil {
