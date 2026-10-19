@@ -121,7 +121,7 @@ var agentAttachCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if !v.BindingOK {
+		if !v.BindingOK || v.PaneForeign {
 			return fmt.Errorf("agent %s binding is %s: %s", args[0], v.State, v.Detail)
 		}
 		a := v.Agent

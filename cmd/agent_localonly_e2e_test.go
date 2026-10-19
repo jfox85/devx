@@ -261,7 +261,8 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 	// A restarted tmux server reuses pane ids. Simulate it by pointing the
 	// agent's binding at an unrelated live pane (another session's shell):
 	// recover must treat it as lost, not respawn that pane.
-	decoy, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "lo-e2e-decoy", "sleep", "600").Output()
+	// A plain shell (empty pane_start_command), as tmuxp and humans create.
+	decoy, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "lo-e2e-decoy").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,15 +274,22 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 	}
 	rawAgent, _ := os.ReadFile(agentPath)
 	rebound := regexp.MustCompile(`"pane_id": "%\d+"`).ReplaceAllString(string(rawAgent), `"pane_id": "`+decoyPane+`"`)
+	if !strings.Contains(rebound, `"pane_id": "`+decoyPane+`"`) {
+		t.Fatalf("could not rebind agent to decoy pane %s:\n%s", decoyPane, rawAgent)
+	}
 	if err := os.WriteFile(agentPath, []byte(rebound), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var statusJS string
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if js, _ := devx("agent", "status", agent, "--json"); strings.Contains(js, `"state": "pane_exited"`) {
+		if statusJS, _ = devx("agent", "status", agent, "--json"); strings.Contains(statusJS, `"pane_foreign": true`) && strings.Contains(statusJS, `"bridge_dead": true`) {
 			break
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+	if !strings.Contains(statusJS, `"pane_foreign": true`) {
+		t.Fatalf("reused pane not detected as foreign:\n%s", statusJS)
 	}
 	if out, err := devx("session", "recover", "--dry-run"); err != nil || !strings.Contains(out, agent+": relaunch") {
 		t.Fatalf("recover dry run: %v\n%s", err, out)
@@ -302,7 +310,7 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 	if out, _ := devx("agent", "inspect", agent, "--lines", "200"); !strings.Contains(out, "after relaunch") {
 		t.Fatalf("conversation not resumed after recover:\n%s", out)
 	}
-	if cmd, _ := exec.Command("tmux", "display-message", "-p", "-t", decoyPane, "#{pane_start_command}").Output(); !strings.Contains(string(cmd), "sleep 600") {
+	if cmd, _ := exec.Command("tmux", "display-message", "-p", "-t", decoyPane, "[#{pane_start_command}]").Output(); strings.TrimSpace(string(cmd)) != "[]" {
 		t.Fatalf("recover respawned the unrelated pane %s: %q", decoyPane, cmd)
 	}
 	// Recovered and live now: a second recover changes nothing.

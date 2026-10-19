@@ -3,6 +3,7 @@ package piagent
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -88,15 +89,18 @@ func TestRestartedServerReusedPaneIsForeignAndNotRespawned(t *testing.T) {
 	m, _ := newTestManager(t)
 	a, _ := crashedSeed(t, m)
 	m.Creator = okTmuxCreator{m.Creator}
-	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\ttail\ttail -f /dev/null"}
+	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\ttail\ttail -f /dev/null\t."}
 	m.Tmux = Tmux{Exec: pt.exec}
 
 	v, err := m.PeekStatus(a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !v.PaneForeign || !v.BridgeDead {
+	if !v.PaneForeign || !v.BridgeDead || v.State != AgentStaleBind {
 		t.Fatalf("foreign=%v dead=%v state=%s", v.PaneForeign, v.BridgeDead, v.State)
+	}
+	if _, err := m.Inspect(a.ID, 10); err == nil || pt.ran("capture-pane") {
+		t.Fatalf("inspect must refuse a foreign pane: %v", err)
 	}
 	if err := m.RelaunchIfUnchanged(a.ID, 1); err != nil {
 		t.Fatal(err)
@@ -116,7 +120,7 @@ func TestOwnPaneIsRespawned(t *testing.T) {
 	m, _ := newTestManager(t)
 	a, _ := crashedSeed(t, m)
 	m.Creator = okTmuxCreator{m.Creator}
-	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\tsh\t" + launchCmd(m, a)}
+	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\tsh\t" + launchCmd(m, a) + "\t."}
 	m.Tmux = Tmux{Exec: pt.exec}
 	if v, _ := m.PeekStatus(a.ID); v.PaneForeign {
 		t.Fatal("own pane reported foreign")
@@ -141,6 +145,100 @@ func TestPaneWithoutStartCommandIsNotForeign(t *testing.T) {
 	adopted := &Agent{ID: "pa_000000000001", Adopted: true}
 	if !paneIsAgents(PaneInfo{Exists: true, HasStartCommand: true, StartCommand: "pi"}, adopted) {
 		t.Fatal("adopted, never-relaunched pane runs the human's command and must not be foreign")
+	}
+	// A failed first launch bumps LaunchCount but leaves the human's pane:
+	// it must still be accepted (PaneLaunched, not LaunchCount, decides).
+	adopted.LaunchCount = 1
+	if !paneIsAgents(PaneInfo{Exists: true, HasStartCommand: true, StartCommand: "pi"}, adopted) {
+		t.Fatal("adopted pane after a failed first launch must not be foreign")
+	}
+	adopted.PaneLaunched = true
+	if paneIsAgents(PaneInfo{Exists: true, HasStartCommand: true, StartCommand: "pi"}, adopted) {
+		t.Fatal("once launched, an adopted pane must run the agent's launch.sh")
+	}
+}
+
+// A default-shell pane reports an empty start command. Through the real
+// parser that must be known-and-foreign, not "unreported".
+func TestEmptyStartCommandIsForeign(t *testing.T) {
+	p := Tmux{Exec: func(args ...string) (string, error) {
+		// What Run returns after trimming: the empty field survives only
+		// because of the sentinel.
+		return "%3\ts1\t@1\t0\t100\ts1\tbash\t\t.", nil
+	}}.Pane("%3")
+	if !p.Exists || !p.HasStartCommand || p.StartCommand != "" {
+		t.Fatalf("%+v", p)
+	}
+	if paneIsAgents(p, &Agent{ID: "pa_000000000001", LaunchCount: 1}) {
+		t.Fatal("empty start command must be foreign")
+	}
+	// Output without the sentinel (field unsupported): unknown.
+	old := Tmux{Exec: func(args ...string) (string, error) { return "%3\ts1\t@1\t0\t100\ts1\tbash", nil }}.Pane("%3")
+	if old.HasStartCommand {
+		t.Fatalf("%+v", old)
+	}
+}
+
+func TestListAgentsLenientSkipsCorruptRecord(t *testing.T) {
+	m, _ := newTestManager(t)
+	good := seedAgent(t, m)
+	bad := seedAgent(t, m)
+	if err := os.WriteFile(m.Store.agentPath(bad.ID), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store.ListAgents(); err == nil {
+		t.Fatal("strict listing should fail on the corrupt record")
+	}
+	agents, unreadable, err := m.Store.ListAgentsLenient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].ID != good.ID || unreadable[bad.ID] == nil {
+		t.Fatalf("agents=%v unreadable=%v", agents, unreadable)
+	}
+}
+
+// A second plain relaunch right after one that has not reported yet must not
+// kill the Pi that is starting.
+func TestRelaunchRefusesWhileNewPiIsStarting(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, _ := crashedSeed(t, m)
+	m.Creator = okTmuxCreator{m.Creator}
+	pt := &paneTmux{paneID: "%3"} // pane gone: the first relaunch opens %9
+	m.Tmux = Tmux{Exec: pt.exec}
+	if err := m.Relaunch(a.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	// %9 is now the agent's pane, alive, but its bridge has not reported.
+	pt.mu.Lock()
+	pt.paneID, pt.fields = "%9", "s1\t@9\t0\t100\ts1\tsh\t"+launchCmd(m, a)+"\t."
+	pt.mu.Unlock()
+	if err := m.Relaunch(a.ID, false); err == nil || !strings.Contains(err.Error(), "may still be starting") {
+		t.Fatalf("want refusal, got %v", err)
+	}
+	if pt.ran("respawn-pane") {
+		t.Fatal("respawned a starting Pi")
+	}
+	if err := m.Relaunch(a.ID, true); err != nil {
+		t.Fatalf("--force must still work: %v", err)
+	}
+}
+
+// MCP start re-checks under the launch lock: if a recover launched the
+// agent in between, start does not launch again over the live pane.
+func TestStartResumeDoesNotDoubleLaunch(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, _ := crashedSeed(t, m)
+	m.Creator = okTmuxCreator{m.Creator}
+	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\tsh\t" + launchCmd(m, a) + "\t."}
+	m.Tmux = Tmux{Exec: pt.exec}
+	tk, _ := m.Store.ListTasks(a.ID)
+	rec := &idemRecord{AgentID: a.ID, TaskID: tk[0].ID, SessionName: "s1"}
+	if err := m.completeStart(rec, StartRequest{Project: "proj", Prompt: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if pt.ran("new-window") || pt.ran("respawn-pane") {
+		t.Fatalf("start launched over a live pane: %v", pt.calls)
 	}
 }
 
@@ -217,5 +315,33 @@ func TestConcurrentRelaunchIfUnchangedStartsOnePi(t *testing.T) {
 	}
 	if windows != 1 {
 		t.Fatalf("%d windows opened", windows)
+	}
+}
+
+// A resumed MCP start whose bound pane id now names an unrelated pane
+// launches a fresh window instead of returning with no Pi running.
+func TestStartResumeLaunchesOverForeignPane(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, _ := crashedSeed(t, m)
+	m.Creator = okTmuxCreator{m.Creator}
+	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\tbash\t\t."}
+	m.Tmux = Tmux{Exec: pt.exec}
+	tk, _ := m.Store.ListTasks(a.ID)
+	rec := &idemRecord{AgentID: a.ID, TaskID: tk[0].ID, SessionName: "s1"}
+	if err := m.completeStart(rec, StartRequest{Project: "proj", Prompt: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if !pt.ran("new-window") || pt.ran("respawn-pane") {
+		t.Fatalf("want a new window over a foreign pane: %v", pt.calls)
+	}
+}
+
+func TestRelaunchUnknownAgentCreatesNothing(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.Relaunch("pa_0123456789ab", false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want not found, got %v", err)
+	}
+	if _, err := os.Stat(m.Store.AgentDir("pa_0123456789ab")); !os.IsNotExist(err) {
+		t.Fatalf("agent dir created for unknown id: %v", err)
 	}
 }

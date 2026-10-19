@@ -15,21 +15,22 @@ import (
 )
 
 type recoverFake struct {
-	live      map[string]bool
-	liveErr   error
-	liveAfter map[string]bool // tmux sessions seen at execution time (default: live)
-	policyErr error
-	peekErr   map[string]error
-	paths     map[string]bool
-	views     []*piagent.AgentView
-	status    map[string]*piagent.AgentView // re-check answers; defaults to views
-	ensureErr map[string]error
-	relErr    map[string]error
-	ensured   []string
-	relaunch  []string
-	order     []string
-	calls     int
-	targetUp  bool
+	live       map[string]bool
+	liveErr    error
+	liveAfter  map[string]bool // tmux sessions seen at execution time (default: live)
+	policyErr  error
+	peekErr    map[string]error
+	unreadable map[string]error
+	paths      map[string]bool
+	views      []*piagent.AgentView
+	status     map[string]*piagent.AgentView // re-check answers; defaults to views
+	ensureErr  map[string]error
+	relErr     map[string]error
+	ensured    []string
+	relaunch   []string
+	order      []string
+	calls      int
+	targetUp   bool
 }
 
 func (f *recoverFake) deps() recoverDeps {
@@ -47,20 +48,15 @@ func (f *recoverFake) deps() recoverDeps {
 			f.order = append(f.order, "ensure:"+name)
 			return f.ensureErr[name]
 		},
-		agents: func() ([]*piagent.Agent, error) {
+		agents: func() ([]*piagent.Agent, map[string]error, error) {
 			var out []*piagent.Agent
 			for _, v := range f.views {
 				out = append(out, v.Agent)
 			}
-			return out, nil
+			return out, f.unreadable, nil
 		},
 		launchPolicyErr: f.policyErr,
-		owns: func(name string, sess *session.Session, a *piagent.Agent) error {
-			if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != a.ID {
-				return errors.New("not owned")
-			}
-			return nil
-		},
+		owns:            managedSessionOwnedBy,
 		peek: func(id string) (*piagent.AgentView, error) {
 			if err := f.peekErr[id]; err != nil {
 				return nil, err
@@ -246,7 +242,7 @@ func TestRecoverSkipsUnrecoverableSessions(t *testing.T) {
 			t.Errorf("%s: %+v", n, it)
 		}
 	}
-	if it := findItem(t, plan, "unmarked"); it.Agents[0].Action != recoverActSkip || !strings.Contains(it.Agents[0].Reason, "not owned") {
+	if it := findItem(t, plan, "unmarked"); it.Agents[0].Action != recoverActSkip || !strings.Contains(it.Agents[0].Reason, "not a local-only session owned by") {
 		t.Errorf("unmarked: %+v", it)
 	}
 	executeRecover(plan, sessions, f.deps(), recoverOpts())
@@ -368,7 +364,7 @@ func TestTmuxNoServer(t *testing.T) {
 func TestRecoverForeignPaneAfterServerRestart(t *testing.T) {
 	recent := recoverNow.Add(-time.Hour)
 	cutoff := recoverNow.Add(-24 * time.Hour)
-	for _, state := range []string{piagent.AgentStaleBind, piagent.AgentPaneExited} {
+	for _, state := range []string{piagent.AgentStaleBind} {
 		v := crashedAgent("pa_1", "s", recent)
 		v.State, v.PaneAlive, v.PaneForeign = state, true, true
 		if ok, reason := agentRecoverDecision(v, cutoff, false); !ok {
@@ -459,6 +455,7 @@ func TestRecoverPolicyErrorAndUnmatchedAgents(t *testing.T) {
 		crashedAgent("pa_333333333333", "lo", recoverNow),
 	}
 	f.peekErr["pa_333333333333"] = errors.New("corrupt agent.json")
+	f.unreadable = map[string]error{"pa_444444444444": errors.New("unexpected end of JSON input")}
 	f.policyErr = errors.New("launch policy unusable")
 	plan, err := planRecover(sessions, f.deps(), recoverOpts())
 	if err != nil {
@@ -467,17 +464,77 @@ func TestRecoverPolicyErrorAndUnmatchedAgents(t *testing.T) {
 	if a := findItem(t, plan, "lo").Agents[0]; a.Action != recoverActSkip || !strings.Contains(a.Reason, "launch policy") {
 		t.Fatalf("policy error must be shown in the plan: %+v", a)
 	}
-	if len(plan.Unmatched) != 2 {
+	if len(plan.Unmatched) != 3 {
 		t.Fatalf("unmatched %+v", plan.Unmatched)
 	}
-	if recoverFailures(plan) != 1 {
+	if recoverFailures(plan) != 2 {
 		t.Fatalf("unreadable agent must count as a failure: %d", recoverFailures(plan))
 	}
 	var buf bytes.Buffer
 	printRecoverPlan(&buf, plan)
-	for _, want := range []string{"pa_222222222222", "session record is gone", "corrupt agent.json"} {
+	for _, want := range []string{"pa_222222222222", "session record is gone", "corrupt agent.json", "pa_444444444444", "unexpected end of JSON"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+// tmux is re-queried before every recreation, so a session (or its viewer)
+// that appears while an earlier session is being recreated is left alone.
+func TestRecoverRequeriesTmuxBeforeEachRecreation(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"a": hostSess(f, "a", recoverNow), "b": hostSess(f, "b", recoverNow)}
+	plan, err := planRecover(sessions, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := f.deps()
+	ensure := d.ensureTmux
+	d.ensureTmux = func(name string, s *session.Session) error {
+		if name == "a" {
+			f.live["b-web"] = true // b's viewer appears while a is recreated
+		}
+		return ensure(name, s)
+	}
+	executeRecover(plan, sessions, d, recoverOpts())
+	if strings.Join(f.ensured, ",") != "a" {
+		t.Fatalf("ensured %v", f.ensured)
+	}
+}
+
+// The real ownership rule is applied: an agent bound to an earlier instance
+// of its session is not relaunched into a recreated one.
+func TestRecoverAppliesInstanceBinding(t *testing.T) {
+	f := newRecoverFake()
+	sess := loSess(f, "lo", "pa_111111111111", recoverNow)
+	sess.InstanceID = "inst-new"
+	v := crashedAgent("pa_111111111111", "lo", recoverNow)
+	v.Agent.SessionInstanceID = "inst-old"
+	f.views = []*piagent.AgentView{v}
+	plan, err := planRecover(map[string]*session.Session{"lo": sess}, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := findItem(t, plan, "lo").Agents[0]; a.Action != recoverActSkip || !strings.Contains(a.Reason, "instance") {
+		t.Fatalf("%+v", a)
+	}
+}
+
+// Naming sessions limits agent reporting to them: an unrelated broken agent
+// does not make `recover <name>` fail.
+func TestRecoverNamedIgnoresUnrelatedAgents(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"a": hostSess(f, "a", recoverNow), "lo": loSess(f, "lo", "pa_111111111111", recoverNow)}
+	f.views = []*piagent.AgentView{crashedAgent("pa_111111111111", "lo", recoverNow)}
+	f.peekErr["pa_111111111111"] = errors.New("boom")
+	f.unreadable = map[string]error{"pa_999999999999": errors.New("corrupt")}
+	opts := recoverOpts()
+	opts.Names = []string{"a"}
+	plan, err := planRecover(sessions, f.deps(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Unmatched) != 0 || recoverFailures(plan) != 0 {
+		t.Fatalf("unrelated agents reported: %+v", plan.Unmatched)
 	}
 }

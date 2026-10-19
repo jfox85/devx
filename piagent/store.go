@@ -194,6 +194,37 @@ func (s *Store) ListAgents() ([]*Agent, error) {
 	return out, nil
 }
 
+// ListAgentsLenient is ListAgents that keeps going past unreadable records:
+// it returns every agent it could load plus the load error of each one it
+// could not, so one corrupt agent.json does not hide the rest.
+func (s *Store) ListAgentsLenient() ([]*Agent, map[string]error, error) {
+	entries, err := os.ReadDir(s.agentsDir())
+	if os.IsNotExist(err) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var out []*Agent
+	bad := map[string]error{}
+	for _, e := range entries {
+		if !e.IsDir() || !ValidAgentID(e.Name()) {
+			continue
+		}
+		a, err := s.LoadAgent(e.Name())
+		if errors.Is(err, ErrNotFound) {
+			continue // start in progress
+		}
+		if err != nil {
+			bad[e.Name()] = err
+			continue
+		}
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, bad, nil
+}
+
 func (s *Store) LoadTask(agentID, taskID string) (*Task, error) {
 	if !ValidTaskID(taskID) {
 		return nil, fmt.Errorf("invalid task id %q", taskID)

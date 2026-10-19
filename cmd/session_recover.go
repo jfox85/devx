@@ -32,7 +32,7 @@ var sessionRecoverCmd = &cobra.Command{
 or tmux kill-server). Worktrees, session metadata and Pi conversations live on
 disk and survive; only tmux and the processes inside it are lost.
 
-recover:
+recover (--dry-run changes no session, agent or task state):
   - recreates each selected session's tmux environment from its tmuxp template
     (the same path 'devx session attach' uses), and
   - relaunches managed Pi agents that crashed, resuming the same Pi
@@ -136,7 +136,7 @@ type recoverDeps struct {
 	// agents lists managed agent records; peek reads one agent's status
 	// without reconciling task state, so planning (and --dry-run) write
 	// nothing.
-	agents func() ([]*piagent.Agent, error)
+	agents func() ([]*piagent.Agent, map[string]error, error)
 	peek   func(id string) (*piagent.AgentView, error)
 	// owns reports why agent a may not run in sess (nil if it may): the
 	// same rule the relaunch itself enforces.
@@ -164,7 +164,7 @@ func runSessionRecover(cmd *cobra.Command, args []string) error {
 		targetRunning: target.IsRunning,
 		pathExists:    func(p string) bool { _, err := os.Stat(p); return err == nil },
 		ensureTmux:    target.EnsureTmuxSession,
-		agents:        m.Store.ListAgents,
+		agents:        m.Store.ListAgentsLenient,
 		peek:          m.PeekStatus,
 		owns:          managedSessionOwnedBy,
 		relaunch:      m.RelaunchIfUnchanged,
@@ -233,7 +233,7 @@ func tmuxNoServer(msg string) bool {
 // unrelated pane (PaneForeign); that pane is lost too.
 func agentRecoverDecision(v *piagent.AgentView, cutoff time.Time, includeExited bool) (bool, string) {
 	a := v.Agent
-	foreignLost := v.PaneForeign && v.BridgeDead && (v.State == piagent.AgentPaneExited || v.State == piagent.AgentStaleBind)
+	foreignLost := v.PaneForeign && v.BridgeDead && v.State == piagent.AgentStaleBind
 	switch {
 	case a.RetiredAt != nil:
 		return false, "retired"
@@ -268,14 +268,30 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 	if err != nil {
 		return nil, fmt.Errorf("cannot query tmux; nothing was changed: %w", err)
 	}
-	agents, err := deps.agents()
+	agents, unreadable, err := deps.agents()
 	if err != nil {
 		return nil, fmt.Errorf("list managed agents: %w", err)
 	}
 	plan := &recoverPlan{}
+	badIDs := make([]string, 0, len(unreadable))
+	for id := range unreadable {
+		badIDs = append(badIDs, id)
+	}
+	sort.Strings(badIDs)
+	for _, id := range badIDs {
+		if len(opts.Names) > 0 {
+			break // unknown session: cannot tell if it was named; reported only without names
+		}
+		// One unreadable agent must not block recovering the rest.
+		plan.Unmatched = append(plan.Unmatched, recoverAgentItem{AgentID: id, Action: recoverActSkip,
+			Reason: "agent record unreadable", Outcome: recoverOutFailed, Error: unreadable[id].Error()})
+	}
 	bySession := map[string][]*piagent.AgentView{}
 	for _, a := range agents {
 		if a.RetiredAt != nil {
+			continue
+		}
+		if len(named) > 0 && !named[a.DevxSession] {
 			continue
 		}
 		v, err := deps.peek(a.ID)
@@ -405,12 +421,14 @@ func executeRecover(plan *recoverPlan, sessions map[string]*session.Session, dep
 			ag.Outcome = recoverOutDone
 		}
 	}
-	live, liveErr := deps.liveTmux()
 	for i := range plan.Items {
 		item := &plan.Items[i]
 		if item.Tmux != recoverActRecreate {
 			continue
 		}
+		// Query right before each recreation: an earlier one may have run
+		// long enough for this session (or its viewer) to appear.
+		live, liveErr := deps.liveTmux()
 		switch {
 		case liveErr != nil:
 			item.Outcome, item.Error = recoverOutFailed, "cannot query tmux; not recreated: "+liveErr.Error()
@@ -456,7 +474,11 @@ func printRecoverPlan(w io.Writer, plan *recoverPlan) {
 		}
 		fmt.Fprintln(w, "\nAgents not recovered:")
 		for _, a := range plan.Unmatched {
-			fmt.Fprintf(w, "  agent %s (session %s): %s%s\n", a.AgentID, a.Session, a.Reason, recoverOutcomeSuffix(a.Outcome, a.Error))
+			where := ""
+			if a.Session != "" {
+				where = " (session " + a.Session + ")"
+			}
+			fmt.Fprintf(w, "  agent %s%s: %s%s\n", a.AgentID, where, a.Reason, recoverOutcomeSuffix(a.Outcome, a.Error))
 		}
 	}()
 	if len(plan.Items) == 0 {

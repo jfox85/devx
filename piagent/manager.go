@@ -287,18 +287,28 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 	} else if err != nil {
 		return err
 	}
-	if agent.Binding.PaneID == "" {
-		return m.launch(agent.ID, false)
-	}
-	switch p := m.Tmux.Pane(agent.Binding.PaneID); {
-	case p.QueryFailed:
-		// The task is queued; launching now could start a second Pi next to
-		// a live one. A retry with the same key resumes from here.
-		return fmt.Errorf("%w: pane %s state unknown; retry with the same idempotency_key", ErrTmuxUnavailable, agent.Binding.PaneID)
-	case !p.Exists:
-		return m.launch(agent.ID, false)
-	}
-	return nil
+	// Decide whether to launch under the launch lock, from a fresh read: a
+	// recover or relaunch may have launched the agent since it was loaded.
+	return m.withLaunchLock(agent.ID, func() error {
+		agent, err := m.Store.LoadAgent(agent.ID)
+		if err != nil {
+			return err
+		}
+		if agent.Binding.PaneID == "" {
+			return m.launchLocked(agent.ID, false)
+		}
+		switch p := m.Tmux.Pane(agent.Binding.PaneID); {
+		case p.QueryFailed:
+			// The task is queued; launching now could start a second Pi next to
+			// a live one. A retry with the same key resumes from here.
+			return fmt.Errorf("%w: pane %s state unknown; retry with the same idempotency_key", ErrTmuxUnavailable, agent.Binding.PaneID)
+		case !p.Exists || !paneIsAgents(p, agent):
+			// Gone, or the id now names an unrelated pane (restarted tmux
+			// server): launch a fresh pi-agent window.
+			return m.launchLocked(agent.ID, false)
+		}
+		return nil
+	})
 }
 
 func (m *Manager) enqueueLocked(agentID, taskID, prompt, idemHash string) error {
@@ -406,12 +416,20 @@ func (m *Manager) withLaunchLock(agentID string, fn func() error) error {
 	if !ValidAgentID(agentID) {
 		return fmt.Errorf("invalid agent id %q", agentID)
 	}
-	if err := os.MkdirAll(m.Store.AgentDir(agentID), 0o700); err != nil {
+	// The agent directory must already exist (start creates it); never
+	// create one for an unknown or mistyped id.
+	if _, err := os.Stat(m.Store.AgentDir(agentID)); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("agent %s: %w", agentID, ErrNotFound)
+		}
 		return err
 	}
-	release, err := AcquireOwnedLock(filepath.Join(m.Store.AgentDir(agentID), launchLockName))
+	release, err := acquireOwnedDirLock(filepath.Join(m.Store.AgentDir(agentID), launchLockName), launchLockTimeout, launchLockStale)
+	if errors.Is(err, errLockTimeout) {
+		return fmt.Errorf("agent %s: another launch is still in progress: %w", agentID, err)
+	}
 	if err != nil {
-		return fmt.Errorf("agent %s: another launch is in progress: %w", agentID, err)
+		return fmt.Errorf("agent %s: %w", agentID, err)
 	}
 	defer release()
 	return fn()
@@ -477,6 +495,7 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 		}
 		a.LaunchNonce = nonce
 		a.LaunchCount++
+		a.LastLaunchAt = m.Store.now()
 		if err := m.markOrphanedLocked(a, "Pi was relaunched while this task was running"); err != nil {
 			return err
 		}
@@ -513,6 +532,7 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 			return err
 		}
 		a.Binding = Binding{TmuxSession: tmuxName, WindowID: windowID, PaneID: paneID}
+		a.PaneLaunched = true
 		if err := m.Store.SaveAgent(a); err != nil {
 			return err
 		}
@@ -527,12 +547,12 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 // (another session's shell, or the devx-local window of the agent's own
 // recreated session). Every pane DevX runs Pi in is created or respawned with
 // the agent's launch.sh, so a pane whose start command does not name it is
-// not the agent's. Adopted panes not yet relaunched run the human's own
-// command and cannot be told apart this way, nor can panes on tmux builds
+// not the agent's. Adopted panes DevX has not yet launched Pi in (even if
+// an earlier attempt failed) run the human's own command and cannot be told apart this way, nor can panes on tmux builds
 // that do not report the start command: both are assumed to be the agent's,
 // as before.
 func paneIsAgents(p PaneInfo, a *Agent) bool {
-	if !p.Exists || !p.HasStartCommand || (a.Adopted && a.LaunchCount == 0) {
+	if !p.Exists || !p.HasStartCommand || (a.Adopted && !a.PaneLaunched) {
 		return true
 	}
 	return strings.Contains(p.StartCommand, a.ID+string(filepath.Separator)+"launch.sh")
@@ -854,6 +874,22 @@ func (m *Manager) Relaunch(agentID string, force bool) error {
 	return m.withLaunchLock(agentID, func() error { return m.relaunchLocked(agentID, force, -1) })
 }
 
+// launchStartGrace is how long after a launch a non-forced relaunch assumes
+// the new Pi may still be starting (its bridge has not reported yet).
+const launchStartGrace = 60 * time.Second
+
+// launchStillStarting reports whether the agent's latest launch is recent,
+// its pane is the agent's own and alive, and the Pi it started has not yet
+// reported (the bridge still carries an older launch nonce). Relaunching
+// then would kill a Pi that is starting, not one that crashed.
+func launchStillStarting(v *AgentView, now time.Time) bool {
+	a := v.Agent
+	if a.LastLaunchAt.IsZero() || now.Sub(a.LastLaunchAt) >= launchStartGrace || !v.PaneAlive || v.PaneForeign {
+		return false
+	}
+	return v.Bridge == nil || v.Bridge.Nonce != a.LaunchNonce
+}
+
 // ErrLaunchedSinceCheck means the agent was (re)launched after the caller
 // last looked at it, so the caller's decision to relaunch is out of date.
 var ErrLaunchedSinceCheck = errors.New("agent was launched since it was checked")
@@ -873,6 +909,10 @@ func (m *Manager) relaunchLocked(agentID string, force bool, expectLaunchCount i
 	}
 	if expectLaunchCount >= 0 && view.Agent.LaunchCount != expectLaunchCount {
 		return fmt.Errorf("%w (launch %d, expected %d)", ErrLaunchedSinceCheck, view.Agent.LaunchCount, expectLaunchCount)
+	}
+	if !force && launchStillStarting(view, m.Store.now()) {
+		return fmt.Errorf("agent %s was launched %s ago and its Pi has not reported yet; refusing to replace a Pi that may still be starting (wait, or use --force)",
+			agentID, m.Store.now().Sub(view.Agent.LastLaunchAt).Round(time.Second))
 	}
 	if view.BridgeOnline && !force {
 		return fmt.Errorf("agent %s is running in pane %s; refusing to relaunch a live Pi (use --force to replace it)", agentID, view.Agent.Binding.PaneID)
@@ -1132,6 +1172,8 @@ func (m *Manager) agentStatus(agentID string, reconcile bool) (*AgentView, error
 			v.State, v.Detail = AgentUnknown, "tmux could not be queried (server busy, restarting or unavailable); pane state unknown, nothing was changed"
 		case !pane.Exists:
 			v.State, v.Detail = AgentPaneExited, "the bound tmux pane no longer exists"
+		case v.PaneForeign:
+			v.State, v.Detail = AgentStaleBind, fmt.Sprintf("pane id %s was reused by an unrelated pane (tmux server restarted?); the agent's own pane is gone", a.Binding.PaneID)
 		case !v.BindingOK:
 			v.State, v.Detail = AgentStaleBind, fmt.Sprintf("pane %s now belongs to %s/%s, not the bound window", a.Binding.PaneID, pane.SessionName, pane.WindowID)
 		case a.Adopted && a.LaunchCount == 0:
@@ -1374,6 +1416,9 @@ func (m *Manager) Inspect(agentID string, lines int) (string, error) {
 	}
 	if lines <= 0 || lines > 2000 {
 		lines = 200
+	}
+	if p := m.Tmux.Pane(a.Binding.PaneID); p.Exists && !paneIsAgents(p, a) {
+		return "", fmt.Errorf("agent %s: pane id %s now belongs to an unrelated pane (tmux server restarted?); not capturing it", a.ID, a.Binding.PaneID)
 	}
 	return m.Tmux.Capture(a.Binding.PaneID, lines)
 }
