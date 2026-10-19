@@ -253,6 +253,42 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 		t.Fatalf("windows after relaunch=%v", got)
 	}
 
+	// Reboot / tmux crash: the whole tmux session is lost. `session recover`
+	// recreates the local-only session (owned tag) and resumes the same Pi.
+	if err := exec.Command("tmux", "kill-session", "-t", "=lo-e2e").Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if js, _ := devx("agent", "status", agent, "--json"); strings.Contains(js, `"state": "pane_exited"`) {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if out, err := devx("session", "recover", "--dry-run"); err != nil || !strings.Contains(out, agent+": relaunch") {
+		t.Fatalf("recover dry run: %v\n%s", err, out)
+	}
+	if exec.Command("tmux", "has-session", "-t", "=lo-e2e").Run() == nil {
+		t.Fatal("dry run recreated the tmux session")
+	}
+	if out, err := devx("session", "recover"); err != nil || !strings.Contains(out, "[done]") {
+		t.Fatalf("recover: %v\n%s", err, out)
+	}
+	afterRecover := mcp("pi_send", map[string]any{"agent_id": agent, "prompt": "after recover", "idempotency_key": "s3"})
+	waitState(afterRecover["task_id"].(string), 60*time.Second, "completed")
+	wins, _ = exec.Command("tmux", "list-windows", "-t", "=lo-e2e", "-F", "#{window_name}").Output()
+	if got := strings.Fields(string(wins)); strings.Join(got, ",") != "devx-local,pi-agent" {
+		t.Fatalf("windows after recover=%v", got)
+	}
+	// The fresh Pi shows turns from before the tmux loss: same conversation.
+	if out, _ := devx("agent", "inspect", agent, "--lines", "200"); !strings.Contains(out, "after relaunch") {
+		t.Fatalf("conversation not resumed after recover:\n%s", out)
+	}
+	// Recovered and live now: a second recover changes nothing.
+	if out, err := devx("session", "recover"); err != nil || strings.Contains(out, "[done]") {
+		t.Fatalf("second recover acted: %v\n%s", err, out)
+	}
+
 	// A later default route sync (dangerous config) still excludes it.
 	if out, err := devx("cloudflare", "sync"); err != nil {
 		t.Fatalf("cloudflare sync: %v %s", err, out)

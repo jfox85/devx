@@ -896,6 +896,7 @@ publication is a separate, optional, human step.
 | Take control | `devx agent takeover <id>`, `/devx-takeover`, or just type a message / press Esc in Pi |
 | Give control back | `devx agent release <id> [--drop-queued]` or `/devx-release` |
 | Recover a crashed Pi | `devx agent relaunch <id>` (same Pi session ID, history restored) |
+| Recover everything after a crash/reboot | `devx session recover [--dry-run] [--since 24h]` (recreates tmux sessions, relaunches crashed agents) |
 
 Inspecting is read-only. Attaching only lets you watch until you type
 something. Taking control fences out remote prompts.
