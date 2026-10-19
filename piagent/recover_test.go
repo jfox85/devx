@@ -148,7 +148,7 @@ func TestPaneWithoutStartCommandIsNotForeign(t *testing.T) {
 	}
 	// A failed first launch bumps LaunchCount but leaves the human's pane:
 	// it must still be accepted (PaneLaunched, not LaunchCount, decides).
-	adopted.LaunchCount = 1
+	adopted.LaunchCount, adopted.LastLaunchAt = 1, time.Now()
 	if !paneIsAgents(PaneInfo{Exists: true, HasStartCommand: true, StartCommand: "pi"}, adopted) {
 		t.Fatal("adopted pane after a failed first launch must not be foreign")
 	}
@@ -344,4 +344,87 @@ func TestRelaunchUnknownAgentCreatesNothing(t *testing.T) {
 	if _, err := os.Stat(m.Store.AgentDir("pa_0123456789ab")); !os.IsNotExist(err) {
 		t.Fatalf("agent dir created for unknown id: %v", err)
 	}
+}
+
+// Adopted agents: a failed first launch keeps the human's Pi protected
+// (still adopted_pending, pane unverified), and legacy records that were
+// launched before PaneLaunched existed keep being verified.
+func TestAdoptedPaneUnlaunched(t *testing.T) {
+	now := time.Now()
+	for name, c := range map[string]struct {
+		a    Agent
+		want bool
+	}{
+		"never launched":         {Agent{Adopted: true}, true},
+		"first launch failed":    {Agent{Adopted: true, LaunchCount: 1, LastLaunchAt: now}, true},
+		"launched":               {Agent{Adopted: true, LaunchCount: 1, LastLaunchAt: now, PaneLaunched: true}, false},
+		"legacy launched record": {Agent{Adopted: true, LaunchCount: 2}, false},
+		"not adopted":            {Agent{LaunchCount: 0}, false},
+	} {
+		if got := c.a.adoptedPaneUnlaunched(); got != c.want {
+			t.Errorf("%s: got %v want %v", name, got, c.want)
+		}
+	}
+}
+
+// Status of an adopted agent whose first relaunch failed is still
+// adopted_pending, so an unforced relaunch cannot replace the human's Pi.
+func TestAdoptedFailedFirstLaunchStaysPending(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Adopted, a.LaunchCount, a.LastLaunchAt = true, 1, time.Now()
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%3"}
+		return m.Store.SaveAgent(a)
+	})
+	pt := &paneTmux{paneID: "%3", fields: "s1\t@1\t0\t100\ts1\tpi\tpi\t."}
+	m.Tmux = Tmux{Exec: pt.exec}
+	v, err := m.PeekStatus(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.State != AgentAdoptedPending || v.PaneForeign {
+		t.Fatalf("state=%s foreign=%v", v.State, v.PaneForeign)
+	}
+	if err := m.Relaunch(a.ID, false); err == nil {
+		t.Fatal("unforced relaunch of an adopted pending agent must be refused")
+	}
+	if pt.ran("respawn-pane") {
+		t.Fatal("respawned the human's Pi")
+	}
+}
+
+// A legacy launched adopted record is migrated on its next launch attempt,
+// so even a failed attempt keeps its pane verified.
+func TestLegacyAdoptedRecordMigratesOnLaunch(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	_ = m.Store.WithAgentLock(a.ID, func() error {
+		a, _ := m.Store.LoadAgent(a.ID)
+		a.Adopted, a.LaunchCount = true, 2
+		a.Binding = Binding{TmuxSession: "s1", WindowID: "@1", PaneID: "%3"}
+		return m.Store.SaveAgent(a)
+	})
+	m.Creator = adoptVerifyOK{m.Creator}
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		if args[0] == "display-message" {
+			return "", fmt.Errorf("can't find pane: %s", args[3])
+		}
+		return "", errors.New("boom")
+	}}
+	_ = m.launch(a.ID, true) // denied: adopted pane gone; nonce already recorded
+	got, _ := m.Store.LoadAgent(a.ID)
+	if !got.PaneLaunched || got.adoptedPaneUnlaunched() {
+		t.Fatalf("legacy launched record lost its launched state: %+v", got)
+	}
+}
+
+// adoptVerifyOK lets launch pass the adopted-session verification.
+type adoptVerifyOK struct{ SessionCreator }
+
+func (adoptVerifyOK) Adopt(string, string) (AdoptedSession, error) { return AdoptedSession{}, nil }
+func (adoptVerifyOK) ReleaseAdoption(string, string) error         { return nil }
+func (adoptVerifyOK) VerifyAdopted(string, *Agent) (AdoptedSession, error) {
+	return AdoptedSession{}, nil
 }

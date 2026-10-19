@@ -140,6 +140,19 @@ type Agent struct {
 	SessionCreatedAt time.Time `json:"session_created_at,omitempty"`
 }
 
+// adoptedPaneUnlaunched reports whether a is adopted and its bound pane
+// still runs the human's original Pi because DevX has not completed a launch
+// in it. A launch attempt that failed before Pi started does not count.
+// Records from before PaneLaunched/LastLaunchAt existed carry only
+// LaunchCount; for them any launch counts as completed, as it always did.
+func (a *Agent) adoptedPaneUnlaunched() bool {
+	if !a.Adopted || a.PaneLaunched {
+		return false
+	}
+	legacyLaunched := a.LaunchCount > 0 && a.LastLaunchAt.IsZero()
+	return !legacyLaunched
+}
+
 // Task is one dispatched prompt.
 type Task struct {
 	ID              string     `json:"id"`

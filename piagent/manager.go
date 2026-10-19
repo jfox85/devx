@@ -493,6 +493,11 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 		if err != nil {
 			return err
 		}
+		// Carry a legacy record's completed launch over before stamping
+		// this attempt, so a failure now cannot make it look unlaunched.
+		if !a.adoptedPaneUnlaunched() && a.LaunchCount > 0 {
+			a.PaneLaunched = true
+		}
 		a.LaunchNonce = nonce
 		a.LaunchCount++
 		a.LastLaunchAt = m.Store.now()
@@ -552,7 +557,7 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 // that do not report the start command: both are assumed to be the agent's,
 // as before.
 func paneIsAgents(p PaneInfo, a *Agent) bool {
-	if !p.Exists || !p.HasStartCommand || (a.Adopted && !a.PaneLaunched) {
+	if !p.Exists || !p.HasStartCommand || a.adoptedPaneUnlaunched() {
 		return true
 	}
 	return strings.Contains(p.StartCommand, a.ID+string(filepath.Separator)+"launch.sh")
@@ -1176,7 +1181,7 @@ func (m *Manager) agentStatus(agentID string, reconcile bool) (*AgentView, error
 			v.State, v.Detail = AgentStaleBind, fmt.Sprintf("pane id %s was reused by an unrelated pane (tmux server restarted?); the agent's own pane is gone", a.Binding.PaneID)
 		case !v.BindingOK:
 			v.State, v.Detail = AgentStaleBind, fmt.Sprintf("pane %s now belongs to %s/%s, not the bound window", a.Binding.PaneID, pane.SessionName, pane.WindowID)
-		case a.Adopted && a.LaunchCount == 0:
+		case a.adoptedPaneUnlaunched():
 			v.State, v.Detail = AgentAdoptedPending, fmt.Sprintf("adopted; the session's Pi runs without the DevX bridge. When it is idle, run: devx agent relaunch %s --force (same conversation), then /devx-release", a.ID)
 		case !v.BridgeOnline && bridgeDead:
 			v.State, v.Detail = AgentPaneExited, "Pi exited; the pane is holding for inspection (devx agent relaunch resumes the same Pi session)"
