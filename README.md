@@ -373,6 +373,34 @@ devx session attach my-feature
 # - Relaunch editor if it was closed
 ```
 
+#### Recover After a Crash or Reboot
+Worktrees, session metadata and Pi conversations survive a crash; only the tmux
+server and the processes in it are lost. `devx session recover` brings them back:
+
+```bash
+# See what would be recovered (changes nothing)
+devx session recover --dry-run
+
+# Recreate missing tmux sessions (from .tmuxp.yaml) and relaunch crashed
+# managed Pi agents (same conversation) for sessions active in the last 24h
+devx session recover
+
+# Widen the window, or pick sessions explicitly
+devx session recover --since 72h
+devx session recover my-feature other-feature
+devx session recover --all
+```
+
+Running tmux sessions are never killed or modified (crashed agents inside them
+are still relaunched), and a session whose `-web` viewer survived is skipped
+rather than started twice. Managed agents are relaunched only when their Pi and
+its tmux pane are confirmed gone and Pi was last seen within `--since`; a Pi that
+exited while its pane stayed open is skipped unless you pass `--include-exited`,
+and adopted agents must be re-adopted by hand. `--dry-run` changes no session, agent or task state.
+Recreating a session runs its `.tmuxp.yaml` just like `devx session attach`, so
+check the dry run before `--all`. Prefer this over tmux-resurrect for DevX
+sessions: a restored session with the same name makes DevX skip its template.
+
 #### Remove Session
 ```bash
 # Clean up session completely

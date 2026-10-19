@@ -18,8 +18,14 @@ import (
 // takeover returns, no dispatch that was not already marked delivered can be
 // delivered until a human releases control.
 const (
-	agentLockName    = "agent.lock"
-	agentLockTimeout = 5 * time.Second
+	agentLockName  = "agent.lock"
+	launchLockName = "launch.lock"
+	// A launch runs tmux commands and can take a while; waiters wait this
+	// long, and a held launch lock is reclaimed only when its owner process
+	// is gone or it is older than launchLockStale.
+	launchLockTimeout = 30 * time.Second
+	launchLockStale   = 10 * time.Minute
+	agentLockTimeout  = 5 * time.Second
 	// A lock older than this is treated as abandoned by a crashed holder.
 	// Critical sections are a handful of small file operations.
 	agentLockStale = 10 * time.Second

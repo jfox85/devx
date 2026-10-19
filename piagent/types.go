@@ -100,20 +100,26 @@ type Binding struct {
 
 // Agent is the durable record for one managed Pi session.
 type Agent struct {
-	ID            string    `json:"id"`
-	DevxSession   string    `json:"devx_session"`
-	Project       string    `json:"project,omitempty"`
-	Worktree      string    `json:"worktree"`
-	PiSessionID   string    `json:"pi_session_id"`
-	Binding       Binding   `json:"binding"`
-	Lease         Lease     `json:"lease"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	LaunchCount   int       `json:"launch_count"`
-	LaunchNonce   string    `json:"launch_nonce,omitempty"`
-	CreatedBy     string    `json:"created_by,omitempty"`
-	StartTaskID   string    `json:"start_task_id,omitempty"`
-	StartIdemHash string    `json:"start_idempotency_hash,omitempty"`
+	ID          string    `json:"id"`
+	DevxSession string    `json:"devx_session"`
+	Project     string    `json:"project,omitempty"`
+	Worktree    string    `json:"worktree"`
+	PiSessionID string    `json:"pi_session_id"`
+	Binding     Binding   `json:"binding"`
+	Lease       Lease     `json:"lease"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	LaunchCount int       `json:"launch_count"`
+	LaunchNonce string    `json:"launch_nonce,omitempty"`
+	// LastLaunchAt is when the latest launch was recorded (before Pi starts).
+	LastLaunchAt time.Time `json:"last_launch_at,omitempty"`
+	// PaneLaunched is set once DevX has started Pi in the bound pane (a
+	// launch or respawn completed). Until then an adopted agent's pane still
+	// runs the human's own command.
+	PaneLaunched  bool   `json:"pane_launched,omitempty"`
+	CreatedBy     string `json:"created_by,omitempty"`
+	StartTaskID   string `json:"start_task_id,omitempty"`
+	StartIdemHash string `json:"start_idempotency_hash,omitempty"`
 	// RetiredAt is set when the agent's DevX session was removed. A retired
 	// agent keeps its records for inspection but accepts no new work.
 	RetiredAt *time.Time `json:"retired_at,omitempty"`
@@ -132,6 +138,19 @@ type Agent struct {
 	// identity witness when an older DevX writer dropped the record's
 	// instance_id (see session.MatchesBoundInstance): authorization-relevant.
 	SessionCreatedAt time.Time `json:"session_created_at,omitempty"`
+}
+
+// adoptedPaneUnlaunched reports whether a is adopted and its bound pane
+// still runs the human's original Pi because DevX has not completed a launch
+// in it. A launch attempt that failed before Pi started does not count.
+// Records from before PaneLaunched/LastLaunchAt existed carry only
+// LaunchCount; for them any launch counts as completed, as it always did.
+func (a *Agent) adoptedPaneUnlaunched() bool {
+	if !a.Adopted || a.PaneLaunched {
+		return false
+	}
+	legacyLaunched := a.LaunchCount > 0 && a.LastLaunchAt.IsZero()
+	return !legacyLaunched
 }
 
 // Task is one dispatched prompt.

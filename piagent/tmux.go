@@ -45,6 +45,11 @@ type PaneInfo struct {
 	LinkedSessions []string
 	// Command is the pane's current foreground command (pane_current_command).
 	Command string
+	// StartCommand is the command the pane was created or last respawned
+	// with (pane_start_command). HasStartCommand is false when tmux did not
+	// report the field at all, so callers can tell "unknown" from "empty".
+	StartCommand    string
+	HasStartCommand bool
 }
 
 // InSession reports whether the pane's window belongs to session, either as
@@ -64,12 +69,15 @@ func (p PaneInfo) InSession(session string) bool {
 	return false
 }
 
+// paneFieldsEnd terminates the display-message format in Pane.
+const paneFieldsEnd = "."
+
 // Pane looks up a pane by its stable %id.
 func (t Tmux) Pane(paneID string) PaneInfo {
 	if !strings.HasPrefix(paneID, "%") {
 		return PaneInfo{}
 	}
-	out, err := t.Run("display-message", "-p", "-t", paneID, "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_dead}\t#{pane_pid}\t#{window_linked_sessions_list}\t#{pane_current_command}")
+	out, err := t.Run("display-message", "-p", "-t", paneID, "#{pane_id}\t#{session_name}\t#{window_id}\t#{pane_dead}\t#{pane_pid}\t#{window_linked_sessions_list}\t#{pane_current_command}\t#{pane_start_command}\t"+paneFieldsEnd)
 	if err != nil {
 		if paneAbsent(err) {
 			return PaneInfo{}
@@ -88,6 +96,12 @@ func (t Tmux) Pane(paneID string) PaneInfo {
 	}
 	if len(f) > 6 {
 		p.Command = f[6]
+	}
+	// Run trims the output, so an empty last field would vanish; the
+	// sentinel after it keeps an empty start command (a default shell)
+	// distinguishable from a tmux that does not report the field.
+	if len(f) > 8 && f[8] == paneFieldsEnd {
+		p.StartCommand, p.HasStartCommand = f[7], true
 	}
 	return p
 }

@@ -121,7 +121,7 @@ var agentAttachCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if !v.BindingOK {
+		if !v.BindingOK || v.PaneForeign {
 			return fmt.Errorf("agent %s binding is %s: %s", args[0], v.State, v.Detail)
 		}
 		a := v.Agent
@@ -462,8 +462,22 @@ func (localOnlySessionCreator) ReleaseAdoption(name, agentID string) error {
 	return session.ReleaseManagedAgent(name, agentID)
 }
 
+// managedSessionOwnedBy is the single rule for whether managed agent a may
+// run in session sess: fail closed, managed agents only ever run in their
+// own local-only session (a missing or foreign marker is a permission
+// denial), and a bound agent only in the exact instance it was bound to,
+// even if a restored or hand-edited record carries a marker naming it.
+func managedSessionOwnedBy(name string, sess *session.Session, a *piagent.Agent) error {
+	if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != a.ID || sess.LocalOnly.Owner != session.LocalOnlyOwnerPiMCP {
+		return piagent.Denied("session %q is not a local-only session owned by agent %s", name, a.ID)
+	}
+	if a.SessionInstanceID != "" && !session.MatchesBoundInstance(sess, a.SessionInstanceID, a.SessionCreatedAt) {
+		return piagent.Denied("session %q is not the session instance agent %s was bound to (it was recreated)", name, a.ID)
+	}
+	return nil
+}
+
 func (localOnlySessionCreator) EnsureTmux(name string, a *piagent.Agent) error {
-	agentID := a.ID
 	store, err := session.LoadSessions()
 	if err != nil {
 		return err
@@ -472,15 +486,8 @@ func (localOnlySessionCreator) EnsureTmux(name string, a *piagent.Agent) error {
 	if !ok {
 		return fmt.Errorf("session %q not found", name)
 	}
-	// Fail closed: managed agents only ever run in their own local-only
-	// session. A missing or foreign marker is a permission denial.
-	if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != agentID || sess.LocalOnly.Owner != session.LocalOnlyOwnerPiMCP {
-		return piagent.Denied("session %q is not a local-only session owned by agent %s", name, agentID)
-	}
-	// A bound agent runs only in the exact instance it was bound to, even
-	// if a restored or hand-edited record carries a marker naming it.
-	if a.SessionInstanceID != "" && !session.MatchesBoundInstance(sess, a.SessionInstanceID, a.SessionCreatedAt) {
-		return piagent.Denied("session %q is not the session instance agent %s was bound to (it was recreated)", name, agentID)
+	if err := managedSessionOwnedBy(name, sess, a); err != nil {
+		return err
 	}
 	if err := session.EnsureLocalOnlyTmuxSession(name, sess); err != nil {
 		if errors.Is(err, session.ErrLocalOnlyNotOwned) {
