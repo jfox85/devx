@@ -40,7 +40,7 @@ Built on battle-tested open tools (tmuxp, Caddy, direnv) with powerful configura
 
 ### Required
 - **Git**: For worktree management
-- **Go 1.22+**: For building the tool
+- **Go 1.23+**: For building the tool (Go 1.26.9+ recommended; older toolchains compile in known standard-library vulnerabilities)
 
 ### Optional but Recommended
 - **tmux**: For session management (ships with macOS)
@@ -57,11 +57,13 @@ brew tap jfox85/homebrew-devx
 brew install devx
 ```
 
-### go install (requires Go 1.22+)
+### go install (requires Go 1.23+; Go 1.26.9+ recommended)
 
 ```bash
 go install github.com/jfox85/devx@latest
 ```
+
+`go install pkg@version` builds with your local Go toolchain (the module's `toolchain` line is ignored), so use Go 1.26.9 or newer to pick up current standard-library security fixes. Homebrew and release binaries are already built with the pinned toolchain.
 
 ### Universal install script
 

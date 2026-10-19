@@ -1,0 +1,22 @@
+# golangci-lint v2 configuration.
+#
+# golangci-lint v1 cannot analyse modules whose toolchain is newer than the Go
+# release it was built with (v1.64.8 is built with go1.24; this module uses the
+# go1.26 toolchain), so CI runs v2. This config reproduces the v1 defaults the
+# repo previously relied on (errcheck, govet, ineffassign, staticcheck incl. the
+# former gosimple checks, unused) without the stylecheck (ST*) and quickfix
+# (QF*) checks that v2 folds into staticcheck and that v1 never enabled.
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    staticcheck:
+      checks: ["all", "-ST*", "-QF*"]
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling

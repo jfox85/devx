@@ -12,7 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.22', '1.23']
+        # 1.23 = the minimum declared by the `go` directive in go.mod;
+        # 1.26 = the release toolchain pinned by the `toolchain` directive.
+        # GOTOOLCHAIN=local stops the 1.23 leg from auto-switching to the
+        # pinned toolchain, so it really compiles with the declared floor.
+        go-version: ['1.23', '1.26']
+    env:
+      GOTOOLCHAIN: local
     
     steps:
     - name: Checkout code
