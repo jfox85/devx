@@ -391,10 +391,14 @@ devx session recover my-feature other-feature
 devx session recover --all
 ```
 
-Running tmux sessions are never touched. Managed agents are relaunched only
-when their Pi and its tmux pane are confirmed gone and Pi was last seen within
-`--since`; a Pi that exited while its pane stayed open is skipped unless you pass
-`--include-exited`, and adopted agents must be re-adopted by hand. Prefer this over tmux-resurrect for DevX
+Running tmux sessions are never killed or modified (crashed agents inside them
+are still relaunched), and a session whose `-web` viewer survived is skipped
+rather than started twice. Managed agents are relaunched only when their Pi and
+its tmux pane are confirmed gone and Pi was last seen within `--since`; a Pi that
+exited while its pane stayed open is skipped unless you pass `--include-exited`,
+and adopted agents must be re-adopted by hand. `--dry-run` writes nothing.
+Recreating a session runs its `.tmuxp.yaml` just like `devx session attach`, so
+check the dry run before `--all`. Prefer this over tmux-resurrect for DevX
 sessions: a restored session with the same name makes DevX skip its template.
 
 #### Remove Session

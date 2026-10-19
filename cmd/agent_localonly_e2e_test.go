@@ -258,6 +258,24 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 	if err := exec.Command("tmux", "kill-session", "-t", "=lo-e2e").Run(); err != nil {
 		t.Fatal(err)
 	}
+	// A restarted tmux server reuses pane ids. Simulate it by pointing the
+	// agent's binding at an unrelated live pane (another session's shell):
+	// recover must treat it as lost, not respawn that pane.
+	decoy, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "lo-e2e-decoy", "sleep", "600").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", "=lo-e2e-decoy").Run() })
+	decoyPane := strings.TrimSpace(string(decoy))
+	agentPath := filepath.Join(home, ".config", "devx", "pi-agents", "agents", agent, "agent.json")
+	if _, err := os.Stat(agentPath); err != nil {
+		t.Fatalf("agent record: %v", err)
+	}
+	rawAgent, _ := os.ReadFile(agentPath)
+	rebound := regexp.MustCompile(`"pane_id": "%\d+"`).ReplaceAllString(string(rawAgent), `"pane_id": "`+decoyPane+`"`)
+	if err := os.WriteFile(agentPath, []byte(rebound), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if js, _ := devx("agent", "status", agent, "--json"); strings.Contains(js, `"state": "pane_exited"`) {
@@ -283,6 +301,9 @@ func TestAgentLocalOnlyStartEndToEnd(t *testing.T) {
 	// The fresh Pi shows turns from before the tmux loss: same conversation.
 	if out, _ := devx("agent", "inspect", agent, "--lines", "200"); !strings.Contains(out, "after relaunch") {
 		t.Fatalf("conversation not resumed after recover:\n%s", out)
+	}
+	if cmd, _ := exec.Command("tmux", "display-message", "-p", "-t", decoyPane, "#{pane_start_command}").Output(); !strings.Contains(string(cmd), "sleep 600") {
+		t.Fatalf("recover respawned the unrelated pane %s: %q", decoyPane, cmd)
 	}
 	// Recovered and live now: a second recover changes nothing.
 	if out, err := devx("session", "recover"); err != nil || strings.Contains(out, "[done]") {

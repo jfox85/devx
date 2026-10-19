@@ -389,6 +389,35 @@ func (m *Manager) launchPolicyUsable() error {
 // launch starts Pi in a dedicated window (or respawns the bound pane) with a
 // fresh launch nonce. Bridges started with an older nonce are fenced out.
 func (m *Manager) launch(agentID string, relaunch bool) error {
+	return m.withLaunchLock(agentID, func() error { return m.launchLocked(agentID, relaunch) })
+}
+
+// withLaunchLock serializes every launch of one agent across processes
+// (MCP start, `devx agent relaunch`, `devx session recover`), so two of them
+// can never both decide the agent is down and each start a Pi. It is a
+// Go-only lock, separate from the agent lock the Node bridge shares, because
+// a launch runs tmux commands that must not hold up the bridge.
+func (m *Manager) withLaunchLock(agentID string, fn func() error) error {
+	// Policy first: an unusable launch policy denies before anything,
+	// including the lock directory, is touched.
+	if err := m.launchPolicyUsable(); err != nil {
+		return err
+	}
+	if !ValidAgentID(agentID) {
+		return fmt.Errorf("invalid agent id %q", agentID)
+	}
+	if err := os.MkdirAll(m.Store.AgentDir(agentID), 0o700); err != nil {
+		return err
+	}
+	release, err := AcquireOwnedLock(filepath.Join(m.Store.AgentDir(agentID), launchLockName))
+	if err != nil {
+		return fmt.Errorf("agent %s: another launch is in progress: %w", agentID, err)
+	}
+	defer release()
+	return fn()
+}
+
+func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 	if err := m.launchPolicyUsable(); err != nil {
 		return err
 	}
@@ -461,7 +490,9 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		tmuxName = agent.DevxSession
 	}
 	var windowID, paneID string
-	if relaunch && pane.Exists && pane.InSession(tmuxName) {
+	// Respawn only a pane that is still this agent's: after a tmux server
+	// restart the bound id can name an unrelated pane (see paneIsAgents).
+	if relaunch && pane.Exists && pane.InSession(tmuxName) && paneIsAgents(pane, agent) {
 		if err := m.Tmux.RespawnPane(agent.Binding.PaneID, agent.Worktree, scriptPath); err != nil {
 			return err
 		}
@@ -488,6 +519,23 @@ func (m *Manager) launch(agentID string, relaunch bool) error {
 		_, err = m.Store.AppendEvent(a.ID, Event{Type: "launched", Source: "devx", Data: map[string]any{"pane": paneID, "window": windowID, "launch": a.LaunchCount, "relaunch": relaunch}})
 		return err
 	})
+}
+
+// paneIsAgents reports whether pane can still be agent a's pane. tmux pane
+// ids are unique per server only: after a reboot or kill-server a new server
+// numbers panes from %0 again, so an old binding can name an unrelated pane
+// (another session's shell, or the devx-local window of the agent's own
+// recreated session). Every pane DevX runs Pi in is created or respawned with
+// the agent's launch.sh, so a pane whose start command does not name it is
+// not the agent's. Adopted panes not yet relaunched run the human's own
+// command and cannot be told apart this way, nor can panes on tmux builds
+// that do not report the start command: both are assumed to be the agent's,
+// as before.
+func paneIsAgents(p PaneInfo, a *Agent) bool {
+	if !p.Exists || !p.HasStartCommand || (a.Adopted && a.LaunchCount == 0) {
+		return true
+	}
+	return strings.Contains(p.StartCommand, a.ID+string(filepath.Separator)+"launch.sh")
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'" }
@@ -803,9 +851,28 @@ func (m *Manager) setLease(agentID, holder, reason, by string, dropQueued bool) 
 // Relaunch restarts Pi for an agent whose process exited, resuming the same
 // Pi session ID so conversation history and identity are preserved.
 func (m *Manager) Relaunch(agentID string, force bool) error {
+	return m.withLaunchLock(agentID, func() error { return m.relaunchLocked(agentID, force, -1) })
+}
+
+// ErrLaunchedSinceCheck means the agent was (re)launched after the caller
+// last looked at it, so the caller's decision to relaunch is out of date.
+var ErrLaunchedSinceCheck = errors.New("agent was launched since it was checked")
+
+// RelaunchIfUnchanged relaunches like Relaunch(id, false), but only if the
+// agent's launch count is still expectLaunchCount: nobody launched it since
+// the caller decided it needed recovery. The check and the launch run under
+// the agent's launch lock, so concurrent recoveries start at most one Pi.
+func (m *Manager) RelaunchIfUnchanged(agentID string, expectLaunchCount int) error {
+	return m.withLaunchLock(agentID, func() error { return m.relaunchLocked(agentID, false, expectLaunchCount) })
+}
+
+func (m *Manager) relaunchLocked(agentID string, force bool, expectLaunchCount int) error {
 	view, err := m.AgentStatus(agentID)
 	if err != nil {
 		return err
+	}
+	if expectLaunchCount >= 0 && view.Agent.LaunchCount != expectLaunchCount {
+		return fmt.Errorf("%w (launch %d, expected %d)", ErrLaunchedSinceCheck, view.Agent.LaunchCount, expectLaunchCount)
 	}
 	if view.BridgeOnline && !force {
 		return fmt.Errorf("agent %s is running in pane %s; refusing to relaunch a live Pi (use --force to replace it)", agentID, view.Agent.Binding.PaneID)
@@ -817,7 +884,7 @@ func (m *Manager) Relaunch(agentID string, force bool) error {
 			"make sure that Pi is idle with nothing unsent in its editor, then rerun with --force. "+
 			"The pane's process is replaced by Pi resuming the same conversation (session %s) with the DevX bridge", agentID, view.Agent.Binding.PaneID, view.Agent.PiSessionID)
 	}
-	return m.launch(agentID, true)
+	return m.launchLocked(agentID, true)
 }
 
 // AdoptRequest registers an existing DevX session's running Pi as a managed
@@ -952,12 +1019,19 @@ type AgentView struct {
 	BridgeOnline bool    `json:"bridge_online"`
 	Bridge       *Bridge `json:"bridge,omitempty"`
 	PaneAlive    bool    `json:"pane_alive"`
-	BindingOK    bool    `json:"binding_ok"`
-	Detail       string  `json:"detail,omitempty"`
-	CurrentTask  string  `json:"current_task,omitempty"`
-	Waiting      int     `json:"waiting_tasks"`
-	LastSeq      int64   `json:"last_event_seq"`
-	AttachHint   string  `json:"attach_hint"`
+	// PaneForeign means the bound pane id exists but provably belongs to
+	// something else (its start command is not this agent's launch script),
+	// typically because a restarted tmux server reused the id.
+	PaneForeign bool `json:"pane_foreign,omitempty"`
+	// BridgeDead means the Pi that last reported is confirmed gone: it shut
+	// down, or its heartbeat is stale and its process no longer exists.
+	BridgeDead  bool   `json:"bridge_dead,omitempty"`
+	BindingOK   bool   `json:"binding_ok"`
+	Detail      string `json:"detail,omitempty"`
+	CurrentTask string `json:"current_task,omitempty"`
+	Waiting     int    `json:"waiting_tasks"`
+	LastSeq     int64  `json:"last_event_seq"`
+	AttachHint  string `json:"attach_hint"`
 	// BridgeProtocol is what the agent's live bridge reports (0 = a bridge
 	// from before protocol versioning). BridgeUpgradeNeeded means the
 	// running Pi was launched with an older bridge than this build's: it
@@ -974,6 +1048,18 @@ type AgentView struct {
 // AgentStatus reconciles durable state with tmux and the bridge heartbeat.
 // It is safe to call after an MCP server restart: nothing lives in memory.
 func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
+	return m.agentStatus(agentID, true)
+}
+
+// PeekStatus is AgentStatus without reconciliation: it never moves orphaned
+// running tasks to unknown, so a dry run or a plan can look without writing
+// task state. The view is the same except that such tasks still show as
+// running.
+func (m *Manager) PeekStatus(agentID string) (*AgentView, error) {
+	return m.agentStatus(agentID, false)
+}
+
+func (m *Manager) agentStatus(agentID string, reconcile bool) (*AgentView, error) {
 	var view *AgentView
 	err := m.Store.WithAgentLock(agentID, func() error {
 		a, err := m.Store.LoadAgent(agentID)
@@ -982,6 +1068,7 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 		}
 		v := &AgentView{Agent: a, AttachHint: fmt.Sprintf("devx session attach %s  (window %q); take control with: devx agent takeover %s", a.DevxSession, m.Config.WindowName, a.ID)}
 		pane := m.Tmux.Pane(a.Binding.PaneID)
+		v.PaneForeign = pane.Exists && !paneIsAgents(pane, a)
 		v.PaneAlive = pane.Exists && !pane.Dead
 		// A grouped viewer session (e.g. "<session>-web") shares the bound
 		// window; tmux may name it instead of the bound session. That is the
@@ -997,6 +1084,7 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 			// no shutdown hook ran). The pane may still exist because the
 			// launch script holds it open for inspection.
 			bridgeDead = b.Mode == "stopped" || (!fresh && !processAlive(b.PID))
+			v.BridgeDead = bridgeDead
 			v.BridgeProtocol = b.Protocol
 			v.BridgeUpgradeNeeded = v.BridgeOnline && b.Protocol < BridgeProtocol
 		}
@@ -1023,7 +1111,7 @@ func (m *Manager) AgentStatus(agentID string) (*AgentView, error) {
 				// died, the heartbeat goes stale and this re-evaluates.
 				sameInstanceLive := v.BridgeOnline && v.Bridge.Instance == t.BridgeInstance
 				paneGone := !sameInstanceLive && !pane.QueryFailed && (!pane.Exists || pane.Dead) && a.Binding.PaneID != ""
-				if (v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || paneGone {
+				if reconcile && ((v.BridgeOnline && v.Bridge.Instance != t.BridgeInstance) || sameInstanceDead || paneGone) {
 					if err := m.markOrphanedLocked(a, "the Pi process that received this task is gone; outcome unknown — inspect the session"); err != nil {
 						return err
 					}

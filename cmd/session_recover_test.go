@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,9 @@ import (
 type recoverFake struct {
 	live      map[string]bool
 	liveErr   error
+	liveAfter map[string]bool // tmux sessions seen at execution time (default: live)
+	policyErr error
+	peekErr   map[string]error
 	paths     map[string]bool
 	views     []*piagent.AgentView
 	status    map[string]*piagent.AgentView // re-check answers; defaults to views
@@ -23,20 +27,44 @@ type recoverFake struct {
 	relErr    map[string]error
 	ensured   []string
 	relaunch  []string
+	order     []string
+	calls     int
 	targetUp  bool
 }
 
 func (f *recoverFake) deps() recoverDeps {
 	return recoverDeps{
-		liveTmux:      func() (map[string]bool, error) { return f.live, f.liveErr },
+		liveTmux: func() (map[string]bool, error) {
+			if f.calls++; f.calls > 1 && f.liveAfter != nil {
+				return f.liveAfter, f.liveErr
+			}
+			return f.live, f.liveErr
+		},
 		targetRunning: func(session.TargetMeta) bool { return f.targetUp },
 		pathExists:    func(p string) bool { return f.paths[p] },
 		ensureTmux: func(name string, _ *session.Session) error {
 			f.ensured = append(f.ensured, name)
+			f.order = append(f.order, "ensure:"+name)
 			return f.ensureErr[name]
 		},
-		agents: func() ([]*piagent.AgentView, error) { return f.views, nil },
-		agentStatus: func(id string) (*piagent.AgentView, error) {
+		agents: func() ([]*piagent.Agent, error) {
+			var out []*piagent.Agent
+			for _, v := range f.views {
+				out = append(out, v.Agent)
+			}
+			return out, nil
+		},
+		launchPolicyErr: f.policyErr,
+		owns: func(name string, sess *session.Session, a *piagent.Agent) error {
+			if !sess.IsLocalOnly() || sess.LocalOnly.AgentID != a.ID {
+				return errors.New("not owned")
+			}
+			return nil
+		},
+		peek: func(id string) (*piagent.AgentView, error) {
+			if err := f.peekErr[id]; err != nil {
+				return nil, err
+			}
 			if v, ok := f.status[id]; ok {
 				return v, nil
 			}
@@ -47,8 +75,9 @@ func (f *recoverFake) deps() recoverDeps {
 			}
 			return nil, errors.New("not found")
 		},
-		relaunch: func(id string) error {
+		relaunch: func(id string, _ int) error {
 			f.relaunch = append(f.relaunch, id)
+			f.order = append(f.order, "relaunch:"+id)
 			return f.relErr[id]
 		},
 	}
@@ -61,27 +90,28 @@ func hostSess(f *recoverFake, name string, active time.Time) *session.Session {
 	p := "/wt/" + name
 	f.paths[p] = true
 	f.paths[filepath.Join(p, ".tmuxp.yaml")] = true
-	return &session.Session{Name: name, Path: p, LastAttached: active}
+	return &session.Session{Name: name, Path: p, CreatedAt: active.Add(-time.Hour), LastAttached: active}
 }
 
 // loSess is a local-only session owned by agentID.
 func loSess(f *recoverFake, name, agentID string, active time.Time) *session.Session {
 	p := "/wt/" + name
 	f.paths[p] = true
-	return &session.Session{Name: name, Path: p, LastAttached: active,
+	return &session.Session{Name: name, Path: p, CreatedAt: active.Add(-time.Hour), LastAttached: active,
 		LocalOnly: &session.LocalOnlyMeta{AgentID: agentID, Owner: session.LocalOnlyOwnerPiMCP}}
 }
 
 func crashedAgent(id, sess string, lastSeen time.Time) *piagent.AgentView {
 	return &piagent.AgentView{
-		Agent:  &piagent.Agent{ID: id, DevxSession: sess},
-		State:  piagent.AgentPaneExited,
-		Bridge: &piagent.Bridge{Heartbeat: lastSeen, Mode: "active"},
+		Agent:      &piagent.Agent{ID: id, DevxSession: sess},
+		State:      piagent.AgentPaneExited,
+		Bridge:     &piagent.Bridge{Heartbeat: lastSeen, Mode: "active"},
+		BridgeDead: true,
 	}
 }
 
 func newRecoverFake() *recoverFake {
-	return &recoverFake{live: map[string]bool{}, paths: map[string]bool{}, ensureErr: map[string]error{}, relErr: map[string]error{}}
+	return &recoverFake{live: map[string]bool{}, paths: map[string]bool{}, ensureErr: map[string]error{}, relErr: map[string]error{}, peekErr: map[string]error{}}
 }
 
 func recoverOpts() recoverOptions { return recoverOptions{Cutoff: recoverNow.Add(-24 * time.Hour)} }
@@ -134,6 +164,10 @@ func TestRecoverPlanAfterCrash(t *testing.T) {
 	}
 	if strings.Join(f.relaunch, ",") != "pa_aaaaaaaaaaaa" {
 		t.Fatalf("relaunched %v", f.relaunch)
+	}
+	// Agents first: recreated sessions must not take pane ids first.
+	if strings.Join(f.order, ",") != "relaunch:pa_aaaaaaaaaaaa,ensure:human" {
+		t.Fatalf("order %v", f.order)
 	}
 	if recoverFailures(plan) != 0 {
 		t.Fatalf("failures: %+v", plan.Items)
@@ -212,7 +246,7 @@ func TestRecoverSkipsUnrecoverableSessions(t *testing.T) {
 			t.Errorf("%s: %+v", n, it)
 		}
 	}
-	if it := findItem(t, plan, "unmarked"); it.Agents[0].Action != recoverActSkip || !strings.Contains(it.Agents[0].Reason, "local-only marker") {
+	if it := findItem(t, plan, "unmarked"); it.Agents[0].Action != recoverActSkip || !strings.Contains(it.Agents[0].Reason, "not owned") {
 		t.Errorf("unmarked: %+v", it)
 	}
 	executeRecover(plan, sessions, f.deps(), recoverOpts())
@@ -325,6 +359,125 @@ func TestTmuxNoServer(t *testing.T) {
 	} {
 		if got := tmuxNoServer(msg); got != want {
 			t.Errorf("%q: got %v want %v", msg, got, want)
+		}
+	}
+}
+
+// After a tmux server restart the old pane id can name an unrelated pane
+// (PaneForeign). With the Pi confirmed dead that is still a lost pane.
+func TestRecoverForeignPaneAfterServerRestart(t *testing.T) {
+	recent := recoverNow.Add(-time.Hour)
+	cutoff := recoverNow.Add(-24 * time.Hour)
+	for _, state := range []string{piagent.AgentStaleBind, piagent.AgentPaneExited} {
+		v := crashedAgent("pa_1", "s", recent)
+		v.State, v.PaneAlive, v.PaneForeign = state, true, true
+		if ok, reason := agentRecoverDecision(v, cutoff, false); !ok {
+			t.Errorf("%s with foreign pane: %s", state, reason)
+		}
+		// A foreign pane with a Pi that may still be alive is not touched.
+		v.BridgeDead = false
+		if ok, _ := agentRecoverDecision(v, cutoff, false); ok {
+			t.Errorf("%s: foreign pane but bridge not confirmed dead must not relaunch", state)
+		}
+	}
+}
+
+func TestRecoverSkipsSessionWhoseWebViewerSurvives(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"s": hostSess(f, "s", recoverNow)}
+	f.live["s-web"] = true
+	plan, err := planRecover(sessions, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := findItem(t, plan, "s"); it.Tmux != recoverActSkip || !strings.Contains(it.Reason, "s-web") {
+		t.Fatalf("%+v", it)
+	}
+}
+
+func TestRecoverLeavesSessionCreatedAfterPlanning(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"s": hostSess(f, "s", recoverNow), "u": hostSess(f, "u", recoverNow)}
+	plan, err := planRecover(sessions, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.liveAfter = map[string]bool{"s": true}
+	executeRecover(plan, sessions, f.deps(), recoverOpts())
+	if strings.Join(f.ensured, ",") != "u" {
+		t.Fatalf("ensured %v; a session that appeared since planning must be left alone", f.ensured)
+	}
+	if it := findItem(t, plan, "s"); it.Outcome != recoverOutSkipped {
+		t.Fatalf("%+v", it)
+	}
+	// tmux unreachable at execution: nothing is recreated, reported as failure.
+	f = newRecoverFake()
+	sessions = map[string]*session.Session{"s": hostSess(f, "s", recoverNow)}
+	plan, _ = planRecover(sessions, f.deps(), recoverOpts())
+	f.liveErr = errors.New("permission denied")
+	executeRecover(plan, sessions, f.deps(), recoverOpts())
+	if len(f.ensured) != 0 || recoverFailures(plan) != 1 {
+		t.Fatalf("ensured=%v failures=%d", f.ensured, recoverFailures(plan))
+	}
+}
+
+func TestRecoverRelaunchedSincePlanningIsSkipped(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"lo": loSess(f, "lo", "pa_111111111111", recoverNow)}
+	f.views = []*piagent.AgentView{crashedAgent("pa_111111111111", "lo", recoverNow)}
+	plan, err := planRecover(sessions, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another recover relaunched it, and that Pi already crashed again: it
+	// still looks crashed, but the launch count moved.
+	again := crashedAgent("pa_111111111111", "lo", recoverNow)
+	again.Agent.LaunchCount = 1
+	f.status = map[string]*piagent.AgentView{"pa_111111111111": again}
+	executeRecover(plan, sessions, f.deps(), recoverOpts())
+	if len(f.relaunch) != 0 {
+		t.Fatalf("relaunched %v", f.relaunch)
+	}
+	// The manager's own launch-count check is honored as a skip, not a failure.
+	f = newRecoverFake()
+	sessions = map[string]*session.Session{"lo": loSess(f, "lo", "pa_111111111111", recoverNow)}
+	f.views = []*piagent.AgentView{crashedAgent("pa_111111111111", "lo", recoverNow)}
+	f.relErr["pa_111111111111"] = fmt.Errorf("x: %w", piagent.ErrLaunchedSinceCheck)
+	plan, _ = planRecover(sessions, f.deps(), recoverOpts())
+	executeRecover(plan, sessions, f.deps(), recoverOpts())
+	if recoverFailures(plan) != 0 || plan.Items[0].Agents[0].Outcome != recoverOutSkipped {
+		t.Fatalf("%+v", plan.Items[0].Agents)
+	}
+}
+
+func TestRecoverPolicyErrorAndUnmatchedAgents(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"lo": loSess(f, "lo", "pa_111111111111", recoverNow)}
+	f.views = []*piagent.AgentView{
+		crashedAgent("pa_111111111111", "lo", recoverNow),
+		crashedAgent("pa_222222222222", "removed-session", recoverNow),
+		crashedAgent("pa_333333333333", "lo", recoverNow),
+	}
+	f.peekErr["pa_333333333333"] = errors.New("corrupt agent.json")
+	f.policyErr = errors.New("launch policy unusable")
+	plan, err := planRecover(sessions, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatalf("one unreadable agent must not block the rest: %v", err)
+	}
+	if a := findItem(t, plan, "lo").Agents[0]; a.Action != recoverActSkip || !strings.Contains(a.Reason, "launch policy") {
+		t.Fatalf("policy error must be shown in the plan: %+v", a)
+	}
+	if len(plan.Unmatched) != 2 {
+		t.Fatalf("unmatched %+v", plan.Unmatched)
+	}
+	if recoverFailures(plan) != 1 {
+		t.Fatalf("unreadable agent must count as a failure: %d", recoverFailures(plan))
+	}
+	var buf bytes.Buffer
+	printRecoverPlan(&buf, plan)
+	for _, want := range []string{"pa_222222222222", "session record is gone", "corrupt agent.json"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, buf.String())
 		}
 	}
 }

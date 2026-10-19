@@ -19,6 +19,7 @@ import (
 // delivered until a human releases control.
 const (
 	agentLockName    = "agent.lock"
+	launchLockName   = "launch.lock"
 	agentLockTimeout = 5 * time.Second
 	// A lock older than this is treated as abandoned by a crashed holder.
 	// Critical sections are a handful of small file operations.

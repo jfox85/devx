@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,21 +39,26 @@ recover:
     conversation (the same path 'devx agent relaunch' uses).
 
 Sessions are selected when named explicitly, with --all, or when they were
-active within --since (last attached or updated). An agent is relaunched only
+created or last attached within --since. An agent is relaunched only
 when its Pi is confirmed gone, its last bridge heartbeat is within --since,
 and its tmux pane was lost too. A Pi that exited while its pane stayed open
 (quit by hand, or crashed on its own) is left alone unless --include-exited
 is given. Adopted agents are never touched:
 their original pane is gone, so they must be adopted again.
 
-Sessions that already have a running tmux session are left alone.
+tmux is never recreated for a session that is still running (crashed agents
+inside it are still relaunched), and a running session is never killed or
+modified. Recreating a session runs its worktree's .tmuxp.yaml exactly as
+'devx session attach' would, so --all runs every selected template; review
+the --dry-run output first.
 
   devx session recover --dry-run        # show what would be recovered
   devx session recover                  # recover sessions active in the last 24h
   devx session recover --since 72h      # widen the window
   devx session recover my-feature       # recover specific sessions
   devx session recover --all            # every session with a worktree`,
-	RunE: runSessionRecover,
+	RunE:         runSessionRecover,
+	SilenceUsage: true,
 }
 
 func init() {
@@ -82,10 +88,14 @@ const (
 
 type recoverAgentItem struct {
 	AgentID string `json:"agent_id"`
+	Session string `json:"session,omitempty"`
 	Action  string `json:"action"`
 	Reason  string `json:"reason,omitempty"`
 	Outcome string `json:"outcome,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// launchCount is the agent's launch count when it was judged crashed;
+	// the relaunch happens only if nobody launched it since.
+	launchCount int
 }
 
 type recoverSessionItem struct {
@@ -102,6 +112,9 @@ type recoverPlan struct {
 	Since   string               `json:"since"`
 	Items   []recoverSessionItem `json:"sessions"`
 	Ignored int                  `json:"ignored_inactive_sessions"`
+	// Unmatched lists agents (not retired) whose DevX session record is
+	// gone or whose status could not be read; they are never relaunched.
+	Unmatched []recoverAgentItem `json:"unmatched_agents,omitempty"`
 }
 
 type recoverOptions struct {
@@ -120,9 +133,18 @@ type recoverDeps struct {
 	targetRunning func(meta session.TargetMeta) bool
 	pathExists    func(path string) bool
 	ensureTmux    func(name string, sess *session.Session) error
-	agents        func() ([]*piagent.AgentView, error)
-	agentStatus   func(id string) (*piagent.AgentView, error)
-	relaunch      func(id string) error
+	// agents lists managed agent records; peek reads one agent's status
+	// without reconciling task state, so planning (and --dry-run) write
+	// nothing.
+	agents func() ([]*piagent.Agent, error)
+	peek   func(id string) (*piagent.AgentView, error)
+	// owns reports why agent a may not run in sess (nil if it may): the
+	// same rule the relaunch itself enforces.
+	owns func(name string, sess *session.Session, a *piagent.Agent) error
+	// launchPolicyErr is non-nil when every relaunch would be refused.
+	launchPolicyErr error
+	// relaunch relaunches the agent only if its launch count is unchanged.
+	relaunch func(id string, launchCount int) error
 }
 
 func runSessionRecover(cmd *cobra.Command, args []string) error {
@@ -142,9 +164,13 @@ func runSessionRecover(cmd *cobra.Command, args []string) error {
 		targetRunning: target.IsRunning,
 		pathExists:    func(p string) bool { _, err := os.Stat(p); return err == nil },
 		ensureTmux:    target.EnsureTmuxSession,
-		agents:        m.List,
-		agentStatus:   m.AgentStatus,
-		relaunch:      func(id string) error { return m.Relaunch(id, false) },
+		agents:        m.Store.ListAgents,
+		peek:          m.PeekStatus,
+		owns:          managedSessionOwnedBy,
+		relaunch:      m.RelaunchIfUnchanged,
+	}
+	if m.Config.LaunchPolicyErr != nil {
+		deps.launchPolicyErr = fmt.Errorf("the pi_mcp launch policy in the owner DevX config is unusable: %v", m.Config.LaunchPolicyErr)
 	}
 	opts := recoverOptions{Names: args, All: recoverAll, Cutoff: time.Now().Add(-recoverSince), IncludeExited: recoverIncludeExited}
 	plan, err := planRecover(store.Sessions, deps, opts)
@@ -195,48 +221,39 @@ func tmuxNoServer(msg string) bool {
 		(strings.Contains(msg, "error connecting to") && strings.Contains(msg, "No such file or directory"))
 }
 
-// sessionLastActive is the newest activity timestamp DevX records for a session.
-func sessionLastActive(s *session.Session) time.Time {
-	t := s.LastAttached
-	if s.UpdatedAt.After(t) {
-		t = s.UpdatedAt
-	}
-	return t
-}
-
 // agentRecoverDecision decides whether a managed agent crashed recently
-// enough to relaunch. Only a confirmed dead pane or Pi qualifies: unknown
-// tmux state, live agents and adopted agents are never touched.
+// enough to relaunch. Only a confirmed dead Pi in a lost pane qualifies:
+// unknown tmux state, live agents and adopted agents are never touched.
 //
 // The bridge's "stopped" mode is not a reliable sign of an intentional quit:
 // a reboot or tmux kill-server hangs Pi up and its shutdown hook writes
 // "stopped" too. The pane tells them apart: after a normal Pi exit the
 // launch script keeps the pane open for inspection, while a lost tmux server
-// takes the pane with it.
+// takes the pane with it. A restarted server can hand the old pane id to an
+// unrelated pane (PaneForeign); that pane is lost too.
 func agentRecoverDecision(v *piagent.AgentView, cutoff time.Time, includeExited bool) (bool, string) {
 	a := v.Agent
+	foreignLost := v.PaneForeign && v.BridgeDead && (v.State == piagent.AgentPaneExited || v.State == piagent.AgentStaleBind)
 	switch {
 	case a.RetiredAt != nil:
 		return false, "retired"
 	case a.Adopted:
 		return false, fmt.Sprintf("adopted agent (state %s); recover it with devx agent adopt / relaunch by hand", v.State)
-	case v.State != piagent.AgentPaneExited:
+	case v.State != piagent.AgentPaneExited && !foreignLost:
 		if d := strings.TrimSpace(v.Detail); d != "" {
 			return false, fmt.Sprintf("state %s: %s", v.State, d)
 		}
 		return false, "state " + v.State
 	case v.Bridge == nil:
 		return false, "no bridge heartbeat recorded"
-	case v.PaneAlive && !includeExited:
+	case v.PaneForeign && !v.BridgeDead:
+		return false, "its pane id now belongs to another pane and its Pi is not confirmed gone"
+	case v.PaneAlive && !v.PaneForeign && !includeExited:
 		return false, "Pi exited but its pane is still open, so tmux was not lost (devx agent relaunch it, or use --include-exited)"
 	case v.Bridge.Heartbeat.Before(cutoff):
 		return false, fmt.Sprintf("last seen %s, outside --since window", v.Bridge.Heartbeat.Local().Format(time.RFC3339))
 	}
 	return true, "Pi is gone (last seen " + v.Bridge.Heartbeat.Local().Format(time.RFC3339) + ")"
-}
-
-func ownsLocalOnlySession(sess *session.Session, agentID string) bool {
-	return sess.IsLocalOnly() && sess.LocalOnly.AgentID == agentID && sess.LocalOnly.Owner == session.LocalOnlyOwnerPiMCP
 }
 
 func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts recoverOptions) (*recoverPlan, error) {
@@ -251,16 +268,31 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 	if err != nil {
 		return nil, fmt.Errorf("cannot query tmux; nothing was changed: %w", err)
 	}
-	views, err := deps.agents()
+	agents, err := deps.agents()
 	if err != nil {
 		return nil, fmt.Errorf("list managed agents: %w", err)
 	}
+	plan := &recoverPlan{}
 	bySession := map[string][]*piagent.AgentView{}
-	for _, v := range views {
-		if v.Agent.RetiredAt != nil {
+	for _, a := range agents {
+		if a.RetiredAt != nil {
 			continue
 		}
-		bySession[v.Agent.DevxSession] = append(bySession[v.Agent.DevxSession], v)
+		v, err := deps.peek(a.ID)
+		if err != nil {
+			// One unreadable agent must not block recovering the rest.
+			plan.Unmatched = append(plan.Unmatched, recoverAgentItem{AgentID: a.ID, Session: a.DevxSession, Action: recoverActSkip,
+				Reason: "status unavailable", Outcome: recoverOutFailed, Error: err.Error()})
+			continue
+		}
+		if _, ok := sessions[a.DevxSession]; !ok {
+			if crashed, _ := agentRecoverDecision(v, opts.Cutoff, opts.IncludeExited); crashed {
+				plan.Unmatched = append(plan.Unmatched, recoverAgentItem{AgentID: a.ID, Session: a.DevxSession, Action: recoverActSkip,
+					Reason: "crashed, but its DevX session record is gone"})
+			}
+			continue
+		}
+		bySession[a.DevxSession] = append(bySession[a.DevxSession], v)
 	}
 
 	names := make([]string, 0, len(sessions))
@@ -269,7 +301,6 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 	}
 	sort.Strings(names)
 
-	plan := &recoverPlan{}
 	for _, name := range names {
 		sess := sessions[name]
 		if len(named) > 0 && !named[name] {
@@ -279,18 +310,22 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 		relaunching := false
 		for _, v := range bySession[name] {
 			ok, reason := agentRecoverDecision(v, opts.Cutoff, opts.IncludeExited)
-			if ok && !ownsLocalOnlySession(sess, v.Agent.ID) {
-				// Relaunch would be denied: managed agents only run in their
-				// own local-only session.
-				ok, reason = false, "session has no local-only marker for this agent (see devx session markers)"
+			if ok {
+				// The relaunch would be refused; say why up front.
+				if err := deps.owns(name, sess, v.Agent); err != nil {
+					ok, reason = false, err.Error()+" (see devx session markers / instances)"
+				} else if deps.launchPolicyErr != nil {
+					ok, reason = false, deps.launchPolicyErr.Error()
+				}
 			}
 			act := recoverActSkip
 			if ok {
 				act, relaunching = recoverActRelaunch, true
 			}
-			agents = append(agents, recoverAgentItem{AgentID: v.Agent.ID, Action: act, Reason: reason})
+			agents = append(agents, recoverAgentItem{AgentID: v.Agent.ID, Action: act, Reason: reason, launchCount: v.Agent.LaunchCount})
 		}
-		selected := named[name] || opts.All || relaunching || !sessionLastActive(sess).Before(opts.Cutoff)
+		activity, _ := sess.ActivityAt()
+		selected := named[name] || opts.All || relaunching || !activity.Before(opts.Cutoff)
 		if !selected {
 			plan.Ignored++
 			continue
@@ -299,6 +334,11 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 		switch {
 		case live[name]:
 			item.Tmux, item.Reason = recoverActRunning, "tmux session is running"
+		case live[name+"-web"]:
+			// The web viewer is grouped with the session and shares its
+			// windows: they (and the processes in them) are still running.
+			// Recreating the session would start the template a second time.
+			item.Tmux, item.Reason = recoverActSkip, fmt.Sprintf("its web viewer session %q is still running the session's windows; attach from the web UI, or kill it and recover again", name+"-web")
 		case !deps.pathExists(sess.Path):
 			item.Tmux, item.Reason = recoverActSkip, "worktree "+sess.Path+" is missing"
 			// Relaunch would fail the same way; do not try.
@@ -313,7 +353,7 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 			if relaunching {
 				item.Tmux, item.Reason = recoverActViaAgent, "local-only agent session; recreated by its agent relaunch"
 			} else {
-				item.Tmux, item.Reason = recoverActSkip, "local-only agent session with no agent to relaunch"
+				item.Tmux, item.Reason = recoverActSkip, "local-only agent session with no agent eligible for relaunch"
 			}
 		case sess.IsContainerized() && !deps.targetRunning(sess.Target):
 			item.Tmux, item.Reason = recoverActSkip, fmt.Sprintf("%s runtime %s is not running; start it first", sess.TargetType(), target.RuntimeName(sess.Target))
@@ -327,49 +367,72 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 	return plan, nil
 }
 
+// executeRecover relaunches agents first, then recreates tmux sessions, so
+// sessions created by tmuxp never take over panes a relaunch is about to
+// look at. tmux is queried again first: a session started (by a human, the
+// web UI or another recover) since planning is left alone.
 func executeRecover(plan *recoverPlan, sessions map[string]*session.Session, deps recoverDeps, opts recoverOptions) {
 	for i := range plan.Items {
-		item := &plan.Items[i]
-		if item.Tmux == recoverActRecreate {
-			if err := deps.ensureTmux(item.Session, sessions[item.Session]); err != nil {
-				item.Outcome, item.Error = recoverOutFailed, err.Error()
-				// Agents in this session would land in a broken session.
-				for j := range item.Agents {
-					if item.Agents[j].Action == recoverActRelaunch {
-						item.Agents[j].Outcome, item.Agents[j].Error = recoverOutSkipped, "session tmux could not be recreated"
-					}
-				}
-				continue
-			}
-			item.Outcome = recoverOutDone
-		}
-		for j := range item.Agents {
-			ag := &item.Agents[j]
+		for j := range plan.Items[i].Agents {
+			ag := &plan.Items[i].Agents[j]
 			if ag.Action != recoverActRelaunch {
 				continue
 			}
 			// Re-check right before acting: another recover, a human or
-			// the MCP server may have relaunched it since planning.
-			v, err := deps.agentStatus(ag.AgentID)
+			// the MCP server may have relaunched it since planning. The
+			// relaunch itself re-checks the launch count under the agent's
+			// launch lock, which closes the remaining race.
+			v, err := deps.peek(ag.AgentID)
 			if err != nil {
 				ag.Outcome, ag.Error = recoverOutFailed, err.Error()
 				continue
 			}
-			if ok, reason := agentRecoverDecision(v, opts.Cutoff, opts.IncludeExited); !ok {
+			if ok, reason := agentRecoverDecision(v, opts.Cutoff, opts.IncludeExited); !ok || v.Agent.LaunchCount != ag.launchCount {
+				if ok {
+					reason = "it was relaunched since planning"
+				}
 				ag.Outcome, ag.Error = recoverOutSkipped, "no longer needs recovery: "+reason
 				continue
 			}
-			if err := deps.relaunch(ag.AgentID); err != nil {
+			if err := deps.relaunch(ag.AgentID, ag.launchCount); err != nil {
+				if errors.Is(err, piagent.ErrLaunchedSinceCheck) {
+					ag.Outcome, ag.Error = recoverOutSkipped, "no longer needs recovery: it was relaunched since planning"
+					continue
+				}
 				ag.Outcome, ag.Error = recoverOutFailed, err.Error()
 				continue
 			}
 			ag.Outcome = recoverOutDone
 		}
 	}
+	live, liveErr := deps.liveTmux()
+	for i := range plan.Items {
+		item := &plan.Items[i]
+		if item.Tmux != recoverActRecreate {
+			continue
+		}
+		switch {
+		case liveErr != nil:
+			item.Outcome, item.Error = recoverOutFailed, "cannot query tmux; not recreated: "+liveErr.Error()
+		case live[item.Session] || live[item.Session+"-web"]:
+			item.Outcome, item.Error = recoverOutSkipped, "a tmux session appeared since planning; left alone"
+		default:
+			if err := deps.ensureTmux(item.Session, sessions[item.Session]); err != nil {
+				item.Outcome, item.Error = recoverOutFailed, err.Error()
+				continue
+			}
+			item.Outcome = recoverOutDone
+		}
+	}
 }
 
 func recoverFailures(plan *recoverPlan) int {
 	n := 0
+	for _, a := range plan.Unmatched {
+		if a.Outcome == recoverOutFailed {
+			n++
+		}
+	}
 	for _, it := range plan.Items {
 		if it.Outcome == recoverOutFailed {
 			n++
@@ -387,6 +450,15 @@ func printRecoverPlan(w io.Writer, plan *recoverPlan) {
 	if plan.DryRun {
 		fmt.Fprintf(w, "Dry run: nothing was changed. Window: --since %s\n\n", plan.Since)
 	}
+	defer func() {
+		if len(plan.Unmatched) == 0 {
+			return
+		}
+		fmt.Fprintln(w, "\nAgents not recovered:")
+		for _, a := range plan.Unmatched {
+			fmt.Fprintf(w, "  agent %s (session %s): %s%s\n", a.AgentID, a.Session, a.Reason, recoverOutcomeSuffix(a.Outcome, a.Error))
+		}
+	}()
 	if len(plan.Items) == 0 {
 		fmt.Fprintf(w, "No sessions to recover (%d inactive session(s) outside --since %s; use --all or name them).\n", plan.Ignored, plan.Since)
 		return

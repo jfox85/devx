@@ -922,7 +922,14 @@ something. Taking control fences out remote prompts.
 - **Redaction is pattern-based.** It catches common credential formats only.
 - **Dispatch needs a live Pi TUI.** Prompts are delivered only while Pi is
   running in the pane. If Pi exits, the agent shows as `pane_exited` until
-  `devx agent relaunch`.
+  `devx agent relaunch` (or `devx session recover` after a crash or reboot).
+- **Pane ids are per tmux server.** A restarted server numbers panes from `%0`
+  again, so an agent's saved pane id can name an unrelated pane. A pane is
+  treated as the agent's only if it was started with that agent's
+  `launch.sh` (`pane_start_command`); otherwise it is reported as
+  `pane_foreign` and relaunch opens a new `pi-agent` window instead of
+  respawning it. Launches of one agent are serialized by a per-agent
+  `launch.lock`.
 
 ## Test isolation (tmux)
 
