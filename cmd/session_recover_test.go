@@ -190,12 +190,13 @@ func TestRecoverAgentDecisions(t *testing.T) {
 		include bool
 		want    bool
 	}{
-		"crashed recently": {v: crashedAgent("pa_1", "s", recent), want: true},
-		"crashed long ago": {v: crashedAgent("pa_1", "s", recoverNow.Add(-48*time.Hour))},
-		"idle":             {v: &piagent.AgentView{Agent: &piagent.Agent{ID: "pa_1"}, State: piagent.AgentIdle, Bridge: &piagent.Bridge{Heartbeat: recent}}},
-		"tmux unknown":     {v: &piagent.AgentView{Agent: &piagent.Agent{ID: "pa_1"}, State: piagent.AgentUnknown, Bridge: &piagent.Bridge{Heartbeat: recent}}},
-		"no bridge":        {v: &piagent.AgentView{Agent: &piagent.Agent{ID: "pa_1"}, State: piagent.AgentPaneExited}},
-		"adopted":          {v: func() *piagent.AgentView { v := crashedAgent("pa_1", "s", recent); v.Agent.Adopted = true; return v }()},
+		"crashed recently":          {v: crashedAgent("pa_1", "s", recent), want: true},
+		"crashed long ago":          {v: crashedAgent("pa_1", "s", recoverNow.Add(-48*time.Hour))},
+		"idle":                      {v: &piagent.AgentView{Agent: &piagent.Agent{ID: "pa_1"}, State: piagent.AgentIdle, Bridge: &piagent.Bridge{Heartbeat: recent}}},
+		"tmux unknown":              {v: &piagent.AgentView{Agent: &piagent.Agent{ID: "pa_1"}, State: piagent.AgentUnknown, Bridge: &piagent.Bridge{Heartbeat: recent}}},
+		"no bridge":                 {v: &piagent.AgentView{Agent: &piagent.Agent{ID: "pa_1"}, State: piagent.AgentPaneExited}},
+		"pane gone, Pi maybe alive": {v: func() *piagent.AgentView { v := crashedAgent("pa_1", "s", recent); v.BridgeDead = false; return v }()},
+		"adopted":                   {v: func() *piagent.AgentView { v := crashedAgent("pa_1", "s", recent); v.Agent.Adopted = true; return v }()},
 		"retired": {v: func() *piagent.AgentView {
 			v := crashedAgent("pa_1", "s", recent)
 			v.Agent.RetiredAt = &retired
@@ -536,5 +537,31 @@ func TestRecoverNamedIgnoresUnrelatedAgents(t *testing.T) {
 	}
 	if len(plan.Unmatched) != 0 || recoverFailures(plan) != 0 {
 		t.Fatalf("unrelated agents reported: %+v", plan.Unmatched)
+	}
+}
+
+// A surviving -web viewer also blocks relaunching the session's agents: the
+// relaunch would create a new session the viewer cannot see.
+func TestRecoverWebViewerBlocksAgentRelaunch(t *testing.T) {
+	f := newRecoverFake()
+	sessions := map[string]*session.Session{"lo": loSess(f, "lo", "pa_111111111111", recoverNow)}
+	f.views = []*piagent.AgentView{crashedAgent("pa_111111111111", "lo", recoverNow)}
+	f.live["lo-web"] = true
+	plan, err := planRecover(sessions, f.deps(), recoverOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := findItem(t, plan, "lo").Agents[0]; a.Action != recoverActSkip || !strings.Contains(a.Reason, "web viewer") {
+		t.Fatalf("%+v", a)
+	}
+	// Viewer appears between plan and execute.
+	f = newRecoverFake()
+	sessions = map[string]*session.Session{"lo": loSess(f, "lo", "pa_111111111111", recoverNow)}
+	f.views = []*piagent.AgentView{crashedAgent("pa_111111111111", "lo", recoverNow)}
+	plan, _ = planRecover(sessions, f.deps(), recoverOpts())
+	f.live["lo-web"] = true
+	executeRecover(plan, sessions, f.deps(), recoverOpts())
+	if len(f.relaunch) != 0 || plan.Items[0].Agents[0].Outcome != recoverOutSkipped {
+		t.Fatalf("relaunched %v: %+v", f.relaunch, plan.Items[0].Agents)
 	}
 }

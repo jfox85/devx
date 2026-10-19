@@ -246,14 +246,29 @@ func agentRecoverDecision(v *piagent.AgentView, cutoff time.Time, includeExited 
 		return false, "state " + v.State
 	case v.Bridge == nil:
 		return false, "no bridge heartbeat recorded"
-	case v.PaneForeign && !v.BridgeDead:
-		return false, "its pane id now belongs to another pane and its Pi is not confirmed gone"
+	case !v.BridgeDead:
+		// A missing pane is not enough: Pi can outlive it (lingering after
+		// a hangup, or a blocked event loop with a stale heartbeat). Only a
+		// Pi that shut down or whose process is gone may be replaced.
+		pid := 0
+		if v.Bridge != nil {
+			pid = v.Bridge.PID
+		}
+		return false, fmt.Sprintf("its pane is gone but its Pi (pid %d) is not confirmed dead; check it, then devx agent relaunch", pid)
 	case v.PaneAlive && !v.PaneForeign && !includeExited:
 		return false, "Pi exited but its pane is still open, so tmux was not lost (devx agent relaunch it, or use --include-exited)"
 	case v.Bridge.Heartbeat.Before(cutoff):
 		return false, fmt.Sprintf("last seen %s, outside --since window", v.Bridge.Heartbeat.Local().Format(time.RFC3339))
 	}
 	return true, "Pi is gone (last seen " + v.Bridge.Heartbeat.Local().Format(time.RFC3339) + ")"
+}
+
+func skipRelaunches(agents []recoverAgentItem, reason string) {
+	for i := range agents {
+		if agents[i].Action == recoverActRelaunch {
+			agents[i].Action, agents[i].Reason = recoverActSkip, reason
+		}
+	}
 }
 
 func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts recoverOptions) (*recoverPlan, error) {
@@ -355,14 +370,13 @@ func planRecover(sessions map[string]*session.Session, deps recoverDeps, opts re
 			// windows: they (and the processes in them) are still running.
 			// Recreating the session would start the template a second time.
 			item.Tmux, item.Reason = recoverActSkip, fmt.Sprintf("its web viewer session %q is still running the session's windows; attach from the web UI, or kill it and recover again", name+"-web")
+			// A relaunch would create a new, ungrouped session the viewer
+			// cannot see; recover this session as a whole later instead.
+			skipRelaunches(item.Agents, "its web viewer session still holds the session's windows")
 		case !deps.pathExists(sess.Path):
 			item.Tmux, item.Reason = recoverActSkip, "worktree "+sess.Path+" is missing"
 			// Relaunch would fail the same way; do not try.
-			for i := range item.Agents {
-				if item.Agents[i].Action == recoverActRelaunch {
-					item.Agents[i].Action, item.Agents[i].Reason = recoverActSkip, "worktree is missing"
-				}
-			}
+			skipRelaunches(item.Agents, "worktree is missing")
 		case sess.IsLocalOnly():
 			// A local-only session holds only its agent's Pi window; the
 			// agent relaunch recreates it with the correct ownership tag.
@@ -392,6 +406,14 @@ func executeRecover(plan *recoverPlan, sessions map[string]*session.Session, dep
 		for j := range plan.Items[i].Agents {
 			ag := &plan.Items[i].Agents[j]
 			if ag.Action != recoverActRelaunch {
+				continue
+			}
+			name := plan.Items[i].Session
+			if live, err := deps.liveTmux(); err != nil {
+				ag.Outcome, ag.Error = recoverOutFailed, "cannot query tmux; not relaunched: "+err.Error()
+				continue
+			} else if !live[name] && live[name+"-web"] {
+				ag.Outcome, ag.Error = recoverOutSkipped, "its web viewer session appeared since planning"
 				continue
 			}
 			// Re-check right before acting: another recover, a human or
