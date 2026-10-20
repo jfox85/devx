@@ -2,7 +2,7 @@
      Cmd/Ctrl+P fuzzy session switcher. Highlighting a row prewarms its
      terminal (debounced) so the open is warm by the time the user hits Enter. -->
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { listSessions, prewarmTerminal } from '../api.js'
   import { markPrewarmed } from './stores/sessionUiState.js'
   import { comparePinnedRecent } from './sessionOrdering.js'
@@ -12,6 +12,11 @@
 
   let query = ''
   let sessions = []
+  // The session list is fetched on open, so a fast "Ctrl+P, type, Enter"
+  // can submit before it arrives. Remember that Enter and honor it once the
+  // list loads instead of silently dropping it.
+  let loaded = false
+  let pendingSubmit = false
   let selectedIndex = 0
   let inputEl
   let listEl
@@ -26,7 +31,17 @@
 
   onMount(() => {
     inputEl?.focus()
-    listSessions().then(s => { sessions = s }).catch(() => {})
+    listSessions()
+      .then(s => { sessions = s })
+      .catch(() => {})
+      .finally(() => {
+        loaded = true
+        if (pendingSubmit) {
+          pendingSubmit = false
+          // Flush reactive `visible` before reading it.
+          tick().then(submitSelection)
+        }
+      })
     return () => clearTimeout(prewarmTimer)
   })
 
@@ -100,6 +115,10 @@
     listEl?.children[selectedIndex]?.scrollIntoView({ block: 'nearest' })
   }
 
+  function submitSelection() {
+    if (visible[selectedIndex]) onSelect(visible[selectedIndex])
+  }
+
   function handleKeydown(e) {
     // stopPropagation on every handled key: SessionList has a window-level
     // keydown handler (Enter opens the highlighted sidebar row, arrows move
@@ -117,7 +136,8 @@
     } else if (e.key === 'Enter') {
       e.preventDefault()
       e.stopPropagation()
-      if (visible[selectedIndex]) onSelect(visible[selectedIndex])
+      if (loaded) submitSelection()
+      else pendingSubmit = true
     } else if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
@@ -130,7 +150,13 @@
   class="absolute inset-0 z-50 bg-black/60 flex items-start justify-center pt-[12vh] px-6"
   on:pointerdown|self={onClose}
 >
-  <div class="w-full max-w-lg bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden">
+  <!-- role="dialog" also tells Terminal's deferred focusTerminal() retries
+       (fired for ~600ms after a session opens) not to steal focus from the
+       search input, which would swallow the query/Enter into the terminal. -->
+  <div
+    class="w-full max-w-lg bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden"
+    role="dialog" aria-modal="true" aria-label="session switcher"
+  >
     <div class="flex items-center gap-2 px-3 py-2 border-b border-[#13213a]">
       <span class="text-cyan-500 text-xs font-mono shrink-0">⌕</span>
       <input
