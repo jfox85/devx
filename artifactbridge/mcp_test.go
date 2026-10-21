@@ -74,8 +74,6 @@ func TestMCPServerWithBridge(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 		call(3, ToolList, map[string]any{"agent_id": a.ID}),
-		call(4, ToolUpload, map[string]any{"agent_id": a.ID, "idempotency_key": "u1", "filename": "notes.txt", "mime_type": "text/plain",
-			"size": len(ref), "sha256": shaHex(ref), "offset": 0, "data_base64": base64.StdEncoding.EncodeToString(ref)}),
 		call(5, ToolList, map[string]any{"agent_id": a.ID, "extra": 1}),
 		call(6, "devx_shell", map[string]any{}),
 	)
@@ -95,7 +93,11 @@ func TestMCPServerWithBridge(t *testing.T) {
 	if len(arts) != 2 {
 		t.Fatalf("list: %v", list)
 	}
-	up := structured(t, out[4])
+	// tools/call requests execute concurrently. Wait for the initial list
+	// before uploading, or that list can legitimately include notes.txt.
+	upload := rpc(t, srv, call(4, ToolUpload, map[string]any{"agent_id": a.ID, "idempotency_key": "u1", "filename": "notes.txt", "mime_type": "text/plain",
+		"size": len(ref), "sha256": shaHex(ref), "offset": 0, "data_base64": base64.StdEncoding.EncodeToString(ref)}))
+	up := structured(t, upload[4])
 	if up["state"] != "complete" {
 		t.Fatalf("upload: %v", up)
 	}
