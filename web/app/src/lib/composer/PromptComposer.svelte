@@ -269,7 +269,7 @@
          textarea into the terminal iframe mid-typing. -->
     <div
       class="w-full max-w-3xl bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden"
-      role="dialog" aria-modal="true" aria-label={`Compose prompt for ${sessionName}`}
+      role="dialog" aria-label={`Compose prompt for ${sessionName}`}
     >
       <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#13213a]">
         <div class="text-[11px] font-mono text-cyan-300">compose → {sessionName}</div>

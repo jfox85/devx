@@ -16,7 +16,7 @@
   // can submit before it arrives. Remember that Enter and honor it once the
   // list loads instead of silently dropping it.
   let loaded = false
-  let pendingSubmit = false
+  let pendingQuery = null
   let selectedIndex = 0
   let inputEl
   let listEl
@@ -30,19 +30,26 @@
   let prewarmRequestedAt = new Map()
 
   onMount(() => {
+    let active = true
     inputEl?.focus()
     listSessions()
-      .then(s => { sessions = s })
-      .catch(() => {})
-      .finally(() => {
+      .then(async s => {
+        if (!active) return
+        sessions = s
+        // Flush reactive `visible` before reading it.
+        await tick()
+        if (!active) return
         loaded = true
-        if (pendingSubmit) {
-          pendingSubmit = false
-          // Flush reactive `visible` before reading it.
-          tick().then(submitSelection)
-        }
+        const submittedQuery = pendingQuery
+        pendingQuery = null
+        if (submittedQuery !== null && submittedQuery === query) submitSelection()
       })
-    return () => clearTimeout(prewarmTimer)
+      .catch(() => { pendingQuery = null })
+    return () => {
+      active = false
+      pendingQuery = null
+      clearTimeout(prewarmTimer)
+    }
   })
 
   // Subsequence fuzzy match against a haystack; returns a score (higher is
@@ -126,7 +133,7 @@
     if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
       e.preventDefault()
       e.stopPropagation()
-      selectedIndex = Math.min(selectedIndex + 1, visible.length - 1)
+      selectedIndex = Math.max(0, Math.min(selectedIndex + 1, visible.length - 1))
       scrollSelectedIntoView()
     } else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) {
       e.preventDefault()
@@ -137,7 +144,7 @@
       e.preventDefault()
       e.stopPropagation()
       if (loaded) submitSelection()
-      else pendingSubmit = true
+      else pendingQuery = query
     } else if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
@@ -155,13 +162,14 @@
        search input, which would swallow the query/Enter into the terminal. -->
   <div
     class="w-full max-w-lg bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden"
-    role="dialog" aria-modal="true" aria-label="session switcher"
+    role="dialog" aria-label="session switcher"
   >
     <div class="flex items-center gap-2 px-3 py-2 border-b border-[#13213a]">
       <span class="text-cyan-500 text-xs font-mono shrink-0">⌕</span>
       <input
         bind:this={inputEl}
         bind:value={query}
+        on:input={() => { pendingQuery = null }}
         on:keydown={handleKeydown}
         placeholder="jump to session…"
         class="flex-1 bg-transparent outline-none text-sm font-mono text-gray-200 placeholder-gray-700"
