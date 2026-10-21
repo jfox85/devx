@@ -264,7 +264,13 @@
     class="absolute inset-0 z-40 flex items-end justify-center pb-10 px-6 bg-black/40"
     on:pointerdown|self={() => dispatch('close')}
   >
-    <div class="w-full max-w-3xl bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden">
+    <!-- role="dialog" also tells Terminal's deferred focusTerminal() retries
+         (fired for ~600ms after a session opens) not to pull focus out of the
+         textarea into the terminal iframe mid-typing. -->
+    <div
+      class="w-full max-w-3xl bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden"
+      role="dialog" aria-label={`Compose prompt for ${sessionName}`}
+    >
       <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#13213a]">
         <div class="text-[11px] font-mono text-cyan-300">compose → {sessionName}</div>
         <div class="text-[10px] font-mono text-gray-600">⌘↵ send · ⇧⌘↵ paste · esc close</div>

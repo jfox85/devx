@@ -88,6 +88,57 @@ for (const [label, viewport] of [['desktop', { width: 1280, height: 800 }], ['mo
       await expect(pane).toBeVisible()
     })
 
+    test('session switcher retains focus through deferred terminal focus retries', async ({ page }) => {
+      await page.clock.install({ time: new Date('2026-10-20T12:00:00Z') })
+      await page.clock.pauseAt(new Date('2026-10-20T12:00:01Z'))
+      await mockAPI(page, [session, beta])
+      await openArtifacts(page)
+      await page.keyboard.press('Control+p')
+      const search = page.getByLabel('session switcher search')
+      await search.fill('beta')
+      await page.clock.runFor(1000)
+      await expect(search).toBeFocused()
+      await expect(search).toHaveValue('beta')
+    })
+
+    for (const action of ['submit', 'edit', 'dismiss', 'fail']) {
+      test(`pending switcher Enter: ${action}`, async ({ page }) => {
+        await mockAPI(page, [session, beta])
+        await openArtifacts(page)
+        let release
+        const gate = new Promise(resolve => { release = resolve })
+        await page.route('**/api/sessions', async route => {
+          await gate
+          return action === 'fail'
+            ? route.fulfill({ status: 500, body: 'session list unavailable' })
+            : route.fulfill({ json: { sessions: [session, beta] } })
+        })
+        await page.keyboard.press('Control+p')
+        const search = page.getByLabel('session switcher search')
+        await search.fill('beta')
+        // Navigating an empty list must not leave a negative selection index.
+        await search.press('ArrowDown')
+        await search.press('Enter')
+        if (action === 'edit') await search.fill('alpha')
+        if (action === 'dismiss') await search.press('Escape')
+        const response = page.waitForResponse('**/api/sessions')
+        release()
+        await (await response).finished()
+        if (action === 'submit') {
+          await expect(search).toHaveCount(0)
+          await expect(page.getByTitle('Terminal — beta')).toBeAttached()
+        } else {
+          // Allow response handlers and the Svelte update to finish before
+          // asserting that no deferred selection took place.
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+          await expect(page.getByTitle('Terminal — alpha')).toBeAttached()
+          await expect(page.getByTitle('Terminal — beta')).toHaveCount(0)
+          if (action === 'dismiss') await expect(search).toHaveCount(0)
+          else await expect(search).toBeVisible()
+        }
+      })
+    }
+
     test('switching sessions with the viewer open leaves no stale history entry', async ({ page }) => {
       await mockAPI(page, [session, beta])
       await openArtifacts(page)
