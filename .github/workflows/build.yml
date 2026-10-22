@@ -56,6 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    - uses: actions/checkout@v4
+
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
@@ -69,4 +71,5 @@ jobs:
     - name: Verify Linux AMD64 binary
       run: |
         chmod +x artifacts/devx-linux-amd64/devx-linux-amd64
-        artifacts/devx-linux-amd64/devx-linux-amd64 version || echo "Version command not implemented"
+        artifacts/devx-linux-amd64/devx-linux-amd64 version
+        bash scripts/check-onboarding.sh artifacts/devx-linux-amd64/devx-linux-amd64

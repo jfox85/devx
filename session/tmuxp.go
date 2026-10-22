@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jfox85/devx/config"
+	"github.com/jfox85/devx/deps"
 	"gopkg.in/yaml.v3"
 )
 
@@ -152,7 +153,7 @@ func loadTmuxpTemplate(projectPath string) (string, error) {
 // session names containing "/" are not misinterpreted as pane separators.
 func launchTmuxDetached(worktreePath, sessionName string) error {
 	if _, err := exec.LookPath("tmuxp"); err != nil {
-		return fmt.Errorf("tmuxp not found in PATH. Install with: pip install tmuxp")
+		return fmt.Errorf("tmuxp not found in PATH. %s", deps.TmuxpInstallHint())
 	}
 
 	tmuxpConfigPath := filepath.Join(worktreePath, ".tmuxp.yaml")
