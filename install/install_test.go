@@ -18,18 +18,11 @@ func TestInstallerLinksDocumentationForResolvedRelease(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("installer targets macOS and Linux")
 	}
-	for _, version := range []string{"latest", "0.3.0", "v0.3.0"} {
+	for _, version := range []string{"", "latest", "0.3.0", "v0.3.0"} {
 		t.Run(version, func(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "bin")
 			if err := os.Mkdir(bin, 0755); err != nil {
-				t.Fatal(err)
-			}
-			metadata := filepath.Join(dir, "release.json")
-			// A long release body must be consumed fully: exiting grep early
-			// makes curl fail with a broken pipe under the installer's pipefail.
-			payload := "{\n  \"tag_name\": \"v0.3.0\",\n  \"body\": \"" + strings.Repeat("release notes ", 100000) + "\"\n}\n"
-			if err := os.WriteFile(metadata, []byte(payload), 0600); err != nil {
 				t.Fatal(err)
 			}
 			archive := filepath.Join(dir, "release.tar.gz")
@@ -53,7 +46,10 @@ func TestInstallerLinksDocumentationForResolvedRelease(t *testing.T) {
 			}
 			curl := `#!/bin/sh
 case "$2" in
- */releases/latest) cat "$FIXTURE_RELEASE_METADATA" ;;
+ https://api.github.com/*) echo 'API rate limit exceeded' >&2; exit 22 ;;
+ https://github.com/jfox85/devx/releases/latest)
+   [ "$3" = "-o" ] && [ "$4" = "/dev/null" ] && [ "$5" = "-w" ] && [ "$6" = '%{url_effective}' ] || exit 99
+   printf '%s' 'https://github.com/jfox85/devx/releases/tag/v0.3.0' ;;
  */releases/download/v0.3.0/devx_0.3.0_*.tar.gz) cp "$FIXTURE_ARCHIVE" "$4" ;;
  *) echo "unexpected URL: $2" >&2; exit 1 ;;
 esac
@@ -62,7 +58,7 @@ esac
 				t.Fatal(err)
 			}
 			cmd := exec.Command("bash", "install.sh")
-			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "DEVX_VERSION="+version, "DEVX_INSTALL_DIR="+filepath.Join(dir, "installed"), "FIXTURE_ARCHIVE="+archive, "FIXTURE_RELEASE_METADATA="+metadata)
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "DEVX_VERSION="+version, "DEVX_INSTALL_DIR="+filepath.Join(dir, "installed"), "FIXTURE_ARCHIVE="+archive)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("installer: %v\n%s", err, output)
@@ -73,6 +69,50 @@ esac
 			}
 			if _, err := os.Stat(filepath.Join(dir, "installed", "devx")); err != nil {
 				t.Fatal(fmt.Errorf("binary not installed: %w", err))
+			}
+		})
+	}
+}
+
+// Discovery errors must stop before downloading or replacing a user's binary.
+func TestInstallerRejectsFailedLatestDiscovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("installer targets macOS and Linux")
+	}
+	for _, tc := range []struct{ name, url, status string }{
+		{"network failure", "", "22"},
+		{"no release", "https://github.com/jfox85/devx/releases/latest", "0"},
+		{"different repository", "https://github.com/other/devx/releases/tag/v0.4.0", "0"},
+		{"invalid tag", "https://github.com/jfox85/devx/releases/tag/v0.4.0/other", "0"},
+		{"empty tag", "https://github.com/jfox85/devx/releases/tag/", "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			installed := filepath.Join(dir, "devx")
+			original := []byte("existing binary")
+			if err := os.WriteFile(installed, original, 0755); err != nil {
+				t.Fatal(err)
+			}
+			curl := `#!/bin/sh
+if [ "$2" != "https://github.com/jfox85/devx/releases/latest" ]; then
+ echo 'unexpected download' >&2
+ exit 99
+fi
+printf '%s' "$FIXTURE_URL"
+exit "$FIXTURE_STATUS"
+`
+			if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "install.sh")
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "DEVX_VERSION=latest", "DEVX_INSTALL_DIR="+dir, "FIXTURE_URL="+tc.url, "FIXTURE_STATUS="+tc.status)
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "Unable to determine latest release version") || strings.Contains(string(output), "unexpected download") {
+				t.Fatalf("expected discovery failure, got %v:\n%s", err, output)
+			}
+			got, err := os.ReadFile(installed)
+			if err != nil || string(got) != string(original) {
+				t.Fatalf("existing binary changed: %q, %v", got, err)
 			}
 		})
 	}
