@@ -3,6 +3,7 @@ package deps
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -413,5 +414,19 @@ func TestVersionExtraction(t *testing.T) {
 	// The important thing is that CheckDependency doesn't crash when version check fails
 	if result.Error != nil {
 		t.Errorf("CheckDependency returned error for available command: %v", result.Error)
+	}
+}
+
+func TestTmuxpInstallHintIncludesPlatformAndPathSetup(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		hint := tmuxpInstallHint(goos)
+		for _, want := range []string{"pipx ensurepath", "pipx install tmuxp", "start a new shell"} {
+			if !strings.Contains(hint, want) {
+				t.Errorf("%s missing %q: %s", goos, want, hint)
+			}
+		}
+		if goos != "darwin" && strings.Contains(hint, "brew install") {
+			t.Errorf("Homebrew required on %s: %s", goos, hint)
+		}
 	}
 }

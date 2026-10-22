@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -107,13 +108,23 @@ func writeInitialConfigFile(cmd *cobra.Command, path string, content []byte, mod
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
+	if err := writeAndCloseInitialConfigFile(path, file, content); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", path)
+	return nil
+}
+
+// Discard only a newly created file on failure, so initialization can be retried.
+func writeAndCloseInitialConfigFile(path string, file io.WriteCloser, content []byte) error {
 	if _, err := file.Write(content); err != nil {
 		_ = file.Close()
+		_ = os.Remove(path)
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
 		return fmt.Errorf("close %s: %w", path, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", path)
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/jfox85/devx/version"
@@ -47,7 +48,7 @@ func GetDependencies() []Dependency {
 			Command:     "tmuxp",
 			Required:    false,
 			Description: "Terminal session layouts (optional; requires tmux)",
-			InstallHint: "Install with: brew install pipx && pipx install tmuxp",
+			InstallHint: TmuxpInstallHint(),
 		},
 		{
 			Name:        "Caddy",
@@ -64,6 +65,17 @@ func GetDependencies() []Dependency {
 			InstallHint: "Install with: brew install direnv",
 		},
 	}
+}
+
+// TmuxpInstallHint includes the PATH setup needed on fresh pipx installations.
+func TmuxpInstallHint() string { return tmuxpInstallHint(runtime.GOOS) }
+
+func tmuxpInstallHint(goos string) string {
+	prefix := "Install pipx using your system package manager (https://pipx.pypa.io/latest/how-to/install-pipx.html). Then run: "
+	if goos == "darwin" {
+		prefix = "Install with: brew install pipx && "
+	}
+	return prefix + "pipx ensurepath && pipx install tmuxp; then start a new shell"
 }
 
 // CheckDependency checks if a single dependency is available

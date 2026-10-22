@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,5 +121,49 @@ func TestConfigInitRejectsDirectoryAtConfigPath(t *testing.T) {
 	t.Cleanup(func() { cfgFile = original })
 	if err := runConfigInit(&cobra.Command{}, nil); err == nil {
 		t.Fatal("directory reported as initialized config file")
+	}
+}
+
+type failingInitialConfigWriter struct{ writeErr, closeErr error }
+
+func (w failingInitialConfigWriter) Write(p []byte) (int, error) {
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	return len(p), nil
+}
+func (w failingInitialConfigWriter) Close() error { return w.closeErr }
+
+func TestConfigInitDiscardsIncompleteFilesAndAllowsRetry(t *testing.T) {
+	for _, failure := range []string{"write", "close"} {
+		t.Run(failure, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("partial"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("disk write failure")
+			writer := failingInitialConfigWriter{}
+			if failure == "write" {
+				writer.writeErr = injected
+			} else {
+				writer.closeErr = injected
+			}
+			if err := writeAndCloseInitialConfigFile(path, writer, []byte("complete")); !errors.Is(err, injected) {
+				t.Fatalf("lost original error: %v", err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("incomplete destination remains: %v", err)
+			}
+			if err := writeInitialConfigFile(&cobra.Command{}, path, []byte("complete"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != "complete" {
+				t.Fatalf("retry did not restore complete config: %q", data)
+			}
+		})
 	}
 }

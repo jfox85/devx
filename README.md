@@ -59,7 +59,10 @@ they do not install the development branch.
 ### Optional features
 - **tmux and tmuxp**: Required for persistent terminal sessions, but optional for
   worktree creation. macOS does not bundle tmux. On macOS, install with
-  `brew install tmux pipx` followed by `pipx install tmuxp`.
+  `brew install tmux pipx`, `pipx ensurepath`, and `pipx install tmuxp`, then start
+  a new shell so pipx's app directory is on PATH. On Linux, install tmux and pipx
+  with your distribution's package manager, then run the same two pipx commands
+  and start a new shell. See the [pipx installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
 - **direnv**: For automatic environment variable loading (`brew install direnv`).
 - **Caddy**: For local proxy routing (`brew install caddy`). Set `disable_caddy: true`
   in your config when you only need worktrees and ports.
