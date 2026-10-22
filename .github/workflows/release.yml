@@ -41,6 +41,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tmux
 
+      - name: Verify documented onboarding before release
+        run: |
+          go build -o "$RUNNER_TEMP/devx-onboarding" .
+          bash scripts/check-onboarding.sh "$RUNNER_TEMP/devx-onboarding"
+
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

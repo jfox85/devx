@@ -79,3 +79,6 @@ install -m 0755 "${workdir}/devx" "${INSTALL_DIR}/devx"
 
 echo "devx installed to ${INSTALL_DIR}/devx"
 "${INSTALL_DIR}/devx" --version || true
+
+# Point users at instructions matching the binary, rather than development docs.
+echo "Documentation for ${VERSION}: https://github.com/${REPO}/blob/${VERSION}/README.md"

@@ -152,7 +152,7 @@ func loadTmuxpTemplate(projectPath string) (string, error) {
 // session names containing "/" are not misinterpreted as pane separators.
 func launchTmuxDetached(worktreePath, sessionName string) error {
 	if _, err := exec.LookPath("tmuxp"); err != nil {
-		return fmt.Errorf("tmuxp not found in PATH. Install with: pip install tmuxp")
+		return fmt.Errorf("tmuxp not found in PATH. Install with: brew install pipx && pipx install tmuxp")
 	}
 
 	tmuxpConfigPath := filepath.Join(worktreePath, ".tmuxp.yaml")

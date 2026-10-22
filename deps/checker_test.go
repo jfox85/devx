@@ -18,14 +18,14 @@ func TestGetDependencies(t *testing.T) {
 
 	// Check required dependencies
 	requiredCommands := map[string]bool{
-		"git":   false,
-		"tmux":  false,
-		"tmuxp": false,
-		"caddy": false,
+		"git": false,
 	}
 
 	optionalCommands := map[string]bool{
 		"direnv": false,
+		"tmux":   false,
+		"tmuxp":  false,
+		"caddy":  false,
 	}
 
 	for _, dep := range deps {

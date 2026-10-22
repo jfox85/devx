@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,9 +43,10 @@ windows:
 
 var configInitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize devx configuration with default template",
-	Long:  `Create the default tmuxp template file that can be customized.`,
-	RunE:  runConfigInit,
+	Short: "Initialize devx configuration and tmuxp template",
+	Long: `Create a starter config and tmuxp template without overwriting existing files.
+The config defaults to ~/.config/devx/config.yaml; use --config to choose another path.`,
+	RunE: runConfigInit,
 }
 
 func init() {
@@ -63,23 +65,55 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	// Create template file
+	configPath := filepath.Join(configDir, "config.yaml")
+	if cfgFile != "" {
+		configPath = cfgFile
+	}
+	// Start with portable defaults, never effective project settings or credentials.
+	const starterConfig = `# DevX starter configuration. Other settings use built-in defaults.
+basedomain: localhost
+caddy_api: http://localhost:2019
+tmuxp_template: ~/.config/devx/session.yaml.tmpl
+ports:
+  - ui
+  - api
+# Set true for worktrees without local proxy routing.
+disable_caddy: false
+`
+	if err := writeInitialConfigFile(cmd, configPath, []byte(starterConfig), 0600); err != nil {
+		return err
+	}
 	templatePath := filepath.Join(configDir, "session.yaml.tmpl")
+	return writeInitialConfigFile(cmd, templatePath, []byte(defaultTmuxpTemplate), 0644)
+}
 
-	// Check if file already exists
-	if _, err := os.Stat(templatePath); err == nil {
-		fmt.Printf("Template file already exists at %s\n", templatePath)
-		fmt.Printf("Use --force to overwrite\n")
+// Exclusive creation makes repeated initialization safe, including concurrent runs.
+func writeInitialConfigFile(cmd *cobra.Command, path string, content []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if errors.Is(err, os.ErrExist) {
+		info, statErr := os.Lstat(path)
+		if statErr != nil {
+			return fmt.Errorf("inspect %s: %w", path, statErr)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("expected a config file, found directory at %s", path)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Kept existing file at %s\n", path)
 		return nil
 	}
-
-	// Write default template
-	if err := os.WriteFile(templatePath, []byte(defaultTmuxpTemplate), 0644); err != nil {
-		return fmt.Errorf("failed to write template file: %w", err)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
 	}
-
-	fmt.Printf("Created default tmuxp template at %s\n", templatePath)
-	fmt.Printf("You can now customize this template to suit your workflow.\n")
-
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", path)
 	return nil
 }
