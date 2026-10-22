@@ -25,6 +25,13 @@ func TestInstallerLinksDocumentationForResolvedRelease(t *testing.T) {
 			if err := os.Mkdir(bin, 0755); err != nil {
 				t.Fatal(err)
 			}
+			metadata := filepath.Join(dir, "release.json")
+			// A long release body must be consumed fully: exiting grep early
+			// makes curl fail with a broken pipe under the installer's pipefail.
+			payload := "{\n  \"tag_name\": \"v0.3.0\",\n  \"body\": \"" + strings.Repeat("release notes ", 100000) + "\"\n}\n"
+			if err := os.WriteFile(metadata, []byte(payload), 0600); err != nil {
+				t.Fatal(err)
+			}
 			archive := filepath.Join(dir, "release.tar.gz")
 			file, err := os.Create(archive)
 			if err != nil {
@@ -46,7 +53,7 @@ func TestInstallerLinksDocumentationForResolvedRelease(t *testing.T) {
 			}
 			curl := `#!/bin/sh
 case "$2" in
- */releases/latest) printf '{"tag_name":"v0.3.0"}\n' ;;
+ */releases/latest) cat "$FIXTURE_RELEASE_METADATA" ;;
  */releases/download/v0.3.0/devx_0.3.0_*.tar.gz) cp "$FIXTURE_ARCHIVE" "$4" ;;
  *) echo "unexpected URL: $2" >&2; exit 1 ;;
 esac
@@ -55,7 +62,7 @@ esac
 				t.Fatal(err)
 			}
 			cmd := exec.Command("bash", "install.sh")
-			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "DEVX_VERSION="+version, "DEVX_INSTALL_DIR="+filepath.Join(dir, "installed"), "FIXTURE_ARCHIVE="+archive)
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "DEVX_VERSION="+version, "DEVX_INSTALL_DIR="+filepath.Join(dir, "installed"), "FIXTURE_ARCHIVE="+archive, "FIXTURE_RELEASE_METADATA="+metadata)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("installer: %v\n%s", err, output)

@@ -4,9 +4,9 @@ All notable changes to devx are recorded here. Versions follow
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor bumps may carry
 breaking changes, which are always called out).
 
-## [v0.4.0]
+## [v0.4.0] - 2026-10-22
 
-57 merged PRs (#35–#99) and 398 commits since v0.3.0 (2026-03-10).
+Changes since v0.3.0 (2026-03-10).
 
 **No breaking changes since v0.3.0.** Every v0.3.0 CLI command and flag, web
 API route, config key and `sessions.json` field is still present. Session
@@ -15,6 +15,7 @@ removed (#68) during this cycle, so they never shipped in a tagged release.
 Existing `sessions.json` files load unchanged.
 
 ### Pi / MCP agents
+- Managed Pi agents expose mid-task progress events and `latest_progress` (#100).
 - **Managed Pi agents over a local stdio MCP server.** New `devx mcp pi` and
   `devx agent` commands (`list`, `status`, `inspect`, `attach`, `adopt`,
   `relaunch`, `takeover`, `release`) let you start Pi agents, message them,
@@ -77,6 +78,8 @@ Existing `sessions.json` files load unchanged.
   a containerized devx service with a configurable bind address (#41).
 
 ### CLI and sessions
+- `devx session recover` restores missing sessions and agents after a crash or
+  reboot, with a dry run for reviewing the recovery plan (#104).
 - **Session targets:** Docker and Gatepost targets alongside host, plus
   `devx session exec` and `devx session gatepost` (#44, #48).
 - Stale-session cleanup: `devx session stale`, `devx session prune` and
@@ -88,6 +91,14 @@ Existing `sessions.json` files load unchanged.
   `make install-local` target does reproducible local installs (#96, #98).
 
 ### Fixes
+- Config initialization now creates both the config and tmuxp template, preserves
+  existing files, supports explicit destinations, and permits retries after a
+  failed write. Dependency checks distinguish core worktrees from optional
+  terminal/proxy tools, with actionable setup guidance (#106).
+- The quick switcher and composer no longer steal focus or drop Enter presses;
+  pending session selection remains consistent (#105).
+- Security and compatibility dependency updates include the Go 1.26.9 release
+  toolchain and patched Go/web dependencies (#101, #102).
 - The terminal WebSocket no longer returns 403 behind Caddy or a Cloudflare
   tunnel (#43).
 - Desktop terminal typing no longer stops after about 30 characters (#66).
@@ -100,6 +111,9 @@ Existing `sessions.json` files load unchanged.
 - The desktop app build works when run from any directory (#64).
 
 ### Build, CI and repo
+- The public installer handles long release metadata without broken-pipe
+  failures and links to the installed version's documentation. Built
+  artifacts and release preparation run an onboarding smoke check (#106).
 - The release workflow installs tmux, so GoReleaser's `go test ./...`
   pre-release hook passes on the release runner.
 - Windows tests are now a real CI gate (#73). The macOS CI tmuxp is pinned

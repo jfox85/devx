@@ -79,3 +79,13 @@ jobs:
           else
             goreleaser release --clean
           fi
+
+      - name: Verify anonymous public installer
+        run: |
+          install_root="$RUNNER_TEMP/devx-public-install"
+          mkdir -p "$install_root"
+          curl -fsSL https://raw.githubusercontent.com/jfox85/devx/main/install/install.sh \
+            -o "$install_root/install.sh"
+          DEVX_INSTALL_DIR="$install_root/bin" bash "$install_root/install.sh"
+          "$install_root/bin/devx" version | grep -F "devx version ${GITHUB_REF_NAME#v} ("
+          bash scripts/check-onboarding.sh "$install_root/bin/devx"

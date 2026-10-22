@@ -49,8 +49,9 @@ case "$arch" in
 esac
 
 if [[ "$VERSION" == "latest" ]]; then
+  # Consume the full response: grep -m1 can give curl a broken pipe on long releases.
   VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
-    grep -m1 '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
+    grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
   if [[ -z "$VERSION" ]]; then
     echo "Unable to determine latest release version" >&2
     exit 1

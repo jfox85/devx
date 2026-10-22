@@ -38,17 +38,16 @@ Built on battle-tested open tools (tmuxp, Caddy, direnv) with powerful configura
 
 ## Documentation versions
 
-This README describes the development branch, including features planned for v0.4.0.
-The current published release is **v0.3.0**. Homebrew, `go install ...@latest`, the
-universal installer, and direct release downloads install the published release;
-they do not install the development branch.
+This README documents **v0.4.0**. Homebrew, `go install ...@latest`, the
+universal installer, and direct release downloads install the latest published
+release; they do not install unreleased changes from `main`.
 
-- **Using a released binary:** follow the [v0.3.0 README](https://github.com/jfox85/devx/blob/v0.3.0/README.md)
-  and check `devx version`. In particular, v0.3.0 does not have `devx artifact`,
-  `devx agent`, or `devx ask`.
-- **Using the features in this README:** [build from source](#build-from-source)
-  from `main`. Check `devx version` and `devx artifact --help` before starting
-  an artifact workflow. A development build is not a published release.
+- Check `devx version` and use the README at that release tag:
+  [v0.4.0](https://github.com/jfox85/devx/blob/v0.4.0/README.md) or
+  [v0.3.0](https://github.com/jfox85/devx/blob/v0.3.0/README.md).
+  Version v0.3.0 does not have `devx artifact`, `devx agent`, or `devx ask`.
+- To work on unreleased changes, [build from source](#build-from-source) from
+  `main`. A development build is not a published release.
 
 ## Dependencies
 
@@ -147,8 +146,8 @@ as `devx.previous`. Restart any running `devx web` afterwards.
    ```bash
    devx config init
    ```
-   This creates `~/.config/devx/config.yaml` and `session.yaml.tmpl` on the
-   development branch, preserving any existing files. Use `devx --config PATH config init`
+   In v0.4.0 and newer, this creates `~/.config/devx/config.yaml` and
+   `session.yaml.tmpl`, preserving any existing files. Use `devx --config PATH config init`
    for a different config destination. On v0.3.0, initialization creates only the
    template; create `config.yaml` from the [global config example](#global-configuration)
    before copying it into a project.
@@ -934,8 +933,7 @@ devx web stop             # stop daemon
 
 ### Session artifacts
 
-Requires a development build from `main` until v0.4.0 is released;
-`devx artifact` is unavailable in v0.3.0. See [Documentation versions](#documentation-versions).
+Available in v0.4.0 and newer; `devx artifact` is unavailable in v0.3.0. See [Documentation versions](#documentation-versions).
 
 Artifacts are files stored under a session worktree's `.artifacts/` directory and indexed by `.artifacts/manifest.json`. They are useful for agent-generated plans, reviews, screenshots, QA reports, logs, diffs, and proof-of-work reports.
 
