@@ -36,17 +36,38 @@ Built on battle-tested open tools (tmuxp, Caddy, direnv) with powerful configura
 - **Dependency Checking**: Validates required tools with installation guidance
 - **Fully Customizable**: Built on open tools (tmuxp, Caddy, direnv)—configure or replace any part
 
+## Documentation versions
+
+This README documents **v0.4.0**. Homebrew, `go install ...@latest`, the
+universal installer, and direct release downloads install the latest published
+release; they do not install unreleased changes from `main`.
+
+- Check `devx version` and use the README at that release tag:
+  [v0.4.0](https://github.com/jfox85/devx/blob/v0.4.0/README.md) or
+  [v0.3.0](https://github.com/jfox85/devx/blob/v0.3.0/README.md).
+  Version v0.3.0 does not have `devx artifact`, `devx agent`, or `devx ask`.
+- To work on unreleased changes, [build from source](#build-from-source) from
+  `main`. A development build is not a published release.
+
 ## Dependencies
 
-### Required
+### Core worktrees
 - **Git**: For worktree management
 - **Go 1.23+**: For building the tool (Go 1.26.9+ recommended; older toolchains compile in known standard-library vulnerabilities)
 
-### Optional but Recommended
-- **tmux**: For session management (ships with macOS)
-- **tmuxp**: For tmux session configuration (`pip install tmuxp`)
-- **direnv**: For automatic environment variable loading
-- **Caddy**: For HTTPS proxy functionality (`brew install caddy`)
+### Optional features
+- **tmux and tmuxp**: Required for persistent terminal sessions, but optional for
+  worktree creation. macOS does not bundle tmux. On macOS, install with
+  `brew install tmux pipx`, `pipx ensurepath`, and `pipx install tmuxp`, then start
+  a new shell so pipx's app directory is on PATH. On Linux, install tmux and pipx
+  with your distribution's package manager, then run the same two pipx commands
+  and start a new shell. See the [pipx installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
+- **direnv**: For automatic environment variable loading (`brew install direnv`).
+- **Caddy**: For local proxy routing (`brew install caddy`). Set `disable_caddy: true`
+  in your config when you only need worktrees and ports.
+
+Run `devx check` to see what is available. Git is the core requirement; the checker
+lists terminal and routing tools as optional and explains which features use them.
 
 ## Installation
 
@@ -125,12 +146,24 @@ as `devx.previous`. Restart any running `devx web` afterwards.
    ```bash
    devx config init
    ```
+   In v0.4.0 and newer, this creates `~/.config/devx/config.yaml` and
+   `session.yaml.tmpl`, preserving any existing files. Use `devx --config PATH config init`
+   for a different config destination. On v0.3.0, initialization creates only the
+   template; create `config.yaml` from the [global config example](#global-configuration)
+   before copying it into a project.
 
 2. **Navigate to your Git repository and create a session**:
    ```bash
    cd /path/to/your/project
    devx session create feature-branch
    ```
+   For a minimal setup without tmux/tmuxp, set `disable_caddy: true` in
+   `~/.config/devx/config.yaml` and run:
+   ```bash
+   devx session create feature-branch --no-tmux
+   ```
+   The worktree and ports are usable immediately. After installing terminal
+   dependencies, open the existing session with `devx session attach feature-branch`.
 
 3. **This will**:
    - Create a Git worktree at `.worktrees/feature-branch`
@@ -899,6 +932,8 @@ devx web stop             # stop daemon
 > **Auto-start:** Set `web_autostart: true` to have the web daemon start automatically when you open the TUI.
 
 ### Session artifacts
+
+Available in v0.4.0 and newer; `devx artifact` is unavailable in v0.3.0. See [Documentation versions](#documentation-versions).
 
 Artifacts are files stored under a session worktree's `.artifacts/` directory and indexed by `.artifacts/manifest.json`. They are useful for agent-generated plans, reviews, screenshots, QA reports, logs, diffs, and proof-of-work reports.
 

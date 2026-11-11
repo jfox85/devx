@@ -49,10 +49,16 @@ case "$arch" in
 esac
 
 if [[ "$VERSION" == "latest" ]]; then
-  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
-    grep -m1 '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
-  if [[ -z "$VERSION" ]]; then
-    echo "Unable to determine latest release version" >&2
+  # The public redirect avoids GitHub's shared anonymous REST API rate limit.
+  release_prefix="https://github.com/${REPO}/releases/tag/"
+  if ! release_url="$(curl -fsSL "https://github.com/${REPO}/releases/latest" \
+    -o /dev/null -w '%{url_effective}')"; then
+    echo "Unable to determine latest release version from GitHub" >&2
+    exit 1
+  fi
+  VERSION="${release_url#"$release_prefix"}"
+  if [[ "$release_url" != "$release_prefix"* || ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+    echo "Unable to determine latest release version: unexpected GitHub release URL" >&2
     exit 1
   fi
 else
@@ -79,3 +85,6 @@ install -m 0755 "${workdir}/devx" "${INSTALL_DIR}/devx"
 
 echo "devx installed to ${INSTALL_DIR}/devx"
 "${INSTALL_DIR}/devx" --version || true
+
+# Point users at instructions matching the binary, rather than development docs.
+echo "Documentation for ${VERSION}: https://github.com/${REPO}/blob/${VERSION}/README.md"

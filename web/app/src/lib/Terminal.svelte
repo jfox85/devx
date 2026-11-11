@@ -351,8 +351,11 @@
     composerOpen = !composerOpen
   }
 
-  function closeComposer() {
+  async function closeComposer() {
     composerOpen = false
+    // Remove the dialog before restoring focus, otherwise the focus guard
+    // still sees the active textarea inside it and refuses the handoff.
+    await tick()
     focusTerminal()
   }
 
@@ -1162,14 +1165,17 @@
     if (goBack && wasOpen) popModalHistory('artifact-search')
   }
 
-  function handleComposerSent(event) {
+  async function handleComposerSent(event) {
     scheduleRefresh()
     // Sending from the desktop overlay dismisses it; paste-only keeps it open
     // so the user can continue composing while reviewing the staged text.
     if (composerOpen && event.detail?.submit) {
       composerOpen = false
     }
-    if (!composerOpen) focusTerminal()
+    if (!composerOpen) {
+      await tick()
+      focusTerminal()
+    }
   }
 
   function handleComposerImagePaste(event) {

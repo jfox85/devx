@@ -484,6 +484,42 @@ test.describe('composer draft persistence — desktop overlay (1280px)', () => {
     await page.getByLabel('terminal input composer').and(page.locator(':visible')).waitFor()
   }
 
+  test('overlay retains focus and text through deferred terminal focus retries', async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-10-20T12:00:00Z') })
+    await page.clock.pauseAt(new Date('2026-10-20T12:00:01Z'))
+    await mockBaseAPI(page)
+    await page.goto('/')
+    await openOverlay(page)
+    const composer = page.getByLabel('terminal input composer').and(page.locator(':visible'))
+    await composer.fill('keep this prompt in the composer')
+    await page.clock.runFor(1000)
+    await expect(composer).toBeFocused()
+    await expect(composer).toHaveValue('keep this prompt in the composer')
+    await expect.poll(() => page.evaluate(() => {
+      const stored = localStorage.getItem('devx_composer_v1:alpha')
+      return stored ? JSON.parse(stored).draft : ''
+    })).toBe('keep this prompt in the composer')
+  })
+
+  for (const action of ['Escape', 'send']) {
+    test(`overlay returns focus to terminal after ${action}`, async ({ page }) => {
+      await page.clock.install({ time: new Date('2026-10-20T12:00:00Z') })
+      await page.clock.pauseAt(new Date('2026-10-20T12:00:01Z'))
+      await mockBaseAPI(page)
+      await page.goto('/')
+      await openOverlay(page)
+      const composer = page.getByLabel('terminal input composer').and(page.locator(':visible'))
+      await composer.fill('a prompt')
+      // Drain all opening retries first: only the close/send handler should
+      // restore focus in this assertion, not a leftover opening timer.
+      await page.clock.runFor(1000)
+      if (action === 'Escape') await composer.press('Escape')
+      else await composer.press('Control+Enter')
+      await expect(page.getByRole('dialog', { name: 'Compose prompt for alpha' })).toHaveCount(0)
+      await expect(page.getByTitle('Terminal — alpha')).toBeFocused()
+    })
+  }
+
   test('draft persists across reload on the desktop overlay, but no history button is shown (v1 deferred)', async ({ page }) => {
     await mockBaseAPI(page)
     await page.goto('/')

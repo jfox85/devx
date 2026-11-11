@@ -200,6 +200,9 @@ test('new session dialog keeps Tab focus inside the overlay', async ({ page }) =
   const dialog = page.getByRole('dialog')
   const name = dialog.locator('#session-name')
   await expect(name).toBeFocused()
+  // Project discovery is asynchronous; while loading this select is disabled
+  // and correctly omitted from the tab order asserted below.
+  await expect(dialog.locator('#session-project')).toBeEnabled()
 
   // WebKit's native tab order skips buttons and radios, so the dialog must own
   // every Tab press rather than only wrapping at the ends. Chromium would tab

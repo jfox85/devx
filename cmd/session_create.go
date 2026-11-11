@@ -512,7 +512,10 @@ func launchSessionTmuxHandoff(name string, sess *session.Session, state string) 
 	fmt.Printf("Opening tmux session...\n")
 	if err := readyAttach(store, name, sess); err != nil {
 		fmt.Printf("Warning: Failed to open tmux session: %v\n", err)
-		fmt.Printf("You can manually attach with: devx session attach %s\n", name)
+		fmt.Printf("Run 'devx check' for dependency installation instructions.\n")
+		fmt.Printf("After resolving the terminal error: devx session attach %s\n", name)
+		fmt.Printf("The worktree is ready at %s; you can use it without tmux.\n", sess.Path)
+		fmt.Printf("For future worktree-only sessions: devx session create <name> --no-tmux\n")
 	}
 }
 

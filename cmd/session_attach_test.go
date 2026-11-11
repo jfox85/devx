@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jfox85/devx/session"
@@ -125,5 +128,40 @@ func TestReadyAttachDoesNotRecordActivityWhenEnsureFails(t *testing.T) {
 	}
 	if !reloaded.Sessions["demo"].LastAttached.IsZero() {
 		t.Fatal("failed ensure recorded activity")
+	}
+}
+
+func TestFailedCreationHandoffExplainsWorktreeOnlyRecovery(t *testing.T) {
+	_, sess := setupAttachTestStore(t)
+	original := ensureTmuxForAttach
+	t.Cleanup(func() { ensureTmuxForAttach = original })
+	ensureTmuxForAttach = func(string, *session.Session) error { return errors.New("tmuxp not found in PATH") }
+	t.Setenv("TMUX", "")
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = writer
+	launchCreatedSessionTmux("demo", sess)
+	os.Stdout = originalStdout
+	_ = writer.Close()
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(data)
+	for _, want := range []string{"tmuxp not found", "devx check", "devx session attach demo", sess.Path, "--no-tmux"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("missing %q in recovery output: %s", want, output)
+		}
+	}
+	store, err := session.LoadSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := store.GetSession("demo"); !exists {
+		t.Fatal("failed terminal launch removed usable worktree metadata")
 	}
 }

@@ -2,7 +2,7 @@
      Cmd/Ctrl+P fuzzy session switcher. Highlighting a row prewarms its
      terminal (debounced) so the open is warm by the time the user hits Enter. -->
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { listSessions, prewarmTerminal } from '../api.js'
   import { markPrewarmed } from './stores/sessionUiState.js'
   import { comparePinnedRecent } from './sessionOrdering.js'
@@ -12,6 +12,11 @@
 
   let query = ''
   let sessions = []
+  // The session list is fetched on open, so a fast "Ctrl+P, type, Enter"
+  // can submit before it arrives. Remember that Enter and honor it once the
+  // list loads instead of silently dropping it.
+  let loaded = false
+  let pendingQuery = null
   let selectedIndex = 0
   let inputEl
   let listEl
@@ -25,9 +30,26 @@
   let prewarmRequestedAt = new Map()
 
   onMount(() => {
+    let active = true
     inputEl?.focus()
-    listSessions().then(s => { sessions = s }).catch(() => {})
-    return () => clearTimeout(prewarmTimer)
+    listSessions()
+      .then(async s => {
+        if (!active) return
+        sessions = s
+        // Flush reactive `visible` before reading it.
+        await tick()
+        if (!active) return
+        loaded = true
+        const submittedQuery = pendingQuery
+        pendingQuery = null
+        if (submittedQuery !== null && submittedQuery === query) submitSelection()
+      })
+      .catch(() => { pendingQuery = null })
+    return () => {
+      active = false
+      pendingQuery = null
+      clearTimeout(prewarmTimer)
+    }
   })
 
   // Subsequence fuzzy match against a haystack; returns a score (higher is
@@ -100,6 +122,10 @@
     listEl?.children[selectedIndex]?.scrollIntoView({ block: 'nearest' })
   }
 
+  function submitSelection() {
+    if (visible[selectedIndex]) onSelect(visible[selectedIndex])
+  }
+
   function handleKeydown(e) {
     // stopPropagation on every handled key: SessionList has a window-level
     // keydown handler (Enter opens the highlighted sidebar row, arrows move
@@ -107,7 +133,7 @@
     if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
       e.preventDefault()
       e.stopPropagation()
-      selectedIndex = Math.min(selectedIndex + 1, visible.length - 1)
+      selectedIndex = Math.max(0, Math.min(selectedIndex + 1, visible.length - 1))
       scrollSelectedIntoView()
     } else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) {
       e.preventDefault()
@@ -117,7 +143,8 @@
     } else if (e.key === 'Enter') {
       e.preventDefault()
       e.stopPropagation()
-      if (visible[selectedIndex]) onSelect(visible[selectedIndex])
+      if (loaded) submitSelection()
+      else pendingQuery = query
     } else if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
@@ -130,12 +157,19 @@
   class="absolute inset-0 z-50 bg-black/60 flex items-start justify-center pt-[12vh] px-6"
   on:pointerdown|self={onClose}
 >
-  <div class="w-full max-w-lg bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden">
+  <!-- role="dialog" also tells Terminal's deferred focusTerminal() retries
+       (fired for ~600ms after a session opens) not to steal focus from the
+       search input, which would swallow the query/Enter into the terminal. -->
+  <div
+    class="w-full max-w-lg bg-[#0b1020] border border-[#1e2d4a] rounded-lg shadow-2xl overflow-hidden"
+    role="dialog" aria-label="session switcher"
+  >
     <div class="flex items-center gap-2 px-3 py-2 border-b border-[#13213a]">
       <span class="text-cyan-500 text-xs font-mono shrink-0">⌕</span>
       <input
         bind:this={inputEl}
         bind:value={query}
+        on:input={() => { pendingQuery = null }}
         on:keydown={handleKeydown}
         placeholder="jump to session…"
         class="flex-1 bg-transparent outline-none text-sm font-mono text-gray-200 placeholder-gray-700"
