@@ -197,7 +197,7 @@ func injectTerminalResponse(resp *http.Response, attempt string) error {
 </script>`, encodedAttempt)
 	}
 	body = bytes.Replace(body, []byte("</head>"), []byte(headAddons+"</head>"), 1)
-	body = bytes.Replace(body, []byte("</body>"), []byte(terminalHelperScript+terminalPasteBridgeScript+"</body>"), 1)
+	body = bytes.Replace(body, []byte("</body>"), []byte(terminalHelperScript+terminalTouchScrollScript+terminalPasteBridgeScript+"</body>"), 1)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -308,6 +308,130 @@ const terminalHelperScript = `<script>
       };
     }
   } catch (e) {}
+})();
+</script>`
+
+// terminalTouchScrollScript makes swipe scrolling work while the program in the
+// pane has mouse reporting enabled. Fullscreen TUIs such as Pi, Claude Code,
+// vim, or tmux with `mouse on` draw on the alternate screen and own their
+// scrolling, so xterm.js has no scrollback of its own. In that state xterm.js
+// also ignores touch input entirely (it only scrolls its local viewport when
+// mouse events are inactive), leaving swipes on a phone dead. This script
+// translates vertical swipes, plus a decaying flick, into wheel events on the
+// xterm screen; xterm.js encodes them as mouse-wheel reports for the program,
+// exactly like a desktop scroll wheel. When mouse reporting is off it does
+// nothing, so plain shells keep native xterm scrollback scrolling.
+const terminalTouchScrollScript = `<script>
+(function () {
+  if (window.__devxTouchScroll) return;
+  window.__devxTouchScroll = true;
+  var LOCK_PX = 8;            // movement before a touch counts as a swipe
+  var MAX_LINES_PER_STEP = 12; // cap wheel events per move/frame
+  var MIN_FLING = 0.25;       // px/ms needed to start momentum
+  var MAX_FLING = 4;          // px/ms
+  var tracking = false, locked = false;
+  var startX = 0, startY = 0, lastX = 0, lastY = 0, lastTime = 0;
+  var velocity = 0, carry = 0, flingFrame = 0;
+
+  function mouseReporting() {
+    var t = window.term;
+    var mode = t && t.modes && t.modes.mouseTrackingMode;
+    return !!mode && mode !== 'none';
+  }
+  function screenEl() { return document.querySelector('.xterm-screen'); }
+  function rowHeight(screen) {
+    var t = window.term;
+    var h = screen ? screen.getBoundingClientRect().height : 0;
+    return t && t.rows && h > 0 ? h / t.rows : 16;
+  }
+  // Positive px scrolls toward newer output (finger moving up), matching
+  // xterm.js's own touch handling and a positive wheel deltaY.
+  function scrollPixels(px) {
+    var screen = screenEl();
+    if (!screen) return;
+    var rh = rowHeight(screen);
+    carry += px;
+    var lines = carry > 0 ? Math.floor(carry / rh) : Math.ceil(carry / rh);
+    if (!lines) return;
+    carry -= lines * rh;
+    var dir = lines > 0 ? 1 : -1;
+    var count = Math.min(Math.abs(lines), MAX_LINES_PER_STEP);
+    var rect = screen.getBoundingClientRect();
+    var x = Math.min(Math.max(lastX, rect.left + 1), rect.right - 1);
+    var y = Math.min(Math.max(lastY, rect.top + 1), rect.bottom - 1);
+    for (var i = 0; i < count; i++) {
+      screen.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: dir, deltaMode: WheelEvent.DOM_DELTA_LINE,
+        clientX: x, clientY: y, bubbles: true, cancelable: true
+      }));
+    }
+  }
+  function stopFling() {
+    if (flingFrame) cancelAnimationFrame(flingFrame);
+    flingFrame = 0;
+  }
+  function startFling() {
+    var v = Math.max(-MAX_FLING, Math.min(MAX_FLING, velocity));
+    if (Math.abs(v) < MIN_FLING) return;
+    var prev = performance.now();
+    function step(now) {
+      var dt = Math.min(now - prev, 50);
+      prev = now;
+      scrollPixels(v * dt);
+      v *= Math.pow(0.95, dt / 16);
+      if (Math.abs(v) < 0.05 || !mouseReporting()) { flingFrame = 0; return; }
+      flingFrame = requestAnimationFrame(step);
+    }
+    flingFrame = requestAnimationFrame(step);
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    stopFling();
+    tracking = e.touches.length === 1 && mouseReporting();
+    locked = false;
+    if (!tracking) return;
+    var t = e.touches[0];
+    startX = lastX = t.clientX;
+    startY = lastY = t.clientY;
+    lastTime = e.timeStamp;
+    velocity = 0;
+    carry = 0;
+  }, { capture: true, passive: true });
+
+  document.addEventListener('touchmove', function (e) {
+    if (!tracking) return;
+    if (e.touches.length !== 1) { tracking = false; return; }
+    var t = e.touches[0];
+    if (!locked) {
+      var dx = Math.abs(t.clientX - startX), dy = Math.abs(t.clientY - startY);
+      if (dy < LOCK_PX) return;
+      // Mostly-horizontal drags (e.g. text selection) are left alone.
+      if (dx > dy) { tracking = false; return; }
+      locked = true;
+      lastY = t.clientY;
+      lastTime = e.timeStamp;
+    }
+    e.preventDefault();
+    var delta = lastY - t.clientY;
+    var dt = Math.max(e.timeStamp - lastTime, 1);
+    velocity = 0.8 * (delta / dt) + 0.2 * velocity;
+    lastX = t.clientX;
+    lastY = t.clientY;
+    lastTime = e.timeStamp;
+    scrollPixels(delta);
+  }, { capture: true, passive: false });
+
+  function endTouch(e) {
+    if (locked && e.type === 'touchend') {
+      // A finger that stopped before lifting should not fling.
+      if (e.timeStamp - lastTime > 100) velocity = 0;
+      startFling();
+    }
+    tracking = false;
+    locked = false;
+  }
+  document.addEventListener('touchend', endTouch, { capture: true, passive: true });
+  document.addEventListener('touchcancel', endTouch, { capture: true, passive: true });
 })();
 </script>`
 

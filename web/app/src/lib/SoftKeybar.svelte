@@ -16,6 +16,8 @@
     { label: '↓', key: 'Down' },
     { label: '←', key: 'Left' },
     { label: '→', key: 'Right' },
+    { label: 'PgUp', key: 'PPage' },
+    { label: 'PgDn', key: 'NPage' },
   ]
   const row3 = [
     { label: 'S-Tab',   key: 'BTab' },

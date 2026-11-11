@@ -33,6 +33,9 @@ func TestInjectTerminalCopyOnSelect(t *testing.T) {
 	if !strings.Contains(got, "devx:openExternal") || !strings.Contains(got, "desktop_token") {
 		t.Fatalf("desktop link-forwarding script missing from response: %s", got)
 	}
+	if !strings.Contains(got, "__devxTouchScroll") || !strings.Contains(got, "mouseTrackingMode") || !strings.Contains(got, "new WheelEvent('wheel'") {
+		t.Fatalf("touch-scroll script missing from response: %s", got)
+	}
 	if !strings.Contains(got, "__devxPasteBridge") || !strings.Contains(got, "devx:terminal-image-paste") {
 		t.Fatalf("paste bridge script missing from response: %s", got)
 	}
