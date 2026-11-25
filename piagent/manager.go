@@ -118,6 +118,9 @@ type Manager struct {
 	// bridgeSrc overrides the embedded bridge (tests only: fixtures that
 	// run an older bridge to validate mixed-version behavior).
 	bridgeSrc []byte
+	// listModels overrides `pi --list-models` (tests only).
+	listModels func() ([]string, error)
+	models     modelCatalog
 }
 
 func NewManager(store *Store, tmux Tmux, creator SessionCreator, cfg Config) *Manager {
@@ -174,6 +177,9 @@ type StartRequest struct {
 	Prompt         string
 	IdempotencyKey string
 	By             string
+	// Model optionally selects the model ("provider/model-id", or a model
+	// id only one provider offers). "" launches Pi on its default model.
+	Model string
 }
 
 // StartResult identifies what was (or had already been) started.
@@ -183,11 +189,14 @@ type StartResult struct {
 	Session     string `json:"session"`
 	PiSessionID string `json:"pi_session_id"`
 	Replayed    bool   `json:"replayed"`
+	// Model is the validated model Pi is launched with ("" = Pi's default).
+	Model string `json:"model"`
 }
 
 // Start is idempotent on IdempotencyKey: a retry after a dropped response or
 // a crash mid-start returns (and finishes) the original start instead of
-// creating a second session or task.
+// creating a second session or task. A requested model is validated against
+// Pi's available models before anything is created.
 func (m *Manager) Start(req StartRequest) (*StartResult, error) {
 	if err := validateIdemKey(req.IdempotencyKey); err != nil {
 		return nil, err
@@ -201,6 +210,9 @@ func (m *Manager) Start(req StartRequest) (*StartResult, error) {
 	if !m.projectAllowed(req.Project) {
 		return nil, denied("project %q is not in the pi_mcp allowlist", req.Project)
 	}
+	if err := checkModelSyntax(req.Model); err != nil {
+		return nil, err
+	}
 	keyHash := hashKey("start", req.IdempotencyKey)
 	reqHash := hashKey(req.Project, req.SessionName, req.Prompt)
 	var result *StartResult
@@ -208,11 +220,21 @@ func (m *Manager) Start(req StartRequest) (*StartResult, error) {
 		rec, err := m.Store.loadIdem(keyHash)
 		switch {
 		case err == nil:
-			if rec.RequestHash != reqHash {
+			// A replay is judged against the recorded request only: the
+			// model catalog may have changed (or be unreadable) since, and
+			// that must never make an already started task look unstarted.
+			if rec.RequestHash != reqHash || !sameModelRequest(req.Model, rec.Model) {
 				return fmt.Errorf("idempotency_key was already used for a different start request")
 			}
-			result = &StartResult{AgentID: rec.AgentID, TaskID: rec.TaskID, Session: rec.SessionName, PiSessionID: rec.PiSessionID, Replayed: true}
+			req.Model = rec.Model
+			result = &StartResult{AgentID: rec.AgentID, TaskID: rec.TaskID, Session: rec.SessionName, PiSessionID: rec.PiSessionID, Replayed: true, Model: rec.Model}
 		case errors.Is(err, ErrNotFound):
+			// Validate before anything is created or recorded.
+			model, err := m.ResolveModel(req.Model)
+			if err != nil {
+				return err
+			}
+			req.Model = model
 			name := req.SessionName
 			agentID := newAgentID()
 			if name == "" {
@@ -226,13 +248,13 @@ func (m *Manager) Start(req StartRequest) (*StartResult, error) {
 				return denied("session %q already exists; MCP may only start agents in new sessions", name)
 			}
 			rec = &idemRecord{Kind: "start", KeyHash: keyHash, RequestHash: reqHash, AgentID: agentID, TaskID: newTaskID(),
-				PiSessionID: newPiSessionID(time.Now()), SessionName: name, CreatingSession: true, CreatedAt: m.Store.now()}
+				PiSessionID: newPiSessionID(time.Now()), SessionName: name, CreatingSession: true, CreatedAt: m.Store.now(), Model: model}
 			// Persist the IDs before any side effect so a crash can resume
 			// with the same identities.
 			if err := m.Store.saveIdem(rec); err != nil {
 				return err
 			}
-			result = &StartResult{AgentID: rec.AgentID, TaskID: rec.TaskID, Session: rec.SessionName, PiSessionID: rec.PiSessionID}
+			result = &StartResult{AgentID: rec.AgentID, TaskID: rec.TaskID, Session: rec.SessionName, PiSessionID: rec.PiSessionID, Model: model}
 		default:
 			return err
 		}
@@ -263,6 +285,7 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 			PiSessionID: rec.PiSessionID, Binding: Binding{TmuxSession: created.TmuxName},
 			Lease:     Lease{Holder: LeaseManaged, Generation: 1, Since: now, Reason: "created"},
 			CreatedAt: now, CreatedBy: req.By, StartTaskID: rec.TaskID, StartIdemHash: rec.KeyHash,
+			Model: req.Model,
 		}
 		if err := m.Store.ensureAgentDirs(agent.ID); err != nil {
 			return err
@@ -271,7 +294,11 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 			if err := m.Store.SaveAgent(agent); err != nil {
 				return err
 			}
-			_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_created", Source: "devx", Data: withInstance(map[string]any{"session": agent.DevxSession, "pi_session_id": agent.PiSessionID}, agent)})
+			data := map[string]any{"session": agent.DevxSession, "pi_session_id": agent.PiSessionID}
+			if agent.Model != "" {
+				data["model"] = agent.Model
+			}
+			_, err := m.Store.AppendEvent(agent.ID, Event{Type: "agent_created", Source: "devx", Data: withInstance(data, agent)})
 			return err
 		})
 		if err != nil {
@@ -279,8 +306,11 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 		}
 	}
 	if _, err := m.Store.LoadTask(agent.ID, rec.TaskID); errors.Is(err, ErrNotFound) {
+		// The first task carries the model too, so the bridge verifies Pi
+		// really is on it before running the prompt (switching, or failing
+		// the task unrun, if Pi fell back to another model).
 		if err := m.Store.WithAgentLock(agent.ID, func() error {
-			return m.enqueueLocked(agent.ID, rec.TaskID, req.Prompt, rec.KeyHash)
+			return m.enqueueLocked(agent.ID, rec.TaskID, req.Prompt, rec.KeyHash, req.Model)
 		}); err != nil {
 			return err
 		}
@@ -311,7 +341,9 @@ func (m *Manager) completeStart(rec *idemRecord, req StartRequest) error {
 	})
 }
 
-func (m *Manager) enqueueLocked(agentID, taskID, prompt, idemHash string) error {
+// enqueueLocked queues a task. model, when set, is a validated model the
+// bridge switches the session to before delivering the prompt.
+func (m *Manager) enqueueLocked(agentID, taskID, prompt, idemHash, model string) error {
 	tasks, err := m.Store.ListTasks(agentID)
 	if err != nil {
 		return err
@@ -321,11 +353,15 @@ func (m *Manager) enqueueLocked(agentID, taskID, prompt, idemHash string) error 
 		order = tasks[n-1].Order + 1
 	}
 	now := m.Store.now()
-	t := &Task{ID: taskID, AgentID: agentID, Order: order, Prompt: prompt, IdempotencyHash: idemHash, State: TaskWaiting, CreatedAt: now}
+	t := &Task{ID: taskID, AgentID: agentID, Order: order, Prompt: prompt, IdempotencyHash: idemHash, State: TaskWaiting, CreatedAt: now, Model: model}
 	if err := m.Store.SaveTask(t); err != nil {
 		return err
 	}
-	_, err = m.Store.AppendEvent(agentID, Event{Type: "task_queued", TaskID: taskID, Source: "devx", Data: map[string]any{"order": order, "prompt_bytes": len(prompt)}})
+	data := map[string]any{"order": order, "prompt_bytes": len(prompt)}
+	if model != "" {
+		data["model"] = model
+	}
+	_, err = m.Store.AppendEvent(agentID, Event{Type: "task_queued", TaskID: taskID, Source: "devx", Data: data})
 	return err
 }
 
@@ -479,12 +515,14 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 	if err != nil {
 		return err
 	}
-	script := m.launchScript(agent, nonce, bridgePath)
 	scriptPath := filepath.Join(m.Store.AgentDir(agent.ID), "launch.sh")
-	if err := writeFileAtomic(scriptPath, []byte(script)); err != nil {
-		return err
+	writeScript := func(a *Agent) error {
+		if err := writeFileAtomic(scriptPath, []byte(m.launchScript(a, nonce, bridgePath))); err != nil {
+			return err
+		}
+		return os.Chmod(scriptPath, 0o700)
 	}
-	if err := os.Chmod(scriptPath, 0o700); err != nil {
+	if err := writeScript(agent); err != nil {
 		return err
 	}
 	// Record the nonce before the process starts so the bridge can verify it.
@@ -493,6 +531,16 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 		if err != nil {
 			return err
 		}
+		// The running (old) bridge may have recorded a model change since
+		// the script was written; it is fenced only once the nonce below
+		// rotates. Launch on the model read under this lock, rewriting the
+		// script before rotating so a write failure rotates nothing.
+		if a.Model != agent.Model {
+			if err := writeScript(a); err != nil {
+				return err
+			}
+		}
+		a.LaunchModel = a.Model
 		// Carry a legacy record's completed launch over before stamping
 		// this attempt, so a failure now cannot make it look unlaunched.
 		if !a.adoptedPaneUnlaunched() && a.LaunchCount > 0 {
@@ -599,6 +647,13 @@ func (m *Manager) launchScript(a *Agent, nonce, bridgePath string) string {
 	}
 	args = append(args, "-e", bridgePath)
 	args = append(args, m.Config.PiArgs...)
+	if a.Model != "" {
+		// After the owner's pi_args: Pi takes the last --model, so the
+		// agent's model wins over an owner default. It also overrides the
+		// model a resumed session last recorded, which is why the bridge
+		// keeps a.Model in step with model changes.
+		args = append(args, "--model", a.Model)
+	}
 	quoted := make([]string, len(args))
 	for i, s := range args {
 		quoted[i] = shellQuote(s)
@@ -626,12 +681,16 @@ type SendRequest struct {
 	AgentID        string
 	Prompt         string
 	IdempotencyKey string
+	// Model optionally switches the agent's session to this model right
+	// before this prompt is delivered (and for the rest of the session).
+	Model string
 }
 
 // SendResult describes the queued (or previously queued) task.
 type SendResult struct {
 	TaskID   string `json:"task_id"`
 	Replayed bool   `json:"replayed"`
+	Model    string `json:"model,omitempty"`
 }
 
 func (m *Manager) Send(req SendRequest) (*SendResult, error) {
@@ -646,20 +705,24 @@ func (m *Manager) Send(req SendRequest) (*SendResult, error) {
 	} else if a.RetiredAt != nil {
 		return nil, denied("agent %s is retired: its session %q was removed", a.ID, a.DevxSession)
 	}
+	if err := checkModelSyntax(req.Model); err != nil {
+		return nil, err
+	}
 	keyHash := hashKey("send", req.AgentID, req.IdempotencyKey)
 	reqHash := hashKey(req.Prompt)
 	var out *SendResult
 	err := m.Store.withIdemLock(keyHash, func() error {
 		rec, err := m.Store.loadIdem(keyHash)
 		if err == nil {
-			if rec.RequestHash != reqHash {
+			// Judged against the record only (see Start).
+			if rec.RequestHash != reqHash || !sameModelRequest(req.Model, rec.Model) {
 				return fmt.Errorf("idempotency_key was already used for a different prompt")
 			}
-			out = &SendResult{TaskID: rec.TaskID, Replayed: true}
+			out = &SendResult{TaskID: rec.TaskID, Replayed: true, Model: rec.Model}
 			// Finish an enqueue interrupted after the record was written.
 			if _, err := m.Store.LoadTask(req.AgentID, rec.TaskID); errors.Is(err, ErrNotFound) {
 				return m.Store.WithAgentLock(req.AgentID, func() error {
-					return m.enqueueLocked(req.AgentID, rec.TaskID, req.Prompt, keyHash)
+					return m.enqueueLocked(req.AgentID, rec.TaskID, req.Prompt, keyHash, rec.Model)
 				})
 			}
 			return nil
@@ -667,13 +730,30 @@ func (m *Manager) Send(req SendRequest) (*SendResult, error) {
 		if !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		rec = &idemRecord{Kind: "send", KeyHash: keyHash, RequestHash: reqHash, AgentID: req.AgentID, TaskID: newTaskID(), CreatedAt: m.Store.now()}
+		model, err := m.ResolveModel(req.Model)
+		if err != nil {
+			return err
+		}
+		if model != "" {
+			// Refuse before recording anything: a bridge that cannot switch
+			// models would deliver the prompt on the wrong model.
+			if err := m.Store.WithAgentLock(req.AgentID, func() error {
+				a, err := m.Store.LoadAgent(req.AgentID)
+				if err != nil {
+					return err
+				}
+				return m.requireModelSwitchLocked(a)
+			}); err != nil {
+				return err
+			}
+		}
+		rec = &idemRecord{Kind: "send", KeyHash: keyHash, RequestHash: reqHash, AgentID: req.AgentID, TaskID: newTaskID(), CreatedAt: m.Store.now(), Model: model}
 		if err := m.Store.saveIdem(rec); err != nil {
 			return err
 		}
-		out = &SendResult{TaskID: rec.TaskID}
+		out = &SendResult{TaskID: rec.TaskID, Model: model}
 		return m.Store.WithAgentLock(req.AgentID, func() error {
-			return m.enqueueLocked(req.AgentID, rec.TaskID, req.Prompt, keyHash)
+			return m.enqueueLocked(req.AgentID, rec.TaskID, req.Prompt, keyHash, model)
 		})
 	})
 	return out, err
@@ -1084,6 +1164,10 @@ type AgentView struct {
 	// cancel is refused; protocol < 3: no mid-task progress is reported).
 	BridgeProtocol      int  `json:"bridge_protocol"`
 	BridgeUpgradeNeeded bool `json:"bridge_upgrade_needed,omitempty"`
+	// Model is the model the agent's current Pi last reported
+	// ("provider/model-id"); "" when unknown (not reported yet since the
+	// latest launch, or a bridge older than BridgeModelProtocol).
+	Model string `json:"model,omitempty"`
 	// LatestProgress is the newest progress the bridge recorded for
 	// CurrentTask (redacted, bounded); nil when there is no running task or
 	// its bridge has not reported any (bridges before protocol 3 never do).
@@ -1132,6 +1216,7 @@ func (m *Manager) agentStatus(agentID string, reconcile bool) (*AgentView, error
 			v.BridgeDead = bridgeDead
 			v.BridgeProtocol = b.Protocol
 			v.BridgeUpgradeNeeded = v.BridgeOnline && b.Protocol < BridgeProtocol
+			v.Model = reportedModel(a, b)
 		}
 		tasks, err := m.Store.ListTasks(a.ID)
 		if err != nil {
@@ -1215,6 +1300,12 @@ type TaskView struct {
 	AbortWithheld   string     `json:"abort_withheld,omitempty"`
 	AcceptedAt      *time.Time `json:"accepted_at,omitempty"`
 	AcceptedAs      string     `json:"accepted_as,omitempty"`
+	// RequestedModel is the model switch requested with this task (pi_send
+	// model); Model is the model Pi was on when it accepted the prompt,
+	// i.e. the model the task ran on (absent before acceptance and for
+	// bridges older than BridgeModelProtocol).
+	RequestedModel  string     `json:"requested_model,omitempty"`
+	Model           string     `json:"model,omitempty"`
 	Supersedes      string     `json:"supersedes,omitempty"`
 	SupersededBy    string     `json:"superseded_by,omitempty"`
 	HumanIntervened bool       `json:"human_intervened,omitempty"`
@@ -1250,7 +1341,8 @@ func (m *Manager) TaskStatus(taskID string) (*TaskView, *AgentView, error) {
 	}
 	tv := &TaskView{TaskID: t.ID, AgentID: t.AgentID, State: t.State, Phase: t.Phase(), Revision: t.Revision,
 		CancelRequested: t.CancelRequested, CancelOutcome: t.CancelOutcome(m.Store.now()), AbortSentAt: t.AbortSentAt, AbortWithheld: t.AbortWithheld,
-		HumanIntervened: t.HumanIntervened, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, Supersedes: t.Supersedes, SupersededBy: t.SupersededBy,
+		HumanIntervened: t.HumanIntervened, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, RequestedModel: t.Model, Model: t.AcceptedModel,
+		Supersedes: t.Supersedes, SupersededBy: t.SupersededBy,
 		StopReason: t.StopReason, Error: Redact(t.Error), Note: t.Note, CreatedAt: t.CreatedAt, DeliveredAt: t.DeliveredAt, FinishedAt: t.FinishedAt}
 	if t.State == TaskWaiting {
 		tv.WaitingReason = m.waitingReason(av, t)
@@ -1314,6 +1406,8 @@ type ResultChunk struct {
 	TotalBytes int    `json:"total_bytes"`
 	EOF        bool   `json:"eof"`
 	Text       string `json:"text"`
+	// Model is the model the task ran on (see TaskView.Model).
+	Model string `json:"model,omitempty"`
 }
 
 // Result returns up to maxBytes of the (redacted) final text from offset.
@@ -1329,7 +1423,7 @@ func (m *Manager) Result(taskID string, offset, maxBytes int) (*ResultChunk, err
 	if err != nil {
 		return nil, err
 	}
-	c := &ResultChunk{TaskID: taskID, State: tv.State, Available: ok, Offset: offset, TotalBytes: len(text)}
+	c := &ResultChunk{TaskID: taskID, State: tv.State, Available: ok, Offset: offset, TotalBytes: len(text), Model: tv.Model}
 	if offset < 0 || offset > len(text) {
 		return nil, fmt.Errorf("offset %d is outside the result (0..%d)", offset, len(text))
 	}

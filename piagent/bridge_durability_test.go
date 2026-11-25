@@ -44,8 +44,9 @@ func TestBridgeDurabilityFaultInjection(t *testing.T) {
 	}
 	// bridge-durability-cancel.test.mjs covers receipts together with the
 	// protocol-2 cancellation gates; bridge-progress.test.mjs covers the
-	// protocol-3 mid-task progress records (emission, rate limit, faults).
-	for _, name := range []string{"bridge-durability.test.mjs", "bridge-durability-cancel.test.mjs", "bridge-progress.test.mjs"} {
+	// protocol-3 mid-task progress records (emission, rate limit, faults);
+	// bridge-model.test.mjs covers protocol-4 model reporting and switches.
+	for _, name := range []string{"bridge-durability.test.mjs", "bridge-durability-cancel.test.mjs", "bridge-progress.test.mjs", "bridge-model.test.mjs"} {
 		t.Run(name, func(t *testing.T) {
 			suite, err := filepath.Abs(filepath.Join("testdata", name))
 			if err != nil {

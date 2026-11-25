@@ -523,6 +523,10 @@ While a task runs, the MCP client can follow it: `pi_events` carries
 rate-limited `progress` events, and `pi_status` carries `latest_progress`.
 Both show the latest assistant message (redacted, max 500 bytes) and the
 last tool called.
+Pass `model` to `pi_start_task` to launch on a specific model (validated
+first; an unknown model fails with the list of valid ones), or to `pi_send`
+to switch before that prompt runs. `pi_status`, `pi_list_sessions` and
+`pi_result` report the model in use.
 
 ```bash
 devx agent list                 # managed agents and who has control

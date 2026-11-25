@@ -267,7 +267,7 @@ test("a failed progress write is retried and never affects the task", async (t) 
 	assert.equal(task(e.dir, id).state, "completed");
 });
 
-test("the bridge heartbeat reports protocol 3", async (t) => {
+test("the bridge heartbeat reports protocol 4", async (t) => {
 	const { e } = await runningTask(t);
-	assert.equal(rj(path.join(e.dir, "bridge.json")).protocol, 3);
+	assert.equal(rj(path.join(e.dir, "bridge.json")).protocol, 4);
 });

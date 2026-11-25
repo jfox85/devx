@@ -4,6 +4,16 @@ All notable changes to devx are recorded here. Versions follow
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor bumps may carry
 breaking changes, which are always called out).
 
+## [Unreleased]
+
+### Pi / MCP agents
+- `pi_start_task` and `pi_send` take an optional `model`. It is validated
+  against Pi's available models before anything starts or is queued, and an
+  unknown model fails with `invalid_model` and the list of valid models.
+  `pi_status`, `pi_list_sessions` and `pi_result` report the model a session
+  and task actually run on. Bridge protocol is now 4; agents launched
+  earlier need a relaunch before `pi_send` can switch their model.
+
 ## [v0.4.0] - 2026-10-22
 
 Changes since v0.3.0 (2026-03-10).

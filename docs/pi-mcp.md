@@ -137,6 +137,51 @@ DevX session "<name>"  tmux window "pi-agent"                      │
     is absent and no `progress` events are written. Everything else works
     as before, and `bridge_upgrade_needed` is true until a human relaunches
     the agent.
+- **Model selection.** Never ask Pi to switch models with a `/model ...`
+  prompt: prompts are delivered as chat messages, not slash commands, so
+  it does nothing except spend a task.
+  - **`pi_start_task` `model`** (optional) launches Pi with `--model`. Use
+    `provider/model-id` (for example `anthropic/claude-sonnet-4-5`), or a
+    bare model id that only one provider offers. DevX validates it before
+    creating anything, against `pi --list-models` run with the owner's
+    `pi_command` and `pi_args` (so extension providers count, and models
+    whose provider has no auth do not). An unknown, unavailable or
+    ambiguous model fails with `error: "invalid_model"`, `valid_models`
+    (at most 300, then `valid_models_truncated`), `suggestions` and
+    `started: false`. If the list itself cannot be read the call fails with
+    `model_catalog_unavailable`. Omitting `model` launches on Pi's default,
+    exactly as before, and never runs `--list-models`. The agent's `--model`
+    comes after `pi_args`, so it wins over an owner default.
+    A relative `pi_command` (for example `./bin/pi`) cannot be validated,
+    since launches run it from the worktree, so a `model` request fails
+    with `model_catalog_unavailable`. Use an absolute path or a command on
+    `PATH`.
+  - **`pi_send` `model`** (optional) switches an existing session. The
+    switch travels with the queued task: right before delivering that
+    prompt the bridge calls `pi.setModel`, and only then hands the prompt to
+    Pi. The session stays on the new model afterwards. If the switch fails
+    (model unknown to this Pi, no credentials) the task fails with
+    `the prompt was not run` and the queue moves on. It never runs on the
+    wrong model. A switch needs bridge protocol 4: for an older bridge (or one
+    that has not reported since its latest launch) `pi_send` returns
+    `model_switch_unsupported` and queues nothing. `pi_supersede_pending`
+    keeps the replaced task's switch.
+    If `pi.setModel` outlives the 60 s switch bound, the task fails and no
+    further task is delivered until that switch settles, so it cannot change
+    the model under a later task.
+  - **Reporting.** `agent.model` in `pi_status` and `pi_list_sessions` is
+    the model the agent's current Pi reports in its heartbeat (absent until
+    it reports after a launch). `agent.launch_model` is the `--model` value
+    DevX passed when it launched the current Pi, and is empty when DevX
+    passed none, even if Pi then picked a model from `pi_args` or its own
+    settings. It is stamped per launch and the bridge never changes it; use
+    `agent.model` for the model actually in use. `task.model` (also
+    `pi_result.model`, `pi_queue` items) is the model Pi was on when it accepted that task's prompt, and
+    `task.requested_model` the switch requested with it.
+  - **Relaunch.** The bridge writes every model change (a `pi_send` switch
+    or a human's `/model`) back to the agent record and logs a
+    `model_changed` event, so `devx agent relaunch` resumes on the model
+    the session last used.
 - **Bounded output.**
   - prompts: 64 KiB max
   - status excerpts: 4 KiB, taken from the end of the text
@@ -242,13 +287,14 @@ launched with. Restarting or upgrading the MCP server does **not** refresh
 it; only a human `devx agent relaunch` does.
 
 - **What the bridge reports.** Each bridge reports `protocol` in its
-  heartbeat. This build's is 3. Bridges from before versioning report
+  heartbeat. This build's is 4. Bridges from before versioning report
   nothing, which is read as 0.
 
   | protocol | adds |
   |---|---|
   | 2 | the running-cancel semantics below |
   | 3 | mid-task progress (`progress` events, `latest_progress`); cancel unchanged from 2 |
+  | 4 | models: reports the current `model`, applies `pi_send` model switches before delivery, records each task's model |
 - **What the agent view shows.** `pi_list_sessions` and `pi_status` show
   `bridge_protocol` and `bridge_upgrade_needed`. `bridge_upgrade_needed` is
   true for any live bridge older than this build's. A protocol-2 bridge

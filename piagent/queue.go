@@ -260,8 +260,9 @@ func (m *Manager) SupersedePending(req SupersedePendingRequest) (*EditResult, er
 			}
 			// Step 2: create the replacement in the same queue position.
 			if _, err := m.Store.LoadTask(a.ID, newID); errors.Is(err, ErrNotFound) {
+				// The replacement keeps the replaced task's model switch.
 				nt := &Task{ID: newID, AgentID: a.ID, Order: old.Order, Prompt: req.Prompt, IdempotencyHash: keyHash,
-					State: TaskWaiting, CreatedAt: m.Store.now(), Supersedes: old.ID}
+					State: TaskWaiting, CreatedAt: m.Store.now(), Supersedes: old.ID, Model: old.Model}
 				if err := m.Store.SaveTask(nt); err != nil {
 					return err
 				}
@@ -290,26 +291,28 @@ type CancelRequest struct {
 
 // QueueItem is one entry of the queue view.
 type QueueItem struct {
-	TaskID        string     `json:"task_id"`
-	Order         int64      `json:"order"`
-	State         string     `json:"state"`
-	Phase         string     `json:"phase"`
-	Revision      int64      `json:"revision"`
-	WaitingReason string     `json:"waiting_reason,omitempty"`
-	CancelOutcome string     `json:"cancel_outcome,omitempty"`
-	AgeSeconds    int64      `json:"age_seconds"`
-	CreatedAt     time.Time  `json:"created_at"`
-	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
-	AcceptedAt    *time.Time `json:"accepted_at,omitempty"`
-	AcceptedAs    string     `json:"accepted_as,omitempty"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
-	PromptBytes   int        `json:"prompt_bytes"`
-	PromptPreview string     `json:"prompt_preview"`
-	PreviewTrunc  bool       `json:"prompt_preview_truncated,omitempty"`
-	Supersedes    string     `json:"supersedes,omitempty"`
-	SupersededBy  string     `json:"superseded_by,omitempty"`
-	Note          string     `json:"note,omitempty"`
-	Editable      bool       `json:"editable"`
+	TaskID         string     `json:"task_id"`
+	Order          int64      `json:"order"`
+	State          string     `json:"state"`
+	Phase          string     `json:"phase"`
+	Revision       int64      `json:"revision"`
+	WaitingReason  string     `json:"waiting_reason,omitempty"`
+	CancelOutcome  string     `json:"cancel_outcome,omitempty"`
+	AgeSeconds     int64      `json:"age_seconds"`
+	CreatedAt      time.Time  `json:"created_at"`
+	DeliveredAt    *time.Time `json:"delivered_at,omitempty"`
+	AcceptedAt     *time.Time `json:"accepted_at,omitempty"`
+	AcceptedAs     string     `json:"accepted_as,omitempty"`
+	RequestedModel string     `json:"requested_model,omitempty"`
+	Model          string     `json:"model,omitempty"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	PromptBytes    int        `json:"prompt_bytes"`
+	PromptPreview  string     `json:"prompt_preview"`
+	PreviewTrunc   bool       `json:"prompt_preview_truncated,omitempty"`
+	Supersedes     string     `json:"supersedes,omitempty"`
+	SupersededBy   string     `json:"superseded_by,omitempty"`
+	Note           string     `json:"note,omitempty"`
+	Editable       bool       `json:"editable"`
 }
 
 // QueueView is the queue of one agent: work in flight, pending work in
@@ -369,7 +372,8 @@ func (m *Manager) Queue(agentID string, recent int) (*QueueView, error) {
 	for _, t := range tasks {
 		it := QueueItem{TaskID: t.ID, Order: t.Order, State: t.State, Phase: t.Phase(), Revision: t.Revision,
 			CancelOutcome: t.CancelOutcome(now), AgeSeconds: int64(now.Sub(t.CreatedAt) / time.Second), CreatedAt: t.CreatedAt,
-			DeliveredAt: t.DeliveredAt, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, FinishedAt: t.FinishedAt, PromptBytes: len(t.Prompt),
+			DeliveredAt: t.DeliveredAt, AcceptedAt: t.ConfirmedAt, AcceptedAs: t.AcceptedAs, RequestedModel: t.Model, Model: t.AcceptedModel,
+			FinishedAt: t.FinishedAt, PromptBytes: len(t.Prompt),
 			Supersedes: t.Supersedes, SupersededBy: t.SupersededBy, Note: t.Note, Editable: t.State == TaskWaiting && av.Agent.RetiredAt == nil}
 		switch t.State {
 		case TaskWaiting:

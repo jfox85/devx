@@ -42,7 +42,10 @@ const PANE = process.env.TMUX_PANE ?? "";
 const TICK_MS = 250;
 // Control protocol this bridge implements; must equal piagent.BridgeProtocol.
 // 3 adds progress records; the control (cancel) semantics are those of 2.
-const PROTOCOL = 3;
+// 4 adds models: the heartbeat reports the current model, a task carrying a
+// model switches the session to it before delivery (or fails unrun), the
+// accepted model is recorded, and model changes update the agent record.
+const PROTOCOL = 4;
 // Progress: at most one record per task per interval (newest turn wins), and
 // a bounded raw excerpt. devx redacts before cutting to its own smaller bound,
 // so the raw window is larger than what clients see.
@@ -52,6 +55,8 @@ const PROGRESS_MIN_INTERVAL_MS = Number.isFinite(PROGRESS_INTERVAL_OVERRIDE) && 
 const PROGRESS_RAW_CHARS = 1200;
 const PROGRESS_TOOL_CHARS = 128;
 const CONFIRM_TIMEOUT_MS = 15000;
+// Bound on switching models before a task's prompt is delivered.
+const MODEL_SWITCH_TIMEOUT_MS = 60000;
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 10000;
 const PUBLISH_BACKOFF_MIN_MS = 250;
@@ -492,6 +497,11 @@ function foreignReceipts(instance: string, deferred?: Set<string>, onDefer?: (na
 	return out;
 }
 
+// "provider/model-id" of a Pi model object, or "" if none.
+function modelRef(m: any): string {
+	return m && typeof m.provider === "string" && typeof m.id === "string" ? `${m.provider}/${m.id}` : "";
+}
+
 function flagAttention(reason: string) {
 	if (!DEVX_EXE || !DEVX_SESSION) return;
 	execFile(DEVX_EXE, ["session", "flag", DEVX_SESSION, reason], { timeout: 10000 }, () => {});
@@ -517,7 +527,15 @@ export default function devxBridge(pi: ExtensionAPI) {
 	const instance = randomBytes(8).toString("hex");
 	let mode: "active" | "fenced" | "stopped" = "active";
 	let currentTask: string | undefined; // delivered to this Pi process
-	let pendingConfirm: { id: string; prompt: string; at: number } | undefined;
+	// switching: a model switch for this task is in flight; the acceptance
+	// timeout starts when the prompt is actually handed to Pi.
+	let pendingConfirm: { id: string; prompt: string; at: number; switching?: boolean } | undefined;
+	// pi.setModel has been called and has not settled (it may outlive our
+	// timeout). No task is delivered meanwhile.
+	let switchInFlight = false;
+	// A model change was seen whose save to agent.json failed; the tick
+	// retries it (see reconcile).
+	let modelUnsaved = false;
 	let lastEnd: { text: string; stop?: string; error?: string } | undefined;
 	let abortSent = false; // this bridge called ctx.abort() for a DevX cancel of currentTask
 	// The task this bridge tried to mark abort_sent_at for. If the save landed
@@ -809,6 +827,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 			heartbeat: now(),
 			mode,
 			protocol: PROTOCOL,
+			model: modelRef(ctx.model),
 			...(receipt ? { result_pending: receipt.task_id, publish_attempts: publishAttempts, publish_error: publishError } : {}),
 			...(humanClaimPending ? { human_claim_pending: true } : {}),
 		});
@@ -845,6 +864,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (ours) {
 			delete t.confirmed_at;
 			delete t.accepted_as;
+			delete t.accepted_model;
 			delete t.human_intervened;
 		}
 		if (ours && t.cancel_requested) {
@@ -870,7 +890,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		// A pending terminal receipt is published first (with backoff); it
 		// keeps currentTask set, so nothing below can dispatch past it.
 		if (receipt) tryPublish();
-		let deliver: { id: string; prompt: string } | undefined;
+		let deliver: { id: string; prompt: string; model: string } | undefined;
 		let doAbort = false;
 		let failUnconfirmed = false;
 		let lockFailed = false;
@@ -902,6 +922,20 @@ export default function devxBridge(pi: ExtensionAPI) {
 					return; // decide dispatch next tick, from the saved lease
 				}
 				if (!recovered) return; // dispatch stays fenced until reconciled
+				// A pinned model follows the live one (a model_select write may
+				// have failed), so a relaunch never forces a stale model.
+				// An unpinned agent is pinned only once a model change was
+				// seen (modelUnsaved), so an untouched default launch stays
+				// on Pi's default.
+				const live = modelRef(ctx.model);
+				if (live && (a.model || modelUnsaved) && a.model !== live) {
+					const from = a.model ?? "";
+					a.model = live;
+					a.updated_at = now();
+					writeJSON(p.agent, a);
+					modelUnsaved = false;
+					annotate("model_changed", currentTask, { from, to: live, source: "reconcile" });
+				} else if (a.model === live) modelUnsaved = false;
 
 				if (currentTask) {
 					if (receipt) return; // settled; only publication remains
@@ -943,7 +977,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 							annotate("abort_sent", t.id, { lease_generation: a.lease.generation });
 						}
 					}
-					if (pendingConfirm && Date.now() - pendingConfirm.at > CONFIRM_TIMEOUT_MS + TEST_DELIVERY_DELAY_MS && t?.state === "running") {
+					if (pendingConfirm && !pendingConfirm.switching && Date.now() - pendingConfirm.at > CONFIRM_TIMEOUT_MS + TEST_DELIVERY_DELAY_MS && t?.state === "running") {
 						pendingConfirm = undefined;
 						// Published after the lock is released (below).
 						failUnconfirmed = true;
@@ -951,6 +985,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 					return;
 				}
 				if (a.lease?.holder !== "managed") return;
+				// A timed-out switch may still complete: deliver nothing until
+				// it settles, so it cannot change the model under a later task.
+				if (switchInFlight) return;
 				if (!ctx.isIdle() || ctx.hasPendingMessages() || editor.trim() !== "") return;
 				// Never pick a waiting task that carries a cancel request.
 				const next = loadTasks().find((t) => t.state === "waiting" && !t.cancel_requested);
@@ -974,7 +1011,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 				abortSent = false;
 				lastEnd = undefined;
 				pendingConfirm = { id: next.id, prompt: next.prompt, at: Date.now() };
-				deliver = { id: next.id, prompt: next.prompt };
+				deliver = { id: next.id, prompt: next.prompt, model: typeof next.model === "string" ? next.model : "" };
 			});
 		} catch {
 			lockFailed = true; // lock contention or a write failure; retry next tick
@@ -988,11 +1025,67 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (deliver) {
 			// followUp avoids a throw if a human submit raced us; the input
 			// handler below is the final fence either way.
-			const prompt = deliver.prompt;
-			if (TEST_DELIVERY_DELAY_MS > 0) setTimeout(() => pi.sendUserMessage(prompt, { deliverAs: "followUp" }), TEST_DELIVERY_DELAY_MS);
-			else pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			const { id, prompt, model } = deliver;
+			const send = () => pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			if (model && pendingConfirm?.id === id) pendingConfirm.switching = true;
+			const go = model ? () => void switchModelThen(ctx, id, model, send).catch(() => {}) : send;
+			if (TEST_DELIVERY_DELAY_MS > 0) setTimeout(go, TEST_DELIVERY_DELAY_MS);
+			else go();
 		}
 		statusLine();
+	};
+
+	// Switch the session to model, then hand the prompt to Pi. If the switch
+	// fails the task fails without running: never on the wrong model. While
+	// switching, the acceptance timeout is paused (see tick); the switch has
+	// its own bound.
+	const switchModelThen = async (ctx: any, id: string, model: string, send: () => void) => {
+		const ours = () => mode === "active" && pendingConfirm?.id === id && currentTask === id && !receipt;
+		let problem = "";
+		try {
+			if (!ours()) return;
+			if (modelRef(ctx.model) !== model) {
+				const slash = model.indexOf("/");
+				const found = slash > 0 ? ctx.modelRegistry?.find?.(model.slice(0, slash), model.slice(slash + 1)) : undefined;
+				if (!found) problem = `model ${model} is not available in this Pi`;
+				else {
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					try {
+						const timeout = new Promise<"timeout">((r) => (timer = setTimeout(() => r("timeout"), MODEL_SWITCH_TIMEOUT_MS)));
+						switchInFlight = true;
+						const op = Promise.resolve()
+							.then(() => pi.setModel(found))
+							.finally(() => {
+								switchInFlight = false;
+							});
+						op.catch(() => {});
+						const ok = await Promise.race([op, timeout]);
+						if (ok === "timeout") problem = `switching to model ${model} did not finish within ${MODEL_SWITCH_TIMEOUT_MS / 1000}s`;
+						else if (!ok) problem = `no credentials configured for model ${model}`;
+					} catch (e: any) {
+						problem = `switching to model ${model} failed: ${String(e?.message ?? e).slice(0, 200)}`;
+					} finally {
+						if (timer) clearTimeout(timer);
+					}
+				}
+			}
+			// Fenced, stopped, cancelled or settled meanwhile: never send.
+			if (!ours()) return;
+			if (!problem) {
+				pendingConfirm!.at = Date.now();
+				pendingConfirm!.switching = false;
+				send();
+				return;
+			}
+		} catch (e: any) {
+			if (!ours()) return;
+			problem = `switching to model ${model} failed: ${String(e?.message ?? e).slice(0, 200)}`;
+		}
+		pendingConfirm = undefined;
+		try {
+			settle({ text: "", stop: "", fail_error: `${problem}; the prompt was not run` });
+			statusLine();
+		} catch {}
 	};
 
 	pi.on("session_start", (_e, ctx) => {
@@ -1064,6 +1157,8 @@ export default function devxBridge(pi: ExtensionAPI) {
 					// this starts its own turn.
 					t.confirmed_at = now();
 					t.accepted_as = e.streamingBehavior ?? "turn";
+					const accepted = modelRef((ctx ?? ctxRef)?.model);
+					if (accepted) t.accepted_model = accepted;
 					saveTask(t);
 					if (progressTask === id) {
 						progressArmed = t.accepted_as === "turn";
@@ -1151,6 +1246,33 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (e?.message?.role !== "assistant") return;
 		progressTurns++;
 		progressPending = turnProgress(e.message, progressTurns);
+	});
+
+	// Keep the agent record's model in step with the session (pi_send model
+	// switches and a human's /model alike), so a relaunch resumes on it.
+	// Best effort: the heartbeat reports the live model either way.
+	pi.on("model_select", (e: any) => {
+		if (mode !== "active") return;
+		const ref = modelRef(e?.model);
+		if (!ref) return;
+		// Marked until saved; a failure below leaves the tick to retry it.
+		modelUnsaved = true;
+		try {
+			withLock(() => {
+				const a = readJSONStrict(p.agent);
+				if (!a || a.launch_nonce !== NONCE) return;
+				if (a.model === ref) {
+					modelUnsaved = false;
+					return;
+				}
+				const from = a.model ?? "";
+				a.model = ref;
+				a.updated_at = now();
+				writeJSON(p.agent, a);
+				modelUnsaved = false;
+				annotate("model_changed", currentTask, { from, to: ref, source: e?.source ?? "" });
+			});
+		} catch {}
 	});
 
 	pi.on("agent_end", (e: any) => {
