@@ -171,9 +171,12 @@ DevX session "<name>"  tmux window "pi-agent"                      │
     the model under a later task.
   - **Reporting.** `agent.model` in `pi_status` and `pi_list_sessions` is
     the model the agent's current Pi reports in its heartbeat (absent until
-    it reports after a launch). `agent.launch_model` is the model the current Pi
-    was launched with (stamped per launch; the bridge never changes it). `task.model` (also `pi_result.model`, `pi_queue` items) is the
-    model Pi was on when it accepted that task's prompt, and
+    it reports after a launch). `agent.launch_model` is the `--model` value
+    DevX passed when it launched the current Pi, and is empty when DevX
+    passed none, even if Pi then picked a model from `pi_args` or its own
+    settings. It is stamped per launch and the bridge never changes it; use
+    `agent.model` for the model actually in use. `task.model` (also
+    `pi_result.model`, `pi_queue` items) is the model Pi was on when it accepted that task's prompt, and
     `task.requested_model` the switch requested with it.
   - **Relaunch.** The bridge writes every model change (a `pi_send` switch
     or a human's `/model`) back to the agent record and logs a

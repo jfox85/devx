@@ -85,7 +85,7 @@ var (
 	}
 )
 
-const modelFieldDoc = `the "provider/model-id" the agent's Pi reports it is running on now (absent until the bridge reports after a launch, or for bridges older than protocol 4); launch_model is the model it was launched with ("" = Pi's default)`
+const modelFieldDoc = `the "provider/model-id" the agent's Pi reports it is running on now (absent until the bridge reports after a launch, or for bridges older than protocol 4); launch_model is the --model DevX passed at the current launch ("" = none passed; Pi chose from its own config), so use model to confirm what is running`
 
 func toolList() []tool {
 	ro := map[string]any{"readOnlyHint": true, "openWorldHint": false}
