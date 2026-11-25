@@ -77,39 +77,47 @@ func obj(props map[string]any, required ...string) map[string]any {
 }
 
 var (
-	strProp = func(d string) map[string]any { return map[string]any{"type": "string", "description": d} }
-	intProp = func(d string) map[string]any { return map[string]any{"type": "integer", "description": d} }
+	strProp   = func(d string) map[string]any { return map[string]any{"type": "string", "description": d} }
+	intProp   = func(d string) map[string]any { return map[string]any{"type": "integer", "description": d} }
+	modelProp = func(d string) map[string]any {
+		return map[string]any{"type": "string", "maxLength": MaxModelRefBytes,
+			"description": d + `, as "provider/model-id" (e.g. "anthropic/claude-sonnet-4-5"), or a model id offered by only one provider. Must be one of the models Pi lists as available (pi --list-models). Not a slash command.`}
+	}
 )
+
+const modelFieldDoc = `the "provider/model-id" the agent's Pi reports it is running on now (absent until the bridge reports after a launch, or for bridges older than protocol 4); launch_model is the model it was launched with ("" = Pi's default)`
 
 func toolList() []tool {
 	ro := map[string]any{"readOnlyHint": true, "openWorldHint": false}
 	return []tool{
 		{Name: "pi_list_sessions", Annotations: ro,
-			Description: "List a bounded page of all MCP-managed Pi agent records (including retired agents), with reconciled state, control and attach instructions, then allowed projects. Follow next_cursor until eof, even when agents is empty. Inventory membership changes invalidate cursors; restart without cursor. State is live per page, not a snapshot. Each agent with a running task may include latest_progress (see pi_status).",
+			Description: "List a bounded page of all MCP-managed Pi agent records (including retired agents), with reconciled state, control and attach instructions, then allowed projects. Follow next_cursor until eof, even when agents is empty. Inventory membership changes invalidate cursors; restart without cursor. State is live per page, not a snapshot. Each agent with a running task may include latest_progress (see pi_status). Each agent reports model (" + modelFieldDoc + ").",
 			InputSchema: obj(map[string]any{
 				"limit":  map[string]any{"type": "integer", "description": "Maximum combined agent and project entries (default 20, max 100); byte budget may shorten a page", "minimum": 1, "maximum": 100},
 				"cursor": map[string]any{"type": "string", "description": "Opaque next_cursor from the previous page; omit to start", "maxLength": 512},
 			})},
 		{Name: "pi_start_task", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-			Description: "Create a NEW local-only DevX session (git worktree + tmux; no service ports, routes or project services) in an allowlisted project, launch an interactive Pi there, and queue the first prompt. Idempotent on idempotency_key: retrying after a timeout or dropped response returns the same agent_id/task_id and never starts a second session. The human can attach and take control at any time.",
+			Description: "Create a NEW local-only DevX session (git worktree + tmux; no service ports, routes or project services) in an allowlisted project, launch an interactive Pi there, and queue the first prompt. Idempotent on idempotency_key: retrying after a timeout or dropped response returns the same agent_id/task_id and never starts a second session. The human can attach and take control at any time. To choose the model, pass model (e.g. \"anthropic/claude-sonnet-4-5\"); it is validated before anything is created, and an unknown or unavailable model fails with error=invalid_model and valid_models, starting nothing. Omit model for Pi's default. Never put \"/model ...\" in the prompt: prompts are plain chat messages, not slash commands.",
 			InputSchema: obj(map[string]any{
 				"project":         strProp("Allowlisted DevX project alias"),
 				"prompt":          strProp("Task for Pi (max 64 KiB)"),
 				"idempotency_key": strProp("Caller-chosen unique key for this start; reuse it on retry"),
 				"session_name":    strProp("Optional name for the new DevX session; must not already exist"),
+				"model":           modelProp("Optional model to launch Pi on"),
 			}, "project", "prompt", "idempotency_key")},
 		{Name: "pi_send", Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-			Description: "QUEUE a follow-up prompt for a managed agent. This never steers or interrupts a running turn: the prompt waits in the DevX queue and is delivered as a new turn, one at a time, only when Pi is idle, its editor is empty and DevX holds control (while a human has control it waits with waiting_reason=human_control). The response reports delivery=queued; follow phase queued -> delivered -> accepted -> finished with pi_status/pi_queue/pi_events. Until delivered it can be edited (pi_update_pending), replaced (pi_supersede_pending) or cancelled (pi_cancel). Idempotent on idempotency_key.",
+			Description: "QUEUE a follow-up prompt for a managed agent. This never steers or interrupts a running turn: the prompt waits in the DevX queue and is delivered as a new turn, one at a time, only when Pi is idle, its editor is empty and DevX holds control (while a human has control it waits with waiting_reason=human_control). The response reports delivery=queued; follow phase queued -> delivered -> accepted -> finished with pi_status/pi_queue/pi_events. Until delivered it can be edited (pi_update_pending), replaced (pi_supersede_pending) or cancelled (pi_cancel). Idempotent on idempotency_key. To change the model, pass model with the prompt: right before delivering this prompt the session switches to that model (and stays on it); if the switch fails the task fails without running. An unknown model fails with error=invalid_model and valid_models, queuing nothing. The prompt is always plain chat: \"/model ...\" or any other slash command in it is NOT executed.",
 			InputSchema: obj(map[string]any{
 				"agent_id":        strProp("Managed agent id (pa_...)"),
 				"prompt":          strProp("Follow-up prompt (max 64 KiB)"),
 				"idempotency_key": strProp("Caller-chosen unique key for this send; reuse it on retry"),
+				"model":           modelProp("Optional model to switch the session to before this prompt runs"),
 			}, "agent_id", "prompt", "idempotency_key")},
 		{Name: "pi_status", Annotations: ro,
-			Description: "Status of a task and its agent, with a bounded result excerpt. state is waiting/running/completed/failed/cancelled/unknown; phase separates queued (DevX queue), delivered (handed to Pi, not yet accepted), accepted (Pi started the turn) and finished. revision is the compare-and-swap token for pending edits. cancel_outcome reports what a cancellation did. 'unknown' means the task was delivered but the Pi process that held it is gone; inspect the session before retrying. Mid-task visibility: task.latest_progress {at, turn, excerpt, excerpt_truncated, last_tool} is the newest recorded assistant turn of the task (redacted; excerpt <= 500 bytes; recorded at most every 30 s per task). It is absent until a turn is recorded and always absent when agent.bridge_protocol < 3 (an older Pi bridge; a human relaunch loads the new one). agent.latest_progress is the same for the agent's current_task.",
+			Description: "Status of a task and its agent, with a bounded result excerpt. state is waiting/running/completed/failed/cancelled/unknown; phase separates queued (DevX queue), delivered (handed to Pi, not yet accepted), accepted (Pi started the turn) and finished. revision is the compare-and-swap token for pending edits. cancel_outcome reports what a cancellation did. 'unknown' means the task was delivered but the Pi process that held it is gone; inspect the session before retrying. Mid-task visibility: task.latest_progress {at, turn, excerpt, excerpt_truncated, last_tool} is the newest recorded assistant turn of the task (redacted; excerpt <= 500 bytes; recorded at most every 30 s per task). It is absent until a turn is recorded and always absent when agent.bridge_protocol < 3 (an older Pi bridge; a human relaunch loads the new one). agent.latest_progress is the same for the agent's current_task. task.model is the model the task ran on (set when Pi accepted it), task.requested_model the switch requested with it; agent.model is " + modelFieldDoc + ".",
 			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)")}, "task_id")},
 		{Name: "pi_result", Annotations: ro,
-			Description: "Read a task's final assistant text in bounded chunks. Continue from next_offset until eof. Text is passed through credential redaction.",
+			Description: "Read a task's final assistant text in bounded chunks. Continue from next_offset until eof. Text is passed through credential redaction. model is the model the task ran on (absent if unknown).",
 			InputSchema: obj(map[string]any{"task_id": strProp("Task id (pt_...)"), "offset": intProp("Byte offset (default 0)"), "max_bytes": intProp("Chunk size, max 16384")}, "task_id")},
 		{Name: "pi_events", Annotations: ro,
 			Description: "Durable, resumable agent event log. Pass after_seq = the last seq you processed; events are never dropped, so a reconnecting client replays exactly what it missed. wait_seconds (max 30) blocks until a new event is written instead of re-polling. Pages contain at most 200 events and 60,000 encoded MCP result bytes (including text and structuredContent); bytes may shorten a page. Continue from next_after_seq while more is true. An individually oversized event returns event_too_large with event_seq and an unchanged next_after_seq: inspect the local log; no events are skipped. Besides lifecycle events (task_delivered, task_started, task_finished, lease_changed, ...), Pi bridges with protocol >= 3 write type=progress events while a task runs: data {turn, at, excerpt (redacted, <= 500 bytes), excerpt_truncated?, last_tool?}, at most one per task every 30 s with the newest turn kept.",
@@ -208,7 +216,7 @@ func (s *MCPServer) Serve(in io.Reader, out io.Writer) error {
 func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 	switch req.Method {
 	case "initialize":
-		instructions := "Manage Pi coding agents in DevX sessions. Every agent stays visible in DevX; a human can attach and take control at any time, which pauses delivery of your queued prompts until they release. pi_send only queues: it never steers a running turn, and queued is not delivered, accepted or completed — check phase/state before relying on a result. Use idempotency keys, compare-and-swap revisions for pending edits, and resume pi_events from your last seq."
+		instructions := "Manage Pi coding agents in DevX sessions. Every agent stays visible in DevX; a human can attach and take control at any time, which pauses delivery of your queued prompts until they release. pi_send only queues: it never steers a running turn, and queued is not delivered, accepted or completed — check phase/state before relying on a result. Use idempotency keys, compare-and-swap revisions for pending edits, and resume pi_events from your last seq. Choose models with the model argument of pi_start_task or pi_send, never by sending \"/model\" as a prompt (prompts are chat, not commands); confirm with model in pi_status, pi_list_sessions or pi_result."
 		if s.Extra != nil {
 			if extra := s.Extra.Instructions(); extra != "" {
 				instructions += " " + extra
@@ -254,6 +262,32 @@ func (s *MCPServer) handle(req rpcRequest) (any, *rpcError) {
 					"required_protocol": BridgeCancelProtocol, "recorded": false}
 				if be.Protocol >= 0 {
 					d["bridge_protocol"] = be.Protocol
+				}
+				data = d
+			} else if me := (*ModelError)(nil); errors.As(err, &me) {
+				d := map[string]any{"error": "invalid_model", "message": msg, "requested_model": me.Requested, "reason": me.Reason,
+					"started": false, "queued": false}
+				if len(me.Candidates) > 0 {
+					d["candidates"] = me.Candidates
+				}
+				if len(me.Suggestions) > 0 {
+					d["suggestions"] = me.Suggestions
+				}
+				valid := me.Valid
+				if len(valid) > MaxValidModelsListed {
+					d["valid_models_truncated"] = true
+					d["valid_models_total"] = len(valid)
+					valid = valid[:MaxValidModelsListed]
+				}
+				d["valid_models"] = valid
+				data = d
+			} else if ce := (*ModelCatalogError)(nil); errors.As(err, &ce) {
+				data = map[string]any{"error": "model_catalog_unavailable", "message": Redact(msg), "started": false, "queued": false}
+			} else if se := (*ModelSwitchUnsupportedError)(nil); errors.As(err, &se) {
+				d := map[string]any{"error": "model_switch_unsupported", "message": msg, "agent_id": se.AgentID, "queued": false,
+					"required_protocol": BridgeModelProtocol}
+				if se.Protocol >= 0 {
+					d["bridge_protocol"] = se.Protocol
 				}
 				data = d
 			} else if errors.Is(err, ErrEditLimit) {
@@ -310,36 +344,36 @@ func (s *MCPServer) call(name string, raw json.RawMessage) (any, error) {
 		return s.listSessions(raw)
 
 	case "pi_start_task":
-		var a struct {
-			Project, Prompt, IdempotencyKey, SessionName string
-		}
 		var w struct {
 			Project        string `json:"project"`
 			Prompt         string `json:"prompt"`
 			IdempotencyKey string `json:"idempotency_key"`
 			SessionName    string `json:"session_name"`
+			Model          string `json:"model"`
 		}
 		if err := decodeArgs(raw, &w); err != nil {
 			return nil, err
 		}
-		a.Project, a.Prompt, a.IdempotencyKey, a.SessionName = w.Project, w.Prompt, w.IdempotencyKey, w.SessionName
-		r, err := s.M.Start(StartRequest{Project: a.Project, SessionName: a.SessionName, Prompt: a.Prompt, IdempotencyKey: a.IdempotencyKey, By: s.Client})
+		r, err := s.M.Start(StartRequest{Project: w.Project, SessionName: w.SessionName, Prompt: w.Prompt, IdempotencyKey: w.IdempotencyKey, By: s.Client, Model: w.Model})
 		if err != nil {
 			return nil, err
 		}
+		// launch_model is what Pi was started with; pi_status/pi_list_sessions
+		// report model once Pi confirms it.
 		return map[string]any{"agent_id": r.AgentID, "task_id": r.TaskID, "session": r.Session, "pi_session_id": r.PiSessionID, "replayed": r.Replayed,
-			"delivery": "queued", "attach": "devx session attach " + r.Session}, nil
+			"delivery": "queued", "attach": "devx session attach " + r.Session, "launch_model": r.Model}, nil
 
 	case "pi_send":
 		var w struct {
 			AgentID        string `json:"agent_id"`
 			Prompt         string `json:"prompt"`
 			IdempotencyKey string `json:"idempotency_key"`
+			Model          string `json:"model"`
 		}
 		if err := decodeArgs(raw, &w); err != nil {
 			return nil, err
 		}
-		r, err := s.M.Send(SendRequest{AgentID: w.AgentID, Prompt: w.Prompt, IdempotencyKey: w.IdempotencyKey})
+		r, err := s.M.Send(SendRequest{AgentID: w.AgentID, Prompt: w.Prompt, IdempotencyKey: w.IdempotencyKey, Model: w.Model})
 		if err != nil {
 			return nil, err
 		}
@@ -485,6 +519,10 @@ func agentSummary(v *AgentView) map[string]any {
 		// this server does not refresh it.
 		"bridge_protocol":       v.BridgeProtocol,
 		"bridge_upgrade_needed": v.BridgeUpgradeNeeded,
+		"launch_model":          a.Model,
+	}
+	if v.Model != "" {
+		out["model"] = v.Model
 	}
 	// Newest mid-task progress of current_task (redacted, at most
 	// MaxProgressExcerptBytes); absent when none was reported.

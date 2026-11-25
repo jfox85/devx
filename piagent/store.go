@@ -441,6 +441,8 @@ type idemRecord struct {
 	CreatingSession bool      `json:"creating_session,omitempty"`
 	SourceTaskID    string    `json:"source_task_id,omitempty"` // supersede: the task being replaced
 	CreatedAt       time.Time `json:"created_at"`
+	// Model is the validated model of a start/send ("" = none requested).
+	Model string `json:"model,omitempty"`
 }
 
 func (s *Store) idemPath(keyHash string) string {

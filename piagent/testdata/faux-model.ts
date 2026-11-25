@@ -8,7 +8,8 @@
 //   "MULTITURN"       -> three turns: two "step <n>" turns that each call the
 //                        read tool (on a missing file), then a final reply;
 //                        step 1 carries a fake credential (progress tests)
-// Every reply starts with "ECHO: <prompt>".
+// Every reply starts with "ECHO: <prompt>". Two models (faux-1, faux-2)
+// behave identically; the second lets tests switch models.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 
@@ -34,9 +35,9 @@ function lastUserText(context: any): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	const core = createFauxCore({ provider: "devx-faux", models: [{ id: "faux-1" }], tokensPerSecond: 60 });
+	const core = createFauxCore({ provider: "devx-faux", models: [{ id: "faux-1" }, { id: "faux-2" }], tokensPerSecond: 60 });
 	// Unthrottled core for BIG replies, sharing the same api id.
-	const fast = createFauxCore({ api: core.api, provider: "devx-faux", models: [{ id: "faux-1" }] });
+	const fast = createFauxCore({ api: core.api, provider: "devx-faux", models: [{ id: "faux-1" }, { id: "faux-2" }] });
 	const respond = (context: any) => {
 		const text = lastUserText(context);
 		if (text.includes("FAIL")) return fauxAssistantMessage("", { stopReason: "error", errorMessage: "synthetic provider failure" });
@@ -69,7 +70,7 @@ export default function (pi: ExtensionAPI) {
 		baseUrl: "http://127.0.0.1:9",
 		apiKey: "unused",
 		api: core.api as any,
-		models: [{ id: "faux-1", name: "faux-1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 65536 }],
+		models: ["faux-1", "faux-2"].map((id) => ({ id, name: id, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 65536 })),
 		streamSimple: (model: any, context: any, options: any) => {
 			if (core.getPendingResponseCount() < 10 || fast.getPendingResponseCount() < 10) refill();
 			return (/BIG:\d+/.test(lastUserText(context)) ? fast : core).streamSimple(model, context, options);

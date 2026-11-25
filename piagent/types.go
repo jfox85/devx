@@ -138,6 +138,11 @@ type Agent struct {
 	// identity witness when an older DevX writer dropped the record's
 	// instance_id (see session.MatchesBoundInstance): authorization-relevant.
 	SessionCreatedAt time.Time `json:"session_created_at,omitempty"`
+	// Model is the "provider/model-id" Pi is launched with (--model), or ""
+	// for Pi's default. Set from pi_start_task's model; the bridge updates
+	// it whenever the session's model changes (pi_send model, /model), so a
+	// relaunch resumes on the model the session last used.
+	Model string `json:"model,omitempty"`
 }
 
 // adoptedPaneUnlaunched reports whether a is adopted and its bound pane
@@ -168,7 +173,14 @@ type Task struct {
 	// AcceptedAs is how Pi took the prompt: "turn" (Pi was idle and started
 	// a turn for it) or "followUp" (Pi was already busy and queued it
 	// internally; the bridge never delivers as steer).
-	AcceptedAs      string     `json:"accepted_as,omitempty"`
+	AcceptedAs string `json:"accepted_as,omitempty"`
+	// Model is a model switch requested with this task (pi_send model):
+	// the bridge switches the session to it before handing the prompt to
+	// Pi, and fails the task instead if the switch fails. "" = no switch.
+	Model string `json:"model,omitempty"`
+	// AcceptedModel is the model Pi was on when it accepted the prompt
+	// (written by bridges with protocol >= BridgeModelProtocol).
+	AcceptedModel   string     `json:"accepted_model,omitempty"`
 	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 	BridgeInstance  string     `json:"bridge_instance,omitempty"`
 	LeaseGeneration int64      `json:"lease_generation_at_delivery,omitempty"`
@@ -312,6 +324,9 @@ type Bridge struct {
 	// Protocol is the bridge's control protocol version (see
 	// BridgeProtocol). Bridges from before versioning write none (0).
 	Protocol int `json:"protocol,omitempty"`
+	// Model is the session's current model as "provider/model-id"
+	// (protocol >= 4; "" if Pi has none selected or an older bridge).
+	Model string `json:"model,omitempty"`
 }
 
 // BridgeProtocol is the control protocol of the bridge embedded in this
@@ -322,8 +337,16 @@ type Bridge struct {
 // records (results/<task>.progress.json and "progress" events) and leaves
 // the cancel semantics of 2 unchanged. A running Pi keeps the bridge it was
 // launched with: restarting the MCP server does not refresh it; only a
-// relaunch of that agent (a human action) does.
-const BridgeProtocol = 3
+// relaunch of that agent (a human action) does. Version 4 adds model
+// handling: the heartbeat reports the current model, a task carrying a
+// model switches the session to it before delivery (or fails without
+// running), the model a task was accepted on is recorded, and model changes
+// are written back to the agent record.
+const BridgeProtocol = 4
+
+// BridgeModelProtocol is the oldest bridge protocol that applies per-task
+// model switches and reports the current model.
+const BridgeModelProtocol = 4
 
 // BridgeCancelProtocol is the oldest bridge protocol whose running-cancel
 // handling this build relies on. Bridges at or above it may be asked to
