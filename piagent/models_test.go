@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,14 @@ func TestReplayAcceptsSlashModelIDs(t *testing.T) {
 	}
 }
 
+func TestIsRelativeCommandPath(t *testing.T) {
+	for cmd, want := range map[string]bool{"pi": false, "/usr/bin/pi": false, "./bin/pi": true, "bin/pi": true, `.\pi.exe`: true} {
+		if got := isRelativeCommandPath(cmd); got != want {
+			t.Errorf("%q: got %v want %v", cmd, got, want)
+		}
+	}
+}
+
 func TestRelativePiCommandCannotValidateModels(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.Config.PiCommand = "./bin/pi"
@@ -182,6 +191,9 @@ func TestRelativePiCommandCannotValidateModels(t *testing.T) {
 }
 
 func TestCatalogErrorWrapsSubprocessError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
 	m, _ := newTestManager(t)
 	m.Config.PiCommand = "/bin/sh"
 	m.Config.PiCommandArgs = []string{"-c", "echo boom >&2; exit 3", "sh"}

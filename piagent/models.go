@@ -105,7 +105,7 @@ func (m *Manager) piListModels() ([]string, error) {
 	// exist yet when a start is validated. A relative path would name a
 	// different file here than there, so it cannot be validated: refuse
 	// rather than check one executable and launch another.
-	if strings.Contains(m.Config.PiCommand, "/") && !filepath.IsAbs(m.Config.PiCommand) {
+	if isRelativeCommandPath(m.Config.PiCommand) {
 		return nil, fmt.Errorf("pi_mcp.pi_command %q is a relative path; use an absolute path or a command name on PATH to request a model", m.Config.PiCommand)
 	}
 	args := append(append(append([]string{}, m.Config.PiCommandArgs...), m.Config.PiArgs...), "--list-models")
@@ -129,6 +129,16 @@ func (m *Manager) piListModels() ([]string, error) {
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// isRelativeCommandPath reports a path-like command that resolves against
+// the working directory ("./pi", "bin/pi"). Bare names (looked up on PATH)
+// and absolute or rooted paths ("/usr/bin/pi", `C:\pi`) are not relative.
+func isRelativeCommandPath(cmd string) bool {
+	if !strings.ContainsAny(cmd, `/\`) || filepath.IsAbs(cmd) {
+		return false
+	}
+	return !strings.HasPrefix(cmd, "/") && !strings.HasPrefix(cmd, `\`)
+}
 
 // parseListModels reads `pi --list-models` output: a header row starting
 // with "provider model", then one row per model. Anything else (warnings,

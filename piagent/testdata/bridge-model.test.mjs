@@ -294,7 +294,8 @@ test("a timed-out switch that is still running fences later deliveries", async (
 	assert.equal(b.sent[0].model, "openai/gpt-5", "the late switch landed before, not during, the next task");
 });
 
-test("a rolled-back acceptance drops accepted_model", async (t) => {
+// Uses a read-only directory to fail the save; Windows ignores directory modes.
+test("a rolled-back acceptance drops accepted_model", { skip: process.platform === "win32" }, async (t) => {
 	const e = makeEnv(t);
 	const id = addTask(e.dir, 1, "x");
 	const b = await startBridge(e);
