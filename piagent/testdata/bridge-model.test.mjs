@@ -259,6 +259,91 @@ test("a slow switch does not trip the acceptance timeout", async (t) => {
 	assert.equal(task(e.dir, id).accepted_model, "openai/gpt-5");
 });
 
+test("a timed-out switch that is still running fences later deliveries", async (t) => {
+	const e = makeEnv(t);
+	let release;
+	const gate = new Promise((r) => (release = r));
+	const id = addTask(e.dir, 1, "slow", "openai/gpt-5");
+	const next = addTask(e.dir, 2, "next one");
+	const realSetTimeout = globalThis.setTimeout;
+	// Make the bridge's 60 s switch timeout fire immediately.
+	globalThis.setTimeout = (f, ms, ...a) => realSetTimeout(f, ms >= 60000 ? 0 : ms, ...a);
+	t.after(() => (globalThis.setTimeout = realSetTimeout));
+	const b = await startBridge(e, {
+		setModel: async (m) => {
+			await gate;
+			b.ctx.model = m;
+			return true;
+		},
+	});
+	b.tick();
+	await new Promise((r) => realSetTimeout(r, 5));
+	await flush();
+	assert.equal(task(e.dir, id).state, "failed");
+	assert.match(task(e.dir, id).error, /did not finish/);
+	b.tick();
+	b.tick();
+	assert.equal(b.sent.length, 0, "nothing delivered while the switch is outstanding");
+	assert.equal(task(e.dir, next).state, "waiting");
+	release();
+	await flush();
+	await flush();
+	b.tick();
+	assert.equal(b.sent.length, 1);
+	assert.equal(b.sent[0].text, "next one");
+	assert.equal(b.sent[0].model, "openai/gpt-5", "the late switch landed before, not during, the next task");
+});
+
+test("a rolled-back acceptance drops accepted_model", async (t) => {
+	const e = makeEnv(t);
+	const id = addTask(e.dir, 1, "x");
+	const b = await startBridge(e);
+	b.tick();
+	// The acceptance save fails (tasks dir read-only): the input handler
+	// drops the prompt and schedules requeueLocked.
+	const tasks = path.join(e.dir, "tasks");
+	fs.chmodSync(tasks, 0o500);
+	assert.deepEqual(b.accept(), { action: "handled" });
+	fs.chmodSync(tasks, 0o700);
+	// ...but suppose it actually landed (it "reported failure"): stale
+	// acceptance fields from this instance are on disk when the rollback runs.
+	const tk = task(e.dir, id);
+	assert.equal(tk.state, "running");
+	Object.assign(tk, { confirmed_at: new Date().toISOString(), accepted_as: "turn", accepted_model: "anthropic/claude-sonnet-4-5" });
+	fs.writeFileSync(path.join(tasks, `${id}.json`), JSON.stringify(tk));
+	b.ctx.idle = false; // keep it from being re-delivered on this tick
+	b.tick();
+	const after = task(e.dir, id);
+	assert.equal(after.state, "waiting");
+	assert.equal(after.accepted_model, undefined);
+	assert.equal(after.accepted_as, undefined);
+	assert.equal(after.confirmed_at, undefined);
+});
+
+test("an unsaved first model change on an unpinned agent is retried", async (t) => {
+	const e = makeEnv(t);
+	const b = await startBridge(e);
+	b.tick();
+	// The save fails (agent record unreadable for that moment).
+	const file = path.join(e.dir, "agent.json");
+	const good = fs.readFileSync(file, "utf8");
+	fs.writeFileSync(file, "{not json");
+	b.ctx.model = CATALOG["openai/gpt-5"];
+	b.h.model_select({ model: CATALOG["openai/gpt-5"], source: "set" }, b.ctx);
+	fs.writeFileSync(file, good);
+	assert.equal(rj(file).model, undefined);
+	b.tick();
+	assert.equal(rj(file).model, "openai/gpt-5", "retried by the tick");
+});
+
+test("an untouched default launch is never pinned", async (t) => {
+	const e = makeEnv(t);
+	const b = await startBridge(e);
+	b.tick();
+	b.tick();
+	assert.equal(rj(path.join(e.dir, "agent.json")).model, undefined);
+});
+
 test("a pinned model that missed its update is reconciled to the live one", async (t) => {
 	const e = makeEnv(t);
 	const a = rj(path.join(e.dir, "agent.json"));

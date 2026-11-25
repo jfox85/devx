@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -100,6 +101,13 @@ func (m *Manager) piListModels() ([]string, error) {
 	if err := m.launchPolicyUsable(); err != nil {
 		return nil, err
 	}
+	// A launch runs pi_command from the agent's worktree, which does not
+	// exist yet when a start is validated. A relative path would name a
+	// different file here than there, so it cannot be validated: refuse
+	// rather than check one executable and launch another.
+	if strings.Contains(m.Config.PiCommand, "/") && !filepath.IsAbs(m.Config.PiCommand) {
+		return nil, fmt.Errorf("pi_mcp.pi_command %q is a relative path; use an absolute path or a command name on PATH to request a model", m.Config.PiCommand)
+	}
 	args := append(append(append([]string{}, m.Config.PiCommandArgs...), m.Config.PiArgs...), "--list-models")
 	ctx, cancel := context.WithTimeout(context.Background(), modelCatalogTimeout)
 	defer cancel()
@@ -113,7 +121,7 @@ func (m *Manager) piListModels() ([]string, error) {
 			detail = detail[:200]
 		}
 		if detail != "" {
-			return nil, fmt.Errorf("%v: %s", err, Redact(detail))
+			return nil, fmt.Errorf("list Pi models: %w: %s", err, Redact(detail))
 		}
 		return nil, err
 	}
@@ -179,8 +187,9 @@ func checkModelSyntax(requested string) error {
 }
 
 // sameModelRequest reports whether a retried request's model names the
-// recorded (canonical) model, without consulting Pi: the same full
-// reference, or the same bare model id.
+// recorded (canonical) model, without consulting Pi, in either form the
+// resolver accepts: the full reference, or the model id (everything after
+// the provider, which may itself contain '/').
 func sameModelRequest(requested, recorded string) bool {
 	requested = strings.TrimSpace(requested)
 	if requested == "" || recorded == "" {
@@ -190,7 +199,7 @@ func sameModelRequest(requested, recorded string) bool {
 		return true
 	}
 	_, id, _ := strings.Cut(recorded, "/")
-	return !strings.Contains(requested, "/") && strings.EqualFold(requested, id)
+	return strings.EqualFold(requested, id)
 }
 
 func resolveModelRef(requested string, valid []string) (string, error) {

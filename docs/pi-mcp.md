@@ -152,6 +152,10 @@ DevX session "<name>"  tmux window "pi-agent"                      │
     `model_catalog_unavailable`. Omitting `model` launches on Pi's default,
     exactly as before, and never runs `--list-models`. The agent's `--model`
     comes after `pi_args`, so it wins over an owner default.
+    A relative `pi_command` (for example `./bin/pi`) cannot be validated,
+    since launches run it from the worktree, so a `model` request fails
+    with `model_catalog_unavailable`. Use an absolute path or a command on
+    `PATH`.
   - **`pi_send` `model`** (optional) switches an existing session. The
     switch travels with the queued task: right before delivering that
     prompt the bridge calls `pi.setModel`, and only then hands the prompt to
@@ -162,10 +166,13 @@ DevX session "<name>"  tmux window "pi-agent"                      │
     that has not reported since its latest launch) `pi_send` returns
     `model_switch_unsupported` and queues nothing. `pi_supersede_pending`
     keeps the replaced task's switch.
+    If `pi.setModel` outlives the 60 s switch bound, the task fails and no
+    further task is delivered until that switch settles, so it cannot change
+    the model under a later task.
   - **Reporting.** `agent.model` in `pi_status` and `pi_list_sessions` is
     the model the agent's current Pi reports in its heartbeat (absent until
-    it reports after a launch). `agent.launch_model` is what DevX launches
-    it with. `task.model` (also `pi_result.model`, `pi_queue` items) is the
+    it reports after a launch). `agent.launch_model` is the model the current Pi
+    was launched with (stamped per launch; the bridge never changes it). `task.model` (also `pi_result.model`, `pi_queue` items) is the
     model Pi was on when it accepted that task's prompt, and
     `task.requested_model` the switch requested with it.
   - **Relaunch.** The bridge writes every model change (a `pi_send` switch

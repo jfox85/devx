@@ -530,6 +530,12 @@ export default function devxBridge(pi: ExtensionAPI) {
 	// switching: a model switch for this task is in flight; the acceptance
 	// timeout starts when the prompt is actually handed to Pi.
 	let pendingConfirm: { id: string; prompt: string; at: number; switching?: boolean } | undefined;
+	// pi.setModel has been called and has not settled (it may outlive our
+	// timeout). No task is delivered meanwhile.
+	let switchInFlight = false;
+	// A model change was seen whose save to agent.json failed; the tick
+	// retries it (see reconcile).
+	let modelUnsaved = false;
 	let lastEnd: { text: string; stop?: string; error?: string } | undefined;
 	let abortSent = false; // this bridge called ctx.abort() for a DevX cancel of currentTask
 	// The task this bridge tried to mark abort_sent_at for. If the save landed
@@ -858,6 +864,7 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (ours) {
 			delete t.confirmed_at;
 			delete t.accepted_as;
+			delete t.accepted_model;
 			delete t.human_intervened;
 		}
 		if (ours && t.cancel_requested) {
@@ -917,14 +924,18 @@ export default function devxBridge(pi: ExtensionAPI) {
 				if (!recovered) return; // dispatch stays fenced until reconciled
 				// A pinned model follows the live one (a model_select write may
 				// have failed), so a relaunch never forces a stale model.
+				// An unpinned agent is pinned only once a model change was
+				// seen (modelUnsaved), so an untouched default launch stays
+				// on Pi's default.
 				const live = modelRef(ctx.model);
-				if (a.model && live && a.model !== live) {
-					const from = a.model;
+				if (live && (a.model || modelUnsaved) && a.model !== live) {
+					const from = a.model ?? "";
 					a.model = live;
 					a.updated_at = now();
 					writeJSON(p.agent, a);
+					modelUnsaved = false;
 					annotate("model_changed", currentTask, { from, to: live, source: "reconcile" });
-				}
+				} else if (a.model === live) modelUnsaved = false;
 
 				if (currentTask) {
 					if (receipt) return; // settled; only publication remains
@@ -974,6 +985,9 @@ export default function devxBridge(pi: ExtensionAPI) {
 					return;
 				}
 				if (a.lease?.holder !== "managed") return;
+				// A timed-out switch may still complete: deliver nothing until
+				// it settles, so it cannot change the model under a later task.
+				if (switchInFlight) return;
 				if (!ctx.isIdle() || ctx.hasPendingMessages() || editor.trim() !== "") return;
 				// Never pick a waiting task that carries a cancel request.
 				const next = loadTasks().find((t) => t.state === "waiting" && !t.cancel_requested);
@@ -1038,7 +1052,14 @@ export default function devxBridge(pi: ExtensionAPI) {
 					let timer: ReturnType<typeof setTimeout> | undefined;
 					try {
 						const timeout = new Promise<"timeout">((r) => (timer = setTimeout(() => r("timeout"), MODEL_SWITCH_TIMEOUT_MS)));
-						const ok = await Promise.race([pi.setModel(found), timeout]);
+						switchInFlight = true;
+						const op = Promise.resolve()
+							.then(() => pi.setModel(found))
+							.finally(() => {
+								switchInFlight = false;
+							});
+						op.catch(() => {});
+						const ok = await Promise.race([op, timeout]);
 						if (ok === "timeout") problem = `switching to model ${model} did not finish within ${MODEL_SWITCH_TIMEOUT_MS / 1000}s`;
 						else if (!ok) problem = `no credentials configured for model ${model}`;
 					} catch (e: any) {
@@ -1234,14 +1255,21 @@ export default function devxBridge(pi: ExtensionAPI) {
 		if (mode !== "active") return;
 		const ref = modelRef(e?.model);
 		if (!ref) return;
+		// Marked until saved; a failure below leaves the tick to retry it.
+		modelUnsaved = true;
 		try {
 			withLock(() => {
 				const a = readJSONStrict(p.agent);
-				if (!a || a.launch_nonce !== NONCE || a.model === ref) return;
+				if (!a || a.launch_nonce !== NONCE) return;
+				if (a.model === ref) {
+					modelUnsaved = false;
+					return;
+				}
 				const from = a.model ?? "";
 				a.model = ref;
 				a.updated_at = now();
 				writeJSON(p.agent, a);
+				modelUnsaved = false;
 				annotate("model_changed", currentTask, { from, to: ref, source: e?.source ?? "" });
 			});
 		} catch {}

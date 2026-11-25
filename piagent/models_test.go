@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,6 +151,100 @@ func TestReplayDoesNotRevalidateModel(t *testing.T) {
 	if err != nil || r2.TaskID != r.TaskID || !r2.Replayed || r2.Model != "openai/gpt-5" {
 		t.Fatalf("send replay: %+v %v", r2, err)
 	}
+}
+
+func TestReplayAcceptsSlashModelIDs(t *testing.T) {
+	valid := []string{"openrouter/team/model-v1"}
+	got, err := resolveModelRef("team/model-v1", valid)
+	if err != nil || got != "openrouter/team/model-v1" {
+		t.Fatalf("resolve: %q %v", got, err)
+	}
+	for _, req := range []string{"team/model-v1", "openrouter/team/model-v1", "TEAM/MODEL-V1"} {
+		if !sameModelRequest(req, got) {
+			t.Errorf("%q must replay as %q", req, got)
+		}
+	}
+	for _, req := range []string{"model-v1", "other/team/model-v1", ""} {
+		if sameModelRequest(req, got) {
+			t.Errorf("%q must not replay as %q", req, got)
+		}
+	}
+}
+
+func TestRelativePiCommandCannotValidateModels(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.Config.PiCommand = "./bin/pi"
+	_, err := m.AvailableModels()
+	var ce *ModelCatalogError
+	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "relative path") {
+		t.Fatalf("want a relative-path catalog error, got %v", err)
+	}
+}
+
+func TestCatalogErrorWrapsSubprocessError(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.Config.PiCommand = "/bin/sh"
+	m.Config.PiCommandArgs = []string{"-c", "echo boom >&2; exit 3", "sh"}
+	_, err := m.AvailableModels()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("want a wrapped *exec.ExitError with stderr detail, got %v", err)
+	}
+}
+
+// launch_model reports what the current Pi was launched with; the bridge
+// moving the mutable model must not change it, and a model the old bridge
+// records while a launch is preparing is the one launched.
+func TestLaunchModelIsSeparateAndRaceFree(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := seedAgent(t, m)
+	setModel := func(model string) {
+		t.Helper()
+		if err := m.Store.WithAgentLock(a.ID, func() error {
+			ag, err := m.Store.LoadAgent(a.ID)
+			if err != nil {
+				return err
+			}
+			ag.Model = model
+			return m.Store.SaveAgent(ag)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setModel("devx-faux/faux-1")
+	// Change the model after the script is first written (when bridge
+	// source is written) but before the nonce is stamped.
+	m.bridgeSrc = []byte("// bridge")
+	m.Tmux = Tmux{Exec: func(args ...string) (string, error) {
+		return "", errors.New("tmux disabled")
+	}}
+	origCreator := m.Creator
+	m.Creator = ensureHook{SessionCreator: origCreator, hook: func() { setModel("devx-faux/faux-2") }}
+	_ = m.launch(a.ID, false) // fails at tmux after stamping
+	ag, _ := m.Store.LoadAgent(a.ID)
+	script, _ := os.ReadFile(filepath.Join(m.Store.AgentDir(a.ID), "launch.sh"))
+	if ag.LaunchModel != "devx-faux/faux-2" || !strings.Contains(string(script), "'devx-faux/faux-2'") {
+		t.Fatalf("launch must use the model read under the nonce lock: launch_model=%q\n%s", ag.LaunchModel, script)
+	}
+	// The bridge moving the live model leaves launch_model alone.
+	setModel("openai/gpt-5")
+	v, _ := m.AgentStatus(a.ID)
+	if got := agentSummary(v)["launch_model"]; got != "devx-faux/faux-2" {
+		t.Fatalf("launch_model must not follow the mutable model: %v", got)
+	}
+}
+
+// ensureHook runs hook when EnsureTmux is called, i.e. after launchLocked
+// read the agent but before the nonce is stamped (a model change the old
+// bridge records in that window).
+type ensureHook struct {
+	SessionCreator
+	hook func()
+}
+
+func (e ensureHook) EnsureTmux(name string, a *Agent) error {
+	e.hook()
+	return nil
 }
 
 func TestModelSyntaxRejectsFlagsAndCommands(t *testing.T) {
@@ -310,6 +405,7 @@ func TestModelReportedInStatusListAndResult(t *testing.T) {
 			return err
 		}
 		ag.Model = "anthropic/claude-sonnet-4-5"
+		ag.LaunchModel = "anthropic/claude-sonnet-4-5"
 		if err := m.Store.SaveAgent(ag); err != nil {
 			return err
 		}

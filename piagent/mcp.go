@@ -519,7 +519,7 @@ func agentSummary(v *AgentView) map[string]any {
 		// this server does not refresh it.
 		"bridge_protocol":       v.BridgeProtocol,
 		"bridge_upgrade_needed": v.BridgeUpgradeNeeded,
-		"launch_model":          a.Model,
+		"launch_model":          a.LaunchModel,
 	}
 	if v.Model != "" {
 		out["model"] = v.Model

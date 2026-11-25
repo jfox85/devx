@@ -515,12 +515,14 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 	if err != nil {
 		return err
 	}
-	script := m.launchScript(agent, nonce, bridgePath)
 	scriptPath := filepath.Join(m.Store.AgentDir(agent.ID), "launch.sh")
-	if err := writeFileAtomic(scriptPath, []byte(script)); err != nil {
-		return err
+	writeScript := func(a *Agent) error {
+		if err := writeFileAtomic(scriptPath, []byte(m.launchScript(a, nonce, bridgePath))); err != nil {
+			return err
+		}
+		return os.Chmod(scriptPath, 0o700)
 	}
-	if err := os.Chmod(scriptPath, 0o700); err != nil {
+	if err := writeScript(agent); err != nil {
 		return err
 	}
 	// Record the nonce before the process starts so the bridge can verify it.
@@ -529,6 +531,16 @@ func (m *Manager) launchLocked(agentID string, relaunch bool) error {
 		if err != nil {
 			return err
 		}
+		// The running (old) bridge may have recorded a model change since
+		// the script was written; it is fenced only once the nonce below
+		// rotates. Launch on the model read under this lock, rewriting the
+		// script before rotating so a write failure rotates nothing.
+		if a.Model != agent.Model {
+			if err := writeScript(a); err != nil {
+				return err
+			}
+		}
+		a.LaunchModel = a.Model
 		// Carry a legacy record's completed launch over before stamping
 		// this attempt, so a failure now cannot make it look unlaunched.
 		if !a.adoptedPaneUnlaunched() && a.LaunchCount > 0 {

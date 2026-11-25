@@ -143,6 +143,10 @@ type Agent struct {
 	// it whenever the session's model changes (pi_send model, /model), so a
 	// relaunch resumes on the model the session last used.
 	Model string `json:"model,omitempty"`
+	// LaunchModel is the model the current Pi process was launched with
+	// (--model; "" = Pi's default), stamped by DevX with each launch's
+	// nonce. Unlike Model, the bridge never writes it.
+	LaunchModel string `json:"launch_model,omitempty"`
 }
 
 // adoptedPaneUnlaunched reports whether a is adopted and its bound pane
